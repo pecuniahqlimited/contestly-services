@@ -67,17 +67,18 @@ export async function partiesRoutes(app: FastifyInstance) {
     const id = uuidParam(req);
     const result = await db.transaction(async (tx) => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
-      if (!p) return { code: 404, error: "not_found" };
-      if (p.status !== "open") return { code: 409, error: "party_not_open" };
+      if (!p) return { status: 404, body: { error: "not_found" } };
+      if (p.status !== "open") return { status: 409, body: { error: "party_not_open" } };
       const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, id));
-      if (Number(n) >= p.maxPlayers) return { code: 409, error: "party_full" };
+      if (Number(n) >= p.maxPlayers) return { status: 409, body: { error: "party_full" } };
       const already = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, id), eq(partyPlayers.userId, me.id)));
-      if (already.length) return { code: 200, joined: true, replayed: true };
+      if (already.length) return { status: 200, body: { joined: true, replayed: true } };
       const paid = await ledger.charge(tx, { userId: me.id, amountKobo: p.entryKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
       await tx.insert(partyPlayers).values({ partyId: id, userId: me.id });
-      await tx.insert(chatMessages).values({ partyId: id, system: true, text: `${me.displayName} joined. Pot is now ${potKobo(p, Number(n) + 1) / 100} naira.` });
-      return { code: 201, joined: true, paid, potKobo: potKobo(p, Number(n) + 1) };
+      await tx.insert(chatMessages).values({ partyId: id, system: true, text: `${me.displayName} joined` });
+      return { status: 201, body: { joined: true, paid, potKobo: potKobo(p, Number(n) + 1) } };
     });
-    return reply.code(result.code).send(result);
+    req.log.info({ partyId: id, userId: me.id, status: result.status }, "party join");
+    return reply.code(result.status).send(result.body);
   });
 }

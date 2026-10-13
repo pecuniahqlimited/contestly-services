@@ -1,4 +1,4 @@
-import { and, eq, sql as dsql } from "drizzle-orm";
+import { and, eq, inArray, sql as dsql } from "drizzle-orm";
 import { db, type Tx } from "./client.js";
 import { ledgerAccounts, ledgerEntries } from "./schema.js";
 
@@ -37,6 +37,15 @@ export async function charge(tx: Tx, p: { userId: string; amountKobo: number; ty
   if (fromBonus) await post(tx, { ...p, kind: "bonus", amountKobo: -fromBonus, idempotencyKey: p.idempotencyKey + ":bonus" });
   if (fromCash) await post(tx, { ...p, kind: "cash", amountKobo: -fromCash, idempotencyKey: p.idempotencyKey + ":cash" });
   return { fromBonus, fromCash };
+}
+
+/** Reverse a charge() leg by leg: what came from bonus goes back to bonus, what came from cash goes back to cash. Idempotent. */
+export async function refund(tx: Tx, p: { chargeKey: string; type: string; refType: string; refId: string; idempotencyKey: string }) {
+  const legs = await tx.select({ userId: ledgerAccounts.userId, kind: ledgerAccounts.kind, amountKobo: ledgerEntries.amountKobo })
+    .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerEntries.accountId, ledgerAccounts.id))
+    .where(inArray(ledgerEntries.idempotencyKey, [p.chargeKey + ":bonus", p.chargeKey + ":cash"]));
+  for (const l of legs) await post(tx, { userId: l.userId, kind: l.kind, amountKobo: -l.amountKobo, type: p.type, refType: p.refType, refId: p.refId, idempotencyKey: `${p.idempotencyKey}:${l.kind}` });
+  return { toBonus: -(legs.find((l) => l.kind === "bonus")?.amountKobo ?? 0), toCash: -(legs.find((l) => l.kind === "cash")?.amountKobo ?? 0) };
 }
 
 export async function balances(userId: string) {

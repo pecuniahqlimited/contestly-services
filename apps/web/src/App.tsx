@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { RT } from "@contestly/shared";
+import { RT, naira, coins } from "@contestly/shared";
 import { api, socket, devUser } from "./api";
 import Prototype from "./prototype/Prototype";
 
@@ -28,7 +28,7 @@ export default function App() {
       <div className="flex flex-wrap items-center justify-center gap-2 px-3 py-2 text-xs font-semibold" style={{ background: "#E7E3F4" }}>
         <span className={`rounded-full px-2 py-1 ${pill(status.api)}`}>API {status.api ?? "…"}</span>
         <span className={`rounded-full px-2 py-1 ${pill(status.rt)}`}>Realtime {status.rt ?? "…"}</span>
-        <span className="rounded-full px-2 py-1 bg-white text-gray-700">as @{devUser()}{status.me ? ` · 🪙 ${status.me.wallet.bonusKobo / 100} · ₦${status.me.wallet.cashKobo / 100}` : ""}</span>
+        <span className="rounded-full px-2 py-1 bg-white text-gray-700">as @{devUser()}{status.me ? ` · 🪙 ${coins(status.me.wallet.bonusKobo)} · ${naira(status.me.wallet.cashKobo)}` : ""}</span>
         {status.parties !== undefined && <span className="rounded-full px-2 py-1 bg-white text-gray-700">{status.parties} open parties</span>}
       </div>
       <Prototype />

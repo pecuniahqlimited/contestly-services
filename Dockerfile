@@ -9,7 +9,7 @@ COPY apps/realtime/package.json ./apps/realtime/
 COPY apps/worker/package.json ./apps/worker/
 RUN npm ci --omit=dev=false --workspace=@contestly/${APP} --include-workspace-root
 COPY apps/${APP} ./apps/${APP}
-RUN npm run build --workspaces --if-present
+RUN npm run build
 
 FROM node:22-alpine
 ARG APP

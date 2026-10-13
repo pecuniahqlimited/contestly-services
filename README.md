@@ -52,7 +52,7 @@ With `startsInMinutes: 1`, watch the worker log: after a minute the party goes `
 - **Ledger is append-only, double-entry style** with a materialised balance per (user, kind). Every write has an idempotency key, so retries and duplicate webhooks are no-ops.
 - **Cash and bonus coins are separate accounts.** Entries drain bonus first, then cash. Prizes and refunds go where the rules say, never by accident.
 - **Joins lock the party row** so a full party can't be oversubscribed by two people tapping at once.
-- **Realtime is stateless.** Rooms live in Redis via the Socket.io adapter, so a second instance later needs no code change.
+- **Live rooms live in process; everything around them lives in Valkey.** Each room's state stays in memory on the one realtime process hosting it. Valkey holds presence, room discovery and pub/sub, so any instance can find any room and a second instance is config, not code. If a room disappears mid-round, the worker cancels and refunds the party through the ledger. (Realtime is still Socket.io; roadmap step 1 replaces it with Colyseus.)
 - **Worker publishes, realtime fans out.** Party lifecycle events travel over a Redis channel; services never call each other directly.
 
 ## Auth modes

@@ -4,14 +4,32 @@ import { z } from "zod";
 export const kobo = (naira: number) => Math.round(naira * 100);
 export const naira = (k: number) => "₦" + (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
 
-export const PAYOUT_STAGES = [
-  { stage: 1, type: "pattern", prizeKobo: kobo(500) },
-  { stage: 2, type: "scramble", prizeKobo: kobo(1500) },
-  { stage: 3, type: "wordhunt", prizeKobo: kobo(4000) },
-  { stage: 4, type: "sudden_death", prizeKobo: kobo(10000) },
-] as const;
-export const PAYOUT_ENTRY_COINS = 100;
-export const DECISION_SECONDS = 8;
+/** Bonus coins are counted in kobo like cash (1 coin = 100 kobo) but shown without the ₦. */
+export const coins = (k: number) => (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
+
+/** Payout Challenge config. Admin-editable (stored under key "payout" in app_config); this is the default when nothing is stored. */
+export const payoutStageTypes = ["pattern", "scramble", "wordhunt", "trivia", "sudden_death"] as const;
+export const payoutConfigSchema = z.object({
+  entryKobo: z.number().int().positive(),
+  decisionSeconds: z.number().int().min(1).max(60),
+  stages: z.array(z.object({
+    type: z.enum(payoutStageTypes),
+    seconds: z.number().int().min(3).max(120),
+    prizeKobo: z.number().int().positive(),
+  })).min(1).max(20).refine((s) => s.every((x, i) => i === 0 || x.prizeKobo > s[i - 1].prizeKobo), "each stage's prize must be higher than the last"),
+});
+export type PayoutConfig = z.infer<typeof payoutConfigSchema>;
+export const DEFAULT_PAYOUT_CONFIG: PayoutConfig = {
+  entryKobo: kobo(100),
+  decisionSeconds: 8,
+  stages: [
+    { type: "pattern", seconds: 15, prizeKobo: kobo(300) },
+    { type: "scramble", seconds: 15, prizeKobo: kobo(800) },
+    { type: "wordhunt", seconds: 15, prizeKobo: kobo(2000) },
+    { type: "trivia", seconds: 12, prizeKobo: kobo(5000) },
+    { type: "sudden_death", seconds: 10, prizeKobo: kobo(12000) },
+  ],
+};
 
 export const CATEGORIES = ["Afrobeats", "Football", "Nollywood", "General knowledge", "History", "Science", "Tech", "Fashion", "Food", "Geography", "Brain teasers", "Reality TV", "Maths", "Hip hop"] as const;
 

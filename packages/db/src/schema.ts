@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, bigint, boolean, timestamp, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, bigint, boolean, timestamp, jsonb, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
@@ -85,6 +85,13 @@ export const ledgerEntries = pgTable("ledger_entries", {
   idempotencyKey: text("idempotency_key").notNull().unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("ledger_entries_account_idx").on(t.accountId, t.createdAt)]);
+
+/** Admin-editable settings, one JSON document per key (e.g. "payout"). Read through packages/db/src/config.ts, which validates. */
+export const appConfig = pgTable("app_config", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export type User = typeof users.$inferSelect;
 export type Party = typeof parties.$inferSelect;

@@ -30,7 +30,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
     if (Number(n) < 2) {
       // Refund every entry and the host's pot. Idempotency keys make retries safe.
       const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
-      for (const pl of players) if (p.entryKobo) await ledger.post(tx, { userId: pl.userId, kind: "bonus", amountKobo: p.entryKobo, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
+      for (const pl of players) await ledger.refund(tx, { chargeKey: `party_entry:${p.id}:${pl.userId}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
       if (p.funding === "host") await ledger.post(tx, { userId: p.hostId, kind: "cash", amountKobo: p.hostPoolKobo, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
       await tx.update(parties).set({ status: "cancelled" }).where(eq(parties.id, partyId));
       await tx.insert(chatMessages).values({ partyId, system: true, text: "Not enough players joined. Everyone has been refunded." });
