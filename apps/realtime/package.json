@@ -1,0 +1,20 @@
+{
+  "name": "@contestly/realtime",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@contestly/auth": "*",
+    "@contestly/db": "*",
+    "@contestly/queue": "*",
+    "@contestly/shared": "*",
+    "@socket.io/redis-adapter": "^8.3.0",
+    "drizzle-orm": "^0.38.3",
+    "socket.io": "^4.8.1"
+  }
+}

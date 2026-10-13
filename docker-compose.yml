@@ -1,0 +1,55 @@
+# Local infrastructure. Services run with `npm run dev` on your machine so you get hot reload;
+# run them in Docker too with `docker compose --profile services up`.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: contestly
+      POSTGRES_PASSWORD: contestly
+      POSTGRES_DB: contestly
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contestly"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    command: ["valkey-server", "--appendonly", "yes"]
+    ports: ["6379:6379"]
+    volumes: [valkeydata:/data]
+
+  api:
+    profiles: ["services"]
+    build: { context: ., args: { APP: api } }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://contestly:contestly@postgres:5432/contestly
+      REDIS_URL: redis://valkey:6379
+    ports: ["4000:4000"]
+    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_started } }
+
+  realtime:
+    profiles: ["services"]
+    build: { context: ., args: { APP: realtime } }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://contestly:contestly@postgres:5432/contestly
+      REDIS_URL: redis://valkey:6379
+    ports: ["4001:4001"]
+    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_started } }
+
+  worker:
+    profiles: ["services"]
+    build: { context: ., args: { APP: worker } }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://contestly:contestly@postgres:5432/contestly
+      REDIS_URL: redis://valkey:6379
+    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_started } }
+
+volumes:
+  pgdata:
+  valkeydata:

@@ -1,0 +1,25 @@
+{
+  "name": "contestly",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "prepare": "npm run build -w @contestly/shared -w @contestly/db -w @contestly/queue -w @contestly/auth",
+    "infra:up": "docker compose up -d postgres valkey",
+    "infra:down": "docker compose down",
+    "db:push": "npm run push -w @contestly/db",
+    "db:seed": "npm run seed -w @contestly/db",
+    "dev": "concurrently -n api,rt,worker,web -c blue,magenta,yellow,green \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\" \"npm run dev -w @contestly/web\"",
+    "dev:backend": "concurrently -n api,rt,worker -c blue,magenta,yellow \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.6.3",
+    "tsx": "^4.19.2"
+  }
+}
