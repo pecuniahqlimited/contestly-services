@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "prepare": "npm run build -w @contestly/shared -w @contestly/db -w @contestly/queue -w @contestly/auth",
-    "infra:up": "docker compose up -d postgres valkey",
+    "infra:up": "docker compose up -d --wait postgres valkey",
     "infra:down": "docker compose down",
     "db:push": "npm run push -w @contestly/db",
     "db:seed": "npm run seed -w @contestly/db",
