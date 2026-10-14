@@ -5,6 +5,8 @@ export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 export const accountKind = pgEnum("account_kind", ["cash", "bonus"]);
+export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
+export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -31,11 +33,18 @@ export const follows = pgTable("follows", {
 
 export const parties = pgTable("parties", {
   id: uuid("id").primaryKey().defaultRandom(),
-  hostId: uuid("host_id").notNull().references(() => users.id),
+  /**
+   * Who clicked create; never null. The *public* host is resolved only through
+   * `publicHost()` in host.ts (ADR 0001): today the creator, from step 4 the brand when
+   * a nullable brand_id lands here. Don't read this column directly for display.
+   */
+  createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
   title: text("title").notNull(),
   category: text("category").notNull(),
   entryKobo: integer("entry_kobo").notNull().default(0),
   maxPlayers: integer("max_players").notNull(),
+  questionCount: integer("question_count").notNull().default(5),
+  questionSeconds: integer("question_seconds").notNull().default(15),
   funding: fundingKind("funding").notNull(),
   hostPoolKobo: integer("host_pool_kobo").notNull().default(0),
   split: integer("split").array().notNull(),
@@ -55,6 +64,40 @@ export const partyPlayers = pgTable("party_players", {
   rank: integer("rank"),
   prizeKobo: integer("prize_kobo"),
 }, (t) => [primaryKey({ columns: [t.partyId, t.userId] })]);
+
+/**
+ * The set attached to a party when it goes live. `payload` is the full server payload, correct
+ * answers included — it never leaves the server before the question closes; clients get the
+ * stripped public view from packages/game. Reserves (`reserve: true`) sit after the play order
+ * and are appended by flag → void → replace (step 2).
+ */
+export const partyQuestions = pgTable("party_questions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  idx: integer("idx").notNull(), // play order, 0-based; reserves continue the numbering
+  format: questionFormat("format").notNull(),
+  payload: jsonb("payload").notNull(),
+  seconds: integer("seconds").notNull(),
+  explanation: text("explanation"),
+  status: partyQuestionStatus("status").notNull().default("pending"),
+  reserve: boolean("reserve").notNull().default(false),
+  sourceRef: text("source_ref"), // step 2: bank question id / file chunk the question came from
+}, (t) => [uniqueIndex("party_questions_party_idx").on(t.partyId, t.idx)]);
+
+/**
+ * One row per (question, player): the submitted answer, server-measured time, and the grade.
+ * Written when the round closes each question; the live tally stays in the room's memory.
+ */
+export const partyAnswers = pgTable("party_answers", {
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  questionId: uuid("question_id").notNull().references(() => partyQuestions.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  answer: jsonb("answer"), // format-specific; null = no answer submitted
+  answeredMs: integer("answered_ms"), // server receive − server open; null = no answer
+  correctness: integer("correctness_pct").notNull().default(0), // 0–100, partial credit included
+  points: integer("points").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.questionId, t.userId] }), index("party_answers_party_idx").on(t.partyId)]);
 
 export const chatMessages = pgTable("chat_messages", {
   id: uuid("id").primaryKey().defaultRandom(),

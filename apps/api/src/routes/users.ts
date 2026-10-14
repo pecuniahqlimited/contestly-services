@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, sql, count, inArray, desc } from "drizzle-orm";
-import { db, users, follows, parties, partyPlayers, ledger } from "@contestly/db";
+import { db, users, follows, partyPlayers, ledger, partiesHostedBy } from "@contestly/db";
 import { upsertMeSchema, kobo } from "@contestly/shared";
 import { Unauthorized } from "@contestly/auth";
 import { requireUser, uuidParam } from "../auth.js";
@@ -36,7 +36,7 @@ export async function usersRoutes(app: FastifyInstance) {
       db.select({ parties: count(), wins: sql<number>`count(*) filter (where ${partyPlayers.rank} = 1)`, best: sql<number>`coalesce(max(${partyPlayers.prizeKobo}), 0)` }).from(partyPlayers).where(eq(partyPlayers.userId, u.id)),
       me ? db.select().from(follows).where(and(eq(follows.followerId, me.id), eq(follows.followeeId, u.id))) : Promise.resolve([]),
     ]);
-    const hosting = await db.select().from(parties).where(and(eq(parties.hostId, u.id), inArray(parties.status, ["open", "live"]))).orderBy(parties.startsAt);
+    const hosting = (await partiesHostedBy(u.id)).filter((p) => p.status === "open" || p.status === "live").sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
     return { ...publicUser(u), followers: fl.n, following: fg.n, stats: { parties: Number(stats.parties), wins: Number(stats.wins), bestPrizeKobo: Number(stats.best) }, viewer: { following: rel.length > 0, notify: rel[0]?.notify ?? false }, hosting };
   });
 

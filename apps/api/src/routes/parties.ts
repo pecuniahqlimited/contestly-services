@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, desc, asc, sql, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, chatMessages, follows, ledger } from "@contestly/db";
+import { db, users, parties, partyPlayers, chatMessages, follows, ledger, publicHost, publicHosts, getPartyConfig } from "@contestly/db";
 import { createPartySchema } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { requireUser, uuidParam } from "../auth.js";
@@ -15,27 +15,28 @@ export async function partiesRoutes(app: FastifyInstance) {
   app.get("/parties", async (req) => {
     const me = req.auth?.user;
     const { filter } = (req.query ?? {}) as { filter?: string };
-    const base = db.select({ p: parties, host: users, players: sql<number>`(select count(*) from ${partyPlayers} pp where pp.party_id = ${parties.id})` })
-      .from(parties).innerJoin(users, eq(users.id, parties.hostId))
+    let rows = await db.select({ p: parties, players: sql<number>`(select count(*) from ${partyPlayers} pp where pp.party_id = ${parties.id})` })
+      .from(parties)
       .where(and(inArray(parties.status, ["open", "live"]), eq(parties.visibility, "public")))
       .orderBy(asc(parties.startsAt)).limit(50);
-    let rows = await base;
-    if (filter === "brands") rows = rows.filter((r) => r.host.isBrand);
+    const hosts = await publicHosts(rows.map((r) => r.p));
+    if (filter === "brands") rows = rows.filter((r) => hosts.get(r.p.id)!.isBrand);
     if (filter === "following" && me) {
       const f = await db.select({ id: follows.followeeId }).from(follows).where(eq(follows.followerId, me.id));
       const ids = new Set(f.map((x) => x.id));
-      rows = rows.filter((r) => ids.has(r.host.id));
+      rows = rows.filter((r) => ids.has(hosts.get(r.p.id)!.id));
     }
     if (!filter && me?.interests.length) rows.sort((a, b) => Number(me.interests.includes(b.p.category)) - Number(me.interests.includes(a.p.category)));
-    return rows.map((r) => ({ ...r.p, host: { id: r.host.id, handle: r.host.handle, displayName: r.host.displayName, avatarEmoji: r.host.avatarEmoji, isBrand: r.host.isBrand, isVerified: r.host.isVerified }, playerCount: Number(r.players), potKobo: potKobo(r.p, Number(r.players)) }));
+    return rows.map((r) => ({ ...r.p, host: hosts.get(r.p.id), playerCount: Number(r.players), potKobo: potKobo(r.p, Number(r.players)) }));
   });
 
   app.post("/parties", async (req, reply) => {
     const me = requireUser(req);
     const body = createPartySchema.parse(req.body);
     const startsAt = new Date(Date.now() + body.startsInMinutes * 60_000);
+    const split = body.split ?? (await getPartyConfig()).defaultSplit;
     const party = await db.transaction(async (tx) => {
-      const [p] = await tx.insert(parties).values({ hostId: me.id, title: body.title, category: body.category, entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, funding: body.funding, hostPoolKobo: body.hostPoolKobo, split: body.split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
+      const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, category: body.category, entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
       // Host funds the pot up front so it can't be spent elsewhere; refunded by the worker if the party is cancelled.
       if (body.funding === "host") await ledger.post(tx, { userId: me.id, kind: "cash", amountKobo: -body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
       // Host is always seated. Pooled hosts pay their own entry like everyone else.
@@ -54,11 +55,11 @@ export async function partiesRoutes(app: FastifyInstance) {
     const id = uuidParam(req);
     const [p] = await db.select().from(parties).where(eq(parties.id, id));
     if (!p) return reply.code(404).send({ error: "not_found" });
-    const [host] = await db.select().from(users).where(eq(users.id, p.hostId));
+    const host = await publicHost(p);
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
     const chat = await db.select({ m: chatMessages, handle: users.handle, avatarEmoji: users.avatarEmoji }).from(chatMessages).leftJoin(users, eq(users.id, chatMessages.userId)).where(eq(chatMessages.partyId, id)).orderBy(desc(chatMessages.createdAt)).limit(50);
     const me = req.auth?.user;
-    return { ...p, host: { id: host.id, handle: host.handle, displayName: host.displayName, avatarEmoji: host.avatarEmoji, isBrand: host.isBrand, isVerified: host.isVerified }, players, playerCount: players.length, potKobo: potKobo(p, players.length), joined: !!me && players.some((x) => x.id === me.id), chat: chat.reverse().map((c) => ({ ...c.m, handle: c.handle, avatarEmoji: c.avatarEmoji })) };
+    return { ...p, host, players, playerCount: players.length, potKobo: potKobo(p, players.length), joined: !!me && players.some((x) => x.id === me.id), chat: chat.reverse().map((c) => ({ ...c.m, handle: c.handle, avatarEmoji: c.avatarEmoji })) };
   });
 
   /** Join: charges bonus coins first, then cash, inside one transaction with a row lock on the party. */

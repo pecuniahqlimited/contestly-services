@@ -9,12 +9,13 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@colyseus/ws-transport": "^0.15.0",
     "@contestly/auth": "*",
     "@contestly/db": "*",
+    "@contestly/game": "*",
     "@contestly/queue": "*",
     "@contestly/shared": "*",
-    "@socket.io/redis-adapter": "^8.3.0",
-    "drizzle-orm": "^0.38.3",
-    "socket.io": "^4.8.1"
+    "colyseus": "^0.15.0",
+    "drizzle-orm": "^0.38.3"
   }
 }

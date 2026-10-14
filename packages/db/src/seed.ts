@@ -4,7 +4,7 @@
  * Wallets are the exception: the ledger is append-only, so the one-off seed credits are posted once and never reset.
  */
 import { and, inArray, sql as dsql } from "drizzle-orm";
-import { kobo, DEFAULT_PAYOUT_CONFIG } from "@contestly/shared";
+import { kobo, DEFAULT_PAYOUT_CONFIG, DEFAULT_PARTY_CONFIG } from "@contestly/shared";
 import { db, sql } from "./client.js";
 import { users, follows, parties, partyPlayers, chatMessages, appConfig } from "./schema.js";
 import * as ledger from "./ledger.js";
@@ -47,13 +47,13 @@ await db.transaction(async (tx) => {
 
   const soon = (m: number) => new Date(Date.now() + m * 60_000);
   const demoParties = [
-    { id: pid(1), hostId: by["afrobeatsweekly"], title: "Afrobeats 2010s throwback", category: "Afrobeats", entryKobo: kobo(200), maxPlayers: 10, funding: "pooled" as const, hostPoolKobo: 0, split: [60, 30, 10], visibility: "public" as const, coverColor: "#7B5CFF", coverEmoji: "🎶", status: "open" as const, startsAt: soon(15) },
-    { id: pid(2), hostId: by["tunde"], title: "Friday night football", category: "Football", entryKobo: kobo(500), maxPlayers: 6, funding: "pooled" as const, hostPoolKobo: 0, split: [70, 30], visibility: "public" as const, coverColor: "#0FA97A", coverEmoji: "⚽", status: "open" as const, startsAt: soon(30) },
-    { id: pid(3), hostId: by["jollofrepublic"], title: "Jollof Republic lunch break", category: "Food", entryKobo: 0, maxPlayers: 50, funding: "host" as const, hostPoolKobo: kobo(20_000), split: [50, 30, 20], visibility: "public" as const, coverColor: "#FF8A3D", coverEmoji: "🍛", status: "open" as const, startsAt: soon(60) },
+    { id: pid(1), createdByUserId: by["afrobeatsweekly"], title: "Afrobeats 2010s throwback", category: "Afrobeats", entryKobo: kobo(200), maxPlayers: 10, funding: "pooled" as const, hostPoolKobo: 0, split: [60, 30, 10], visibility: "public" as const, coverColor: "#7B5CFF", coverEmoji: "🎶", status: "open" as const, startsAt: soon(15) },
+    { id: pid(2), createdByUserId: by["tunde"], title: "Friday night football", category: "Football", entryKobo: kobo(500), maxPlayers: 6, funding: "pooled" as const, hostPoolKobo: 0, split: [70, 30], visibility: "public" as const, coverColor: "#0FA97A", coverEmoji: "⚽", status: "open" as const, startsAt: soon(30) },
+    { id: pid(3), createdByUserId: by["jollofrepublic"], title: "Jollof Republic lunch break", category: "Food", entryKobo: 0, maxPlayers: 50, funding: "host" as const, hostPoolKobo: kobo(20_000), split: [50, 30, 20], visibility: "public" as const, coverColor: "#FF8A3D", coverEmoji: "🍛", status: "open" as const, startsAt: soon(60) },
   ];
   await tx.insert(parties).values(demoParties).onConflictDoUpdate({
     target: parties.id,
-    set: { hostId: dsql`excluded.host_id`, title: dsql`excluded.title`, category: dsql`excluded.category`, entryKobo: dsql`excluded.entry_kobo`, maxPlayers: dsql`excluded.max_players`, funding: dsql`excluded.funding`, hostPoolKobo: dsql`excluded.host_pool_kobo`, split: dsql`excluded.split`, visibility: dsql`excluded.visibility`, coverColor: dsql`excluded.cover_color`, coverEmoji: dsql`excluded.cover_emoji`, status: dsql`excluded.status`, startsAt: dsql`excluded.starts_at` },
+    set: { createdByUserId: dsql`excluded.created_by_user_id`, title: dsql`excluded.title`, category: dsql`excluded.category`, entryKobo: dsql`excluded.entry_kobo`, maxPlayers: dsql`excluded.max_players`, funding: dsql`excluded.funding`, hostPoolKobo: dsql`excluded.host_pool_kobo`, split: dsql`excluded.split`, visibility: dsql`excluded.visibility`, coverColor: dsql`excluded.cover_color`, coverEmoji: dsql`excluded.cover_emoji`, status: dsql`excluded.status`, startsAt: dsql`excluded.starts_at` },
   });
 
   const demoPartyIds = demoParties.map((p) => p.id);
@@ -73,6 +73,7 @@ await db.transaction(async (tx) => {
   ]);
 
   await tx.insert(appConfig).values({ key: "payout", value: DEFAULT_PAYOUT_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_PAYOUT_CONFIG, updatedAt: new Date() } });
+  await tx.insert(appConfig).values({ key: "party", value: DEFAULT_PARTY_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_PARTY_CONFIG, updatedAt: new Date() } });
 });
 
 console.log(`Seeded ${people.length} users, 3 parties, payout config. Try: curl -H 'x-dev-user: tunde' http://localhost:4000/me`);

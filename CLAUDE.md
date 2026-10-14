@@ -158,7 +158,9 @@ npm run db:push         # drizzle-kit push (dev). Use db:generate + db:migrate o
 npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 brands) and 3 parties
 npm run dev             # api, realtime, worker
 npm run build && npm run typecheck
+npm test                # unit tests (packages/game)
 scripts/smoke.sh        # end-to-end check against the running stack
+npm run sim             # 3 simulated players play a party to the end against the running stack
 ```
 
 Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handles are auto-created.
