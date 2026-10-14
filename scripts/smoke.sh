@@ -4,6 +4,10 @@ set -e
 H=(-s -H "x-dev-user: tunde" -H "content-type: application/json")
 j() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 echo "health:   $(curl -s localhost:4000/health)"
+# Top up the paying users so repeat runs don't drain the seed balances (brokeuser stays broke on purpose).
+for u in tunde zee; do
+  echo "topup $u: $(curl -s -H "x-dev-user: $u" -H 'content-type: application/json' -X POST localhost:4000/wallet/dev-topup -d '{"nairaAmount":1000}')"
+done
 echo "me:       $(curl "${H[@]}" localhost:4000/me | j "d['handle'], d['wallet']")"
 PID=$(curl "${H[@]}" -X POST localhost:4000/parties -d '{"title":"Smoke test party","category":"Tech","entryKobo":20000,"maxPlayers":6,"funding":"pooled","split":[70,30],"startsInMinutes":1}' | j "d['id']")
 echo "created:  $PID"
