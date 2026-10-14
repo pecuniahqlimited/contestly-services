@@ -1,6 +1,8 @@
 # ADR 0001: How a party records its host
 
-**Status:** Proposed — awaiting decision, no schema changed yet
+**Status:** Accepted (2026-10-14), with one condition: a single shared helper in `packages/db`
+resolves the public host (name, avatar, profile link) and is the **only** place that logic lives;
+step 4 adds `brand_id` by changing that helper alone, without touching callers.
 **Date:** 2026-10-14
 
 ## Context
