@@ -63,6 +63,17 @@ describe("the three-beat round", () => {
     expect(m.submitAnswer("ghost", { index: 2 }, 1_000)).toMatchObject({ accepted: false, reason: "not_in_match" });
   });
 
+  it("verdicts carry what each player actually submitted", () => {
+    const m = newMatch([q("q1")]);
+    m.openQuestion(0);
+    m.submitAnswer("ada", { index: 2 }, 1_000);
+    m.submitAnswer("tunde", { index: 0 }, 2_000);
+    const reveal = m.closeQuestion(10_000);
+    expect(reveal.verdicts.find((v) => v.userId === "ada")!.answer).toEqual({ index: 2 });
+    expect(reveal.verdicts.find((v) => v.userId === "tunde")!.answer).toEqual({ index: 0 });
+    expect(reveal.verdicts.find((v) => v.userId === "zee")!.answer).toBeNull();
+  });
+
   it("no answer earns 0 points and full time toward the tie-break", () => {
     const m = newMatch([q("q1")]);
     m.openQuestion(0);

@@ -41,6 +41,8 @@ export interface Verdict {
   points: number;
   /** null = no answer submitted. */
   answeredMs: number | null;
+  /** What the player actually submitted ("Your pick" in the reveal, disputes, learn-from-play). null = no answer. */
+  answer: unknown | null;
 }
 
 export interface Reveal {
@@ -152,14 +154,14 @@ export class Match {
       const s = this.submissions.get(userId);
       if (!s) {
         tally.timeMs += questionMs;
-        verdicts.push({ userId, correctness: 0, points: 0, answeredMs: null });
+        verdicts.push({ userId, correctness: 0, points: 0, answeredMs: null, answer: null });
         continue;
       }
       const correctness = grade(q.format, q.payload, s.answer);
       const pts = points(correctness, s.answeredMs, questionMs, this.cfg);
       tally.score += pts;
       tally.timeMs += s.answeredMs;
-      verdicts.push({ userId, correctness, points: pts, answeredMs: s.answeredMs });
+      verdicts.push({ userId, correctness, points: pts, answeredMs: s.answeredMs, answer: s.answer ?? null });
     }
     this.beat = "reveal";
     this.lastReveal = {

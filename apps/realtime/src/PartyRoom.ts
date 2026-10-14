@@ -223,6 +223,7 @@ export class PartyRoom extends Room {
       partyId: this.partyId,
       questionId: reveal.questionId,
       userId: v.userId,
+      answer: v.answer,
       answeredMs: v.answeredMs,
       correctness: Math.round(v.correctness * 100),
       points: v.points,

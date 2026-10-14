@@ -9,7 +9,7 @@
  */
 import { Client, type Room } from "colyseus.js";
 import { and, count, eq } from "drizzle-orm";
-import { db, partyQuestions, ledgerEntries } from "@contestly/db";
+import { db, partyQuestions, partyAnswers, ledgerEntries } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat, Payload } from "@contestly/game";
@@ -95,11 +95,16 @@ await api("kemz", "POST", `/parties/${partyId}/join`);
 
 // ---- connect the three players ------------------------------------------------------
 
-type Persona = { handle: string; play: (format: QuestionFormat, payload: any) => unknown; delayMs: (questionMs: number) => number };
+/** The question on which kemz answers only after the clock: must score 0 and store answered_ms NULL. */
+const LATE_IDX = 3;
+
+type Persona = { handle: string; play: (format: QuestionFormat, payload: any) => unknown; delayMs: (idx: number, questionMs: number) => number };
 const personas: Persona[] = [
-  { handle: "tunde", play: correctAnswer, delayMs: () => 400 }, // fast and right
-  { handle: "ada.o", play: correctAnswer, delayMs: (ms) => Math.floor(ms * 0.6) }, // right but slow
-  { handle: "kemz", play: wrongAnswer, delayMs: () => 300 }, // fast and wrong
+  // tunde dawdles on Q0 so ada.o takes the early lead; from Q1 he's fast and overtakes — a rank flip we assert.
+  { handle: "tunde", play: correctAnswer, delayMs: (idx, ms) => (idx === 0 ? Math.floor(ms * 0.8) : 400) },
+  { handle: "ada.o", play: correctAnswer, delayMs: (idx, ms) => (idx === 0 ? 400 : Math.floor(ms * 0.6)) },
+  // kemz is fast and wrong — and on LATE_IDX only answers after the question closed.
+  { handle: "kemz", play: wrongAnswer, delayMs: (idx, ms) => (idx === LATE_IDX ? ms + 600 : 300) },
 ];
 
 const userIds = new Map<string, string>();
@@ -111,8 +116,10 @@ let distributionsSeen = 0;
 let firstStandingsPrevRanks: (number | null)[] = [];
 let laterStandingsWithPrevRank = 0;
 let standingsSeen = 0;
+let rankFlipSeen = false;
 let chatDuringQuestionRejected = false;
 let chatDuringStandingsSeen = false;
+const errorsSeen: Record<string, string[]> = {};
 let resolveFinal!: (rows: any[]) => void;
 const finalRows = new Promise<any[]>((r) => (resolveFinal = r));
 
@@ -143,13 +150,14 @@ for (const persona of personas) {
     setTimeout(() => {
       room.send(MSG.answer, answer);
       room.send(MSG.lock);
-    }, persona.delayMs(view.seconds * 1000));
+    }, persona.delayMs(view.idx, view.seconds * 1000));
     // chat must be rejected while a question is up (checked once, from ada)
     if (persona.handle === "ada.o" && view.idx === 1) room.send(MSG.chat, { text: "mid-question chat, should bounce" });
   });
 
   room.onMessage(MSG.error, (e: any) => {
     if (e?.error === "chat_closed") chatDuringQuestionRejected = true;
+    (errorsSeen[persona.handle] ??= []).push(e?.error);
   });
 
   if (isHost) {
@@ -161,6 +169,7 @@ for (const persona of personas) {
       standingsSeen++;
       if (standingsSeen === 1) firstStandingsPrevRanks = s.rows.map((r: any) => r.prevRank);
       else if (s.rows.every((r: any) => r.prevRank !== null)) laterStandingsWithPrevRank++;
+      if (standingsSeen > 1 && s.rows.some((r: any) => r.prevRank !== null && r.prevRank !== r.rank)) rankFlipSeen = true;
       if (standingsSeen === 2) rooms[1].send(MSG.chat, { text: "gg so far!" }); // chat is open on standings
     });
     room.onMessage(MSG.chatMessage, (m: any) => {
@@ -207,6 +216,7 @@ ok(revealsSeen === 5, `reveal after every question (saw ${revealsSeen})`);
 ok(distributionsSeen >= 3, `distributions on option formats (saw ${distributionsSeen})`);
 ok(firstStandingsPrevRanks.every((p) => p === null), "first standings carry prev_rank=null");
 ok(laterStandingsWithPrevRank >= 4, `later standings carry prev_rank (saw ${laterStandingsWithPrevRank})`);
+ok(rankFlipSeen, "a mid-game rank flip showed prev_rank ≠ rank in a standings");
 ok(chatDuringQuestionRejected, "chat rejected while a question is open");
 ok(chatDuringStandingsSeen, "chat delivered during standings");
 
@@ -220,6 +230,17 @@ for (const h of ["tunde", "ada.o", "kemz"]) {
 
 const [{ reserves }] = await db.select({ reserves: count() }).from(partyQuestions).where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.reserve, true)));
 ok(Number(reserves) >= 2, `reserve questions stored with the set (${reserves})`);
+
+// What each player submitted is stored for "Your pick", disputes and learn-from-play.
+const q0 = await questionByIdx(0);
+const [tundeQ0] = await db.select().from(partyAnswers).where(and(eq(partyAnswers.questionId, q0.id), eq(partyAnswers.userId, userIds.get("tunde")!)));
+ok(JSON.stringify(tundeQ0?.answer) === JSON.stringify(correctAnswer(q0.format as QuestionFormat, q0.payload)), "submitted answer stored verbatim in party_answers");
+
+// kemz's answer after the clock: rejected by the server, scores 0, stored as no answer.
+const qLate = await questionByIdx(LATE_IDX);
+const [kemzLate] = await db.select().from(partyAnswers).where(and(eq(partyAnswers.questionId, qLate.id), eq(partyAnswers.userId, userIds.get("kemz")!)));
+ok(!!kemzLate && kemzLate.answeredMs === null && kemzLate.points === 0 && kemzLate.answer === null, `late answer scored 0 with answered_ms NULL (got ms=${kemzLate?.answeredMs}, pts=${kemzLate?.points})`);
+ok((errorsSeen["kemz"] ?? []).some((e) => e === "not_open" || e === "too_late"), `late answer rejected by the server (${JSON.stringify(errorsSeen["kemz"] ?? [])})`);
 
 // ---- settlement (1b): rake once, split via the ledger, party → finished -------------
 
