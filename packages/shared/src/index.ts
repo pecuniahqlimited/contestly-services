@@ -86,6 +86,9 @@ export const createPartySchema = z.object({
   maxPlayers: z.number().int().min(2).max(100),
   funding: z.enum(["pooled", "host"]),
   hostPoolKobo: z.number().int().min(0).default(0),
+  /** Host-funded parties may offer a product or experience instead of cash: a fulfilment record, not a ledger entry. */
+  prizeKind: z.enum(["cash", "noncash"]).default("cash"),
+  prizeText: z.string().min(3).max(120).optional(),
   /** Pot split by rank. Omitted → the admin default from party config (winner takes all). */
   split: z.array(z.number().int().positive()).min(1).max(5).refine((s) => s.reduce((a, b) => a + b, 0) === 100, "split must add up to 100").optional(),
   questionCount: z.number().int().min(3).max(30).default(5),
@@ -95,7 +98,9 @@ export const createPartySchema = z.object({
   coverEmoji: z.string().max(8).default("🎉"),
   startsInMinutes: z.number().int().min(1).max(24 * 60).default(10),
   inviteUserIds: z.array(z.string().uuid()).max(20).default([]),
-}).refine((p) => p.funding === "host" ? p.hostPoolKobo > 0 : p.entryKobo > 0, { message: "pooled parties need an entry fee; host-funded parties need a pot" });
+}).refine((p) => p.funding === "pooled" ? p.entryKobo > 0 && p.prizeKind === "cash" : true, { message: "pooled parties need an entry fee and pay cash" })
+  .refine((p) => p.funding === "host" && p.prizeKind === "cash" ? p.hostPoolKobo > 0 : true, { message: "host-funded cash parties need a pot" })
+  .refine((p) => p.prizeKind === "noncash" ? !!p.prizeText && p.hostPoolKobo === 0 : true, { message: "non-cash parties describe the prize and carry no cash pot" });
 
 /** Chat is room-scoped in Colyseus; the party comes from the room, not the message. */
 export const chatSendSchema = z.object({

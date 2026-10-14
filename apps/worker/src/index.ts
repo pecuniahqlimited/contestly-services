@@ -1,11 +1,13 @@
 import { Worker } from "bullmq";
-import { and, eq, count } from "drizzle-orm";
-import { db, parties, partyPlayers, follows, users, chatMessages, ledger, getPartyConfig } from "@contestly/db";
-import { makeRedis } from "@contestly/queue";
-import { QUEUES, PARTY_EVENTS_CHANNEL, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { and, asc, eq, count } from "drizzle-orm";
+import { db, parties, partyPlayers, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, type Party, type Tx } from "@contestly/db";
+import { makeRedis, partyQueue } from "@contestly/queue";
+import { QUEUES, PARTY_EVENTS_CHANNEL, partyRoomKey, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { computeSettlement } from "@contestly/game";
 
 const connection = makeRedis();
 const pub = makeRedis();
+const partyJobs = partyQueue();
 const emit = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 
 /** Push notifications. Locally this logs; wire FCM/APNs here (device tokens table + firebase-admin messaging). */
@@ -20,30 +22,97 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   }
 }, { connection });
 
-/** Party lifecycle. Starts a party at startsAt, or cancels + refunds if too few people joined. */
-const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
-  const { partyId } = job.data;
+/** Refund everything a party took in: every entry leg by leg, and the host's cash pot. Idempotent. */
+async function refundParty(tx: Tx, p: Party, message: string) {
+  const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, p.id));
+  for (const pl of players) await ledger.refund(tx, { chargeKey: `party_entry:${p.id}:${pl.userId}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
+  if (p.funding === "host" && p.prizeKind === "cash" && p.hostPoolKobo > 0) {
+    await ledger.post(tx, { userId: p.createdByUserId, kind: "cash", amountKobo: p.hostPoolKobo, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
+  }
+  await tx.update(parties).set({ status: "cancelled" }).where(eq(parties.id, p.id));
+  await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: message });
+  await emit({ partyId: p.id, status: "cancelled" });
+  return players.length;
+}
+
+/** Start a party at startsAt, or cancel + refund if too few people joined. */
+async function startOrCancel(partyId: string) {
   const cfg = await getPartyConfig();
-  await db.transaction(async (tx) => {
+  const started = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "open") return;
+    if (!p || p.status !== "open") return false;
     const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
     if (Number(n) < cfg.minPlayers) {
-      // Refund every entry and the host's pot. Idempotency keys make retries safe.
-      const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
-      for (const pl of players) await ledger.refund(tx, { chargeKey: `party_entry:${p.id}:${pl.userId}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
-      if (p.funding === "host") await ledger.post(tx, { userId: p.createdByUserId, kind: "cash", amountKobo: p.hostPoolKobo, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
-      await tx.update(parties).set({ status: "cancelled" }).where(eq(parties.id, partyId));
-      await tx.insert(chatMessages).values({ partyId, system: true, text: "Not enough players joined. Everyone has been refunded." });
-      await emit({ partyId, status: "cancelled" });
-      console.log(`[party] ${p.title} cancelled, ${players.length} refunded`);
-      return;
+      const refunded = await refundParty(tx, p, "Not enough players joined. Everyone has been refunded.");
+      console.log(`[party] ${p.title} cancelled, ${refunded} refunded`);
+      return false;
     }
     await tx.update(parties).set({ status: "live" }).where(eq(parties.id, partyId));
     await tx.insert(chatMessages).values({ partyId, system: true, text: "The party is starting. Good luck!" });
     await emit({ partyId, status: "live" });
     console.log(`[party] ${p.title} is live with ${n} players`);
+    return true;
   });
+  // Watchdog: if the realtime room's heartbeat key goes stale mid-round, cancel and refund.
+  if (started) await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 });
+}
+
+/**
+ * Settle a finished round: rake taken once, pot split via the ledger with idempotency keys,
+ * non-cash prizes become a fulfilment record, party → finished with ranks. A replayed job is a no-op.
+ */
+async function settle(partyId: string) {
+  const cfg = await getPartyConfig();
+  await db.transaction(async (tx) => {
+    const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+    if (!p || p.status !== "live") return; // already settled or cancelled
+    const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, partyId)).orderBy(asc(partyPlayers.rank));
+    const ranked = players.filter((x) => x.rank !== null).map((x) => x.userId);
+    if (!ranked.length) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
+
+    if (p.prizeKind === "noncash") {
+      await tx.insert(prizeFulfilments).values({ partyId: p.id, winnerUserId: ranked[0], hostUserId: p.createdByUserId, prizeText: p.prizeText ?? "" }).onConflictDoNothing();
+      console.log(`[party] ${p.title}: non-cash prize awarded to winner (fulfilment record created)`);
+    } else {
+      const s = computeSettlement({ funding: p.funding, entryKobo: p.entryKobo, playerCount: players.length, hostPoolKobo: p.hostPoolKobo, split: p.split, ranked }, cfg);
+      if (s.rakeKobo > 0) await ledger.post(tx, { userId: await ledger.treasuryUserId(tx), kind: "cash", amountKobo: s.rakeKobo, type: "party_rake", refType: "party", refId: p.id, idempotencyKey: `party_rake:${p.id}` });
+      if (s.hostCutKobo > 0) await ledger.post(tx, { userId: p.createdByUserId, kind: "cash", amountKobo: s.hostCutKobo, type: "party_host_cut", refType: "party", refId: p.id, idempotencyKey: `party_host_cut:${p.id}` });
+      for (const prize of s.prizes) {
+        if (prize.amountKobo <= 0) continue;
+        await ledger.post(tx, { userId: prize.userId, kind: "cash", amountKobo: prize.amountKobo, type: "party_prize", refType: "party", refId: p.id, idempotencyKey: `party_prize:${p.id}:${prize.userId}` });
+        await tx.update(partyPlayers).set({ prizeKobo: prize.amountKobo }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, prize.userId)));
+      }
+      console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)`);
+    }
+
+    await tx.update(parties).set({ status: "finished" }).where(eq(parties.id, partyId));
+    await tx.insert(chatMessages).values({ partyId, system: true, text: "That's a wrap! Results are in." });
+    await emit({ partyId, status: "finished" });
+  });
+}
+
+/** A live round whose room heartbeat disappeared (process crash, deploy) is cancelled and refunded. */
+async function watchdog(partyId: string) {
+  const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
+  if (!p || p.status !== "live") return; // finished or cancelled; the watchdog retires
+  const alive = await pub.get(partyRoomKey(partyId));
+  if (alive) {
+    await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 30_000 });
+    return;
+  }
+  await db.transaction(async (tx) => {
+    const [locked] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+    if (!locked || locked.status !== "live") return;
+    const refunded = await refundParty(tx, locked, "The round was interrupted. Everyone has been refunded.");
+    console.log(`[party] ${locked.title}: room disappeared mid-round, cancelled and ${refunded} refunded`);
+  });
+}
+
+const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
+  const { kind, partyId } = job.data;
+  if (kind === "start" || kind === "cancel_if_empty") return startOrCancel(partyId);
+  if (kind === "settle") return settle(partyId);
+  if (kind === "watchdog") return watchdog(partyId);
 }, { connection });
 
 for (const w of [notifyWorker, partyWorker]) {

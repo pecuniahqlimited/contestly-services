@@ -36,9 +36,10 @@ export async function partiesRoutes(app: FastifyInstance) {
     const startsAt = new Date(Date.now() + body.startsInMinutes * 60_000);
     const split = body.split ?? (await getPartyConfig()).defaultSplit;
     const party = await db.transaction(async (tx) => {
-      const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, category: body.category, entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
-      // Host funds the pot up front so it can't be spent elsewhere; refunded by the worker if the party is cancelled.
-      if (body.funding === "host") await ledger.post(tx, { userId: me.id, kind: "cash", amountKobo: -body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
+      const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, category: body.category, entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, prizeText: body.prizeText, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
+      // Host funds a cash pot up front so it can't be spent elsewhere; refunded by the worker if the party is cancelled.
+      // A non-cash prize moves no money: it becomes a fulfilment record at settlement.
+      if (body.funding === "host" && body.prizeKind === "cash") await ledger.post(tx, { userId: me.id, kind: "cash", amountKobo: -body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
       // Host is always seated. Pooled hosts pay their own entry like everyone else.
       await ledger.charge(tx, { userId: me.id, amountKobo: body.funding === "pooled" ? body.entryKobo : 0, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
       await tx.insert(partyPlayers).values({ partyId: p.id, userId: me.id });

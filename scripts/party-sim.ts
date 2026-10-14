@@ -9,7 +9,7 @@
  */
 import { Client, type Room } from "colyseus.js";
 import { and, count, eq } from "drizzle-orm";
-import { db, partyQuestions } from "@contestly/db";
+import { db, partyQuestions, ledgerEntries } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat, Payload } from "@contestly/game";
@@ -74,6 +74,9 @@ function leaks(view: unknown): string[] {
 
 console.log("creating party as tunde, joining ada.o and kemz…");
 for (const h of ["tunde", "ada.o", "kemz"]) await api(h, "POST", "/wallet/dev-topup", { nairaAmount: 1000 }).catch(() => ({}));
+const total = (w: { cashKobo: number; bonusKobo: number }) => w.cashKobo + w.bonusKobo;
+const walletsBefore = new Map<string, number>();
+for (const h of ["tunde", "ada.o", "kemz"]) walletsBefore.set(h, total((await api(h, "GET", "/me")).wallet));
 const party = await api("tunde", "POST", "/parties", {
   title: "Sim party",
   category: "General knowledge",
@@ -89,12 +92,6 @@ console.log(`party ${partyId} created (split defaulted to ${JSON.stringify(party
 ok(Array.isArray(party.split) && party.split.reduce((a: number, b: number) => a + b, 0) === 100, "split defaulted from party config");
 await api("ada.o", "POST", `/parties/${partyId}/join`);
 await api("kemz", "POST", `/parties/${partyId}/join`);
-
-// Don't wait the full minute: promote the delayed start job (same code path the worker runs).
-const startJob = await partyQueue().getJob(`start-${partyId}`);
-if (!startJob) throw new Error("start job not found — is the API running?");
-await startJob.promote();
-console.log("start job promoted; waiting for the worker to flip the party live…");
 
 // ---- connect the three players ------------------------------------------------------
 
@@ -179,7 +176,13 @@ for (const persona of personas) {
   room.onMessage(MSG.phase, () => {});
   room.onMessage(MSG.presence, () => {});
 }
-console.log("3 players connected; playing 5 questions (~90s)…");
+// Players are in the lobby BEFORE the party starts, so the worker's party:events "live"
+// publish — the real product path — is what starts the round in the room.
+// Don't wait the full minute: promote the delayed start job (same code path the worker runs).
+const startJob = await partyQueue().getJob(`start-${partyId}`);
+if (!startJob) throw new Error("start job not found — is the API running?");
+await startJob.promote();
+console.log("3 players in the lobby; start job promoted; playing 5 questions (~90s)…");
 
 const timeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("sim timed out after 240s")), 240_000));
 const final = (await Promise.race([finalRows, timeout])) as any[];
@@ -218,6 +221,33 @@ for (const h of ["tunde", "ada.o", "kemz"]) {
 const [{ reserves }] = await db.select({ reserves: count() }).from(partyQuestions).where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.reserve, true)));
 ok(Number(reserves) >= 2, `reserve questions stored with the set (${reserves})`);
 
-for (const r of rooms) await r.leave();
+// ---- settlement (1b): rake once, split via the ledger, party → finished -------------
+
+console.log("\nwaiting for the worker to settle…");
+let settled: any = null;
+for (let i = 0; i < 40 && !settled; i++) {
+  const d = await api("tunde", "GET", `/parties/${partyId}`);
+  if (d.status === "finished") settled = d;
+  else await new Promise((r) => setTimeout(r, 500));
+}
+ok(!!settled, "party flipped to finished by the settle job");
+
+if (settled) {
+  // pot 3 × ₦200 = 60_000k; rake 10% = 6_000k; host cut 0; split [100] → winner takes 54_000k
+  const winner = settled.players.find((p: any) => p.id === userIds.get("tunde"));
+  ok(winner?.prizeKobo === 54_000, `winner prizeKobo persisted (${winner?.prizeKobo} = pot − rake)`);
+  const [rake] = await db.select().from(ledgerEntries).where(eq(ledgerEntries.idempotencyKey, `party_rake:${partyId}`));
+  ok(rake?.amountKobo === 6_000, `rake taken once into the treasury (${rake?.amountKobo})`);
+
+  const expectedDelta: Record<string, number> = { tunde: -20_000 + 54_000, "ada.o": -20_000, kemz: -20_000 };
+  for (const h of ["tunde", "ada.o", "kemz"]) {
+    const after = total((await api(h, "GET", "/me")).wallet);
+    const delta = after - walletsBefore.get(h)!;
+    ok(delta === expectedDelta[h], `${h} wallet delta ${delta} kobo (expected ${expectedDelta[h]})`);
+  }
+}
+
+// leave() can hang on an already-disposed room; it's best-effort cleanup, never worth blocking the verdict.
+await Promise.race([Promise.allSettled(rooms.map((r) => r.leave())), new Promise((r) => setTimeout(r, 3000))]);
 console.log(failures ? `\n${failures} assertion(s) FAILED` : "\nparty-sim: all assertions passed");
 process.exit(failures ? 1 : 0);

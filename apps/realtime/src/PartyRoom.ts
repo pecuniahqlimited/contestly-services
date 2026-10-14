@@ -81,8 +81,15 @@ export class PartyRoom extends Room {
     });
 
     // Worker → realtime: party lifecycle events over Valkey, never HTTP.
-    this.presence.subscribe(PARTY_EVENTS_CHANNEL, (raw: string) => {
-      const ev = JSON.parse(raw) as { partyId: string; status: string };
+    // RedisPresence JSON-parses published messages before invoking callbacks (LocalPresence doesn't),
+    // so accept both shapes and never throw here: a throw would break delivery to every other room.
+    this.presence.subscribe(PARTY_EVENTS_CHANNEL, (raw: unknown) => {
+      let ev: { partyId: string; status: string };
+      try {
+        ev = typeof raw === "string" ? JSON.parse(raw) : (raw as { partyId: string; status: string });
+      } catch {
+        return;
+      }
       if (ev.partyId !== this.partyId) return;
       if (ev.status === "live") void this.startMatch();
       if (ev.status === "cancelled") {

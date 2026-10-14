@@ -1,8 +1,19 @@
 import { and, eq, inArray, sql as dsql } from "drizzle-orm";
 import { db, type Tx } from "./client.js";
-import { ledgerAccounts, ledgerEntries } from "./schema.js";
+import { ledgerAccounts, ledgerEntries, users } from "./schema.js";
 
 export class InsufficientFunds extends Error { constructor() { super("insufficient_funds"); } }
+
+/** The platform's internal account the rake is posted to. Created on first use; never plays, never shown. */
+export const TREASURY_HANDLE = "contestly.treasury";
+export async function treasuryUserId(tx: Tx): Promise<string> {
+  const [existing] = await tx.select({ id: users.id }).from(users).where(eq(users.handle, TREASURY_HANDLE));
+  if (existing) return existing.id;
+  const [created] = await tx.insert(users).values({ handle: TREASURY_HANDLE, displayName: "Contestly", avatarEmoji: "🏛️", isSystem: true }).onConflictDoNothing().returning({ id: users.id });
+  if (created) return created.id;
+  const [again] = await tx.select({ id: users.id }).from(users).where(eq(users.handle, TREASURY_HANDLE));
+  return again.id;
+}
 
 type Kind = "cash" | "bonus";
 

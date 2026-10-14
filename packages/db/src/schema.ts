@@ -7,6 +7,8 @@ export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 export const accountKind = pgEnum("account_kind", ["cash", "bonus"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided"]);
+export const prizeKind = pgEnum("prize_kind", ["cash", "noncash"]);
+export const fulfilmentStatus = pgEnum("fulfilment_status", ["awarded", "arranged", "delivered", "disputed"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -19,6 +21,8 @@ export const users = pgTable("users", {
   interests: text("interests").array().notNull().default(sql`'{}'::text[]`),
   isBrand: boolean("is_brand").notNull().default(false),
   isVerified: boolean("is_verified").notNull().default(false),
+  /** Internal accounts (the rake treasury). Never shown in discovery, never plays. */
+  isSystem: boolean("is_system").notNull().default(false),
   streakDays: integer("streak_days").notNull().default(0),
   lastPlayedOn: text("last_played_on"), // YYYY-MM-DD, used for streaks
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -47,6 +51,9 @@ export const parties = pgTable("parties", {
   questionSeconds: integer("question_seconds").notNull().default(15),
   funding: fundingKind("funding").notNull(),
   hostPoolKobo: integer("host_pool_kobo").notNull().default(0),
+  /** Non-cash prizes (a product, an experience) are a fulfilment state machine, never a ledger entry. */
+  prizeKind: prizeKind("prize_kind").notNull().default("cash"),
+  prizeText: text("prize_text"),
   split: integer("split").array().notNull(),
   visibility: visibilityKind("visibility").notNull().default("public"),
   coverColor: text("cover_color").notNull().default("#7B5CFF"),
@@ -128,6 +135,22 @@ export const ledgerEntries = pgTable("ledger_entries", {
   idempotencyKey: text("idempotency_key").notNull().unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("ledger_entries_account_idx").on(t.accountId, t.createdAt)]);
+
+/**
+ * Non-cash prize fulfilment: awarded → arranged → delivered, or disputed. Winner and host are
+ * both notified by the worker (day 3 and 7 nudges land in roadmap step 7). One prize per party.
+ */
+export const prizeFulfilments = pgTable("prize_fulfilments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partyId: uuid("party_id").notNull().references(() => parties.id),
+  winnerUserId: uuid("winner_user_id").notNull().references(() => users.id),
+  /** Who owes delivery: the party's creator today, the brand's team from step 4. */
+  hostUserId: uuid("host_user_id").notNull().references(() => users.id),
+  prizeText: text("prize_text").notNull(),
+  status: fulfilmentStatus("status").notNull().default("awarded"),
+  awardedAt: timestamp("awarded_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("prize_fulfilments_party").on(t.partyId)]);
 
 /** Admin-editable settings, one JSON document per key (e.g. "payout"). Read through packages/db/src/config.ts, which validates. */
 export const appConfig = pgTable("app_config", {
