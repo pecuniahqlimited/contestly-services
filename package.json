@@ -1,5 +1,5 @@
 {
-  "name": "contestly",
+  "name": "contestly-services",
   "private": true,
   "engines": { "node": ">=22 <23" },
   "type": "module",
@@ -13,8 +13,7 @@
     "infra:down": "docker compose down",
     "db:push": "npm run push -w @contestly/db",
     "db:seed": "npm run seed -w @contestly/db",
-    "dev": "concurrently -n api,rt,worker,web -c blue,magenta,yellow,green \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\" \"npm run dev -w @contestly/web\"",
-    "dev:backend": "concurrently -n api,rt,worker -c blue,magenta,yellow \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\"",
+    "dev": "concurrently -n api,rt,worker -c blue,magenta,yellow \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\"",
     "build": "npm run prepare && npm run build -w apps --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

@@ -1,4 +1,4 @@
-# Contestly
+# contestly-services
 
 Ground-up rebuild. Nothing here depends on the previous app.
 
@@ -9,7 +9,6 @@ apps/
   api/        Fastify HTTP API        :4000   users, follows, parties, wallet
   realtime/   Socket.io               :4001   lobby presence, chat, party status
   worker/     BullMQ                           notifications, party start/cancel + refunds
-  web/        Vite + React            :5173   the clickable prototype + backend check strip
 packages/
   shared/     zod schemas, event names, money helpers (kobo)
   db/         Drizzle schema, client, append-only ledger, seed
@@ -19,6 +18,8 @@ packages/
 
 One codebase, one Docker image, three backend processes. Postgres and Valkey are the only things in Docker locally.
 
+The UI (Expo mobile app, Vite web app, design tokens, API client and the prototype) lives in the sibling repo [`contestly-app`](../contestly-app).
+
 ## Run it
 
 ```bash
@@ -27,10 +28,21 @@ npm install            # also builds the shared packages (prepare script)
 npm run infra:up        # postgres + valkey in docker
 npm run db:push         # create tables
 npm run db:seed         # demo users + parties
-npm run dev             # api, realtime, worker, web with hot reload
+npm run dev             # api, realtime, worker with hot reload
+scripts/smoke.sh        # end-to-end check against the running stack
 ```
 
-Open http://localhost:5173. The strip at the top should show API ok, Realtime ok, and you signed in as `@tunde` with 🪙 500.
+To see it in a UI, run `contestly-app` next to this repo (see its README).
+
+## How `contestly-app` consumes `@contestly/shared`
+
+For now the app links this package straight from disk: its `package.json` files depend on `"@contestly/shared": "file:../../../contestly-services/packages/shared"`, so this repo must be checked out next to `contestly-app` and `npm install` must have been run here (that builds `packages/shared/dist`). After changing `packages/shared`, run `npm run build -w @contestly/shared`.
+
+To switch to a published package later:
+
+1. Drop `"private"` if set, give `packages/shared` a real version and a `publishConfig` for the registry (e.g. GitHub Packages, `@contestly` scope).
+2. `npm publish -w @contestly/shared` (in CI on tag).
+3. In `contestly-app`, replace the `file:` specifier with a version range (`"@contestly/shared": "^0.1.0"`), add an `.npmrc` pointing the scope at the registry, and remove the shared path from `apps/mobile/metro.config.js` `watchFolders`.
 
 ## Poke the API
 

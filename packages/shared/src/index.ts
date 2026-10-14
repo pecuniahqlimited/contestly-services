@@ -85,5 +85,25 @@ export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserI
 export type NotifyJob = NotifyFollowersJob | NotifyInviteJob;
 export type PartyJob = { kind: "start" | "cancel_if_empty"; partyId: string };
 
+/** Response shapes. The UI's api-client parses every response with these. */
+export const healthResponseSchema = z.object({ ok: z.boolean(), service: z.string(), time: z.string() });
+export const walletSchema = z.object({ cashKobo: z.number().int(), bonusKobo: z.number().int() });
+export const publicUserSchema = z.object({
+  id: z.string().uuid(),
+  handle: z.string(),
+  displayName: z.string(),
+  avatarEmoji: z.string(),
+  bio: z.string().nullable(),
+  interests: z.array(z.string()),
+  isBrand: z.boolean(),
+  isVerified: z.boolean(),
+  streakDays: z.number().int(),
+});
+export const meResponseSchema = publicUserSchema.extend({ wallet: walletSchema });
+
+export type HealthResponse = z.infer<typeof healthResponseSchema>;
+export type Wallet = z.infer<typeof walletSchema>;
+export type PublicUser = z.infer<typeof publicUserSchema>;
+export type MeResponse = z.infer<typeof meResponseSchema>;
 export type CreatePartyInput = z.infer<typeof createPartySchema>;
 export type UpsertMeInput = z.infer<typeof upsertMeSchema>;

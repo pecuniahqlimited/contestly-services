@@ -1,6 +1,6 @@
 # Contestly
 
-Social trivia app for the Nigerian market. This is a **ground-up rebuild** that replaces an earlier Contestly app. Treat it as a brand-new product: do not look for, assume, or reproduce anything from the previous codebase, schema, or UI. The only inputs are this repo, the prototype and the docs under `docs/` (see Reference docs). Keep the design clean and lean; when in doubt, remove rather than add.
+Social trivia app for the Nigerian market. This is a **ground-up rebuild** that replaces an earlier Contestly app. Treat it as a brand-new product: do not look for, assume, or reproduce anything from the previous codebase, schema, or UI. The only inputs are this repo, the docs under `docs/` and the prototype in `contestly-app` (see Reference docs). Keep the design clean and lean; when in doubt, remove rather than add.
 
 ## What we're building (agreed direction, Oct 2026)
 
@@ -36,7 +36,7 @@ A 90-second party, not a form, and it ends on Home. Three entry states:
 
 Brands get brand-specific picks and the verification checklist after name and logo; prize type is chosen per party, not at onboarding. If several people are onboarding at the same time they share the quick-fire round and see a leaderboard; alone, they still play and get the solo reward. Never claim someone is online unless they are. No pick is asked twice; anything collected in onboarding is editable from Me.
 
-The clickable prototype at `docs/design/contestly-prototype.jsx` (pure UI, demo data, web React + Tailwind) is the reference for screens, flows, copy and design tokens. In `contestly-app`, rebuild each screen in React Native (Expo, Reanimated) to match it and wire it to the API screen by screen; don't port the Tailwind code line by line and don't redesign without being asked.
+Screens, flows and copy are defined by the prototype in `contestly-app` (`../contestly-app/docs/design/contestly-prototype.jsx`); this repo serves the API those screens need.
 
 ### Open questions (decide before building the relevant piece)
 
@@ -124,7 +124,7 @@ Read these before starting a roadmap step. If they disagree with this file, this
 
 - `docs/product/Contestly-User-Intents.md`: what users are trying to do, screen by screen, and the open product questions.
 - `docs/engineering/contestly-services-architecture.md`: which service owns each step of each flow (party lifecycle, Payout Challenge, wallet, question generation, onboarding, nudges).
-- `docs/design/contestly-prototype.jsx`: the clickable UI reference.
+- `../contestly-app/docs/design/contestly-prototype.jsx`: the clickable UI reference (lives only in the app repo).
 - `docs/adr/`: decisions that could have gone either way (one page each).
 
 ## Layout
@@ -145,15 +145,7 @@ packages/queue      BullMQ queues + ioredis connections
 packages/game       pure game logic: party round, payout ladder, scoring, tie-breaks. No I/O.
 ```
 
-`contestly-app` (separate repo, to create):
-```
-apps/mobile         React Native + Expo       iOS + Android; the product
-apps/web            Vite + React              admin, brand console, share/deep-link landing pages
-packages/ui         design tokens, components ported from the prototype
-packages/api-client typed client generated from the services' zod schemas (depends on @contestly/shared)
-```
-
-The prototype's canonical copy is `docs/design/contestly-prototype.jsx`; when `contestly-app` is created, copy `docs/design/` into it as well. It stays the design reference either way.
+`contestly-app` (sibling repo, `../contestly-app`): the Expo mobile app, the Vite web app (admin, brand console, share pages), design tokens, and `@contestly/api-client`, a typed client hand-written on top of the zod schemas in `@contestly/shared` for now (codegen later). It links `@contestly/shared` from this repo with `file:` until the package is published (see README). Changing a schema in `packages/shared` changes the app's contract: rebuild shared and typecheck the app repo too.
 
 One Dockerfile per service repo build (`APP` build arg picks the process); each service is its own container and can be scaled or rewritten independently (Elixir was mentioned for real-time); until then everything is TypeScript. Services share Postgres and Valkey but never each other's tables directly except through `packages/db`.
 
@@ -164,7 +156,7 @@ cp .env.example .env && npm install     # install also builds the shared package
 npm run infra:up        # docker compose: postgres + valkey
 npm run db:push         # drizzle-kit push (dev). Use db:generate + db:migrate once schema stabilises.
 npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 brands) and 3 parties
-npm run dev             # api, realtime, worker, web
+npm run dev             # api, realtime, worker
 npm run build && npm run typecheck
 scripts/smoke.sh        # end-to-end check against the running stack
 ```
@@ -181,7 +173,7 @@ Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handle
 - **Joins lock the party row** (`for update`) so a full party can't be oversubscribed.
 - **Live rooms live in process; everything around them lives in Valkey.** Colyseus keeps each room's state in memory on the one realtime process hosting it. Do not try to move live room state into Valkey. Valkey holds presence, room discovery (Colyseus Redis presence and driver) and pub/sub, so any instance can find any room and adding a second instance is config, not code. Results are persisted to Postgres when a round ends; if a room disappears mid-round (process crash, deploy), the worker cancels and refunds that party through the ledger. Clients reconnect with Colyseus reconnection tokens. Worker → realtime communication goes over the `party:events` Valkey channel, never direct calls.
 - **Services never call each other over HTTP.** API enqueues jobs; worker processes them; realtime subscribes.
-- **Validate at the edge with zod** from `@contestly/shared`; the same schemas are used by the web client.
+- **Validate at the edge with zod** from `@contestly/shared`; the same schemas are used by the UI's api-client.
 - Uploads (avatars, covers, logos) go to object storage via presigned URLs, never through the API.
 - **Never present fake presence.** Bots or sample data in a prototype are fine; in the product, "online", "playing now" and "N people in your round" must be true.
 
@@ -196,7 +188,7 @@ Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handle
 
 ## Stack
 
-Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state sync, reconnection tokens, matchmaking for shared onboarding rounds), BullMQ on Valkey (jobs, delayed and repeatable), PostgreSQL via Drizzle, Valkey (hot state, presence, pub/sub, leaderboard sorted sets), Firebase Auth (phone OTP, Apple, Google), Paystack behind a `PayoutRail` interface, DigitalOcean Spaces. Mobile app: React Native with Expo (native animation for the game screens, OTA updates). Web: Vite + React for admin, brand console and share pages.
+Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state sync, reconnection tokens, matchmaking for shared onboarding rounds), BullMQ on Valkey (jobs, delayed and repeatable), PostgreSQL via Drizzle, Valkey (hot state, presence, pub/sub, leaderboard sorted sets), Firebase Auth (phone OTP, Apple, Google), Paystack behind a `PayoutRail` interface, DigitalOcean Spaces. UI stack (Expo, Vite) is documented in `contestly-app`.
 
 ## Deployment target (not yet; don't deploy without being asked)
 
@@ -204,7 +196,7 @@ DigitalOcean. One droplet runs the containers behind Caddy; DO Managed Postgres 
 
 ## Roadmap, in order
 
-0. Split the repos: move UI to `contestly-app`, publish `@contestly/shared`, set up the generated API client.
+0. ~~Split the repos~~ (done Oct 2026): UI in `contestly-app`, `@contestly/shared` linked via `file:` (publish later), hand-written api-client.
 1. Game engine in `packages/game` + Colyseus party room: question delivery with server timing, scoring, tie-break by speed, live ranking, prize settlement into the ledger (cash) or fulfilment record (non-cash), party → `finished` with ranks. Decide the host entity (open question 1) as part of this.
 2. Question engine v1 (`apps/questions`): bank + retrieval first, then generation with the verify/dedupe/review steps above; sealed and curate host modes; the five formats with graders; flag → void → replace in the room.
 3. Payout Challenge: config-driven stages, decision timer, weekly seat allocation and budget, leaderboard points.
