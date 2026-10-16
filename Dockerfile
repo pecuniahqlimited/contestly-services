@@ -7,6 +7,7 @@ COPY packages ./packages
 COPY apps/api/package.json ./apps/api/
 COPY apps/realtime/package.json ./apps/realtime/
 COPY apps/worker/package.json ./apps/worker/
+COPY apps/questions/package.json ./apps/questions/
 RUN npm ci --omit=dev=false --workspace=@contestly/${APP} --include-workspace-root
 COPY apps/${APP} ./apps/${APP}
 RUN npm run build

@@ -1,14 +1,23 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count } from "drizzle-orm";
-import { db, parties, partyPlayers, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, type Party, type Tx } from "@contestly/db";
-import { makeRedis, partyQueue } from "@contestly/queue";
+import { db, parties, partyPlayers, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, type Party, type Tx } from "@contestly/db";
+import { makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { QUEUES, PARTY_EVENTS_CHANNEL, partyRoomKey, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement } from "@contestly/game";
 
 const connection = makeRedis();
 const pub = makeRedis();
 const partyJobs = partyQueue();
+const questionJobs = questionsQueue();
 const emit = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
+
+const GENERATION_FAILED_MESSAGE = "We couldn't build the questions for this party. Everyone has been refunded.";
+
+/** True once the party has a sealed play order (reserves don't count). */
+async function hasQuestionSet(partyId: string): Promise<boolean> {
+  const [{ n }] = await db.select({ n: count() }).from(partyQuestions).where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.reserve, false)));
+  return Number(n) > 0;
+}
 
 /** Push notifications. Locally this logs; wire FCM/APNs here (device tokens table + firebase-admin messaging). */
 const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
@@ -47,14 +56,19 @@ async function startOrCancel(partyId: string) {
       console.log(`[party] ${p.title} cancelled, ${refunded} refunded`);
       return false;
     }
-    await tx.update(parties).set({ status: "live" }).where(eq(parties.id, partyId));
+    await tx.update(parties).set({ status: "live", liveAt: new Date() }).where(eq(parties.id, partyId));
     await tx.insert(chatMessages).values({ partyId, system: true, text: "The party is starting. Good luck!" });
     await emit({ partyId, status: "live" });
     console.log(`[party] ${p.title} is live with ${n} players`);
     return true;
   });
-  // Watchdog: if the realtime room's heartbeat key goes stale mid-round, cancel and refund.
-  if (started) await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 });
+  if (started) {
+    // Sealed sets are generated at start: the questions service builds and gates the set, then
+    // publishes questions_ready; the room waits on that. (ADR 0002)
+    await questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}` });
+    // Watchdog: if the realtime room's heartbeat key goes stale mid-round, cancel and refund.
+    await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 });
+  }
 }
 
 /**
@@ -63,9 +77,9 @@ async function startOrCancel(partyId: string) {
  */
 async function settle(partyId: string) {
   const cfg = await getPartyConfig();
-  await db.transaction(async (tx) => {
+  const settled = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "live") return; // already settled or cancelled
+    if (!p || p.status !== "live") return false; // already settled or cancelled
     const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, partyId)).orderBy(asc(partyPlayers.rank));
     const ranked = players.filter((x) => x.rank !== null).map((x) => x.userId);
     if (!ranked.length) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
@@ -88,23 +102,52 @@ async function settle(partyId: string) {
     await tx.update(parties).set({ status: "finished" }).where(eq(parties.id, partyId));
     await tx.insert(chatMessages).values({ partyId, system: true, text: "That's a wrap! Results are in." });
     await emit({ partyId, status: "finished" });
+    return true;
+  });
+  // Fold this party's answer stats back into the question bank (idempotent via play_stats_recorded_at).
+  if (settled) await questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId: `record-play-${partyId}` });
+}
+
+/**
+ * The questions service exhausted its retries without sealing a set (fail closed): refund and
+ * cancel, unless the set landed in the meantime. Money only ever moves here, never in questions.
+ */
+async function cancelGenerationFailed(partyId: string) {
+  await db.transaction(async (tx) => {
+    const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+    if (!p || p.status !== "live") return;
+    if (await hasQuestionSet(partyId)) return; // a retry sealed the set after all; let the round run
+    const refunded = await refundParty(tx, p, GENERATION_FAILED_MESSAGE);
+    console.log(`[party] ${p.title}: question generation failed, cancelled and ${refunded} refunded`);
   });
 }
 
-/** A live round whose room heartbeat disappeared (process crash, deploy) is cancelled and refunded. */
+/**
+ * A live round whose room heartbeat disappeared (process crash, deploy) is cancelled and refunded.
+ * Also the belt-and-braces for generation: a live party still waiting for its question set past
+ * the generation timeout is cancelled the same way (a dead questions process never fails its job).
+ */
 async function watchdog(partyId: string) {
   const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
   if (!p || p.status !== "live") return; // finished or cancelled; the watchdog retires
-  const alive = await pub.get(partyRoomKey(partyId));
-  if (alive) {
-    await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 30_000 });
-    return;
+  const qcfg = await getQuestionsConfig();
+  const generationStalled =
+    p.liveAt !== null &&
+    Date.now() - p.liveAt.getTime() > qcfg.generationTimeoutSeconds * 1000 &&
+    !(await hasQuestionSet(partyId));
+  if (!generationStalled) {
+    const alive = await pub.get(partyRoomKey(partyId));
+    if (alive) {
+      await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 30_000 });
+      return;
+    }
   }
   await db.transaction(async (tx) => {
     const [locked] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!locked || locked.status !== "live") return;
-    const refunded = await refundParty(tx, locked, "The round was interrupted. Everyone has been refunded.");
-    console.log(`[party] ${locked.title}: room disappeared mid-round, cancelled and ${refunded} refunded`);
+    const message = generationStalled ? GENERATION_FAILED_MESSAGE : "The round was interrupted. Everyone has been refunded.";
+    const refunded = await refundParty(tx, locked, message);
+    console.log(`[party] ${locked.title}: ${generationStalled ? "generation stalled" : "room disappeared mid-round"}, cancelled and ${refunded} refunded`);
   });
 }
 
@@ -113,6 +156,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   if (kind === "start" || kind === "cancel_if_empty") return startOrCancel(partyId);
   if (kind === "settle") return settle(partyId);
   if (kind === "watchdog") return watchdog(partyId);
+  if (kind === "cancel_generation_failed") return cancelGenerationFailed(partyId);
 }, { connection });
 
 for (const w of [notifyWorker, partyWorker]) {

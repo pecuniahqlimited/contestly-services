@@ -9,10 +9,11 @@
  */
 import { Client, type Room } from "colyseus.js";
 import { and, count, eq } from "drizzle-orm";
-import { db, partyQuestions, partyAnswers, ledgerEntries } from "@contestly/db";
+import { db, parties, partyQuestions, partyAnswers, ledgerEntries, bankQuestions, questionGenerations } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat, Payload } from "@contestly/game";
+import { isKnownBadQuestion } from "../apps/questions/src/providers/mock/deck.js";
 
 const API = process.env.API_URL ?? "http://localhost:4000";
 const RT = process.env.RT_URL ?? "ws://localhost:4001";
@@ -72,6 +73,12 @@ function leaks(view: unknown): string[] {
 
 // ---- set the party up over the API -------------------------------------------------
 
+// TEST-ONLY: wipe the question bank so this run plays a freshly generated set. The engine is
+// bank-first by design — with a populated bank, retrieval would legitimately serve the whole set
+// and no generation (or generation records) would happen.
+await db.delete(questionGenerations);
+await db.delete(bankQuestions);
+
 console.log("creating party as tunde, joining ada.o and kemz…");
 for (const h of ["tunde", "ada.o", "kemz"]) await api(h, "POST", "/wallet/dev-topup", { nairaAmount: 1000 }).catch(() => ({}));
 const total = (w: { cashKobo: number; bonusKobo: number }) => w.cashKobo + w.bonusKobo;
@@ -79,7 +86,7 @@ const walletsBefore = new Map<string, number>();
 for (const h of ["tunde", "ada.o", "kemz"]) walletsBefore.set(h, total((await api(h, "GET", "/me")).wallet));
 const party = await api("tunde", "POST", "/parties", {
   title: "Sim party",
-  category: "General knowledge",
+  brief: "Nigerian general knowledge — cities, food, music, football",
   entryKobo: 20_000,
   maxPlayers: 5,
   funding: "pooled",
@@ -90,6 +97,7 @@ const party = await api("tunde", "POST", "/parties", {
 const partyId: string = party.id;
 console.log(`party ${partyId} created (split defaulted to ${JSON.stringify(party.split)})`);
 ok(Array.isArray(party.split) && party.split.reduce((a: number, b: number) => a + b, 0) === 100, "split defaulted from party config");
+ok(typeof party.category === "string" && party.category.length > 0, `category inferred from the brief (${party.category})`);
 await api("ada.o", "POST", `/parties/${partyId}/join`);
 await api("kemz", "POST", `/parties/${partyId}/join`);
 
@@ -111,6 +119,7 @@ const userIds = new Map<string, string>();
 for (const p of personas) userIds.set(p.handle, (await api(p.handle, "GET", "/me")).id);
 
 let questionLeaks = 0;
+const seenQuestionTexts: string[] = [];
 let revealsSeen = 0;
 let distributionsSeen = 0;
 let firstStandingsPrevRanks: (number | null)[] = [];
@@ -140,6 +149,7 @@ for (const persona of personas) {
   const isHost = persona.handle === "tunde";
 
   room.onMessage(MSG.question, async (view: any) => {
+    if (typeof view?.view?.question === "string") seenQuestionTexts.push(view.view.question);
     const leaked = leaks(view);
     if (leaked.length) {
       questionLeaks++;
@@ -231,6 +241,27 @@ for (const h of ["tunde", "ada.o", "kemz"]) {
 const [{ reserves }] = await db.select({ reserves: count() }).from(partyQuestions).where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.reserve, true)));
 ok(Number(reserves) >= 2, `reserve questions stored with the set (${reserves})`);
 
+// ---- question engine (2a): fresh gated set, records, bank -----------------------------
+
+const allQuestions = await db.select().from(partyQuestions).where(eq(partyQuestions.partyId, partyId));
+ok(allQuestions.length > 0 && allQuestions.every((q) => !isKnownBadQuestion(q.payload)), "no planted bad question reached party_questions");
+ok(seenQuestionTexts.length > 0 && seenQuestionTexts.every((t) => !isKnownBadQuestion({ question: t })), "no planted bad question was shown in the room");
+ok(allQuestions.every((q) => q.sourceRef), "every party question cites its bank source");
+const bankIds = new Set((await db.select({ id: bankQuestions.id }).from(bankQuestions)).map((r) => r.id));
+ok(allQuestions.every((q) => bankIds.has(q.sourceRef!)), "every sourceRef resolves to a bank question");
+
+const gens = await db.select().from(questionGenerations).where(eq(questionGenerations.partyId, partyId));
+const outcomes = gens.map((g) => g.outcome);
+ok(gens.length > 0, `generation records written (${gens.length}: ${outcomes.filter((o) => o === "accepted").length} accepted)`);
+ok(outcomes.filter((o) => o === "rejected_verify").length === 3, "all three planted bad questions rejected by independent verification");
+ok(gens.some((g) => (g.verify as any)?.verdict === "needs_source"), "the unverifiable claim was marked needs_source");
+ok(outcomes.filter((o) => o === "rejected_dedupe").length >= 1, "a near-duplicate was rejected by semantic dedupe");
+ok(gens.filter((g) => g.outcome === "accepted").every((g) => g.bankQuestionId), "every accepted generation landed in the bank");
+ok(gens.every((g) => g.spec && g.draft && g.outcome), "each record carries brief, spec, draft and gate outcome");
+
+const [partyRow] = await db.select().from(parties).where(eq(parties.id, partyId));
+ok(!!partyRow?.specSummary, `spec summary stored on the party ("${partyRow?.specSummary}")`);
+
 // What each player submitted is stored for "Your pick", disputes and learn-from-play.
 const q0 = await questionByIdx(0);
 const [tundeQ0] = await db.select().from(partyAnswers).where(and(eq(partyAnswers.questionId, q0.id), eq(partyAnswers.userId, userIds.get("tunde")!)));
@@ -265,6 +296,20 @@ if (settled) {
     const after = total((await api(h, "GET", "/me")).wallet);
     const delta = after - walletsBefore.get(h)!;
     ok(delta === expectedDelta[h], `${h} wallet delta ${delta} kobo (expected ${expectedDelta[h]})`);
+  }
+
+  // record_play: the worker's settle enqueued it; played questions' stats land in the bank.
+  let statsRecorded = false;
+  for (let i = 0; i < 40 && !statsRecorded; i++) {
+    const [row] = await db.select({ at: parties.playStatsRecordedAt }).from(parties).where(eq(parties.id, partyId));
+    if (row?.at) statsRecorded = true;
+    else await new Promise((r) => setTimeout(r, 500));
+  }
+  ok(statsRecorded, "play stats recorded for the party (play_stats_recorded_at set)");
+  if (statsRecorded) {
+    const q0row = await questionByIdx(0);
+    const [bq] = await db.select().from(bankQuestions).where(eq(bankQuestions.id, q0row.sourceRef!));
+    ok((bq?.timesPlayed ?? 0) >= 1 && (bq?.timesAnswered ?? 0) >= 3, `bank stats updated from play (played=${bq?.timesPlayed}, answered=${bq?.timesAnswered})`);
   }
 }
 

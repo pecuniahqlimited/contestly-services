@@ -1,28 +1,38 @@
 import { eq } from "drizzle-orm";
-import { DEFAULT_PARTY_CONFIG, DEFAULT_PAYOUT_CONFIG, partyConfigSchema, payoutConfigSchema, type PartyConfig, type PayoutConfig } from "@contestly/shared";
+import type { z } from "zod";
+import {
+  DEFAULT_PARTY_CONFIG, DEFAULT_PAYOUT_CONFIG, DEFAULT_QUESTIONS_CONFIG,
+  partyConfigSchema, payoutConfigSchema, questionsConfigSchema,
+} from "@contestly/shared";
 import { db } from "./client.js";
 import { appConfig } from "./schema.js";
 
-/** Current Payout Challenge config: the stored admin value, or the default when none is stored. */
-export async function getPayoutConfig(): Promise<PayoutConfig> {
-  const [row] = await db.select().from(appConfig).where(eq(appConfig.key, "payout"));
-  return row ? payoutConfigSchema.parse(row.value) : DEFAULT_PAYOUT_CONFIG;
+/** One admin-editable JSON document per key, validated by its shared schema, defaulting when nothing is stored. */
+function configEntry<T>(key: string, schema: z.ZodType<T>, fallback: T) {
+  return {
+    async get(): Promise<T> {
+      const [row] = await db.select().from(appConfig).where(eq(appConfig.key, key));
+      return row ? schema.parse(row.value) : fallback;
+    },
+    async set(value: unknown): Promise<T> {
+      const parsed = schema.parse(value);
+      await db.insert(appConfig).values({ key, value: parsed }).onConflictDoUpdate({ target: appConfig.key, set: { value: parsed, updatedAt: new Date() } });
+      return parsed;
+    },
+  };
 }
 
-export async function setPayoutConfig(value: unknown): Promise<PayoutConfig> {
-  const parsed = payoutConfigSchema.parse(value);
-  await db.insert(appConfig).values({ key: "payout", value: parsed }).onConflictDoUpdate({ target: appConfig.key, set: { value: parsed, updatedAt: new Date() } });
-  return parsed;
-}
+/** Payout Challenge config (entry, decision timer, stages). */
+const payout = configEntry("payout", payoutConfigSchema, DEFAULT_PAYOUT_CONFIG);
+export const getPayoutConfig = payout.get;
+export const setPayoutConfig = payout.set;
 
-/** Current party round + settlement config (rake, host cut, default split, beat timings). */
-export async function getPartyConfig(): Promise<PartyConfig> {
-  const [row] = await db.select().from(appConfig).where(eq(appConfig.key, "party"));
-  return row ? partyConfigSchema.parse(row.value) : DEFAULT_PARTY_CONFIG;
-}
+/** Party round + settlement config (rake, host cut, default split, beat timings). */
+const party = configEntry("party", partyConfigSchema, DEFAULT_PARTY_CONFIG);
+export const getPartyConfig = party.get;
+export const setPartyConfig = party.set;
 
-export async function setPartyConfig(value: unknown): Promise<PartyConfig> {
-  const parsed = partyConfigSchema.parse(value);
-  await db.insert(appConfig).values({ key: "party", value: parsed }).onConflictDoUpdate({ target: appConfig.key, set: { value: parsed, updatedAt: new Date() } });
-  return parsed;
-}
+/** Question-engine config (reserves, generation timeout, dedupe threshold, flag rules). */
+const questions = configEntry("questions", questionsConfigSchema, DEFAULT_QUESTIONS_CONFIG);
+export const getQuestionsConfig = questions.get;
+export const setQuestionsConfig = questions.set;

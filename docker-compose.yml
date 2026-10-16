@@ -4,13 +4,17 @@ name: contestly-services
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector-enabled Postgres for question-bank retrieval. The init script only runs on a
+    # fresh volume: after switching images, `docker compose down -v` once, then infra:up + db:push + db:seed.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: contestly
       POSTGRES_PASSWORD: contestly
       POSTGRES_DB: contestly
     ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./packages/db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U contestly"]
       interval: 5s
@@ -51,6 +55,15 @@ services:
   worker:
     profiles: ["services"]
     build: { context: ., args: { APP: worker } }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://contestly:contestly@postgres:5432/contestly
+      REDIS_URL: redis://valkey:6379
+    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_healthy } }
+
+  questions:
+    profiles: ["services"]
+    build: { context: ., args: { APP: questions } }
     env_file: .env
     environment:
       DATABASE_URL: postgres://contestly:contestly@postgres:5432/contestly

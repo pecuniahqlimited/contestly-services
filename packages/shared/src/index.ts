@@ -67,7 +67,72 @@ export const DEFAULT_PARTY_CONFIG: PartyConfig = {
   defaultSplit: [100],
 };
 
+/**
+ * Question-engine config. Admin-editable (stored under key "questions" in app_config);
+ * this is the default when nothing is stored. Flag keys are read by flag → void → replace (step 2b).
+ */
+export const questionsConfigSchema = z.object({
+  /** Reserve questions generated on top of every set so a void never needs a live generation call. */
+  reserveCount: z.number().int().min(1).max(10),
+  /** A live party with no gated set after this long is cancelled and refunded (worker watchdog). */
+  generationTimeoutSeconds: z.number().int().min(10).max(600),
+  /** Cosine similarity at or above which two questions count as the same fact reworded. */
+  dedupeSimilarity: z.number().min(0).max(1),
+  /** A question is voided when flaggers reach this share of the room… */
+  flagThresholdPct: z.number().int().min(1).max(100),
+  /** …but never on fewer than this many flaggers. */
+  flagFloorPlayers: z.number().int().min(1),
+});
+export type QuestionsConfig = z.infer<typeof questionsConfigSchema>;
+export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
+  reserveCount: 2,
+  generationTimeoutSeconds: 120,
+  dedupeSimilarity: 0.92,
+  flagThresholdPct: 30,
+  flagFloorPlayers: 3,
+};
+
 export const CATEGORIES = ["Afrobeats", "Football", "Nollywood", "General knowledge", "History", "Science", "Tech", "Fashion", "Food", "Geography", "Brain teasers", "Reality TV", "Maths", "Hip hop"] as const;
+export type Category = (typeof CATEGORIES)[number];
+
+/** Question formats — one source of truth for the engine, the game rules and the app. */
+export const QUESTION_FORMATS = ["pick_one", "pick_all", "order", "match", "picture"] as const;
+export type QuestionFormat = (typeof QUESTION_FORMATS)[number];
+
+export const DIFFICULTIES = ["easy", "mixed", "hard", "brutal"] as const;
+export type Difficulty = (typeof DIFFICULTIES)[number];
+
+/** Width of bank-question and file-chunk embeddings (text-embedding-3-small's size, so a real embedder needs no migration). */
+export const EMBEDDING_DIM = 1536;
+
+/**
+ * There is no category picker: the engine infers the category tag from the host's brief, and this
+ * keyword map is the v1 inference, shared by the API (at create) and the question engine (in the spec).
+ * A single clear winner takes the tag; no hit at all, or a tie across topics (a mixed brief), lands
+ * on General knowledge.
+ */
+const CATEGORY_HINTS: Partial<Record<Category, string[]>> = {
+  Afrobeats: ["afrobeat", "music", "song", "artist", "burna", "wizkid", "davido", "tems"],
+  Football: ["football", "soccer", "super eagles", "premier league", "world cup", "afcon"],
+  Nollywood: ["nollywood", "movie", "film", "actor", "actress"],
+  History: ["history", "independence", "colonial", "civil war", "president"],
+  Science: ["science", "biology", "chemistry", "physics", "space"],
+  Tech: ["tech", "startup", "coding", "software", "internet"],
+  Fashion: ["fashion", "style", "designer", "ankara"],
+  Food: ["food", "dish", "recipe", "jollof", "soup", "cuisine"],
+  Geography: ["geography", "capital", "river", "state", "cities", "map"],
+  "Brain teasers": ["puzzle", "riddle", "brain teaser", "logic"],
+  "Reality TV": ["reality tv", "bbnaija", "big brother"],
+  Maths: ["maths", "math", "number", "algebra", "arithmetic"],
+  "Hip hop": ["hip hop", "rap", "rapper"],
+};
+export function inferCategory(brief: string): Category {
+  const text = brief.toLowerCase();
+  const scored = CATEGORIES.map((cat) => ({ cat, hits: (CATEGORY_HINTS[cat] ?? []).filter((h) => text.includes(h)).length }));
+  const top = Math.max(...scored.map((s) => s.hits));
+  const leaders = scored.filter((s) => s.hits === top);
+  return top > 0 && leaders.length === 1 ? leaders[0].cat : "General knowledge";
+}
 
 export const handleSchema = z.string().min(3).max(20).regex(/^[a-z0-9_.]+$/, "lowercase letters, numbers, _ and . only");
 
@@ -81,7 +146,12 @@ export const upsertMeSchema = z.object({
 
 export const createPartySchema = z.object({
   title: z.string().min(3).max(60),
-  category: z.enum(CATEGORIES),
+  /** The source for question generation: a topic, a vibe, a list of facts — anything. File upload lands in step 2b. */
+  brief: z.string().min(3).max(2000),
+  /** Omitted → inferred from the brief; the engine may refine it again when it builds the spec. */
+  category: z.enum(CATEGORIES).optional(),
+  difficulty: z.enum(DIFFICULTIES).default("mixed"),
+  formats: z.array(z.enum(QUESTION_FORMATS)).min(1).max(QUESTION_FORMATS.length).default([...QUESTION_FORMATS]),
   entryKobo: z.number().int().min(0).max(kobo(50_000)),
   maxPlayers: z.number().int().min(2).max(100),
   funding: z.enum(["pooled", "host"]),
@@ -134,11 +204,18 @@ export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */
-export const QUEUES = { notify: "notify", party: "party" } as const;
+export const QUEUES = { notify: "notify", party: "party", questions: "questions" } as const;
 export type NotifyFollowersJob = { kind: "party_created"; partyId: string; hostId: string };
 export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserId: string; toUserIds: string[] };
 export type NotifyJob = NotifyFollowersJob | NotifyInviteJob;
-export type PartyJob = { kind: "start" | "cancel_if_empty" | "settle" | "watchdog"; partyId: string };
+/** `cancel_generation_failed`: the questions service couldn't build a set; the worker refunds (money only moves in the worker). */
+export type PartyJob = { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string };
+/**
+ * Questions-service jobs. `generate_set` persists the gated set into party_questions and then
+ * publishes {partyId, status: "questions_ready"} on PARTY_EVENTS_CHANNEL; `record_play` folds a
+ * finished party's answer stats back into the bank. (ADR 0002)
+ */
+export type QuestionsJob = { kind: "generate_set"; partyId: string } | { kind: "record_play"; partyId: string };
 
 /** Response shapes. The UI's api-client parses every response with these. */
 export const healthResponseSchema = z.object({ ok: z.boolean(), service: z.string(), time: z.string() });

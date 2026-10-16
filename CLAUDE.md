@@ -137,7 +137,7 @@ apps/api            Fastify HTTP API          :4000   users, follows, parties, w
 apps/realtime       game rooms + chat         :4001   Colyseus rooms: party rounds, lobby presence, party chat, DMs
 apps/worker         BullMQ                             notifications, party start/cancel + refunds, resets, prize fulfilment nudges
 apps/recsys         recommendation service    :4002   read-model ranking for Home, Parties, pairing, pushes
-apps/questions      question engine           :4003   brief → spec → retrieve → generate → verify → dedupe → review
+apps/questions      question engine (BullMQ consumer, no port)   brief → spec → retrieve → generate → verify → dedupe → review
 packages/shared     zod schemas, event names (RT), queue names, money helpers (kobo/naira); published so the UI repo can depend on it
 packages/db         Drizzle schema, postgres-js client, append-only ledger, seed
 packages/auth       resolveUser(): dev header or Firebase ID token → users row
@@ -153,12 +153,12 @@ One Dockerfile per service repo build (`APP` build arg picks the process); each 
 
 ```bash
 cp .env.example .env && npm install     # install also builds the shared packages
-npm run infra:up        # docker compose: postgres + valkey
+npm run infra:up        # docker compose: postgres (pgvector image) + valkey. After pulling the pgvector switch: docker compose down -v once, then infra:up + db:push + db:seed.
 npm run db:push         # drizzle-kit push (dev). Use db:generate + db:migrate once schema stabilises.
 npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 brands) and 3 parties
-npm run dev             # api, realtime, worker
+npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
-npm test                # unit tests (packages/game)
+npm test                # unit tests (packages/game, apps/questions)
 scripts/smoke.sh        # end-to-end check against the running stack
 npm run sim             # 3 simulated players play a party to the end against the running stack
 ```

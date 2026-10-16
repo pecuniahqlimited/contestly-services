@@ -1,5 +1,6 @@
-import { pgTable, uuid, text, integer, bigint, boolean, timestamp, jsonb, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { EMBEDDING_DIM } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -9,6 +10,10 @@ export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all",
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided"]);
 export const prizeKind = pgEnum("prize_kind", ["cash", "noncash"]);
 export const fulfilmentStatus = pgEnum("fulfilment_status", ["awarded", "arranged", "delivered", "disputed"]);
+export const partyDifficulty = pgEnum("party_difficulty", ["easy", "mixed", "hard", "brutal"]);
+export const difficultySource = pgEnum("difficulty_source", ["model_estimate", "play_stats"]);
+export const bankQuestionStatus = pgEnum("bank_question_status", ["active", "pending_review", "retired"]);
+export const generationOutcome = pgEnum("generation_outcome", ["accepted", "rejected_invalid", "rejected_verify", "rejected_dedupe", "rejected_safety"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -44,7 +49,14 @@ export const parties = pgTable("parties", {
    */
   createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
   title: text("title").notNull(),
+  /** The host's free-text source for question generation. Files land in step 2b. */
+  brief: text("brief").notNull().default(""),
+  /** Inferred from the brief (no category picker); the engine may refine it when it builds the spec. */
   category: text("category").notNull(),
+  difficulty: partyDifficulty("difficulty").notNull().default("mixed"),
+  formats: questionFormat("formats").array().notNull().default(sql`'{pick_one,pick_all,order,match,picture}'::question_format[]`),
+  /** The engine's one-line "what we understood", written when the set is generated. */
+  specSummary: text("spec_summary"),
   entryKobo: integer("entry_kobo").notNull().default(0),
   maxPlayers: integer("max_players").notNull(),
   questionCount: integer("question_count").notNull().default(5),
@@ -60,6 +72,10 @@ export const parties = pgTable("parties", {
   coverEmoji: text("cover_emoji").notNull().default("🎉"),
   status: partyStatus("status").notNull().default("open"),
   startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
+  /** When the party went live; the worker's watchdog cancels if no set lands within the generation timeout. */
+  liveAt: timestamp("live_at", { withTimezone: true }),
+  /** Set when record_play has folded this party's answer stats into the bank (job idempotency). */
+  playStatsRecordedAt: timestamp("play_stats_recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("parties_status_starts_idx").on(t.status, t.startsAt)]);
 
@@ -105,6 +121,61 @@ export const partyAnswers = pgTable("party_answers", {
   points: integer("points").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.questionId, t.userId] }), index("party_answers_party_idx").on(t.partyId)]);
+
+/**
+ * The question bank: every question that passed the generation gate, plus (from step 2b) host-authored
+ * ones. Retrieval pulls from here before generating; play stats flow back in via record_play and
+ * recalibrate difficulty once a question has been answered enough. `payload` includes correct answers
+ * and never leaves the server. Stats are raw counters so recalibration is pure math over the row.
+ */
+export const bankQuestions = pgTable("bank_questions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  format: questionFormat("format").notNull(),
+  payload: jsonb("payload").notNull(),
+  explanation: text("explanation"),
+  categoryTag: text("category_tag").notNull(),
+  language: text("language").notNull().default("en"),
+  embedding: vector("embedding", { dimensions: EMBEDDING_DIM }).notNull(),
+  /** 0 (everyone gets it) … 1 (nobody does). Marked by provenance: a model estimate until real answer rates recalibrate it. */
+  difficulty: real("difficulty").notNull(),
+  difficultySource: difficultySource("difficulty_source").notNull().default("model_estimate"),
+  status: bankQuestionStatus("status").notNull().default("active"),
+  origin: text("origin").notNull().default("generated"), // step 2b: "host_authored"
+  sourceChunkId: uuid("source_chunk_id"), // step 2b: the file chunk this question was generated from
+  timesPlayed: integer("times_played").notNull().default(0), // parties this question ran in
+  timesAnswered: integer("times_answered").notNull().default(0),
+  correctnessSum: integer("correctness_sum").notNull().default(0), // sum of per-answer correctness (0–100)
+  answeredMsSum: bigint("answered_ms_sum", { mode: "number" }).notNull().default(0),
+  flagCount: integer("flag_count").notNull().default(0), // step 2b: player flags across all parties
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),
+}, (t) => [
+  index("bank_questions_status_category_idx").on(t.status, t.categoryTag),
+  index("bank_questions_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+]);
+
+/**
+ * The generation record: one row per generated draft, accepted or rejected, so an admin can see for
+ * any question the brief, the spec, what the verifier said, what it nearly duplicated, and why the
+ * gate let it through or not. Bank-reused questions get no row; their provenance is party_questions.source_ref.
+ * `outcome` is the per-draft gate result. `bank_question_id` is set only when the whole set sealed:
+ * an "accepted" row without one belonged to an attempt that couldn't fill count + reserves (each
+ * retry of a failed generate_set leaves its own batch of rows).
+ */
+export const questionGenerations = pgTable("question_generations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  bankQuestionId: uuid("bank_question_id").references(() => bankQuestions.id), // null when rejected
+  brief: text("brief").notNull(),
+  spec: jsonb("spec").notNull(), // the full GenerationSpec, one-line summary included
+  draft: jsonb("draft").notNull(), // { format, payload, explanation, claim } as generated
+  verify: jsonb("verify"), // { verdict, sources, note } from the independent verification pass
+  dedupe: jsonb("dedupe"), // { nearestId, similarity } against bank + batch
+  difficulty: jsonb("difficulty"), // { value, source }
+  safety: jsonb("safety"), // { passed, reasons }
+  outcome: generationOutcome("outcome").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("question_generations_party_idx").on(t.partyId)]);
 
 export const chatMessages = pgTable("chat_messages", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -162,3 +233,5 @@ export const appConfig = pgTable("app_config", {
 export type User = typeof users.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type ChatMessage = typeof chatMessages.$inferSelect;
+export type BankQuestion = typeof bankQuestions.$inferSelect;
+export type PartyQuestion = typeof partyQuestions.$inferSelect;

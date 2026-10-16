@@ -9,13 +9,13 @@
   ],
   "scripts": {
     "prepare": "npm run build -w @contestly/shared -w @contestly/game -w @contestly/db -w @contestly/queue -w @contestly/auth",
-    "test": "npm test -w @contestly/game",
+    "test": "npm test -w @contestly/game -w @contestly/questions",
     "sim": "tsx --env-file=.env scripts/party-sim.ts",
     "infra:up": "docker compose up -d --wait postgres valkey",
     "infra:down": "docker compose down",
     "db:push": "npm run push -w @contestly/db",
     "db:seed": "npm run seed -w @contestly/db",
-    "dev": "concurrently -n api,rt,worker -c blue,magenta,yellow \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\"",
+    "dev": "concurrently -n api,rt,worker,questions -c blue,magenta,yellow,cyan \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\" \"npm run dev -w @contestly/questions\"",
     "build": "npm run prepare && npm run build -w apps --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

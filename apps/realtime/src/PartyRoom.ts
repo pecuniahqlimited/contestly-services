@@ -16,7 +16,7 @@ import { db, parties, partyPlayers, partyQuestions, partyAnswers, chatMessages, 
 import { resolveUser } from "@contestly/auth";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, partyRoomKey, type PartyConfig } from "@contestly/shared";
-import { Match, fixtureQuestionSource, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
+import { Match, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member {
   id: string;
@@ -25,7 +25,7 @@ interface Member {
   avatarEmoji: string;
 }
 
-type Phase = "lobby" | "question" | "reveal" | "standings" | "finished" | "cancelled";
+type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "finished" | "cancelled";
 
 const settleQueue = partyQueue();
 
@@ -40,6 +40,7 @@ export class PartyRoom extends Room {
   private pending?: { clear(): void };
   private heartbeat?: { clear(): void };
   private starting = false;
+  private startAgain = false;
 
   async onCreate(options: { partyId?: string }) {
     const partyId = options?.partyId;
@@ -73,7 +74,7 @@ export class PartyRoom extends Room {
     this.onMessage(MSG.chat, async (client, raw) => {
       const me = client.auth as Member | undefined;
       if (!me) return;
-      if (!["lobby", "standings", "finished"].includes(this.phase)) return client.send(MSG.error, { error: "chat_closed" });
+      if (!["lobby", "generating", "standings", "finished"].includes(this.phase)) return client.send(MSG.error, { error: "chat_closed" });
       const parsed = chatSendSchema.safeParse(raw);
       if (!parsed.success) return client.send(MSG.error, { error: "validation", issues: parsed.error.issues });
       const [saved] = await db.insert(chatMessages).values({ partyId: this.partyId, userId: me.id, text: parsed.data.text, sticker: parsed.data.sticker }).returning();
@@ -91,7 +92,8 @@ export class PartyRoom extends Room {
         return;
       }
       if (ev.partyId !== this.partyId) return;
-      if (ev.status === "live") void this.startMatch();
+      // "live" usually arrives before the set is sealed; the room waits and "questions_ready" starts the round.
+      if (ev.status === "live" || ev.status === "questions_ready") void this.startMatch();
       if (ev.status === "cancelled") {
         this.setPhase("cancelled");
         this.broadcast(MSG.phase, { phase: "cancelled" });
@@ -141,34 +143,50 @@ export class PartyRoom extends Room {
   // ---- round driving ----------------------------------------------------------------
 
   private async startMatch() {
-    if (this.match || this.starting) return;
+    if (this.match) return;
+    // questions_ready can land while the "live" attempt is still reading an empty set; remember to retry.
+    if (this.starting) {
+      this.startAgain = true;
+      return;
+    }
     this.starting = true;
     try {
-      const questions = await this.loadOrCreateSet();
+      // Heartbeat before anything else: the party is live, so the watchdog must see this room —
+      // including while it's still waiting for the questions service to seal the set.
+      this.startHeartbeat();
+      const questions = await this.loadSet();
+      if (!questions.length) {
+        // The set isn't sealed yet; questions_ready will call startMatch again.
+        this.setPhase("generating");
+        this.broadcast(MSG.phase, { phase: "generating" });
+        return;
+      }
       this.cfg = await getPartyConfig();
       this.match = new Match(questions, this.cfg);
       const seated = await db.select({ userId: partyPlayers.userId }).from(partyPlayers).where(eq(partyPlayers.partyId, this.partyId));
       for (const s of seated) this.match.addPlayer(s.userId);
       for (const m of this.members.values()) this.match.addPlayer(m.id);
-      // Heartbeat for the worker's watchdog: if this process dies mid-round, the key expires and the party is refunded.
-      this.heartbeat = this.clock.setInterval(() => void this.presence.setex(partyRoomKey(this.partyId), "1", 30), 10_000);
-      void this.presence.setex(partyRoomKey(this.partyId), "1", 30);
       this.nextQuestion();
     } finally {
       this.starting = false;
+      if (this.startAgain) {
+        this.startAgain = false;
+        if (!this.match) void this.startMatch();
+      }
     }
   }
 
-  /** Reuse a set already persisted for this party (room restart), else generate and persist one. */
-  private async loadOrCreateSet(): Promise<MatchQuestion[]> {
-    const existing = await db.select().from(partyQuestions).where(and(eq(partyQuestions.partyId, this.partyId), eq(partyQuestions.reserve, false))).orderBy(asc(partyQuestions.idx));
-    if (existing.length) return existing.map((q) => ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined }));
-    const set = await fixtureQuestionSource.getSet({ partyId: this.partyId, category: this.party.category, count: this.party.questionCount, secondsPerQuestion: this.party.questionSeconds });
-    const rows = [...set.questions, ...set.reserves].map((q, i) => ({
-      id: q.id, partyId: this.partyId, idx: i, format: q.format, payload: q.payload, seconds: q.seconds, explanation: q.explanation, reserve: i >= set.questions.length,
-    }));
-    await db.insert(partyQuestions).values(rows).onConflictDoNothing();
-    return set.questions;
+  /** If this process dies mid-round, the key expires and the worker's watchdog refunds the party. */
+  private startHeartbeat() {
+    if (this.heartbeat) return;
+    this.heartbeat = this.clock.setInterval(() => void this.presence.setex(partyRoomKey(this.partyId), "1", 30), 10_000);
+    void this.presence.setex(partyRoomKey(this.partyId), "1", 30);
+  }
+
+  /** The play order the questions service sealed for this party; empty while generation is still running. */
+  private async loadSet(): Promise<MatchQuestion[]> {
+    const rows = await db.select().from(partyQuestions).where(and(eq(partyQuestions.partyId, this.partyId), eq(partyQuestions.reserve, false))).orderBy(asc(partyQuestions.idx));
+    return rows.map((q) => ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined }));
   }
 
   private nextQuestion() {

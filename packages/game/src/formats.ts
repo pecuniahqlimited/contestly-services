@@ -7,9 +7,9 @@
  * see before the question closes.
  */
 import { z } from "zod";
+import { QUESTION_FORMATS, type QuestionFormat } from "@contestly/shared";
 
-export const QUESTION_FORMATS = ["pick_one", "pick_all", "order", "match", "picture"] as const;
-export type QuestionFormat = (typeof QUESTION_FORMATS)[number];
+export { QUESTION_FORMATS, type QuestionFormat };
 
 const options = z.array(z.string().min(1)).min(2).max(6);
 const indexes = z.array(z.number().int().min(0)).min(1);
