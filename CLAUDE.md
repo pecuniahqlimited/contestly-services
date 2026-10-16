@@ -188,6 +188,21 @@ Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handle
 - Heartbeats on sockets stay under 30s (Cloudflare drops idle WebSockets at ~100s). Clients reconnect and rejoin their room automatically.
 - Decisions that could have gone either way get a one-page ADR in `docs/adr/`.
 
+## Code quality
+
+Apply SOLID and clean-code principles the way they are meant: to keep change cheap, not to add layers.
+
+- **One reason to change.** A module owns one concern: a route handler parses and replies; a service module decides; `packages/db` persists; `packages/game` computes. Anything that does two of these is split.
+- **Open for extension, closed for edits.** Things that come in kinds (question formats, payout rails, LLM providers, nudge types, graders) are registries. Adding a kind adds a file and registers it; it never edits a switch statement in three places.
+- **Depend on interfaces, inject the implementation.** Anything external (LLM providers, Paystack, FCM, object storage, the clock) sits behind a small vendor-neutral interface and is passed in, so every pipeline is unit-testable with a fake. No vendor SDK type leaks past its adapter.
+- **Interfaces are earned.** Abstract only where a second implementation exists or is planned in this file. One implementation with no plan for a second is a plain function. Don't add a layer "in case".
+- **DRY means one source of truth,** not zero repetition. Money rules, host resolution, scoring and validation each live in exactly one place and are imported, never re-implemented. Two similar lines are fine; two copies of a rule are a bug.
+- **Small and named.** Functions do one thing and fit on a screen. Names say what, not how. No boolean parameters that flip behaviour; use two functions or an options object. No magic numbers; config or a named constant.
+- **Errors are typed and handled once,** at the edge. Inner code throws the shared error types; the API error handler and job wrappers map them. No swallowed exceptions, no `catch {}`.
+- **Tests go with the logic.** Pure modules get unit tests covering the edge cases (ties, zero players, late answers, rounding). Flows get one end-to-end script. A bug fix adds the test that would have caught it.
+- **Refactor when touching, not on a tour.** Leave a file cleaner than you found it, but don't rewrite modules the task doesn't touch. Big restructures get their own commit with no behaviour change.
+- **Before committing, review your own diff** against this list and say in the summary which of these you bent and why.
+
 ## Stack
 
 Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state sync, reconnection tokens, matchmaking for shared onboarding rounds), BullMQ on Valkey (jobs, delayed and repeatable), PostgreSQL via Drizzle, Valkey (hot state, presence, pub/sub, leaderboard sorted sets), Firebase Auth (phone OTP, Apple, Google), Paystack behind a `PayoutRail` interface, DigitalOcean Spaces. UI stack (Expo, Vite) is documented in `contestly-app`.
