@@ -7,7 +7,11 @@ export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 export const accountKind = pgEnum("account_kind", ["cash", "bonus"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
-export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided"]);
+/** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
+export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
+export const partyMode = pgEnum("party_mode", ["sealed", "curate"]);
+export const partyFileStatus = pgEnum("party_file_status", ["uploading", "parsing", "parsed", "failed"]);
+export const questionEventKind = pgEnum("question_event_kind", ["flag", "void", "replace", "approve", "edit", "swap", "regenerate"]);
 export const prizeKind = pgEnum("prize_kind", ["cash", "noncash"]);
 export const fulfilmentStatus = pgEnum("fulfilment_status", ["awarded", "arranged", "delivered", "disputed"]);
 export const partyDifficulty = pgEnum("party_difficulty", ["easy", "mixed", "hard", "brutal"]);
@@ -57,6 +61,11 @@ export const parties = pgTable("parties", {
   formats: questionFormat("formats").array().notNull().default(sql`'{pick_one,pick_all,order,match,picture}'::question_format[]`),
   /** The engine's one-line "what we understood", written when the set is generated. */
   specSummary: text("spec_summary"),
+  /**
+   * sealed: generated at start, nobody sees it first, the host plays.
+   * curate: generated at creation as drafts the host's team reviews; the host can't play (ADR 0003).
+   */
+  mode: partyMode("mode").notNull().default("sealed"),
   entryKobo: integer("entry_kobo").notNull().default(0),
   maxPlayers: integer("max_players").notNull(),
   questionCount: integer("question_count").notNull().default(5),
@@ -104,8 +113,61 @@ export const partyQuestions = pgTable("party_questions", {
   explanation: text("explanation"),
   status: partyQuestionStatus("status").notNull().default("pending"),
   reserve: boolean("reserve").notNull().default(false),
-  sourceRef: text("source_ref"), // step 2: bank question id / file chunk the question came from
+  /** The bank question this came from (the bank row cites its file chunk). Null for host-authored edits, which stay out of the bank. */
+  sourceRef: text("source_ref"),
+  /** Edited by the host in curate mode. */
+  hostAuthored: boolean("host_authored").notNull().default(false),
 }, (t) => [uniqueIndex("party_questions_party_idx").on(t.partyId, t.idx)]);
+
+/**
+ * Per-party log of everything that happened to a party's questions: player flags, voids (with
+ * the tally and threshold), replacements, and curate-mode review actions (approve, edit, swap,
+ * regenerate) — so an admin can see who approved what, and why a question disappeared mid-game.
+ */
+export const partyQuestionEvents = pgTable("party_question_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  questionId: uuid("question_id").notNull().references(() => partyQuestions.id, { onDelete: "cascade" }),
+  kind: questionEventKind("kind").notNull(),
+  userId: uuid("user_id").references(() => users.id), // null for engine actions (void, replace)
+  reason: text("reason"), // flag reason
+  detail: jsonb("detail"), // void: { flaggers, threshold, playerCount }; replace: { replacedQuestionId }; …
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("party_question_events_party_idx").on(t.partyId, t.createdAt)]);
+
+/** Who has seen a curate party's drafts. Anyone here is barred from playing that party. */
+export const partyDraftViews = pgTable("party_draft_views", {
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  firstViewedAt: timestamp("first_viewed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.partyId, t.userId] })]);
+
+/**
+ * A source file the host attached to a party (PDF/DOCX), uploaded straight to object storage via a
+ * presigned URL, then parsed and chunked by the questions service. Questions are generated only
+ * from its chunks and cite the chunk they came from.
+ */
+export const partyFiles = pgTable("party_files", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  uploaderId: uuid("uploader_id").notNull().references(() => users.id),
+  storageKey: text("storage_key").notNull(),
+  filename: text("filename").notNull(),
+  contentType: text("content_type").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  status: partyFileStatus("status").notNull().default("uploading"),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("party_files_party_idx").on(t.partyId)]);
+
+export const fileChunks = pgTable("file_chunks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  fileId: uuid("file_id").notNull().references(() => partyFiles.id, { onDelete: "cascade" }),
+  idx: integer("idx").notNull(),
+  text: text("text").notNull(),
+  embedding: vector("embedding", { dimensions: EMBEDDING_DIM }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("file_chunks_file_idx").on(t.fileId, t.idx)]);
 
 /**
  * One row per (question, player): the submitted answer, server-measured time, and the grade.
@@ -140,13 +202,16 @@ export const bankQuestions = pgTable("bank_questions", {
   difficulty: real("difficulty").notNull(),
   difficultySource: difficultySource("difficulty_source").notNull().default("model_estimate"),
   status: bankQuestionStatus("status").notNull().default("active"),
-  origin: text("origin").notNull().default("generated"), // step 2b: "host_authored"
-  sourceChunkId: uuid("source_chunk_id"), // step 2b: the file chunk this question was generated from
+  origin: text("origin").notNull().default("generated"),
+  sourceChunkId: uuid("source_chunk_id"), // the file chunk this question was generated from (file-sourced parties)
   timesPlayed: integer("times_played").notNull().default(0), // parties this question ran in
   timesAnswered: integer("times_answered").notNull().default(0),
   correctnessSum: integer("correctness_sum").notNull().default(0), // sum of per-answer correctness (0–100)
   answeredMsSum: bigint("answered_ms_sum", { mode: "number" }).notNull().default(0),
-  flagCount: integer("flag_count").notNull().default(0), // step 2b: player flags across all parties
+  timesSkipped: integer("times_skipped").notNull().default(0), // graded with no answer submitted
+  flagCount: integer("flag_count").notNull().default(0), // player flags across all parties
+  retiredReason: text("retired_reason"), // flagged | too_hard | skipped (set by the retirement sweep)
+  retiredAt: timestamp("retired_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),
 }, (t) => [

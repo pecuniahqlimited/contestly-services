@@ -82,6 +82,14 @@ export const questionsConfigSchema = z.object({
   flagThresholdPct: z.number().int().min(1).max(100),
   /** …but never on fewer than this many flaggers. */
   flagFloorPlayers: z.number().int().min(1),
+  /** Retirement sweep: play-stat rules only apply once a question has this many graded answers. */
+  retireMinAnswers: z.number().int().min(1),
+  /** Retire when the average correctness falls below this (the question is broken or unfair). */
+  retireBelowCorrectPct: z.number().min(0).max(100),
+  /** Retire when this share of players don't answer at all (unclear, or too slow to read). */
+  retireAboveSkipPct: z.number().min(0).max(100),
+  /** Retire when flags across all parties reach this many, played or not. */
+  retireFlagCount: z.number().int().min(1),
 });
 export type QuestionsConfig = z.infer<typeof questionsConfigSchema>;
 export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
@@ -90,7 +98,37 @@ export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
   dedupeSimilarity: 0.92,
   flagThresholdPct: 30,
   flagFloorPlayers: 3,
+  retireMinAnswers: 30,
+  retireBelowCorrectPct: 5,
+  retireAboveSkipPct: 50,
+  retireFlagCount: 5,
 };
+
+export * from "./safety.js";
+
+/** Why a player flagged a question. */
+export const FLAG_REASONS = ["wrong_answer", "multiple_correct", "unclear", "out_of_date", "inappropriate"] as const;
+export type FlagReason = (typeof FLAG_REASONS)[number];
+/** Flags name their question, so a flag that arrives late never lands on the next one. */
+export const flagSchema = z.object({ questionId: z.string().uuid(), reason: z.enum(FLAG_REASONS) });
+
+/** Host source files: parsed server-side into chunks the questions are generated from. */
+export const UPLOAD_CONTENT_TYPES = {
+  "application/pdf": "pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+} as const;
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const requestUploadSchema = z.object({
+  filename: z.string().min(1).max(200),
+  contentType: z.enum(Object.keys(UPLOAD_CONTENT_TYPES) as [keyof typeof UPLOAD_CONTENT_TYPES, ...(keyof typeof UPLOAD_CONTENT_TYPES)[]]),
+  sizeBytes: z.number().int().min(1).max(MAX_UPLOAD_BYTES),
+});
+
+/** Curate mode: a host edit replaces the question's payload (validated against its format) and explanation. */
+export const editDraftSchema = z.object({
+  payload: z.record(z.unknown()),
+  explanation: z.string().max(500).optional(),
+});
 
 export const CATEGORIES = ["Afrobeats", "Football", "Nollywood", "General knowledge", "History", "Science", "Tech", "Fashion", "Food", "Geography", "Brain teasers", "Reality TV", "Maths", "Hip hop"] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -152,6 +190,8 @@ export const createPartySchema = z.object({
   category: z.enum(CATEGORIES).optional(),
   difficulty: z.enum(DIFFICULTIES).default("mixed"),
   formats: z.array(z.enum(QUESTION_FORMATS)).min(1).max(QUESTION_FORMATS.length).default([...QUESTION_FORMATS]),
+  /** sealed: generated at start, the host plays. curate: the host reviews drafts and can't play. */
+  mode: z.enum(["sealed", "curate"]).default("sealed"),
   entryKobo: z.number().int().min(0).max(kobo(50_000)),
   maxPlayers: z.number().int().min(2).max(100),
   funding: z.enum(["pooled", "host"]),
@@ -186,6 +226,7 @@ export const MSG = {
   lock: "lock",
   skip: "skip",
   chat: "chat",
+  flag: "flag",
   // server → client
   phase: "phase",
   question: "question",
@@ -194,6 +235,8 @@ export const MSG = {
   finalStandings: "final",
   chatMessage: "chat:message",
   presence: "presence",
+  /** A question was voided by player flags: { questionId, idx, replacementAdded, total }. */
+  questionVoided: "question:voided",
   error: "error",
 } as const;
 
@@ -215,7 +258,17 @@ export type PartyJob = { kind: "start" | "cancel_if_empty" | "settle" | "watchdo
  * publishes {partyId, status: "questions_ready"} on PARTY_EVENTS_CHANNEL; `record_play` folds a
  * finished party's answer stats back into the bank. (ADR 0002)
  */
-export type QuestionsJob = { kind: "generate_set"; partyId: string } | { kind: "record_play"; partyId: string };
+export type QuestionsJob =
+  | { kind: "generate_set"; partyId: string }
+  | { kind: "record_play"; partyId: string }
+  /** Curate mode: replace one draft with a freshly generated, gated question. */
+  | { kind: "regenerate_one"; partyId: string; partyQuestionId: string; requestedBy: string }
+  /** Extract, chunk and embed an uploaded source file. */
+  | { kind: "parse_file"; fileId: string }
+  /** A question was voided by flags in a room: take it out of retrieval pending review. */
+  | { kind: "question_voided"; partyQuestionId: string; flags: number }
+  /** Repeatable: retire flagged and underperforming bank questions. */
+  | { kind: "retire_sweep" };
 
 /** Response shapes. The UI's api-client parses every response with these. */
 export const healthResponseSchema = z.object({ ok: z.boolean(), service: z.string(), time: z.string() });

@@ -7,12 +7,16 @@ import {
 import { db } from "./client.js";
 import { appConfig } from "./schema.js";
 
-/** One admin-editable JSON document per key, validated by its shared schema, defaulting when nothing is stored. */
-function configEntry<T>(key: string, schema: z.ZodType<T>, fallback: T) {
+/**
+ * One admin-editable JSON document per key, validated by its shared schema. Stored values are
+ * layered over the defaults, so a key added to a schema later takes its default until an admin
+ * sets it, and existing admin edits survive.
+ */
+function configEntry<T extends object>(key: string, schema: z.ZodType<T>, fallback: T) {
   return {
     async get(): Promise<T> {
       const [row] = await db.select().from(appConfig).where(eq(appConfig.key, key));
-      return row ? schema.parse(row.value) : fallback;
+      return row ? schema.parse({ ...fallback, ...(row.value as object) }) : fallback;
     },
     async set(value: unknown): Promise<T> {
       const parsed = schema.parse(value);

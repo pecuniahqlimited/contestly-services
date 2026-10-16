@@ -11,28 +11,39 @@
 import colyseus from "colyseus";
 import type { Client } from "colyseus";
 const { Room } = colyseus;
-import { and, asc, eq } from "drizzle-orm";
-import { db, parties, partyPlayers, partyQuestions, partyAnswers, chatMessages, getPartyConfig, type Party } from "@contestly/db";
+import { and, asc, eq, notInArray } from "drizzle-orm";
+import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, chatMessages, getPartyConfig, getQuestionsConfig, type Party } from "@contestly/db";
 import { resolveUser } from "@contestly/auth";
-import { partyQueue } from "@contestly/queue";
-import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, partyRoomKey, type PartyConfig } from "@contestly/shared";
-import { Match, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
+import { partyQueue, questionsQueue } from "@contestly/queue";
+import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, flagSchema, partyRoomKey, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member {
   id: string;
   handle: string;
   displayName: string;
   avatarEmoji: string;
+  /** Seated players play; the host of a curate party is in the room but never in the match. */
+  plays: boolean;
 }
+
+const toMatchQuestion = (q: typeof partyQuestions.$inferSelect): MatchQuestion =>
+  ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined });
 
 type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "finished" | "cancelled";
 
 const settleQueue = partyQueue();
+const questionJobs = questionsQueue();
 
 export class PartyRoom extends Room {
   private partyId!: string;
   private party!: Party;
   private cfg!: PartyConfig;
+  private qcfg!: QuestionsConfig;
+  /** questionId → distinct flaggers. */
+  private flags = new Map<string, Set<string>>();
+  /** Question-result writes, serialised so a void never races the close that preceded it. */
+  private persisting: Promise<unknown> = Promise.resolve();
   private match: Match | null = null;
   private phase: Phase = "lobby";
   private members = new Map<string, Member>(); // sessionId → member
@@ -50,7 +61,8 @@ export class PartyRoom extends Room {
     this.partyId = partyId;
     this.party = party;
     this.cfg = await getPartyConfig();
-    this.maxClients = party.maxPlayers;
+    this.qcfg = await getQuestionsConfig();
+    this.maxClients = party.maxPlayers + 1; // + the curate host, who watches without a seat
 
     this.onMessage(MSG.answer, (client, data) => {
       if (!this.match || !client.auth) return;
@@ -68,6 +80,26 @@ export class PartyRoom extends Room {
       const now = Date.now();
       if (this.phase === "reveal" && this.match.canSkipReveal(now)) this.advance(() => this.showStandings());
       else if (this.phase === "standings" && this.match.canSkipStandings(now)) this.advance(() => this.afterStandings());
+    });
+
+    // Any player can flag the question on screen (or just revealed). Past the threshold it's voided for
+    // everyone, with no host involvement.
+    this.onMessage(MSG.flag, async (client, raw) => {
+      const me = client.auth as Member | undefined;
+      if (!this.match || !me) return;
+      const parsed = flagSchema.safeParse(raw);
+      if (!parsed.success) return client.send(MSG.error, { error: "validation", issues: parsed.error.issues });
+      const q = this.match.current;
+      if ((this.phase !== "question" && this.phase !== "reveal") || q?.id !== parsed.data.questionId) return client.send(MSG.error, { error: "flag_closed" });
+      if (!this.match.hasPlayer(me.id)) return client.send(MSG.error, { error: "not_in_match" });
+      if (this.match.isVoided(q.id)) return;
+      const flaggers = this.flags.get(q.id) ?? new Set<string>();
+      if (flaggers.has(me.id)) return;
+      flaggers.add(me.id);
+      this.flags.set(q.id, flaggers);
+      await db.insert(partyQuestionEvents).values({ partyId: this.partyId, questionId: q.id, kind: "flag", userId: me.id, reason: parsed.data.reason });
+      const threshold = flagThreshold(this.match.playerCount, this.qcfg);
+      if (flaggers.size >= threshold && !this.match.isVoided(q.id)) await this.voidCurrent(q.id, flaggers.size, threshold);
     });
 
     // Chat is open in the lobby, during standings, and after the game — never while a question or reveal is up.
@@ -111,13 +143,13 @@ export class PartyRoom extends Room {
     if (!user) throw new Error("unauthorized");
     const seated = await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, this.partyId), eq(partyPlayers.userId, user.id)));
     if (!seated.length && user.id !== this.party.createdByUserId) throw new Error("join_the_party_first");
-    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji } satisfies Member;
+    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, plays: seated.length > 0 } satisfies Member;
   }
 
   onJoin(client: Client) {
     const me = client.auth as Member;
     this.members.set(client.sessionId, me);
-    this.match?.addPlayer(me.id);
+    if (me.plays) this.match?.addPlayer(me.id);
     this.broadcastPresence();
     this.sendSnapshot(client);
   }
@@ -162,10 +194,11 @@ export class PartyRoom extends Room {
         return;
       }
       this.cfg = await getPartyConfig();
+      this.qcfg = await getQuestionsConfig();
       this.match = new Match(questions, this.cfg);
+      // Seats are the match: a curate host (or anyone else unseated) watches but never plays.
       const seated = await db.select({ userId: partyPlayers.userId }).from(partyPlayers).where(eq(partyPlayers.partyId, this.partyId));
       for (const s of seated) this.match.addPlayer(s.userId);
-      for (const m of this.members.values()) this.match.addPlayer(m.id);
       this.nextQuestion();
     } finally {
       this.starting = false;
@@ -183,10 +216,12 @@ export class PartyRoom extends Room {
     void this.presence.setex(partyRoomKey(this.partyId), "1", 30);
   }
 
-  /** The play order the questions service sealed for this party; empty while generation is still running. */
+  /** The play order sealed (or approved) for this party; empty while generation is still running. */
   private async loadSet(): Promise<MatchQuestion[]> {
-    const rows = await db.select().from(partyQuestions).where(and(eq(partyQuestions.partyId, this.partyId), eq(partyQuestions.reserve, false))).orderBy(asc(partyQuestions.idx));
-    return rows.map((q) => ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined }));
+    const rows = await db.select().from(partyQuestions)
+      .where(and(eq(partyQuestions.partyId, this.partyId), eq(partyQuestions.reserve, false), notInArray(partyQuestions.status, ["voided", "draft"])))
+      .orderBy(asc(partyQuestions.idx));
+    return rows.map(toMatchQuestion);
   }
 
   private nextQuestion() {
@@ -204,7 +239,50 @@ export class PartyRoom extends Room {
     this.remember(MSG.reveal, reveal);
     this.broadcast(MSG.reveal, reveal);
     this.schedule(this.cfg.revealSeconds * 1000, () => this.showStandings());
-    await this.persistQuestionResults(reveal);
+    await this.serialise(() => this.persistQuestionResults(reveal));
+  }
+
+  /**
+   * Flags crossed the threshold: void the question for everyone. Open → nobody scores it; in its
+   * reveal → its points come back off. The first approved reserve is appended as a replacement, the
+   * room is told, and the tally, threshold and swap are logged for the party.
+   */
+  private async voidCurrent(questionId: string, flaggers: number, threshold: number) {
+    const during = this.phase;
+    const reveal = this.match!.voidQuestion(questionId, Date.now()); // sync, before any await: voids exactly once
+    this.pending?.clear();
+    this.setPhase("reveal");
+    this.remember(MSG.reveal, reveal);
+    this.broadcast(MSG.reveal, reveal);
+
+    const replacement = await this.promoteReserve();
+    if (replacement) this.match!.appendQuestion(toMatchQuestion(replacement));
+    this.broadcast(MSG.questionVoided, { questionId, idx: reveal.idx, replacementAdded: !!replacement, total: this.match!.totalQuestions });
+    this.schedule(Math.max(0, reveal.endsAt - Date.now()), () => this.showStandings());
+
+    await this.serialise(() => db.transaction(async (tx) => {
+      await tx.update(partyQuestions).set({ status: "voided" }).where(eq(partyQuestions.id, questionId));
+      await tx.update(partyAnswers).set({ points: 0 }).where(eq(partyAnswers.questionId, questionId));
+      await tx.insert(partyQuestionEvents).values({ partyId: this.partyId, questionId, kind: "void", detail: { flaggers, threshold, playerCount: this.match!.playerCount, during } });
+      if (replacement) await tx.insert(partyQuestionEvents).values({ partyId: this.partyId, questionId: replacement.id, kind: "replace", detail: { replacedQuestionId: questionId } });
+    }));
+    await questionJobs.add("question_voided", { kind: "question_voided", partyQuestionId: questionId, flags: flaggers });
+  }
+
+  /** The first approved, unused reserve joins the play order (it already sits after it by idx). */
+  private async promoteReserve() {
+    const [next] = await db.select().from(partyQuestions)
+      .where(and(eq(partyQuestions.partyId, this.partyId), eq(partyQuestions.reserve, true), eq(partyQuestions.status, "pending")))
+      .orderBy(asc(partyQuestions.idx)).limit(1);
+    if (!next) return null;
+    await db.update(partyQuestions).set({ reserve: false }).where(eq(partyQuestions.id, next.id));
+    return next;
+  }
+
+  private serialise<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.persisting.then(work);
+    this.persisting = run.catch(() => undefined); // one failed write mustn't wedge every later one
+    return run;
   }
 
   private showStandings() {
@@ -247,7 +325,7 @@ export class PartyRoom extends Room {
       points: v.points,
     }));
     if (rows.length) await db.insert(partyAnswers).values(rows).onConflictDoNothing();
-    await db.update(partyQuestions).set({ status: "played" }).where(eq(partyQuestions.id, reveal.questionId));
+    await db.update(partyQuestions).set({ status: "played" }).where(and(eq(partyQuestions.id, reveal.questionId), eq(partyQuestions.status, "pending")));
   }
 
   // ---- plumbing ---------------------------------------------------------------------
@@ -273,7 +351,12 @@ export class PartyRoom extends Room {
 
   /** Late joiners and reconnections get the current beat so they land on the right screen. */
   private sendSnapshot(client: Client) {
-    client.send(MSG.phase, { phase: this.phase, partyStatus: this.party.status });
+    client.send(MSG.phase, {
+      phase: this.phase,
+      partyStatus: this.party.status,
+      // Always disclosed: AI-generated, and sealed (nobody saw them first) or host-reviewed.
+      questions: { aiGenerated: true, review: this.party.mode === "curate" ? "host_reviewed" : "sealed" },
+    });
     if (this.lastBroadcast && this.phase !== "lobby") client.send(this.lastBroadcast.type, this.lastBroadcast.payload);
   }
 

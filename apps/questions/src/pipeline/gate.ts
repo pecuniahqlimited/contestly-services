@@ -7,7 +7,7 @@
  */
 import type { VerifyVerdict } from "../providers/types.js";
 import { isDuplicate, type Neighbour } from "./dedupe.js";
-import type { SafetyResult } from "./safety.js";
+import type { SafetyResult } from "@contestly/shared";
 
 export type GateOutcome = "accepted" | "rejected_invalid" | "rejected_verify" | "rejected_dedupe" | "rejected_safety";
 

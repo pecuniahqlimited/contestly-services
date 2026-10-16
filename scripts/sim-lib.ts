@@ -1,0 +1,88 @@
+/**
+ * TEST-ONLY helpers shared by the party sims: an API client with the dev identity header, an
+ * assertion tally, and answer builders that read the server payload straight from Postgres.
+ * Nothing like this exists in the product.
+ */
+import type { QuestionFormat } from "@contestly/game";
+
+export const API = process.env.API_URL ?? "http://localhost:4000";
+export const RT = process.env.RT_URL ?? "ws://localhost:4001";
+
+let failures = 0;
+export const ok = (cond: boolean, label: string) => {
+  console.log(`${cond ? "✓" : "✗ FAIL"} ${label}`);
+  if (!cond) failures++;
+};
+export const failureCount = () => failures;
+
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Poll until `probe` returns a truthy value, or give up and return null. */
+export async function waitFor<T>(probe: () => Promise<T | null | undefined | false>, { tries = 60, everyMs = 500 } = {}): Promise<T | null> {
+  for (let i = 0; i < tries; i++) {
+    const v = await probe();
+    if (v) return v;
+    await sleep(everyMs);
+  }
+  return null;
+}
+
+/** Calls the API as a dev user. Returns { status, body } so callers can assert on refusals too. */
+export async function call<T = any>(handle: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
+  const res = await fetch(`${API}${path}`, {
+    method,
+    headers: { "x-dev-user": handle, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = res.status === 204 ? ({} as T) : ((await res.json().catch(() => ({}))) as T);
+  return { status: res.status, body: json };
+}
+
+/** Like call(), but throws on any non-2xx (except 402, which the sims assert on). */
+export async function api<T = any>(handle: string, method: string, path: string, body?: unknown): Promise<T> {
+  const { status, body: json } = await call<T>(handle, method, path, body);
+  if (status >= 300 && status !== 402) throw new Error(`${method} ${path} → ${status}: ${JSON.stringify(json)}`);
+  return json;
+}
+
+export const walletTotal = async (handle: string) => {
+  const w = (await api(handle, "GET", "/me")).wallet as { cashKobo: number; bonusKobo: number };
+  return w.cashKobo + w.bonusKobo;
+};
+
+/** The right answer for each format, straight from the server payload (test-only). */
+export function correctAnswer(format: QuestionFormat, payload: any): unknown {
+  switch (format) {
+    case "pick_one":
+    case "picture": return { index: payload.correctIndex };
+    case "pick_all": return { indexes: payload.correctIndexes };
+    case "order": return { order: payload.correctOrder };
+    case "match": return { pairs: payload.pairs };
+  }
+}
+
+/** A deliberately wrong answer. */
+export function wrongAnswer(format: QuestionFormat, payload: any): unknown {
+  switch (format) {
+    case "pick_one":
+    case "picture": return { index: (payload.correctIndex + 1) % payload.options.length };
+    case "pick_all": return { indexes: [payload.correctIndexes[0] === 0 ? 1 : 0].filter((i) => !payload.correctIndexes.includes(i)) };
+    case "order": return { order: [...payload.correctOrder].reverse() };
+    case "match": return { pairs: payload.pairs.map((p: number) => (p + 1) % payload.right.length) };
+  }
+}
+
+/** Deep-scan a payload for anything that looks like a leaked correct answer. */
+export function leaks(view: unknown): string[] {
+  const banned = ["correctIndex", "correctIndexes", "correctOrder", "pairs"];
+  const found: string[] = [];
+  const walk = (o: unknown) => {
+    if (!o || typeof o !== "object") return;
+    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
+      if (banned.includes(k)) found.push(k);
+      walk(v);
+    }
+  };
+  walk(view);
+  return found;
+}

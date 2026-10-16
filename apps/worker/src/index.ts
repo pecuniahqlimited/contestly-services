@@ -19,6 +19,12 @@ async function hasQuestionSet(partyId: string): Promise<boolean> {
   return Number(n) > 0;
 }
 
+/** A curate party may start only when its whole play order exists and every question in it was approved. */
+async function curateSetApproved(tx: Tx, p: Party): Promise<boolean> {
+  const rows = await tx.select({ status: partyQuestions.status }).from(partyQuestions).where(and(eq(partyQuestions.partyId, p.id), eq(partyQuestions.reserve, false)));
+  return rows.length === p.questionCount && rows.every((r) => r.status === "pending");
+}
+
 /** Push notifications. Locally this logs; wire FCM/APNs here (device tokens table + firebase-admin messaging). */
 const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   const d = job.data;
@@ -47,7 +53,7 @@ async function refundParty(tx: Tx, p: Party, message: string) {
 /** Start a party at startsAt, or cancel + refund if too few people joined. */
 async function startOrCancel(partyId: string) {
   const cfg = await getPartyConfig();
-  const started = await db.transaction(async (tx) => {
+  const started = await db.transaction(async (tx): Promise<Party["mode"] | false> => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p || p.status !== "open") return false;
     const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
@@ -56,16 +62,21 @@ async function startOrCancel(partyId: string) {
       console.log(`[party] ${p.title} cancelled, ${refunded} refunded`);
       return false;
     }
+    if (p.mode === "curate" && !(await curateSetApproved(tx, p))) {
+      const refunded = await refundParty(tx, p, "The host didn't finish reviewing the questions. Everyone has been refunded.");
+      console.log(`[party] ${p.title}: curate set not approved at start, cancelled and ${refunded} refunded`);
+      return false;
+    }
     await tx.update(parties).set({ status: "live", liveAt: new Date() }).where(eq(parties.id, partyId));
     await tx.insert(chatMessages).values({ partyId, system: true, text: "The party is starting. Good luck!" });
     await emit({ partyId, status: "live" });
     console.log(`[party] ${p.title} is live with ${n} players`);
-    return true;
+    return p.mode;
   });
   if (started) {
     // Sealed sets are generated at start: the questions service builds and gates the set, then
-    // publishes questions_ready; the room waits on that. (ADR 0002)
-    await questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}` });
+    // publishes questions_ready; the room waits on that (ADR 0002). Curate sets already exist.
+    if (started === "sealed") await questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}` });
     // Watchdog: if the realtime room's heartbeat key goes stale mid-round, cancel and refund.
     await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 });
   }
@@ -109,13 +120,14 @@ async function settle(partyId: string) {
 }
 
 /**
- * The questions service exhausted its retries without sealing a set (fail closed): refund and
- * cancel, unless the set landed in the meantime. Money only ever moves here, never in questions.
+ * The questions service exhausted its retries without building a set (fail closed): refund and
+ * cancel, unless the set landed in the meantime. Sealed parties are live by then; curate parties
+ * fail while still open, drafting. Money only ever moves here, never in questions.
  */
 async function cancelGenerationFailed(partyId: string) {
   await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "live") return;
+    if (!p || (p.status !== "live" && p.status !== "open")) return;
     if (await hasQuestionSet(partyId)) return; // a retry sealed the set after all; let the round run
     const refunded = await refundParty(tx, p, GENERATION_FAILED_MESSAGE);
     console.log(`[party] ${p.title}: question generation failed, cancelled and ${refunded} refunded`);

@@ -43,6 +43,14 @@ export async function publicHosts(list: PartyHostFields[]): Promise<Map<string, 
   return new Map(list.map((p) => [p.id, byUser.get(p.createdByUserId)!]));
 }
 
+/**
+ * Who may act for the host: review curate drafts, attach source files. Today only the creator;
+ * step 4 extends this to the brand's team with roles. Callers never check created_by_user_id directly.
+ */
+export function isHostTeam(party: PartyHostFields, userId: string): boolean {
+  return party.createdByUserId === userId;
+}
+
 /** Parties publicly hosted by this user (step 4 extends to brands). */
 export async function partiesHostedBy(userId: string) {
   return db.select().from(parties).where(eq(parties.createdByUserId, userId));

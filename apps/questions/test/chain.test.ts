@@ -13,7 +13,7 @@ import { mockVerifier } from "../src/providers/mock/verifier.js";
 import { mockEmbedder } from "../src/providers/mock/embedder.js";
 import { buildSpec } from "../src/pipeline/spec.js";
 import { nearest } from "../src/pipeline/dedupe.js";
-import { checkSafety } from "../src/pipeline/safety.js";
+import { checkSafety } from "@contestly/shared";
 import { gateDraft, type GateOutcome } from "../src/pipeline/gate.js";
 import { embeddingText } from "../src/pipeline/text.js";
 

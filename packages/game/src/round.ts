@@ -26,6 +26,8 @@ export interface RoundConfig extends ScoringConfig {
 export type Beat = "idle" | "question" | "reveal" | "standings" | "finished";
 
 export interface OpenQuestionView {
+  /** Opaque id the client echoes when flagging this question. */
+  questionId: string;
   idx: number;
   total: number;
   format: QuestionFormat;
@@ -48,6 +50,8 @@ export interface Verdict {
 export interface Reveal {
   idx: number;
   questionId: string;
+  /** Voided by player flags: scored for nobody, and every verdict reads "Voided". */
+  voided: boolean;
   answer: Record<string, unknown>;
   explanation?: string;
   /** Per-option counts for option formats, null otherwise. Only exists after close. */
@@ -66,8 +70,10 @@ interface Submission {
 }
 
 export class Match {
-  readonly questions: MatchQuestion[];
   readonly cfg: RoundConfig;
+  /** Grows when a voided question's replacement is appended. */
+  private questions: MatchQuestion[];
+  private voided = new Set<string>();
   private beat: Beat = "idle";
   private idx = -1;
   private openedAt = 0;
@@ -81,8 +87,18 @@ export class Match {
 
   constructor(questions: MatchQuestion[], cfg: RoundConfig) {
     if (!questions.length) throw new Error("a match needs at least one question");
-    this.questions = questions;
+    this.questions = [...questions];
     this.cfg = cfg;
+  }
+
+  get totalQuestions(): number {
+    return this.questions.length;
+  }
+  get playerCount(): number {
+    return this.players.size;
+  }
+  isVoided(questionId: string): boolean {
+    return this.voided.has(questionId);
   }
 
   get currentBeat(): Beat {
@@ -98,7 +114,10 @@ export class Match {
   /** Players can join at any point (late joiners start at 0 and accrue full time for missed questions). */
   addPlayer(userId: string): void {
     if (!this.players.has(userId)) {
-      const missedMs = this.questions.slice(0, Math.max(0, this.idx + (this.beat === "question" ? 0 : 1))).reduce((a, q) => a + q.seconds * 1000, 0);
+      const missedMs = this.questions
+        .slice(0, Math.max(0, this.idx + (this.beat === "question" ? 0 : 1)))
+        .filter((q) => !this.voided.has(q.id))
+        .reduce((a, q) => a + q.seconds * 1000, 0);
       this.players.set(userId, { score: 0, timeMs: missedMs });
     }
   }
@@ -115,6 +134,7 @@ export class Match {
     this.submissions = new Map();
     const q = this.current;
     return {
+      questionId: q.id,
       idx: this.idx,
       total: this.questions.length,
       format: q.format,
@@ -167,6 +187,7 @@ export class Match {
     this.lastReveal = {
       idx: this.idx,
       questionId: q.id,
+      voided: false,
       answer: revealAnswer(q.format, q.payload),
       explanation: q.explanation,
       distribution: distribution(q.format, q.payload, [...this.submissions.values()].map((s) => s.answer)),
@@ -177,6 +198,57 @@ export class Match {
       skippableAt: now + this.cfg.revealFloorSeconds * 1000,
     };
     return this.lastReveal;
+  }
+
+  /**
+   * Void the current question (player flags crossed the threshold). While it's open, nothing gets
+   * scored and the match moves to a voided reveal. During its reveal, every point and every
+   * millisecond of tie-break time it handed out is taken back. Either way the reveal is marked
+   * voided and the verdicts read 0. A question can only be voided once, and only while it's current.
+   */
+  voidQuestion(questionId: string, now: number): Reveal {
+    const q = this.current;
+    if (!q || q.id !== questionId) throw new Error("only the current question can be voided");
+    if (this.voided.has(questionId)) throw new Error("question already voided");
+    if (this.beat === "question") {
+      this.beat = "reveal";
+      this.lastReveal = {
+        idx: this.idx,
+        questionId: q.id,
+        voided: true,
+        answer: revealAnswer(q.format, q.payload),
+        explanation: q.explanation,
+        distribution: null,
+        answered: this.submissions.size,
+        noAnswer: this.players.size - this.submissions.size,
+        verdicts: [...this.players.keys()].map((userId) => {
+          const s = this.submissions.get(userId);
+          return { userId, correctness: 0, points: 0, answeredMs: s?.answeredMs ?? null, answer: s?.answer ?? null };
+        }),
+        endsAt: now + this.cfg.revealSeconds * 1000,
+        skippableAt: now + this.cfg.revealFloorSeconds * 1000,
+      };
+    } else if (this.beat === "reveal" && this.lastReveal?.questionId === questionId) {
+      const questionMs = q.seconds * 1000;
+      for (const v of this.lastReveal.verdicts) {
+        const tally = this.players.get(v.userId);
+        if (!tally) continue;
+        tally.score -= v.points;
+        tally.timeMs -= v.answeredMs ?? questionMs;
+      }
+      this.lastReveal = { ...this.lastReveal, voided: true, verdicts: this.lastReveal.verdicts.map((v) => ({ ...v, correctness: 0, points: 0 })) };
+    } else {
+      throw new Error(`cannot void during ${this.beat}`);
+    }
+    this.voided.add(questionId);
+    return this.lastReveal;
+  }
+
+  /** Append a replacement question (a promoted reserve) to the end of the set. */
+  appendQuestion(question: MatchQuestion): void {
+    if (this.beat === "finished") throw new Error("match is finished");
+    if (this.questions.some((x) => x.id === question.id)) throw new Error("question already in the match");
+    this.questions.push(question);
   }
 
   /** Host may cut the reveal short, but never below the floor. */

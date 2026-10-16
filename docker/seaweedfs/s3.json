@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "contestly-dev",
+      "credentials": [{ "accessKey": "contestly-dev", "secretKey": "contestly-dev-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

@@ -8,10 +8,12 @@
     "apps/*"
   ],
   "scripts": {
-    "prepare": "npm run build -w @contestly/shared -w @contestly/game -w @contestly/db -w @contestly/queue -w @contestly/auth",
+    "prepare": "npm run build -w @contestly/shared -w @contestly/game -w @contestly/db -w @contestly/queue -w @contestly/auth -w @contestly/storage",
     "test": "npm test -w @contestly/game -w @contestly/questions",
-    "sim": "tsx --env-file=.env scripts/party-sim.ts",
-    "infra:up": "docker compose up -d --wait postgres valkey",
+    "sim": "npm run sim:sealed && npm run sim:curate",
+    "sim:sealed": "tsx --env-file=.env scripts/party-sim.ts",
+    "sim:curate": "tsx --env-file=.env scripts/party-sim-curate.ts",
+    "infra:up": "docker compose up -d --wait postgres valkey storage",
     "infra:down": "docker compose down",
     "db:push": "npm run push -w @contestly/db",
     "db:seed": "npm run seed -w @contestly/db",

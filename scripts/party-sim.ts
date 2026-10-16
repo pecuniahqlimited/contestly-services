@@ -12,64 +12,9 @@ import { and, count, eq } from "drizzle-orm";
 import { db, parties, partyQuestions, partyAnswers, ledgerEntries, bankQuestions, questionGenerations } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
-import type { QuestionFormat, Payload } from "@contestly/game";
+import type { QuestionFormat } from "@contestly/game";
 import { isKnownBadQuestion } from "../apps/questions/src/providers/mock/deck.js";
-
-const API = process.env.API_URL ?? "http://localhost:4000";
-const RT = process.env.RT_URL ?? "ws://localhost:4001";
-
-let failures = 0;
-const ok = (cond: boolean, label: string) => {
-  console.log(`${cond ? "✓" : "✗ FAIL"} ${label}`);
-  if (!cond) failures++;
-};
-
-async function api<T = any>(handle: string, method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    method,
-    headers: { "x-dev-user": handle, "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok && res.status !== 402) throw new Error(`${method} ${path} → ${res.status}: ${JSON.stringify(json)}`);
-  return json as T;
-}
-
-/** The right answer for each format, straight from the server payload (test-only). */
-function correctAnswer(format: QuestionFormat, payload: any): unknown {
-  switch (format) {
-    case "pick_one":
-    case "picture": return { index: payload.correctIndex };
-    case "pick_all": return { indexes: payload.correctIndexes };
-    case "order": return { order: payload.correctOrder };
-    case "match": return { pairs: payload.pairs };
-  }
-}
-/** A deliberately wrong answer. */
-function wrongAnswer(format: QuestionFormat, payload: any): unknown {
-  switch (format) {
-    case "pick_one":
-    case "picture": return { index: (payload.correctIndex + 1) % payload.options.length };
-    case "pick_all": return { indexes: [payload.correctIndexes[0] === 0 ? 1 : 0].filter((i) => !payload.correctIndexes.includes(i)) };
-    case "order": return { order: [...payload.correctOrder].reverse() };
-    case "match": return { pairs: payload.pairs.map((p: number) => (p + 1) % payload.right.length) };
-  }
-}
-
-/** Deep-scan a payload for anything that looks like a leaked correct answer. */
-function leaks(view: unknown): string[] {
-  const banned = ["correctIndex", "correctIndexes", "correctOrder", "pairs"];
-  const found: string[] = [];
-  const walk = (o: unknown) => {
-    if (!o || typeof o !== "object") return;
-    for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
-      if (banned.includes(k)) found.push(k);
-      walk(v);
-    }
-  };
-  walk(view);
-  return found;
-}
+import { RT, api, correctAnswer, failureCount, leaks, ok, wrongAnswer } from "./sim-lib.js";
 
 // ---- set the party up over the API -------------------------------------------------
 
@@ -315,5 +260,6 @@ if (settled) {
 
 // leave() can hang on an already-disposed room; it's best-effort cleanup, never worth blocking the verdict.
 await Promise.race([Promise.allSettled(rooms.map((r) => r.leave())), new Promise((r) => setTimeout(r, 3000))]);
+const failures = failureCount();
 console.log(failures ? `\n${failures} assertion(s) FAILED` : "\nparty-sim: all assertions passed");
 process.exit(failures ? 1 : 0);

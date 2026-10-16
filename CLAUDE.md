@@ -142,7 +142,8 @@ packages/shared     zod schemas, event names (RT), queue names, money helpers (k
 packages/db         Drizzle schema, postgres-js client, append-only ledger, seed
 packages/auth       resolveUser(): dev header or Firebase ID token → users row
 packages/queue      BullMQ queues + ioredis connections
-packages/game       pure game logic: party round, payout ladder, scoring, tie-breaks. No I/O.
+packages/game       pure game logic: party round, payout ladder, scoring, tie-breaks, flag → void. No I/O.
+packages/storage    ObjectStore interface + S3 implementation (DO Spaces in prod, SeaweedFS locally): presigned uploads, reads
 ```
 
 `contestly-app` (sibling repo, `../contestly-app`): the Expo mobile app, the Vite web app (admin, brand console, share pages), design tokens, and `@contestly/api-client`, a typed client hand-written on top of the zod schemas in `@contestly/shared` for now (codegen later). It links `@contestly/shared` from this repo with `file:` until the package is published (see README). Changing a schema in `packages/shared` changes the app's contract: rebuild shared and typecheck the app repo too.
@@ -153,14 +154,15 @@ One Dockerfile per service repo build (`APP` build arg picks the process); each 
 
 ```bash
 cp .env.example .env && npm install     # install also builds the shared packages
-npm run infra:up        # docker compose: postgres (pgvector image) + valkey. After pulling the pgvector switch: docker compose down -v once, then infra:up + db:push + db:seed.
+npm run infra:up        # docker compose: postgres (pgvector image) + valkey + storage (SeaweedFS, S3 API on :8333). After pulling the pgvector switch: docker compose down -v once, then infra:up + db:push + db:seed.
 npm run db:push         # drizzle-kit push (dev). Use db:generate + db:migrate once schema stabilises.
 npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 brands) and 3 parties
 npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
 npm test                # unit tests (packages/game, apps/questions)
 scripts/smoke.sh        # end-to-end check against the running stack
-npm run sim             # 3 simulated players play a party to the end against the running stack
+npm run sim             # both sims against the running stack: sim:sealed (generated set, 3 players) then
+                        # sim:curate (PDF upload → curate review → play with two flag-voids → settle)
 ```
 
 Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handles are auto-created.

@@ -8,6 +8,7 @@ import { authPlugin } from "./auth.js";
 import { usersRoutes } from "./routes/users.js";
 import { partiesRoutes } from "./routes/parties.js";
 import { walletRoutes } from "./routes/wallet.js";
+import { questionsRoutes } from "./routes/questions.js";
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 
@@ -35,6 +36,7 @@ app.get("/health", async () => ({ ok: true, service: "api", time: new Date().toI
 await app.register(usersRoutes);
 await app.register(partiesRoutes);
 await app.register(walletRoutes);
+await app.register(questionsRoutes);
 
 const port = Number(process.env.API_PORT ?? 4000);
 await app.listen({ port, host: "0.0.0.0" });

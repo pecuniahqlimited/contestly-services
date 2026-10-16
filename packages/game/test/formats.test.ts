@@ -86,3 +86,16 @@ describe("distribution", () => {
     expect(distribution("match", match, [])).toBeNull();
   });
 });
+
+describe("answer keys stay inside the question", () => {
+  it("rejects keys that point outside the options or repeat", async () => {
+    const { payloadSchemas } = await import("../src/formats.js");
+    expect(payloadSchemas.pick_one.safeParse({ ...pickOne, correctIndex: 4 }).success).toBe(false);
+    expect(payloadSchemas.pick_all.safeParse({ ...pickAll, correctIndexes: [0, 0] }).success).toBe(false);
+    expect(payloadSchemas.pick_all.safeParse({ ...pickAll, correctIndexes: [0, 9] }).success).toBe(false);
+    expect(payloadSchemas.order.safeParse({ question: "o", items: ["a", "b", "c"], correctOrder: [0, 0, 1] }).success).toBe(false);
+    expect(payloadSchemas.order.safeParse({ question: "o", items: ["a", "b", "c"], correctOrder: [2, 0, 1] }).success).toBe(true);
+    expect(payloadSchemas.match.safeParse({ question: "m", left: ["a", "b"], right: ["x", "y", "z"], pairs: [0, 1] }).success).toBe(false);
+    expect(payloadSchemas.match.safeParse({ question: "m", left: ["a", "b"], right: ["x", "y"], pairs: [1, 0] }).success).toBe(true);
+  });
+});

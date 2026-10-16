@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { QUESTION_FORMATS } from "@contestly/shared";
-import { buildSpec, parseExclusions } from "../src/pipeline/spec.js";
+import { buildSpec } from "../src/pipeline/spec.js";
 import { cosine, isDuplicate, nearest } from "../src/pipeline/dedupe.js";
 import { estimateDifficulty } from "../src/pipeline/difficulty.js";
-import { checkSafety } from "../src/pipeline/safety.js";
+import { checkSafety, parseExclusions } from "@contestly/shared";
 import { assertSetFilled, gateDraft, SetUnderfilled } from "../src/pipeline/gate.js";
 import type { GateInput } from "../src/pipeline/gate.js";
 

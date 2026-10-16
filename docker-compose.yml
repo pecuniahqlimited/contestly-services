@@ -32,6 +32,16 @@ services:
       timeout: 3s
       retries: 10
 
+  # Local S3-compatible object storage (DO Spaces in production). Dev-only credentials in docker/seaweedfs/s3.json.
+  storage:
+    image: chrislusf/seaweedfs:latest
+    # Small volumes so a laptop disk fits the volumes SeaweedFS pre-grows per bucket.
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweedfs/s3.json", "-volume.max=50", "-master.volumeSizeLimitMB=64"]
+    ports: ["8333:8333"]
+    volumes:
+      - storagedata:/data
+      - ./docker/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+
   api:
     profiles: ["services"]
     build: { context: ., args: { APP: api } }
@@ -73,3 +83,4 @@ services:
 volumes:
   pgdata:
   valkeydata:
+  storagedata:

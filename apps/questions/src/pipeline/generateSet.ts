@@ -1,123 +1,87 @@
 /**
  * The generate_set orchestrator: brief → spec → retrieve → generate → verify → embed → dedupe →
  * difficulty → safety → gate, then one transaction that fills the bank, writes a generation
- * record per draft, seals the set into party_questions (reserves last) and stores the spec
- * summary. After commit it publishes questions_ready on party:events (ADR 0002).
+ * record per draft, writes the set into party_questions (reserves last) and stores the spec
+ * summary.
+ *
+ * Sealed parties generate at start (party is live) and publish questions_ready on party:events
+ * when the set is sealed (ADR 0002). Curate parties generate at creation (party is open) and the
+ * rows land as drafts for the host's team to review (ADR 0003).
+ *
+ * Retrieval: open-knowledge parties reuse proven bank questions first and generate only the gap;
+ * file-sourced parties generate only from the most relevant chunks of their files.
  *
  * Fail closed: if the gate can't fill count + reserves, the records are still written, then the
  * job throws — BullMQ retries, and the final failure becomes a cancel_generation_failed party
  * job (money only ever moves in the worker).
  */
-import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { db, parties, partyQuestions, bankQuestions, questionGenerations, getQuestionsConfig, type Party } from "@contestly/db";
-import { payloadSchemas } from "@contestly/game";
-import type { DraftQuestion, Providers, VerifyVerdict } from "../providers/types.js";
-import { nearest, type Neighbour } from "./dedupe.js";
-import { estimateDifficulty, type DifficultyEstimate } from "./difficulty.js";
-import { assertSetFilled, gateDraft, type GateOutcome } from "./gate.js";
-import { nearestInBank, retrieveFromBank } from "./retrieve.js";
-import { checkSafety, type SafetyResult } from "./safety.js";
+import { db, parties, partyQuestions, bankQuestions, questionGenerations, getQuestionsConfig, type BankQuestion, type Party } from "@contestly/db";
+import type { Providers, SourceChunk } from "../providers/types.js";
+import { assertSetFilled } from "./gate.js";
+import { draftAndJudge } from "./judge.js";
+import { bankRow, generationRecord } from "./records.js";
+import { retrieveFromBank } from "./retrieve.js";
+import { partyFileIds, retrieveChunks } from "./sources.js";
 import { buildSpec } from "./spec.js";
-import { embeddingText, questionText } from "./text.js";
-
-/** Extra drafts requested beyond the gap, so rejections don't force a second round. */
-const QUALITY_BUFFER = 6;
-const MAX_DRAFT_ROUNDS = 2;
+import { questionText } from "./text.js";
 
 export interface GenerateSetDeps {
   providers: Providers;
   publish: (ev: { partyId: string; status: string }) => Promise<unknown>;
 }
 
-interface JudgedDraft {
-  draft: DraftQuestion;
-  embedding: number[];
-  payloadValid: boolean;
-  verify: VerifyVerdict | null;
-  nearest: Neighbour | null;
-  difficulty: DifficultyEstimate;
-  safety: SafetyResult | null;
-  outcome: GateOutcome;
+/** Sealed sets are built once the party is live; curate drafts while it's still open. */
+const generatesNow = (p: Party) => (p.mode === "sealed" ? p.status === "live" : p.status === "open");
+
+export async function specFor(party: Party) {
+  return buildSpec({ brief: party.brief, difficulty: party.difficulty, formats: party.formats, questionCount: party.questionCount, questionSeconds: party.questionSeconds, fileIds: await partyFileIds(party.id) });
 }
 
 export async function generateSet(partyId: string, deps: GenerateSetDeps): Promise<void> {
   const [party] = await db.select().from(parties).where(eq(parties.id, partyId));
-  if (!party || party.status !== "live") return;
+  if (!party || !generatesNow(party)) return;
 
   // Replay (or a room-restart race): the set already exists — just re-announce it.
   const existing = await db.select({ id: partyQuestions.id }).from(partyQuestions)
     .where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.reserve, false))).limit(1);
   if (existing.length) {
-    await deps.publish({ partyId, status: "questions_ready" });
+    if (party.mode === "sealed") await deps.publish({ partyId, status: "questions_ready" });
     return;
   }
 
   const cfg = await getQuestionsConfig();
-  const spec = buildSpec({ brief: party.brief, difficulty: party.difficulty, formats: party.formats, questionCount: party.questionCount, questionSeconds: party.questionSeconds });
+  const spec = await specFor(party);
   const need = party.questionCount + cfg.reserveCount;
 
-  // Bank first; generation only fills the gap.
   const [specEmbedding] = await deps.providers.embedder.embed([`${spec.topic} · ${spec.categoryTag}`]);
-  const retrieved = await retrieveFromBank(spec, specEmbedding, need);
+  let retrieved: BankQuestion[] = [];
+  let sources: SourceChunk[] | undefined;
+  if (spec.sourceScope === "open") retrieved = await retrieveFromBank(spec, specEmbedding, need);
+  else sources = await retrieveChunks(spec.sourceScope.fileIds, specEmbedding);
 
-  const judged: JudgedDraft[] = [];
-  const accepted: JudgedDraft[] = [];
-  const avoid = retrieved.map((q) => questionText(q.payload));
-
-  for (let round = 0; round < MAX_DRAFT_ROUNDS && retrieved.length + accepted.length < need; round++) {
-    const gap = need - retrieved.length - accepted.length;
-    const drafts = await deps.providers.generator.draft({ spec, count: gap + QUALITY_BUFFER, avoid });
-    for (const draft of drafts) {
-      avoid.push(questionText(draft.payload));
-      judged.push(await judge(draft, { spec, cfg, deps, accepted }));
-      const last = judged[judged.length - 1];
-      if (last.outcome === "accepted") accepted.push(last);
-    }
-  }
-
-  const bankRowOf = (j: JudgedDraft) => ({
-    id: randomUUID(),
-    format: j.draft.format,
-    payload: j.draft.payload,
-    explanation: j.draft.explanation,
-    categoryTag: spec.categoryTag,
-    language: spec.language,
-    embedding: j.embedding,
-    difficulty: j.difficulty.value,
-  });
-  const newBankRows = accepted.map(bankRowOf);
-  const bankIdOf = new Map(accepted.map((j, i) => [j, newBankRows[i].id]));
-
-  const recordRows = judged.map((j) => ({
-    partyId,
-    bankQuestionId: bankIdOf.get(j) ?? null,
-    brief: party.brief,
-    spec,
-    draft: { format: j.draft.format, payload: j.draft.payload, explanation: j.draft.explanation, claim: j.draft.claim },
-    verify: j.verify,
-    dedupe: j.nearest,
-    difficulty: j.difficulty,
-    safety: j.safety,
-    outcome: j.outcome,
-  }));
+  const { judged, accepted } = retrieved.length >= need
+    ? { judged: [], accepted: [] }
+    : await draftAndJudge({ spec, providers: deps.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: need - retrieved.length, avoid: retrieved.map((q) => questionText(q.payload)), sources });
 
   const filled = retrieved.length + accepted.length;
   if (filled < need) {
     // Keep the audit trail of the failed attempt (nothing enters the bank or the party set), then fail closed.
-    if (recordRows.length) await db.insert(questionGenerations).values(recordRows.map((r) => ({ ...r, bankQuestionId: null })));
+    if (judged.length) await db.insert(questionGenerations).values(judged.map((j) => generationRecord(j, { partyId, brief: party.brief, spec, banked: false })));
     assertSetFilled(filled, need);
   }
 
-  // The sealed set: proven bank questions lead, fresh ones follow, reserves continue the numbering.
+  // Proven bank questions lead, fresh ones follow, reserves continue the numbering.
+  const used = accepted.slice(0, need - retrieved.length);
   const set = [
-    ...retrieved.map((q) => ({ format: q.format, payload: q.payload, explanation: q.explanation, bankId: q.id })),
-    ...accepted.map((j) => ({ format: j.draft.format, payload: j.draft.payload, explanation: j.draft.explanation ?? null, bankId: bankIdOf.get(j)! })),
-  ].slice(0, need);
+    ...retrieved.slice(0, need).map((q) => ({ format: q.format, payload: q.payload, explanation: q.explanation, bankId: q.id })),
+    ...used.map((j) => ({ format: j.draft.format, payload: j.draft.payload, explanation: j.draft.explanation ?? null, bankId: j.bankId })),
+  ];
 
   await db.transaction(async (tx) => {
-    if (newBankRows.length) await tx.insert(bankQuestions).values(newBankRows);
-    if (recordRows.length) await tx.insert(questionGenerations).values(recordRows);
+    // Every accepted draft enters the bank once the set seals — extras beyond this set included.
+    if (accepted.length) await tx.insert(bankQuestions).values(accepted.map((j) => bankRow(j, spec)));
+    if (judged.length) await tx.insert(questionGenerations).values(judged.map((j) => generationRecord(j, { partyId, brief: party.brief, spec, banked: true })));
     await tx.insert(partyQuestions).values(set.map((q, i) => ({
       partyId,
       idx: i,
@@ -127,39 +91,11 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
       explanation: q.explanation,
       reserve: i >= party.questionCount,
       sourceRef: q.bankId,
+      status: party.mode === "curate" ? ("draft" as const) : ("pending" as const),
     }))).onConflictDoNothing();
     await tx.update(parties).set({ specSummary: spec.summary, category: spec.categoryTag }).where(eq(parties.id, partyId));
   });
 
-  await deps.publish({ partyId, status: "questions_ready" });
-  console.log(`[questions] ${party.title}: sealed ${party.questionCount}+${need - party.questionCount} reserve (${retrieved.length} from bank, ${accepted.length} generated, ${judged.length - accepted.length} rejected)`);
-}
-
-/** Run one draft through verify → embed → dedupe → difficulty → safety, in pipeline order, gating as we go. */
-async function judge(
-  draft: DraftQuestion,
-  ctx: { spec: ReturnType<typeof buildSpec>; cfg: { dedupeSimilarity: number }; deps: GenerateSetDeps; accepted: JudgedDraft[] },
-): Promise<JudgedDraft> {
-  const { spec, cfg, deps, accepted } = ctx;
-  const payloadValid = payloadSchemas[draft.format].safeParse(draft.payload).success;
-  const [embedding] = await deps.providers.embedder.embed([embeddingText(draft.format, draft.payload)]);
-  const difficulty = estimateDifficulty(spec.difficulty, draft.format);
-
-  // Verification is a separate provider call by design — never the same call as generation.
-  const verify = payloadValid ? await deps.providers.verifier.verify({ format: draft.format, payload: draft.payload, explanation: draft.explanation, claim: draft.claim }) : null;
-
-  // Nearest of: the whole bank (any status — retired stays dead) and the batch accepted so far.
-  const inBank = await nearestInBank(embedding);
-  const inBatch = nearest(embedding, accepted.map((a, i) => ({ id: `draft-${i}`, embedding: a.embedding })));
-  const near = [inBank, inBatch].reduce<Neighbour | null>((a, b) => (!a ? b : !b ? a : b.similarity > a.similarity ? b : a), null);
-
-  const safety = checkSafety(spec, draft.payload, draft.explanation);
-  const outcome = gateDraft({
-    payloadValid,
-    verify: verify ?? { verdict: "fail", sources: [], note: "payload failed schema validation" },
-    nearest: near,
-    dedupeThreshold: cfg.dedupeSimilarity,
-    safety,
-  });
-  return { draft, embedding, payloadValid, verify, nearest: near, difficulty, safety, outcome };
+  if (party.mode === "sealed") await deps.publish({ partyId, status: "questions_ready" });
+  console.log(`[questions] ${party.title}: ${party.mode === "sealed" ? "sealed" : "drafted"} ${party.questionCount}+${need - party.questionCount} reserve (${retrieved.length} from bank, ${used.length} generated${sources ? " from file" : ""}, ${judged.length - accepted.length} rejected)`);
 }

@@ -22,6 +22,7 @@ export async function recordPlay(partyId: string): Promise<void> {
         answered: sql<number>`count(*)`,
         correctnessSum: sql<number>`coalesce(sum(${partyAnswers.correctness}), 0)`,
         answeredMsSum: sql<number>`coalesce(sum(${partyAnswers.answeredMs}), 0)`,
+        skipped: sql<number>`count(*) filter (where ${partyAnswers.answer} is null)`,
       })
       .from(partyAnswers)
       .innerJoin(partyQuestions, eq(partyAnswers.questionId, partyQuestions.id))
@@ -35,6 +36,7 @@ export async function recordPlay(partyId: string): Promise<void> {
         timesAnswered: sql`${bankQuestions.timesAnswered} + ${Number(s.answered)}`,
         correctnessSum: sql`${bankQuestions.correctnessSum} + ${Number(s.correctnessSum)}`,
         answeredMsSum: sql`${bankQuestions.answeredMsSum} + ${Number(s.answeredMsSum)}`,
+        timesSkipped: sql`${bankQuestions.timesSkipped} + ${Number(s.skipped)}`,
         lastPlayedAt: new Date(),
       }).where(eq(bankQuestions.id, s.bankId));
 

@@ -14,30 +14,37 @@ export { QUESTION_FORMATS, type QuestionFormat };
 const options = z.array(z.string().min(1)).min(2).max(6);
 const indexes = z.array(z.number().int().min(0)).min(1);
 
+/** `xs` uses each of 0..n-1 exactly once. */
+const isPermutation = (xs: number[], n: number) => xs.length === n && new Set(xs).size === n && xs.every((i) => i < n);
+
+/**
+ * Answer keys must point inside the question, so neither a generator slip nor a host edit can
+ * make a question unanswerable.
+ */
 export const payloadSchemas = {
   pick_one: z.object({
     question: z.string().min(1),
     options,
     correctIndex: z.number().int().min(0),
-  }),
+  }).refine((p) => p.correctIndex < p.options.length, "correctIndex must point at an option"),
   pick_all: z.object({
     question: z.string().min(1),
     options,
     correctIndexes: indexes,
-  }),
+  }).refine((p) => new Set(p.correctIndexes).size === p.correctIndexes.length && p.correctIndexes.every((i) => i < p.options.length), "correctIndexes must be distinct options"),
   /** `items` is the display order (pre-shuffled by the author/generator); `correctOrder` lists item indexes in the right sequence. */
   order: z.object({
     question: z.string().min(1),
     items: z.array(z.string().min(1)).min(3).max(6),
     correctOrder: indexes,
-  }),
+  }).refine((p) => isPermutation(p.correctOrder, p.items.length), "correctOrder must use every item exactly once"),
   /** `right` is pre-shuffled; `pairs[i]` is the index into `right` that matches `left[i]`. */
   match: z.object({
     question: z.string().min(1),
     left: z.array(z.string().min(1)).min(2).max(6),
     right: z.array(z.string().min(1)).min(2).max(6),
     pairs: indexes,
-  }),
+  }).refine((p) => p.left.length === p.right.length && isPermutation(p.pairs, p.right.length), "pairs must match every left item to a distinct right item"),
   /** An image with a caption, then pick one. Images come from a licensed/generated pool with alt text. */
   picture: z.object({
     question: z.string().min(1),
@@ -45,7 +52,7 @@ export const payloadSchemas = {
     imageAlt: z.string().min(1),
     options,
     correctIndex: z.number().int().min(0),
-  }),
+  }).refine((p) => p.correctIndex < p.options.length, "correctIndex must point at an option"),
 } as const;
 
 export const answerSchemas = {

@@ -5,6 +5,7 @@
  */
 import type { Difficulty } from "@contestly/shared";
 import { BAD_IDS, DECK, DUP_IDS, type DeckEntry } from "./deck.js";
+import { draftsFromFile } from "./fromFile.js";
 import type { DraftQuestion, Generator } from "../types.js";
 
 const DIFFICULTY_TARGET: Record<Difficulty, number> = { easy: 0.25, mixed: 0.5, hard: 0.7, brutal: 0.85 };
@@ -13,8 +14,9 @@ const PLANTED_IDS = new Set<string>([...Object.values(BAD_IDS), DUP_IDS.duplicat
 const toDraft = (e: DeckEntry): DraftQuestion => ({ format: e.format, payload: e.payload, explanation: e.explanation, claim: e.claim });
 
 export const mockGenerator: Generator = {
-  async draft({ spec, count, avoid }) {
+  async draft({ spec, count, avoid, sources }) {
     const avoidSet = new Set(avoid);
+    if (sources) return spec.formats.includes("pick_one") ? draftsFromFile(sources, count, avoidSet) : [];
     const eligible = (e: DeckEntry) => spec.formats.includes(e.format) && !avoidSet.has(e.payload.question);
 
     const planted = DECK.filter((e) => PLANTED_IDS.has(e.id)).filter(eligible);
