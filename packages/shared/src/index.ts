@@ -290,7 +290,13 @@ export const publicUserSchema = z.object({
 export const meResponseSchema = publicUserSchema.extend({ wallet: walletSchema });
 
 /** GET /users/:handle: a profile with counts, play stats, the viewer's follow state and open parties hosted. */
-export const userStatsSchema = z.object({ parties: z.number().int(), wins: z.number().int(), bestPrizeKobo: z.number().int() });
+export const userStatsSchema = z.object({
+  parties: z.number().int(),
+  wins: z.number().int(),
+  bestPrizeKobo: z.number().int(),
+  /** Best finishing rank in any played party; null until one has been played. */
+  bestRank: z.number().int().nullable(),
+});
 
 /** GET /wallet: balances plus the latest ledger entries, newest first. */
 export const ledgerEntrySchema = z.object({

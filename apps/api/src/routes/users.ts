@@ -33,11 +33,11 @@ export async function usersRoutes(app: FastifyInstance) {
     const [[fl], [fg], [stats], rel] = await Promise.all([
       db.select({ n: count() }).from(follows).where(eq(follows.followeeId, u.id)),
       db.select({ n: count() }).from(follows).where(eq(follows.followerId, u.id)),
-      db.select({ parties: count(), wins: sql<number>`count(*) filter (where ${partyPlayers.rank} = 1)`, best: sql<number>`coalesce(max(${partyPlayers.prizeKobo}), 0)` }).from(partyPlayers).where(eq(partyPlayers.userId, u.id)),
+      db.select({ parties: count(), wins: sql<number>`count(*) filter (where ${partyPlayers.rank} = 1)`, best: sql<number>`coalesce(max(${partyPlayers.prizeKobo}), 0)`, bestRank: sql<number | null>`min(${partyPlayers.rank})` }).from(partyPlayers).where(eq(partyPlayers.userId, u.id)),
       me ? db.select().from(follows).where(and(eq(follows.followerId, me.id), eq(follows.followeeId, u.id))) : Promise.resolve([]),
     ]);
     const hosting = (await partiesHostedBy(u.id)).filter((p) => p.status === "open" || p.status === "live").sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
-    return { ...publicUser(u), followers: fl.n, following: fg.n, stats: { parties: Number(stats.parties), wins: Number(stats.wins), bestPrizeKobo: Number(stats.best) }, viewer: { following: rel.length > 0, notify: rel[0]?.notify ?? false }, hosting };
+    return { ...publicUser(u), followers: fl.n, following: fg.n, stats: { parties: Number(stats.parties), wins: Number(stats.wins), bestPrizeKobo: Number(stats.best), bestRank: stats.bestRank === null ? null : Number(stats.bestRank) }, viewer: { following: rel.length > 0, notify: rel[0]?.notify ?? false }, hosting };
   });
 
   app.get("/users/:handle/followers", async (req, reply) => {
