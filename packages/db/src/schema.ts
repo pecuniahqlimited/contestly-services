@@ -75,6 +75,8 @@ export const parties = pgTable("parties", {
   /** Non-cash prizes (a product, an experience) are a fulfilment state machine, never a ledger entry. */
   prizeKind: prizeKind("prize_kind").notNull().default("cash"),
   prizeText: text("prize_text"),
+  /** Non-cash prizes only: what it's roughly worth, for display. No money moves on it. */
+  prizeValueKobo: integer("prize_value_kobo"),
   split: integer("split").array().notNull(),
   visibility: visibilityKind("visibility").notNull().default("public"),
   coverColor: text("cover_color").notNull().default("#7B5CFF"),

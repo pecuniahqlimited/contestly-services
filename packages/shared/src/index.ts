@@ -199,6 +199,8 @@ export const createPartySchema = z.object({
   /** Host-funded parties may offer a product or experience instead of cash: a fulfilment record, not a ledger entry. */
   prizeKind: z.enum(["cash", "noncash"]).default("cash"),
   prizeText: z.string().min(3).max(120).optional(),
+  /** What a non-cash prize is roughly worth, shown as "worth about ₦X" on the party and the join sheet. Informational: no money moves. */
+  prizeValueKobo: z.number().int().positive().max(kobo(10_000_000)).optional(),
   /** Pot split by rank. Omitted → the admin default from party config (winner takes all). */
   split: z.array(z.number().int().positive()).min(1).max(5).refine((s) => s.reduce((a, b) => a + b, 0) === 100, "split must add up to 100").optional(),
   questionCount: z.number().int().min(3).max(30).default(5),
@@ -210,7 +212,8 @@ export const createPartySchema = z.object({
   inviteUserIds: z.array(z.string().uuid()).max(20).default([]),
 }).refine((p) => p.funding === "pooled" ? p.entryKobo > 0 && p.prizeKind === "cash" : true, { message: "pooled parties need an entry fee and pay cash" })
   .refine((p) => p.funding === "host" && p.prizeKind === "cash" ? p.hostPoolKobo > 0 : true, { message: "host-funded cash parties need a pot" })
-  .refine((p) => p.prizeKind === "noncash" ? !!p.prizeText && p.hostPoolKobo === 0 : true, { message: "non-cash parties describe the prize and carry no cash pot" });
+  .refine((p) => p.prizeKind === "noncash" ? !!p.prizeText && p.hostPoolKobo === 0 : true, { message: "non-cash parties describe the prize and carry no cash pot" })
+  .refine((p) => p.prizeValueKobo === undefined || p.prizeKind === "noncash", { message: "only a non-cash prize carries a value" });
 
 /** Chat is room-scoped in Colyseus; the party comes from the room, not the message. */
 export const chatSendSchema = z.object({
@@ -332,6 +335,8 @@ export const partyRowSchema = z.object({
   hostPoolKobo: z.number().int(),
   prizeKind: z.enum(["cash", "noncash"]),
   prizeText: z.string().nullable(),
+  /** Non-cash prizes only: roughly what it's worth. */
+  prizeValueKobo: z.number().int().nullable(),
   split: z.array(z.number().int()),
   visibility: z.enum(["public", "private"]),
   coverColor: z.string(),
