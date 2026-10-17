@@ -286,9 +286,134 @@ export const publicUserSchema = z.object({
 });
 export const meResponseSchema = publicUserSchema.extend({ wallet: walletSchema });
 
+/** GET /users/:handle: a profile with counts, play stats, the viewer's follow state and open parties hosted. */
+export const userStatsSchema = z.object({ parties: z.number().int(), wins: z.number().int(), bestPrizeKobo: z.number().int() });
+
+/** GET /wallet: balances plus the latest ledger entries, newest first. */
+export const ledgerEntrySchema = z.object({
+  id: z.string().uuid(),
+  kind: z.enum(["cash", "bonus"]),
+  amountKobo: z.number().int(),
+  /** party_entry, party_prize, party_refund, party_fund, topup, welcome_bonus, … */
+  type: z.string(),
+  refType: z.string().nullable(),
+  refId: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+export const walletResponseSchema = walletSchema.extend({ history: z.array(ledgerEntrySchema) });
+
+/** A party's public host, resolved only through publicHost() (ADR 0001). Step 4 adds kind "brand". */
+export const publicHostSchema = z.object({
+  id: z.string().uuid(),
+  kind: z.enum(["user", "brand"]),
+  handle: z.string(),
+  displayName: z.string(),
+  avatarEmoji: z.string(),
+  isBrand: z.boolean(),
+  isVerified: z.boolean(),
+});
+
+export const PARTY_STATUSES = ["open", "live", "finished", "cancelled"] as const;
+export type PartyStatus = (typeof PARTY_STATUSES)[number];
+
+/** The parties row as the API returns it. */
+export const partyRowSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string(),
+  category: z.string(),
+  difficulty: z.enum(DIFFICULTIES),
+  formats: z.array(z.enum(QUESTION_FORMATS)),
+  mode: z.enum(["sealed", "curate"]),
+  entryKobo: z.number().int(),
+  maxPlayers: z.number().int(),
+  questionCount: z.number().int(),
+  questionSeconds: z.number().int(),
+  funding: z.enum(["pooled", "host"]),
+  hostPoolKobo: z.number().int(),
+  prizeKind: z.enum(["cash", "noncash"]),
+  prizeText: z.string().nullable(),
+  split: z.array(z.number().int()),
+  visibility: z.enum(["public", "private"]),
+  coverColor: z.string(),
+  coverEmoji: z.string(),
+  status: z.enum(PARTY_STATUSES),
+  startsAt: z.string().datetime(),
+});
+
+/** GET /parties: one card in Discover. */
+export const partySummarySchema = partyRowSchema.extend({
+  host: publicHostSchema,
+  playerCount: z.number().int(),
+  potKobo: z.number().int(),
+});
+export const partiesResponseSchema = z.array(partySummarySchema);
+
+/** Always disclosed in the lobby and the game: AI-generated, and sealed or host-reviewed. */
+export const questionDisclosureSchema = z.object({ aiGenerated: z.boolean(), review: z.enum(["sealed", "host_reviewed"]) });
+
+export const partyPlayerSchema = z.object({
+  id: z.string().uuid(),
+  handle: z.string(),
+  displayName: z.string(),
+  avatarEmoji: z.string(),
+  score: z.number().int().nullable(),
+  rank: z.number().int().nullable(),
+  prizeKobo: z.number().int().nullable(),
+});
+
+/** A persisted party chat line. System lines have no author. */
+export const chatMessageSchema = z.object({
+  id: z.string().uuid(),
+  partyId: z.string().uuid(),
+  userId: z.string().uuid().nullable(),
+  text: z.string().nullable(),
+  sticker: z.string().nullable(),
+  system: z.boolean(),
+  createdAt: z.string().datetime(),
+  handle: z.string().nullable(),
+  avatarEmoji: z.string().nullable(),
+});
+
+/** GET /parties/:id: the lobby before the room is joined. `joined` is the viewer's seat. */
+export const partyDetailSchema = partySummarySchema.extend({
+  questions: questionDisclosureSchema,
+  players: z.array(partyPlayerSchema),
+  joined: z.boolean(),
+  chat: z.array(chatMessageSchema),
+});
+
+/** POST /parties/:id/join. A replayed join (already seated) charges nothing and carries no `paid`. */
+export const joinPartyResponseSchema = z.object({
+  joined: z.literal(true),
+  replayed: z.boolean().optional(),
+  paid: z.object({ fromBonus: z.number().int(), fromCash: z.number().int() }).optional(),
+  potKobo: z.number().int().optional(),
+});
+
+export const userProfileSchema = publicUserSchema.extend({
+  followers: z.number().int(),
+  following: z.number().int(),
+  stats: userStatsSchema,
+  viewer: z.object({ following: z.boolean(), notify: z.boolean() }),
+  hosting: z.array(partyRowSchema),
+});
+
+/** The `error` code in a refused request's body, e.g. insufficient_funds (402), party_full (409). */
+export const apiErrorBodySchema = z.object({ error: z.string() });
+
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type Wallet = z.infer<typeof walletSchema>;
 export type PublicUser = z.infer<typeof publicUserSchema>;
 export type MeResponse = z.infer<typeof meResponseSchema>;
+export type LedgerEntry = z.infer<typeof ledgerEntrySchema>;
+export type WalletResponse = z.infer<typeof walletResponseSchema>;
+export type PublicHost = z.infer<typeof publicHostSchema>;
+export type PartySummary = z.infer<typeof partySummarySchema>;
+export type PartyDetail = z.infer<typeof partyDetailSchema>;
+export type PartyPlayer = z.infer<typeof partyPlayerSchema>;
+export type ChatMessage = z.infer<typeof chatMessageSchema>;
+export type QuestionDisclosure = z.infer<typeof questionDisclosureSchema>;
+export type JoinPartyResponse = z.infer<typeof joinPartyResponseSchema>;
+export type UserProfile = z.infer<typeof userProfileSchema>;
 export type CreatePartyInput = z.infer<typeof createPartySchema>;
 export type UpsertMeInput = z.infer<typeof upsertMeSchema>;
