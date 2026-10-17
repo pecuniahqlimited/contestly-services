@@ -64,7 +64,9 @@ async function judge(draft: DraftQuestion, req: DraftRequest, accepted: JudgedDr
   const verify = payloadValid ? await verifyDraft(draft, req) : null;
 
   // Nearest of: the whole bank (any status — retired stays dead) and the batch accepted so far.
-  const inBank = await nearestInBank(embedding);
+  // File-sourced drafts skip the bank: the file is the source, so the same file uploaded again must
+  // yield its questions again (and file-derived bank rows are never served to open-knowledge parties).
+  const inBank = req.sources ? null : await nearestInBank(embedding);
   const inBatch = nearest(embedding, accepted.map((a) => ({ id: a.bankId, embedding: a.embedding })));
   const near = [inBank, inBatch].reduce<Neighbour | null>((a, b) => (!a ? b : !b ? a : b.similarity > a.similarity ? b : a), null);
 

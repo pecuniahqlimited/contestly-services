@@ -6,6 +6,7 @@
 import type { Difficulty } from "@contestly/shared";
 import { BAD_IDS, DECK, DUP_IDS, type DeckEntry } from "./deck.js";
 import { draftsFromFile } from "./fromFile.js";
+import { syntheticDrafts } from "./synthetic.js";
 import type { DraftQuestion, Generator } from "../types.js";
 
 const DIFFICULTY_TARGET: Record<Difficulty, number> = { easy: 0.25, mixed: 0.5, hard: 0.7, brutal: 0.85 };
@@ -28,7 +29,10 @@ export const mockGenerator: Generator = {
     // Stable rank; the duplicate's original always leads so the planted near-duplicate has its pair in the batch.
     good.sort((a, b) => (a.id === DUP_IDS.original ? -1 : b.id === DUP_IDS.original ? 1 : score(b) - score(a) || DECK.indexOf(a) - DECK.indexOf(b)));
 
-    const chosen = good.slice(0, Math.max(0, count - planted.length));
-    return [...chosen, ...planted].slice(0, count).map(toDraft);
+    const chosen = good.slice(0, Math.max(0, count - planted.length)).map(toDraft);
+    // Deck exhausted for this avoid list: top up with numbered synthetic questions.
+    const shortfall = count - planted.length - chosen.length;
+    const extra = shortfall > 0 && spec.formats.includes("pick_one") ? syntheticDrafts(shortfall, avoidSet) : [];
+    return [...chosen, ...extra, ...planted.map(toDraft)].slice(0, count);
   },
 };

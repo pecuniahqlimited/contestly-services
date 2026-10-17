@@ -19,7 +19,7 @@ import {
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { RT, api, call, correctAnswer, failureCount, ok, sleep, waitFor, walletTotal, wrongAnswer } from "./sim-lib.js";
+import { RT, api, call, correctAnswer, failureCount, ok, partyNetKobo, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 import { minimalPdf } from "./sim-pdf.js";
 
 const HOST = "tunde";
@@ -55,28 +55,31 @@ const curateParty = (title: string) => ({
 });
 
 for (const h of [HOST, ...PLAYERS]) await topUp(h);
+const userIds = new Map<string, string>();
+for (const h of [HOST, ...PLAYERS]) userIds.set(h, (await api(h, "GET", "/me")).id);
 
 // ---- fail closed: a curate party whose host never approved the set doesn't start ----------
 
 console.log("curate party with an unreviewed set: start must cancel and refund…");
 {
   const p = await api(HOST, "POST", "/parties", curateParty("Unreviewed curate party"));
-  const before = new Map(await Promise.all(PLAYERS.slice(0, 2).map(async (h) => [h, await walletTotal(h)] as const)));
   for (const h of PLAYERS.slice(0, 2)) await api(h, "POST", `/parties/${p.id}/join`);
   await promoteStart(p.id);
   const done = await waitFor(async () => { const d = await api(HOST, "GET", `/parties/${p.id}`); return d.status === "cancelled" ? d : null; }, { tries: 30 });
   ok(!!done && done.chat.some((c: any) => c.system && /didn't finish reviewing/.test(c.text)), "unreviewed curate party cancelled at start with the reason");
-  for (const h of PLAYERS.slice(0, 2)) ok((await walletTotal(h)) === before.get(h), `${h} refunded in full`);
+  for (const h of PLAYERS.slice(0, 2)) {
+    const net = await partyNetKobo(userIds.get(h)!, p.id);
+    ok(net === 0, `${h} refunded in full (net ${net} from that party)`);
+  }
 }
 
 // ---- create + upload a source file ---------------------------------------------------------
 
 console.log("\ncurate party from an uploaded PDF…");
-const hostBefore = await walletTotal(HOST);
 const party = await api(HOST, "POST", "/parties", curateParty("Curate sim party"));
 const partyId: string = party.id;
 ok(party.playerCount === 0 && party.questions?.review === "host_reviewed" && party.questions?.aiGenerated === true, "curate host isn't seated; party discloses AI-generated, host-reviewed questions");
-ok((await walletTotal(HOST)) === hostBefore, "curate host isn't charged an entry");
+ok((await partyNetKobo(userIds.get(HOST)!, partyId)) === 0, "curate host isn't charged an entry");
 
 const pdf = minimalPdf(FACTS);
 const notHost = await call(PLAYERS[0], "POST", `/parties/${partyId}/files`, { filename: "x.pdf", contentType: "application/pdf", sizeBytes: pdf.length });
@@ -157,16 +160,20 @@ ok(kinds("approve").every((e) => e.userId), "every approval records who approved
 
 const hostJoin = await call(HOST, "POST", `/parties/${partyId}/join`);
 ok(hostJoin.status === 403, `curate host can't join as a player (${hostJoin.status} ${JSON.stringify(hostJoin.body)})`);
-const playerBefore = new Map<string, number>();
-for (const h of PLAYERS) {
-  playerBefore.set(h, await walletTotal(h));
-  await api(h, "POST", `/parties/${partyId}/join`);
-}
+
+// A team member who opened the drafts. Brand teams arrive in step 4 (until then isHostTeam() is the
+// creator alone), so record the view GET /drafts would write for them, then try to join.
+const TEAM_MEMBER = "segunola";
+await topUp(TEAM_MEMBER);
+const teamMemberId: string = (await api(TEAM_MEMBER, "GET", "/me")).id;
+await db.insert(partyDraftViews).values({ partyId, userId: teamMemberId }).onConflictDoNothing();
+const teamJoin = await call(TEAM_MEMBER, "POST", `/parties/${partyId}/join`);
+ok(teamJoin.status === 403 && teamJoin.body?.error === "seen_the_questions_cannot_play", `a team member who opened the drafts gets 403 on join (${teamJoin.status} ${JSON.stringify(teamJoin.body)})`);
+ok((await partyNetKobo(teamMemberId, partyId)) === 0, "and is never charged an entry");
+for (const h of PLAYERS) await api(h, "POST", `/parties/${partyId}/join`);
 
 // ---- play: three players, the host watching ------------------------------------------------
 
-const userIds = new Map<string, string>();
-for (const h of [HOST, ...PLAYERS]) userIds.set(h, (await api(h, "GET", "/me")).id);
 const questionById = async (id: string) => (await db.select().from(partyQuestions).where(eq(partyQuestions.id, id)))[0];
 
 type Persona = { handle: string; play: (f: QuestionFormat, p: any) => unknown; delayMs: (questionMs: number) => number };
@@ -267,11 +274,11 @@ if (settled) {
   const winner = final.find((r) => r.rank === 1)!;
   const winnerHandle = [...userIds.entries()].find(([, id]) => id === winner.userId)![0];
   for (const h of PLAYERS) {
-    const delta = (await walletTotal(h)) - playerBefore.get(h)!;
+    const net = await partyNetKobo(userIds.get(h)!, partyId);
     const expected = h === winnerHandle ? -20_000 + 54_000 : -20_000;
-    ok(delta === expected, `${h} wallet delta ${delta} (expected ${expected})`);
+    ok(net === expected, `${h} net from this party ${net} (expected ${expected})`);
   }
-  ok((await walletTotal(HOST)) === hostBefore, "curate host's wallet untouched");
+  ok((await partyNetKobo(userIds.get(HOST)!, partyId)) === 0, "curate host neither paid in nor won anything");
 }
 
 const voidedBankIds = (await db.select({ ref: partyQuestions.sourceRef }).from(partyQuestions).where(inArray(partyQuestions.id, [voidedId(VOID_OPEN_IDX), voidedId(VOID_REVEAL_IDX)]))).map((r) => r.ref!).filter(Boolean);

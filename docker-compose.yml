@@ -41,6 +41,12 @@ services:
     volumes:
       - storagedata:/data
       - ./docker/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    # The port opens before the S3 API is ready; infra:up --wait holds until this passes.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   api:
     profiles: ["services"]
@@ -49,8 +55,9 @@ services:
     environment:
       DATABASE_URL: postgres://contestly:contestly@postgres:5432/contestly
       REDIS_URL: redis://valkey:6379
+      S3_ENDPOINT: http://storage:8333
     ports: ["4000:4000"]
-    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_healthy } }
+    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_healthy }, storage: { condition: service_healthy } }
 
   realtime:
     profiles: ["services"]
@@ -78,7 +85,8 @@ services:
     environment:
       DATABASE_URL: postgres://contestly:contestly@postgres:5432/contestly
       REDIS_URL: redis://valkey:6379
-    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_healthy } }
+      S3_ENDPOINT: http://storage:8333
+    depends_on: { postgres: { condition: service_healthy }, valkey: { condition: service_healthy }, storage: { condition: service_healthy } }
 
 volumes:
   pgdata:

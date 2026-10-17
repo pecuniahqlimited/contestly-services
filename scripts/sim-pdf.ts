@@ -2,7 +2,7 @@
  * TEST-ONLY: write a minimal one-page PDF (Helvetica, one line per sentence) so the sims can
  * upload a real file through the presigned-URL path without shipping a binary fixture.
  */
-export function minimalPdf(lines: string[]): Uint8Array {
+export function minimalPdf(lines: string[]): Uint8Array<ArrayBuffer> {
   const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
   const content = ["BT", "/F1 10 Tf", "14 TL", "40 800 Td", ...lines.map((l) => `(${esc(l)}) Tj T*`), "ET"].join("\n");
   const objects = [

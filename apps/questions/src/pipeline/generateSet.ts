@@ -21,7 +21,7 @@ import type { Providers, SourceChunk } from "../providers/types.js";
 import { assertSetFilled } from "./gate.js";
 import { draftAndJudge } from "./judge.js";
 import { bankRow, generationRecord } from "./records.js";
-import { retrieveFromBank } from "./retrieve.js";
+import { playedBySeatedPlayers, retrieveFromBank } from "./retrieve.js";
 import { partyFileIds, retrieveChunks } from "./sources.js";
 import { buildSpec } from "./spec.js";
 import { questionText } from "./text.js";
@@ -55,14 +55,17 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
   const need = party.questionCount + cfg.reserveCount;
 
   const [specEmbedding] = await deps.providers.embedder.embed([`${spec.topic} · ${spec.categoryTag}`]);
+  // Nobody seated gets a question they've already seen; if that leaves the bank short, generation fills the gap.
+  const played = await playedBySeatedPlayers(partyId);
   let retrieved: BankQuestion[] = [];
   let sources: SourceChunk[] | undefined;
-  if (spec.sourceScope === "open") retrieved = await retrieveFromBank(spec, specEmbedding, need);
+  if (spec.sourceScope === "open") retrieved = await retrieveFromBank(spec, specEmbedding, need, played.map((p) => p.bankId));
   else sources = await retrieveChunks(spec.sourceScope.fileIds, specEmbedding);
 
+  const avoid = [...retrieved.map((q) => questionText(q.payload)), ...played.map((p) => questionText(p.payload))];
   const { judged, accepted } = retrieved.length >= need
     ? { judged: [], accepted: [] }
-    : await draftAndJudge({ spec, providers: deps.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: need - retrieved.length, avoid: retrieved.map((q) => questionText(q.payload)), sources });
+    : await draftAndJudge({ spec, providers: deps.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: need - retrieved.length, avoid, sources });
 
   const filled = retrieved.length + accepted.length;
   if (filled < need) {
@@ -97,5 +100,5 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
   });
 
   if (party.mode === "sealed") await deps.publish({ partyId, status: "questions_ready" });
-  console.log(`[questions] ${party.title}: ${party.mode === "sealed" ? "sealed" : "drafted"} ${party.questionCount}+${need - party.questionCount} reserve (${retrieved.length} from bank, ${used.length} generated${sources ? " from file" : ""}, ${judged.length - accepted.length} rejected)`);
+  console.log(`[questions] ${party.title}: ${party.mode === "sealed" ? "sealed" : "drafted"} ${party.questionCount}+${need - party.questionCount} reserve (${retrieved.length} from bank, ${played.length} skipped as already played, ${used.length} generated${sources ? " from file" : ""}, ${judged.length - accepted.length} rejected)`);
 }

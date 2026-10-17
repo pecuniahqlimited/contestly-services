@@ -3,6 +3,8 @@
  * assertion tally, and answer builders that read the server payload straight from Postgres.
  * Nothing like this exists in the product.
  */
+import { and, eq, sql } from "drizzle-orm";
+import { db, ledgerAccounts, ledgerEntries } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
 
 export const API = process.env.API_URL ?? "http://localhost:4000";
@@ -49,6 +51,20 @@ export const walletTotal = async (handle: string) => {
   const w = (await api(handle, "GET", "/me")).wallet as { cashKobo: number; bonusKobo: number };
   return w.cashKobo + w.bonusKobo;
 };
+
+/**
+ * Net money a party moved for one user (entries, refunds, prizes; cash and bonus together), read
+ * from the ledger by reference. Unlike a wallet before/after, it can't be thrown off by some other
+ * party settling or refunding at the same moment.
+ */
+export async function partyNetKobo(userId: string, partyId: string): Promise<number> {
+  const [row] = await db
+    .select({ net: sql<number>`coalesce(sum(${ledgerEntries.amountKobo}), 0)` })
+    .from(ledgerEntries)
+    .innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
+    .where(and(eq(ledgerAccounts.userId, userId), eq(ledgerEntries.refType, "party"), eq(ledgerEntries.refId, partyId)));
+  return Number(row?.net ?? 0);
+}
 
 /** The right answer for each format, straight from the server payload (test-only). */
 export function correctAnswer(format: QuestionFormat, payload: any): unknown {
