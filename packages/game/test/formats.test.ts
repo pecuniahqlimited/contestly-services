@@ -99,3 +99,19 @@ describe("answer keys stay inside the question", () => {
     expect(payloadSchemas.match.safeParse({ question: "m", left: ["a", "b"], right: ["x", "y"], pairs: [1, 0] }).success).toBe(true);
   });
 });
+
+describe("the room protocol in @contestly/shared", () => {
+  it("parses every format's public view, so the app can render what the room sends", async () => {
+    const { questionViewSchemas } = await import("@contestly/shared");
+    const payloads = { pick_one: pickOne, pick_all: pickAll, order, match, picture } as const;
+    for (const [format, payload] of Object.entries(payloads) as [keyof typeof payloads, unknown][]) {
+      expect(() => questionViewSchemas[format].parse(publicView(format, payload))).not.toThrow();
+    }
+  });
+  it("parses every format's revealed answer", async () => {
+    const { revealAnswerSchema } = await import("@contestly/shared");
+    for (const [format, payload] of [["pick_one", pickOne], ["pick_all", pickAll], ["order", order], ["match", match], ["picture", picture]] as const) {
+      expect(revealAnswerSchema.parse(revealAnswer(format, payload))).toEqual(revealAnswer(format, payload));
+    }
+  });
+});

@@ -428,3 +428,131 @@ export type JoinPartyResponse = z.infer<typeof joinPartyResponseSchema>;
 export type UserProfile = z.infer<typeof userProfileSchema>;
 export type CreatePartyInput = z.infer<typeof createPartySchema>;
 export type UpsertMeInput = z.infer<typeof upsertMeSchema>;
+
+/**
+ * The party room protocol: every message the room sends, as the app parses it. The room builds these
+ * from packages/game (publicView, Reveal, StandingRow); the app never trusts an unparsed message.
+ */
+const roomOptions = z.array(z.string()).min(2).max(6);
+/** What each format shows while its question is open: the engine's publicView, answers stripped. */
+export const questionViewSchemas = {
+  pick_one: z.object({ question: z.string(), options: roomOptions }),
+  pick_all: z.object({ question: z.string(), options: roomOptions }),
+  order: z.object({ question: z.string(), items: z.array(z.string()).min(2).max(6) }),
+  match: z.object({ question: z.string(), left: z.array(z.string()).min(2).max(6), right: z.array(z.string()).min(2).max(6) }),
+  picture: z.object({ question: z.string(), imageUrl: z.string(), imageAlt: z.string(), options: roomOptions }),
+} as const satisfies Record<QuestionFormat, z.ZodTypeAny>;
+
+/** A player's answer, per format. One source for the engine's graders and the app's answer UIs. */
+export const answerSchemas = {
+  pick_one: z.object({ index: z.number().int().min(0).max(5) }),
+  pick_all: z.object({ indexes: z.array(z.number().int().min(0).max(5)).max(6) }),
+  order: z.object({ order: z.array(z.number().int().min(0).max(5)).max(6) }),
+  match: z.object({ pairs: z.array(z.number().int().min(0).max(5)).max(6) }),
+  picture: z.object({ index: z.number().int().min(0).max(5) }),
+} as const satisfies Record<QuestionFormat, z.ZodTypeAny>;
+export type AnswerFor<F extends QuestionFormat> = z.infer<(typeof answerSchemas)[F]>;
+
+const openQuestion = {
+  /** Echoed when flagging, so a late flag never lands on the next question. */
+  questionId: z.string().uuid(),
+  idx: z.number().int().min(0),
+  total: z.number().int().min(1),
+  seconds: z.number().int().positive(),
+  /** Server epoch ms. The countdown is display only; the server closes the question. */
+  openedAt: z.number(),
+  closesAt: z.number(),
+};
+export const roomQuestionSchema = z.discriminatedUnion("format", [
+  z.object({ ...openQuestion, format: z.literal("pick_one"), view: questionViewSchemas.pick_one }),
+  z.object({ ...openQuestion, format: z.literal("pick_all"), view: questionViewSchemas.pick_all }),
+  z.object({ ...openQuestion, format: z.literal("order"), view: questionViewSchemas.order }),
+  z.object({ ...openQuestion, format: z.literal("match"), view: questionViewSchemas.match }),
+  z.object({ ...openQuestion, format: z.literal("picture"), view: questionViewSchemas.picture }),
+]);
+
+/** The right answer, sent only once the question has closed. Its shape follows the question's format. */
+export const revealAnswerSchema = z.union([
+  z.object({ correctIndex: z.number().int() }),
+  z.object({ correctIndexes: z.array(z.number().int()) }),
+  z.object({ correctOrder: z.array(z.number().int()) }),
+  z.object({ pairs: z.array(z.number().int()) }),
+]);
+export const roomVerdictSchema = z.object({
+  userId: z.string().uuid(),
+  /** 0..1; partial credit for pick-all, order and match. */
+  correctness: z.number().min(0).max(1),
+  points: z.number().int(),
+  /** null: no answer. */
+  answeredMs: z.number().int().nullable(),
+  /** What the player submitted ("Your pick"); null when they didn't answer. */
+  answer: z.unknown().nullable(),
+});
+export const roomRevealSchema = z.object({
+  idx: z.number().int(),
+  questionId: z.string().uuid(),
+  voided: z.boolean(),
+  answer: revealAnswerSchema,
+  explanation: z.string().optional(),
+  /** Per-option counts for option formats; null for order and match, and for a voided question. */
+  distribution: z.array(z.number().int()).nullable(),
+  answered: z.number().int(),
+  noAnswer: z.number().int(),
+  verdicts: z.array(roomVerdictSchema),
+  endsAt: z.number(),
+  skippableAt: z.number(),
+});
+
+export const standingRowSchema = z.object({
+  userId: z.string().uuid(),
+  score: z.number().int(),
+  timeMs: z.number().int(),
+  rank: z.number().int().min(1),
+  /** From the server's previous standings; null on the first. The client never infers it. */
+  prevRank: z.number().int().min(1).nullable(),
+});
+export const roomStandingsSchema = z.object({
+  rows: z.array(standingRowSchema),
+  endsAt: z.number(),
+  skippableAt: z.number(),
+  chatOpen: z.boolean(),
+  lastQuestion: z.boolean(),
+});
+export const roomFinalSchema = z.object({ rows: z.array(standingRowSchema) });
+
+export const ROOM_PHASES = ["lobby", "generating", "question", "reveal", "standings", "finished", "cancelled"] as const;
+export type RoomPhase = (typeof ROOM_PHASES)[number];
+/** Sent on join (with the party's status and disclosure) and on lifecycle changes (phase only). */
+export const roomPhaseSchema = z.object({
+  phase: z.enum(ROOM_PHASES),
+  partyStatus: z.enum(PARTY_STATUSES).optional(),
+  questions: questionDisclosureSchema.optional(),
+});
+
+/** Someone actually connected to the room right now. `plays` is false for a curate host, who watches. */
+export const roomMemberSchema = z.object({ id: z.string().uuid(), handle: z.string(), displayName: z.string(), avatarEmoji: z.string(), plays: z.boolean() });
+export const roomPresenceSchema = z.object({ partyId: z.string().uuid(), online: z.array(roomMemberSchema) });
+/** The room's msgpack encoding turns the row's timestamp into a Date; normalise it to the ISO string HTTP sends. */
+export const roomChatMessageSchema = chatMessageSchema.extend({
+  createdAt: z.preprocess((v) => (v instanceof Date ? v.toISOString() : v), z.string().datetime()),
+  displayName: z.string().nullable().optional(),
+});
+export const roomVoidedSchema = z.object({ questionId: z.string().uuid(), idx: z.number().int(), replacementAdded: z.boolean(), total: z.number().int() });
+/** not_open, too_late, locked, chat_closed, flag_closed, validation, … */
+export const roomErrorSchema = z.object({ error: z.string() });
+
+export type QuestionView<F extends QuestionFormat = QuestionFormat> = z.infer<(typeof questionViewSchemas)[F]>;
+export type RoomQuestion = z.infer<typeof roomQuestionSchema>;
+export type RevealAnswer = z.infer<typeof revealAnswerSchema>;
+export type RoomVerdict = z.infer<typeof roomVerdictSchema>;
+export type RoomReveal = z.infer<typeof roomRevealSchema>;
+export type StandingRowView = z.infer<typeof standingRowSchema>;
+export type RoomStandings = z.infer<typeof roomStandingsSchema>;
+export type RoomFinal = z.infer<typeof roomFinalSchema>;
+export type RoomPhaseMessage = z.infer<typeof roomPhaseSchema>;
+export type RoomMember = z.infer<typeof roomMemberSchema>;
+export type RoomPresence = z.infer<typeof roomPresenceSchema>;
+export type RoomChatMessage = z.infer<typeof roomChatMessageSchema>;
+export type RoomVoided = z.infer<typeof roomVoidedSchema>;
+export type RoomError = z.infer<typeof roomErrorSchema>;
+

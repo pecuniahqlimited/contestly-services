@@ -7,7 +7,7 @@
  * see before the question closes.
  */
 import { z } from "zod";
-import { QUESTION_FORMATS, type QuestionFormat } from "@contestly/shared";
+import { QUESTION_FORMATS, answerSchemas, type QuestionFormat } from "@contestly/shared";
 
 export { QUESTION_FORMATS, type QuestionFormat };
 
@@ -55,13 +55,8 @@ export const payloadSchemas = {
   }).refine((p) => p.correctIndex < p.options.length, "correctIndex must point at an option"),
 } as const;
 
-export const answerSchemas = {
-  pick_one: z.object({ index: z.number().int().min(0).max(5) }),
-  pick_all: z.object({ indexes: z.array(z.number().int().min(0).max(5)).max(6) }),
-  order: z.object({ order: z.array(z.number().int().min(0).max(5)).max(6) }),
-  match: z.object({ pairs: z.array(z.number().int().min(0).max(5)).max(6) }),
-  picture: z.object({ index: z.number().int().min(0).max(5) }),
-} as const;
+/** Answer shapes live in @contestly/shared so the app's answer UIs and these graders can't drift apart. */
+export { answerSchemas };
 
 export type Payload<F extends QuestionFormat = QuestionFormat> = z.infer<(typeof payloadSchemas)[F]>;
 export type Answer<F extends QuestionFormat = QuestionFormat> = z.infer<(typeof answerSchemas)[F]>;
