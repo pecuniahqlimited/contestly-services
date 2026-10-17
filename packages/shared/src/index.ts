@@ -397,6 +397,9 @@ export const questionDisclosure = (p: { mode: "sealed" | "curate"; questionsStat
   error: p.questionsStatus === "failed" ? p.questionsError : null,
 });
 
+/** POST /parties/:id/questions/retry → 202: the set is being made again. */
+export const retryQuestionsResponseSchema = z.object({ status: z.literal("generating") });
+
 /** POST /parties/:id/questions/retry: try a failed set again, optionally with a changed brief. */
 export const retryQuestionsSchema = z.object({
   brief: z.string().min(3).max(2000).optional(),
