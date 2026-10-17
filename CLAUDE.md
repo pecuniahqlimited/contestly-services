@@ -213,18 +213,25 @@ Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state syn
 
 DigitalOcean. One droplet runs the containers behind Caddy; DO Managed Postgres (has PgBouncer) and Managed Valkey on the private VPC; Spaces for images; frontend static on a CDN; Cloudflare in front. GitHub Actions → DO Container Registry. Region LON1. Secrets via Doppler/Infisical, not .env on the box. Payments: Paystack webhooks (verify signature, idempotent). Payout rail is pluggable per platform: cash transfers on iOS/web, vouchers/airtime on Android (Play Store policy).
 
-## Roadmap, in order
+## Roadmap, in build order
 
-0. ~~Split the repos~~ (done Oct 2026): UI in `contestly-app`, `@contestly/shared` linked via `file:` (publish later), hand-written api-client.
-1. Game engine in `packages/game` + Colyseus party room: question delivery with server timing, scoring, tie-break by speed, live ranking, prize settlement into the ledger (cash) or fulfilment record (non-cash), party → `finished` with ranks. Decide the host entity (open question 1) as part of this.
-2. ~~Question engine v1~~ (done Oct 2026): `apps/questions` with bank + retrieval (pgvector), generation with verify/dedupe/safety/gate, sealed and curate host modes, PDF/DOCX sources, the five formats with graders, flag → void → replace in the room, retirement. Providers are mocks behind `Generator`/`Verifier`/`Embedder`; choosing the first real provider is open question 2. ADRs 0002, 0003.
-3. Payout Challenge: config-driven stages, decision timer, weekly seat allocation and budget, leaderboard points.
-4. Accounts: brand profiles, team roles, profile switching, verification checklist and review.
-5. Recommendation service v1 (`apps/recsys`): rules + weighted scores, logged decisions with reasons; Home ordering, Parties ranking, "filling up now", pairing, not-interested.
-5b. Chat: party chat and DMs on the same composer; voice notes to object storage with capped length; transcription + moderation queue in the worker.
-6. Feed and friends leaderboard queries; profile stats from real results.
-7. Nudges: device tokens + FCM/APNs in the worker; the nudge table above with triggers, caps, quiet hours, per-category toggles, and send/open/dismiss logging; in-app banner for the same events.
-8. Paystack: top-ups via webhook, payouts via pluggable rail, nightly reconciliation.
-9. Trust & safety: block/mute/report, profanity filter, moderation queue, ban + wallet freeze.
-10. Firebase Auth mode end to end; onboarding flow against the API, including shared onboarding rounds via matchmaking.
-11. Caddy, CI, staging, then deploy.
+Agreed Oct 2026. Step numbers are stable IDs (other docs and ADRs refer to them); the list is in the order we build. The rule: **the backend leads and the app follows one step behind.** An app screen is built only once its endpoints exist; until then it's an honest empty state, never hard-coded demo data. Seeded rows in the dev database are fine.
+
+Done:
+- ~~0. Split the repos~~: UI in `contestly-app`, `@contestly/shared` linked via `file:` (publish later), hand-written api-client.
+- ~~1. Game engine + Colyseus party room~~: `packages/game` (three-beat round, five graders, speed scoring, prev_rank), PartyRoom, settlement (rake once, split, host cut, non-cash fulfilment), crash watchdog. Host entity: ADR 0001 (option A).
+- ~~2. Question engine v1~~: `apps/questions` with bank + retrieval (pgvector), generation with verify/dedupe/safety/gate, sealed and curate host modes, PDF/DOCX sources, flag → void → replace, retirement, no repeats for seated players. Providers are mocks behind `Generator`/`Verifier`/`Embedder`; choosing the first real provider is open question 2. ADRs 0002, 0003.
+
+Next, in order:
+1. **App: play a party** (contestly-app slice B): lobby, live game, result. Plus `npm run dev:bots` here (dev only).
+2. **App: create a party** (slice C): the six-scene builder and the Forge.
+3. **Me and my people** (small, here first): "parties I'm in", follow/unfollow, other people's profiles. Then the app: Home's "your next party" card, Chats › Parties, follow from a party, tappable profiles.
+4. **Step 3, Payout Challenge**: config-driven stages, decision timer, weekly seat allocation and budget, leaderboard points. Then the app's Payout screens and Home's Party/Payout switch.
+5. **Step 10, Firebase Auth and onboarding**: auth end to end; the onboarding party against the API, including shared onboarding rounds via matchmaking. Moved up so friends can install a test build and sign in; fill rate is the thing to test.
+6. **Steps 5b + 6, chat and social**: party chat and DMs on one composer; voice notes to object storage with capped length; transcription + moderation queue in the worker. Feed and friends leaderboard queries; profile stats from real results.
+7. **Step 5, recommendation service v1** (`apps/recsys`): rules + weighted scores, logged decisions with reasons; Home ordering, Parties ranking, "filling up now", pairing, not-interested. After real users, so it has behaviour to learn from.
+8. **Step 4, brands and teams**: brand profiles, team roles, profile switching, verification checklist and review; brand console on web. Replace the curate sim's direct draft-view insert with the real team API.
+9. **Step 7, nudges**: device tokens + FCM/APNs in the worker; the nudge table above with triggers, caps, quiet hours, per-category toggles, and send/open/dismiss logging; in-app banner for the same events.
+10. **Step 8, Paystack**: top-ups via webhook, payouts via pluggable rail, nightly reconciliation. Removes the dev top-up.
+11. **Step 9, trust and safety**: block/mute/report, profanity filter, moderation queue, ban + wallet freeze.
+12. **Step 11, deploy**: Caddy, CI, staging, then production. Includes a public endpoint for presigned storage URLs (containers can't hand out storage:8333).
