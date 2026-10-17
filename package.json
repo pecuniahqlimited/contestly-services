@@ -13,6 +13,7 @@
     "sim": "npm run sim:sealed && npm run sim:curate",
     "sim:sealed": "tsx --env-file=.env scripts/party-sim.ts",
     "sim:curate": "tsx --env-file=.env scripts/party-sim-curate.ts",
+    "dev:bots": "tsx --env-file=.env scripts/dev-bots.ts",
     "infra:up": "docker compose up -d --wait postgres valkey storage",
     "infra:down": "docker compose down",
     "db:push": "npm run push -w @contestly/db",
