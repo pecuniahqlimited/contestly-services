@@ -210,7 +210,7 @@ for (const persona of personas) {
     }
     const q = await questionById(view.questionId);
     const answer = persona.play(q.format as QuestionFormat, q.payload);
-    setTimeout(() => { room.send(MSG.answer, answer); room.send(MSG.lock); }, persona.delayMs(view.seconds * 1000));
+    setTimeout(() => room.send(MSG.answer, answer), persona.delayMs(view.seconds * 1000));
   });
   room.onMessage(MSG.reveal, (r: any) => {
     if (isAda) adaReveals.push({ idx: r.idx, voided: r.voided, points: r.verdicts.find((v: any) => v.userId === userIds.get("ada.o"))?.points ?? 0 });

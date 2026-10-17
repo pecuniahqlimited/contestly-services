@@ -73,6 +73,13 @@ describe("MockGenerator once the deck is exhausted", () => {
     const cos = (x: number[], y: number[]) => x.reduce((s, v, i) => s + v * y[i], 0);
     for (let i = 0; i < vecs.length; i++) for (let j = i + 1; j < vecs.length; j++) expect(cos(vecs[i], vecs[j])).toBeLessThan(0.92);
 
+    // far down the sequence there's still no period: question 70 isn't question 6 reworded
+    const far = await mockGenerator.draft({ spec: spec(), count: 80, avoid });
+    const farVecs = await mockEmbedder.embed(far.map((d) => embeddingText(d.format, d.payload)));
+    let worst = 0;
+    for (let i = 0; i < farVecs.length; i++) for (let j = i + 1; j < farVecs.length; j++) worst = Math.max(worst, cos(farVecs[i], farVecs[j]));
+    expect(worst).toBeLessThan(0.92);
+
     // and it keeps going: avoiding this batch too yields a new one
     const next = await mockGenerator.draft({ spec: spec(), count: 12, avoid: [...avoid, ...fresh.map((d) => (d.payload as { question: string }).question)] });
     const nextTexts = next.filter((d) => !isKnownBadQuestion(d.payload)).map((d) => (d.payload as { question: string }).question);

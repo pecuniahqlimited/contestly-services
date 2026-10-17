@@ -1,18 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, desc, asc, sql, count } from "drizzle-orm";
 import { db, users, parties, partyPlayers, chatMessages, follows, ledger, publicHost, publicHosts, getPartyConfig } from "@contestly/db";
-import { createPartySchema, inferCategory } from "@contestly/shared";
+import { createPartySchema, inferCategory, questionDisclosure } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
+import { enqueueSealedSet } from "../questionSet.js";
 
 const notify = notifyQueue();
 const partyJobs = partyQueue();
 
 export const potKobo = (p: { funding: string; hostPoolKobo: number; entryKobo: number }, players: number) => (p.funding === "host" ? p.hostPoolKobo : p.entryKobo * players);
-
-/** Always disclosed in the lobby and the game: questions are AI-generated, and whether the set is sealed or host-reviewed. */
-const questionDisclosure = (p: { mode: "sealed" | "curate" }) => ({ aiGenerated: true, review: p.mode === "curate" ? "host_reviewed" : "sealed" });
 
 export async function partiesRoutes(app: FastifyInstance) {
   /** Discover feed. ?filter=following|brands|soon. Personalised by the viewer's interests when signed in. */
@@ -40,7 +38,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const startsAt = new Date(Date.now() + body.startsInMinutes * 60_000);
     const split = body.split ?? (await getPartyConfig()).defaultSplit;
     const party = await db.transaction(async (tx) => {
-      const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode: body.mode, entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, prizeText: body.prizeText, prizeValueKobo: body.prizeValueKobo, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
+      const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode: body.mode, questionsStatus: body.mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, prizeText: body.prizeText, prizeValueKobo: body.prizeValueKobo, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
       // Host funds a cash pot up front so it can't be spent elsewhere; refunded by the worker if the party is cancelled.
       // A non-cash prize moves no money: it becomes a fulfilment record at settlement.
       if (body.funding === "host" && body.prizeKind === "cash") await ledger.post(tx, { userId: me.id, kind: "cash", amountKobo: -body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
@@ -56,6 +54,8 @@ export async function partiesRoutes(app: FastifyInstance) {
     const seated = body.mode === "sealed" ? 1 : 0;
     if (body.visibility === "public") await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
     if (body.inviteUserIds.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: body.inviteUserIds });
+    // Sealed sets are built now, so they're ready long before start and a failure reaches the host in time (ADR 0002).
+    if (body.mode === "sealed") await enqueueSealedSet(party.id, "create");
     await partyJobs.add("start", { kind: "start", partyId: party.id }, { delay: Math.max(0, startsAt.getTime() - Date.now()), jobId: `start-${party.id}` });
     return reply.code(201).send({ ...party, questions: questionDisclosure(party), playerCount: seated, potKobo: potKobo(party, seated) });
   });

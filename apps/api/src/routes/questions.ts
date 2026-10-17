@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { editDraftSchema, requestUploadSchema } from "@contestly/shared";
+import { editDraftSchema, requestUploadSchema, retryQuestionsSchema } from "@contestly/shared";
+import { retrySealedSet } from "../questionSet.js";
 import { requireUser, uuidParam } from "../auth.js";
 import { approveDraft, editDraft, listDrafts, requestDrafts, requestRegenerate, swapDraft } from "../drafts.js";
 import { ingestUpload, listFiles, requestUpload } from "../files.js";
 
-/** Source files and curate-mode review. Host's team only; the logic lives in files.ts and drafts.ts. */
+/** Source files, sealed-set retries and curate-mode review. Host's team only; the logic lives in files.ts, questionSet.ts and drafts.ts. */
 export async function questionsRoutes(app: FastifyInstance) {
   app.post("/parties/:id/files", async (req, reply) => {
     const res = await requestUpload(uuidParam(req), requireUser(req), requestUploadSchema.parse(req.body));
@@ -15,6 +16,12 @@ export async function questionsRoutes(app: FastifyInstance) {
     return reply.code(202).send({ status: "parsing" });
   });
   app.get("/parties/:id/files", async (req) => listFiles(uuidParam(req), requireUser(req)));
+
+  /** A sealed set that failed: try again, optionally with a changed brief, difficulty or formats. */
+  app.post("/parties/:id/questions/retry", async (req, reply) => {
+    await retrySealedSet(uuidParam(req), requireUser(req), retryQuestionsSchema.parse(req.body ?? {}));
+    return reply.code(202).send({ status: "generating" });
+  });
 
   app.post("/parties/:id/drafts", async (req, reply) => {
     await requestDrafts(uuidParam(req), requireUser(req));

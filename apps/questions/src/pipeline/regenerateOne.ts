@@ -10,7 +10,7 @@ import type { Providers } from "../providers/types.js";
 import { draftAndJudge } from "./judge.js";
 import { bankRow, generationRecord } from "./records.js";
 import { retrieveChunks } from "./sources.js";
-import { specFor } from "./generateSet.js";
+import { specFor } from "./partySpec.js";
 import { questionText } from "./text.js";
 
 export async function regenerateOne(job: { partyId: string; partyQuestionId: string; requestedBy: string }, deps: { providers: Providers }): Promise<void> {

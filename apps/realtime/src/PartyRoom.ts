@@ -15,7 +15,7 @@ import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, chatMessages, getPartyConfig, getQuestionsConfig, type Party } from "@contestly/db";
 import { resolveUser } from "@contestly/auth";
 import { partyQueue, questionsQueue } from "@contestly/queue";
-import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, flagSchema, partyRoomKey, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, flagSchema, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member {
@@ -64,14 +64,11 @@ export class PartyRoom extends Room {
     this.qcfg = await getQuestionsConfig();
     this.maxClients = party.maxPlayers + 1; // + the curate host, who watches without a seat
 
+    // Every change of selection arrives here; the last one before the clock ends is graded. No lock-in.
     this.onMessage(MSG.answer, (client, data) => {
       if (!this.match || !client.auth) return;
       const res = this.match.submitAnswer((client.auth as Member).id, data, Date.now());
       if (!res.accepted) client.send(MSG.error, { error: res.reason });
-    });
-
-    this.onMessage(MSG.lock, (client) => {
-      if (this.match && client.auth) this.match.lockAnswer((client.auth as Member).id);
     });
 
     // Host only: cut a reveal or standings short, never below the floor.
@@ -124,8 +121,11 @@ export class PartyRoom extends Room {
         return;
       }
       if (ev.partyId !== this.partyId) return;
-      // "live" usually arrives before the set is sealed; the room waits and "questions_ready" starts the round.
-      if (ev.status === "live" || ev.status === "questions_ready") void this.startMatch();
+      // The set is built at creation, so "live" usually finds it ready and the round starts at once. If a
+      // late joiner had seen a question, the set is being swapped and "questions_ready" starts it.
+      if (ev.status === "live" || ev.status.startsWith("questions_")) {
+        void this.onSetOrLifecycleChange(ev.status).catch((err) => console.error(`[room ${this.partyId}] ${ev.status}:`, err));
+      }
       if (ev.status === "cancelled") {
         this.setPhase("cancelled");
         this.broadcast(MSG.phase, { phase: "cancelled" });
@@ -172,6 +172,18 @@ export class PartyRoom extends Room {
     this.heartbeat?.clear();
   }
 
+  /** Re-read the party, tell the room where its question set is, and start the round if it's due. */
+  private async onSetOrLifecycleChange(status: string) {
+    await this.refreshParty();
+    if (status.startsWith("questions_")) this.broadcast(MSG.questionsStatus, questionDisclosure(this.party));
+    if (this.party.status === "live") await this.startMatch();
+  }
+
+  private async refreshParty() {
+    const [p] = await db.select().from(parties).where(eq(parties.id, this.partyId));
+    if (p) this.party = p;
+  }
+
   // ---- round driving ----------------------------------------------------------------
 
   private async startMatch() {
@@ -186,11 +198,12 @@ export class PartyRoom extends Room {
       // Heartbeat before anything else: the party is live, so the watchdog must see this room —
       // including while it's still waiting for the questions service to seal the set.
       this.startHeartbeat();
-      const questions = await this.loadSet();
+      await this.refreshParty();
+      const questions = this.party.questionsStatus === "ready" ? await this.loadSet() : [];
       if (!questions.length) {
-        // The set isn't sealed yet; questions_ready will call startMatch again.
+        // Still being built, or being swapped for the final roster: questions_ready calls startMatch again.
         this.setPhase("generating");
-        this.broadcast(MSG.phase, { phase: "generating" });
+        this.broadcast(MSG.phase, { phase: "generating", questions: questionDisclosure(this.party) });
         return;
       }
       this.cfg = await getPartyConfig();
@@ -354,8 +367,8 @@ export class PartyRoom extends Room {
     client.send(MSG.phase, {
       phase: this.phase,
       partyStatus: this.party.status,
-      // Always disclosed: AI-generated, and sealed (nobody saw them first) or host-reviewed.
-      questions: { aiGenerated: true, review: this.party.mode === "curate" ? "host_reviewed" : "sealed" },
+      // Always disclosed: AI-generated, sealed or host-reviewed, and whether the set is ready. Never content.
+      questions: questionDisclosure(this.party),
     });
     if (this.lastBroadcast && this.phase !== "lobby") client.send(this.lastBroadcast.type, this.lastBroadcast.payload);
   }

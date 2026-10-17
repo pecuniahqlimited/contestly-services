@@ -65,8 +65,8 @@ export interface Reveal {
 
 interface Submission {
   answer: unknown;
+  /** Server receive time of this (the latest) selection, relative to open: the speed bonus uses it. */
   answeredMs: number;
-  locked: boolean;
 }
 
 export class Match {
@@ -145,23 +145,18 @@ export class Match {
     };
   }
 
-  /** Latest answer wins until the player locks in or the clock closes the question. */
+  /**
+   * There is no lock-in: a player may change their answer as often as they like until the clock
+   * ends, and the last selection received before then is graded. Its own server timestamp drives the
+   * speed bonus, so a late change costs points. Questions always run their full length.
+   */
   submitAnswer(userId: string, answer: unknown, now: number): { accepted: boolean; reason?: string } {
     if (this.beat !== "question") return { accepted: false, reason: "not_open" };
     if (!this.players.has(userId)) return { accepted: false, reason: "not_in_match" };
     const q = this.current;
     if (now > this.openedAt + q.seconds * 1000) return { accepted: false, reason: "too_late" };
-    const existing = this.submissions.get(userId);
-    if (existing?.locked) return { accepted: false, reason: "locked" };
-    this.submissions.set(userId, { answer, answeredMs: now - this.openedAt, locked: false });
+    this.submissions.set(userId, { answer, answeredMs: now - this.openedAt });
     return { accepted: true };
-  }
-
-  lockAnswer(userId: string): { locked: boolean } {
-    const s = this.submissions.get(userId);
-    if (this.beat !== "question" || !s) return { locked: false };
-    s.locked = true;
-    return { locked: true };
   }
 
   /** Close the question: grade everyone, accumulate scores and tie-break time, build the reveal. */

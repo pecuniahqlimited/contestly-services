@@ -225,8 +225,8 @@ export const chatSendSchema = z.object({
 export const PARTY_ROOM = "party";
 export const MSG = {
   // client → server
+  /** Send on every change of selection; the last one received before the clock ends is the answer. */
   answer: "answer",
-  lock: "lock",
   skip: "skip",
   chat: "chat",
   flag: "flag",
@@ -240,6 +240,8 @@ export const MSG = {
   presence: "presence",
   /** A question was voided by player flags: { questionId, idx, replacementAdded, total }. */
   questionVoided: "question:voided",
+  /** The party's question set changed state (generating / ready / failed). Never carries content. */
+  questionsStatus: "questions:status",
   error: "error",
 } as const;
 
@@ -253,16 +255,25 @@ export const PARTY_EVENTS_CHANNEL = "party:events";
 export const QUEUES = { notify: "notify", party: "party", questions: "questions" } as const;
 export type NotifyFollowersJob = { kind: "party_created"; partyId: string; hostId: string };
 export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserId: string; toUserIds: string[] };
-export type NotifyJob = NotifyFollowersJob | NotifyInviteJob;
-/** `cancel_generation_failed`: the questions service couldn't build a set; the worker refunds (money only moves in the worker). */
+/** The host's question set couldn't be built; they can retry or edit the brief. */
+export type NotifyQuestionsFailedJob = { kind: "questions_failed"; partyId: string; hostId: string; reason: string };
+export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob;
+/**
+ * `cancel_generation_failed`: a party that is already live has no playable set (its start-time
+ * re-check couldn't be completed); the worker refunds (money only moves in the worker). Before
+ * start, a failed generation never cancels: the host is notified and can retry.
+ */
 export type PartyJob = { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string };
 /**
- * Questions-service jobs. `generate_set` persists the gated set into party_questions and then
- * publishes {partyId, status: "questions_ready"} on PARTY_EVENTS_CHANNEL; `record_play` folds a
- * finished party's answer stats back into the bank. (ADR 0002)
+ * Questions-service jobs (ADR 0002). `generate_set` builds and seals the set when the party is
+ * created (curate: when the host asks for drafts) and publishes the set's state on
+ * PARTY_EVENTS_CHANNEL; `reseal_for_roster` runs at start only if someone seated has already seen
+ * a question in the set, and swaps just those; `record_play` folds a finished party's answer
+ * stats back into the bank.
  */
 export type QuestionsJob =
   | { kind: "generate_set"; partyId: string }
+  | { kind: "reseal_for_roster"; partyId: string }
   | { kind: "record_play"; partyId: string }
   /** Curate mode: replace one draft with a freshly generated, gated question. */
   | { kind: "regenerate_one"; partyId: string; partyQuestionId: string; requestedBy: string }
@@ -359,8 +370,39 @@ export const partySummarySchema = partyRowSchema.extend({
 });
 export const partiesResponseSchema = z.array(partySummarySchema);
 
-/** Always disclosed in the lobby and the game: AI-generated, and sealed or host-reviewed. */
-export const questionDisclosureSchema = z.object({ aiGenerated: z.boolean(), review: z.enum(["sealed", "host_reviewed"]) });
+/**
+ * Where the party's question set is: not_started (a curate party before the host asks for drafts),
+ * generating, ready, or failed (the host can retry or edit the brief; the party stays open).
+ */
+export const QUESTIONS_STATUSES = ["not_started", "generating", "ready", "failed"] as const;
+export type QuestionsStatus = (typeof QUESTIONS_STATUSES)[number];
+
+/**
+ * Always disclosed in the lobby and the game: AI-generated, sealed or host-reviewed, and the set's
+ * state. Never any content: `error` is a plain reason for the host ("make the brief broader"), not
+ * anything from the questions.
+ */
+export const questionDisclosureSchema = z.object({
+  aiGenerated: z.boolean(),
+  review: z.enum(["sealed", "host_reviewed"]),
+  status: z.enum(QUESTIONS_STATUSES),
+  error: z.string().nullable(),
+});
+
+/** The disclosure for a party row. One builder for the API and the room. */
+export const questionDisclosure = (p: { mode: "sealed" | "curate"; questionsStatus: QuestionsStatus; questionsError: string | null }): z.infer<typeof questionDisclosureSchema> => ({
+  aiGenerated: true,
+  review: p.mode === "curate" ? "host_reviewed" : "sealed",
+  status: p.questionsStatus,
+  error: p.questionsStatus === "failed" ? p.questionsError : null,
+});
+
+/** POST /parties/:id/questions/retry: try a failed set again, optionally with a changed brief. */
+export const retryQuestionsSchema = z.object({
+  brief: z.string().min(3).max(2000).optional(),
+  difficulty: z.enum(DIFFICULTIES).optional(),
+  formats: z.array(z.enum(QUESTION_FORMATS)).min(1).max(QUESTION_FORMATS.length).optional(),
+});
 
 export const partyPlayerSchema = z.object({
   id: z.string().uuid(),
@@ -538,7 +580,9 @@ export const roomChatMessageSchema = chatMessageSchema.extend({
   displayName: z.string().nullable().optional(),
 });
 export const roomVoidedSchema = z.object({ questionId: z.string().uuid(), idx: z.number().int(), replacementAdded: z.boolean(), total: z.number().int() });
-/** not_open, too_late, locked, chat_closed, flag_closed, validation, … */
+/** MSG.questionsStatus: the set's state changed. Same shape as the disclosure on party detail. */
+export const roomQuestionsStatusSchema = questionDisclosureSchema;
+/** not_open, too_late, chat_closed, flag_closed, validation, … */
 export const roomErrorSchema = z.object({ error: z.string() });
 
 export type QuestionView<F extends QuestionFormat = QuestionFormat> = z.infer<(typeof questionViewSchemas)[F]>;
@@ -554,5 +598,7 @@ export type RoomMember = z.infer<typeof roomMemberSchema>;
 export type RoomPresence = z.infer<typeof roomPresenceSchema>;
 export type RoomChatMessage = z.infer<typeof roomChatMessageSchema>;
 export type RoomVoided = z.infer<typeof roomVoidedSchema>;
+export type RoomQuestionsStatus = z.infer<typeof roomQuestionsStatusSchema>;
+export type RetryQuestionsInput = z.infer<typeof retryQuestionsSchema>;
 export type RoomError = z.infer<typeof roomErrorSchema>;
 

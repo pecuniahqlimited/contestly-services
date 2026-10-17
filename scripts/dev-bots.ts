@@ -116,7 +116,6 @@ for (const b of bots) {
     const answer = (right ? correctAnswer : wrongAnswer)(row.format as QuestionFormat, row.payload);
     await sleep(q.seconds * 1000 * between(PACE));
     room.send(MSG.answer, answer);
-    room.send(MSG.lock);
   });
   room.onMessage(MSG.standings, async () => {
     if (Math.random() >= STICKER_CHANCE) return;

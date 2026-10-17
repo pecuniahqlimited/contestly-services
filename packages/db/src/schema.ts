@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { EMBEDDING_DIM } from "@contestly/shared";
+import { EMBEDDING_DIM, QUESTIONS_STATUSES } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -10,6 +10,7 @@ export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all",
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
 export const partyMode = pgEnum("party_mode", ["sealed", "curate"]);
+export const questionsStatus = pgEnum("questions_status", QUESTIONS_STATUSES);
 export const partyFileStatus = pgEnum("party_file_status", ["uploading", "parsing", "parsed", "failed"]);
 export const questionEventKind = pgEnum("question_event_kind", ["flag", "void", "replace", "approve", "edit", "swap", "regenerate"]);
 export const prizeKind = pgEnum("prize_kind", ["cash", "noncash"]);
@@ -66,6 +67,13 @@ export const parties = pgTable("parties", {
    * curate: generated at creation as drafts the host's team reviews; the host can't play (ADR 0003).
    */
   mode: partyMode("mode").notNull().default("sealed"),
+  /**
+   * The set's state, shown on party detail and in the lobby without any content. Sealed parties
+   * start generating at creation; the room starts a round only once this is "ready" (ADR 0002).
+   */
+  questionsStatus: questionsStatus("questions_status").notNull().default("not_started"),
+  /** Why the set failed, worded for the host. Never anything from the questions themselves. */
+  questionsError: text("questions_error"),
   entryKobo: integer("entry_kobo").notNull().default(0),
   maxPlayers: integer("max_players").notNull(),
   questionCount: integer("question_count").notNull().default(5),

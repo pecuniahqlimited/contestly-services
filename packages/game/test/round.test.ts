@@ -44,16 +44,27 @@ describe("the three-beat round", () => {
     expect(open2.idx).toBe(1);
   });
 
-  it("latest answer wins until lock; locked answers reject changes", () => {
+  it("answers stay changeable until the clock ends; the final change is graded at its own time", () => {
     const m = newMatch();
     const t0 = 0;
     m.openQuestion(t0);
-    m.submitAnswer("ada", { index: 0 }, t0 + 1_000);
-    m.submitAnswer("ada", { index: 2 }, t0 + 2_000);
-    expect(m.lockAnswer("ada")).toEqual({ locked: true });
-    expect(m.submitAnswer("ada", { index: 0 }, t0 + 3_000)).toMatchObject({ accepted: false, reason: "locked" });
+    // ada: right early, then changes to wrong — the change counts
+    expect(m.submitAnswer("ada", { index: 2 }, t0 + 1_000)).toEqual({ accepted: true });
+    expect(m.submitAnswer("ada", { index: 0 }, t0 + 4_000)).toEqual({ accepted: true });
+    // tunde: wrong early, then right at 6s — scored as answered at 6s, not 1s
+    m.submitAnswer("tunde", { index: 1 }, t0 + 1_000);
+    m.submitAnswer("tunde", { index: 2 }, t0 + 6_000);
+    // zee: right, and changes nothing — answered at 2s
+    m.submitAnswer("zee", { index: 2 }, t0 + 2_000);
+    // a change right on the deadline still counts; one after it doesn't
+    expect(m.submitAnswer("zee", { index: 2 }, t0 + 10_000)).toEqual({ accepted: true });
+    expect(m.submitAnswer("zee", { index: 0 }, t0 + 10_001)).toMatchObject({ accepted: false, reason: "too_late" });
+
     const reveal = m.closeQuestion(t0 + 10_000);
-    expect(reveal.verdicts.find((v) => v.userId === "ada")!.correctness).toBe(1);
+    const v = (u: string) => reveal.verdicts.find((x) => x.userId === u)!;
+    expect(v("ada")).toMatchObject({ correctness: 0, points: 0, answeredMs: 4_000, answer: { index: 0 } });
+    expect(v("tunde")).toMatchObject({ correctness: 1, answeredMs: 6_000, points: 140 }); // 100 + 40% of the speed bonus
+    expect(v("zee")).toMatchObject({ correctness: 1, answeredMs: 10_000, points: 100 }); // the re-send at the deadline set its time
   });
 
   it("rejects answers after the deadline and from non-players", () => {
