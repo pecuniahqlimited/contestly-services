@@ -22,7 +22,7 @@ import { notifyQueue, partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import { isOptionFormat, type QuestionFormat } from "@contestly/game";
 import { isKnownBadQuestion } from "../apps/questions/src/providers/mock/deck.js";
-import { RT, api, call, correctAnswer, failureCount, leaks, ok, partyNetKobo, waitFor, wrongAnswer } from "./sim-lib.js";
+import { RT, api, call, correctAnswer, failureCount, inMinutes, leaks, ok, partyNetKobo, waitFor, wrongAnswer } from "./sim-lib.js";
 
 const HANDLES = ["tunde", "ada.o", "kemz"];
 const BRIEF = "Nigerian general knowledge — cities, food, music, football";
@@ -69,7 +69,7 @@ const playOrderBankIds = async (partyId: string) =>
 /** Create a sealed party as tunde and wait for its set; asserts the lifecycle shows and the content doesn't. */
 async function createSealedParty(title: string, extra: Record<string, unknown> = {}) {
   const party = await api("tunde", "POST", "/parties", {
-    title, brief: BRIEF, entryKobo: 20_000, maxPlayers: 5, funding: "pooled", startsInMinutes: 30, questionCount: 5, secondsPerQuestion: 5, ...extra,
+    title, brief: BRIEF, entryKobo: 20_000, maxPlayers: 5, funding: "pooled", startsAt: inMinutes(30), questionCount: 5, secondsPerQuestion: 5, ...extra,
   });
   ok(party.questions?.status === "generating", `${title}: set starts generating the moment the party is created`);
   return party as { id: string; split: number[]; category: string };

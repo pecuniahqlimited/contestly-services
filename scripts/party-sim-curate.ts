@@ -19,7 +19,7 @@ import {
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { RT, api, call, correctAnswer, failureCount, ok, partyNetKobo, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
+import { RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 import { minimalPdf } from "./sim-pdf.js";
 
 const HOST = "tunde";
@@ -51,7 +51,7 @@ const promoteStart = async (partyId: string) => {
 };
 const curateParty = (title: string) => ({
   title, brief: "Lagos bridges, ports and waterways", mode: "curate",
-  entryKobo: 20_000, maxPlayers: 6, funding: "pooled", startsInMinutes: 30, questionCount: 4, secondsPerQuestion: 5,
+  entryKobo: 20_000, maxPlayers: 6, funding: "pooled", startsAt: inMinutes(30), questionCount: 4, secondsPerQuestion: 5,
 });
 
 for (const h of [HOST, ...PLAYERS]) await topUp(h);

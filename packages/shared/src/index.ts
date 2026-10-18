@@ -185,6 +185,18 @@ export const upsertMeSchema = z.object({
   interests: z.array(z.enum(CATEGORIES)).max(10).default([]),
 });
 
+/** A new party starts this long after it's created unless the host picks a time. */
+export const DEFAULT_START_MINUTES = 10;
+/** The earliest and latest a host can set a party to start. */
+export const MIN_START_LEAD_MINUTES = 1;
+export const MAX_START_LEAD_DAYS = 7;
+const MINUTE_MS = 60_000;
+const DAY_MS = 24 * 60 * MINUTE_MS;
+export const startWindowHolds = (startsAt: Date, now = Date.now()) =>
+  startsAt.getTime() >= now + MIN_START_LEAD_MINUTES * MINUTE_MS && startsAt.getTime() <= now + MAX_START_LEAD_DAYS * DAY_MS;
+/** When a party created now starts. */
+export const startsAtFor = (input: { startsAt?: string }, now = Date.now()) => (input.startsAt ? new Date(input.startsAt) : new Date(now + DEFAULT_START_MINUTES * MINUTE_MS));
+
 export const createPartySchema = z.object({
   title: z.string().min(3).max(60),
   /** The source for question generation: a topic, a vibe, a list of facts — anything. File upload lands in step 2b. */
@@ -216,12 +228,14 @@ export const createPartySchema = z.object({
   visibility: z.enum(["public", "private"]).default("public"),
   coverColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#7B5CFF"),
   coverEmoji: z.string().max(8).default("🎉"),
-  startsInMinutes: z.number().int().min(1).max(24 * 60).default(10),
+  /** When the first question drops. Omitted → DEFAULT_START_MINUTES from now. */
+  startsAt: z.string().datetime({ offset: true }).optional(),
   inviteUserIds: z.array(z.string().uuid()).max(20).default([]),
 }).refine((p) => p.funding === "pooled" ? p.entryKobo > 0 && p.prizeKind === "cash" : true, { message: "pooled parties need an entry fee and pay cash" })
   .refine((p) => p.funding === "host" && p.prizeKind === "cash" ? p.hostPoolKobo > 0 : true, { message: "host-funded cash parties need a pot" })
   .refine((p) => p.prizeKind === "noncash" ? !!p.prizeText && p.hostPoolKobo === 0 : true, { message: "non-cash parties describe the prize and carry no cash pot" })
-  .refine((p) => p.prizeValueKobo === undefined || p.prizeKind === "noncash", { message: "only a non-cash prize carries a value" });
+  .refine((p) => p.prizeValueKobo === undefined || p.prizeKind === "noncash", { message: "only a non-cash prize carries a value" })
+  .refine((p) => p.startsAt === undefined || startWindowHolds(new Date(p.startsAt)), { message: `a party starts between ${MIN_START_LEAD_MINUTES} minute and ${MAX_START_LEAD_DAYS} days from now`, path: ["startsAt"] });
 
 /** Chat is room-scoped in Colyseus; the party comes from the room, not the message. */
 export const chatSendSchema = z.object({

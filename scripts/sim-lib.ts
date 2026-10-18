@@ -18,6 +18,8 @@ export const ok = (cond: boolean, label: string) => {
 export const failureCount = () => failures;
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** A party's startsAt, this many minutes from now. */
+export const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
 
 /** Poll until `probe` returns a truthy value, or give up and return null. */
 export async function waitFor<T>(probe: () => Promise<T | null | undefined | false>, { tries = 60, everyMs = 500 } = {}): Promise<T | null> {

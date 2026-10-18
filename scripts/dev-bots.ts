@@ -17,7 +17,7 @@ import { eq } from "drizzle-orm";
 import { db, partyQuestions } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, kobo, type QuestionFormat } from "@contestly/shared";
-import { RT, api, correctAnswer, sleep, wrongAnswer } from "./sim-lib.js";
+import { RT, api, correctAnswer, inMinutes, sleep, wrongAnswer } from "./sim-lib.js";
 
 if (process.env.AUTH_MODE !== "dev") {
   console.error("dev:bots only runs with AUTH_MODE=dev.");
@@ -80,7 +80,7 @@ if (!partyId) {
   const party = await api(host.handle, "POST", "/parties", {
     title: "Quiz night with the bots",
     brief,
-    startsInMinutes,
+    startsAt: inMinutes(startsInMinutes),
     maxPlayers: 10,
     ...(free
       ? { entryKobo: 0, funding: "host", prizeKind: "noncash", prizeText: "Bragging rights" }

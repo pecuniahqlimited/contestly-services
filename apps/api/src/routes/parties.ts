@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, desc, asc, sql, count } from "drizzle-orm";
 import { db, users, parties, partyPlayers, chatMessages, follows, ledger, publicHost, publicHosts, getPartyConfig, isHostTeam } from "@contestly/db";
-import { createPartySchema, inferCategory, questionDisclosure } from "@contestly/shared";
+import { createPartySchema, inferCategory, questionDisclosure, startsAtFor } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
@@ -36,7 +36,7 @@ export async function partiesRoutes(app: FastifyInstance) {
   app.post("/parties", async (req, reply) => {
     const me = requireUser(req);
     const body = createPartySchema.parse(req.body);
-    const startsAt = new Date(Date.now() + body.startsInMinutes * 60_000);
+    const startsAt = startsAtFor(body);
     const split = body.split ?? (await getPartyConfig()).defaultSplit;
     const party = await db.transaction(async (tx) => {
       const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode: body.mode, questionsStatus: body.mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, prizeText: body.prizeText, prizeValueKobo: body.prizeValueKobo, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
