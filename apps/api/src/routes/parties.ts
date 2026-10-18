@@ -49,7 +49,7 @@ export async function partiesRoutes(app: FastifyInstance) {
         await ledger.charge(tx, { userId: me.id, amountKobo: body.funding === "pooled" ? body.entryKobo : 0, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
         await tx.insert(partyPlayers).values({ partyId: p.id, userId: me.id });
       }
-      await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: body.visibility === "public" ? "Party is live. Followers have been notified." : "Private party. Share the link to fill seats." });
+      await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: body.visibility === "public" ? "Party is open. Your followers have been told." : "Private party. Share the link to fill seats." });
       return p;
     });
     const seated = body.mode === "sealed" ? 1 : 0;
