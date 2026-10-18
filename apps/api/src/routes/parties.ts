@@ -55,7 +55,8 @@ export async function partiesRoutes(app: FastifyInstance) {
     if (body.visibility === "public") await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
     if (body.inviteUserIds.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: body.inviteUserIds });
     // Sealed sets are built now, so they're ready long before start and a failure reaches the host in time (ADR 0002).
-    if (body.mode === "sealed") await enqueueSealedSet(party.id, "create");
+    // With files on the way, the questions service builds it once they're read (sealWhenFilesRead).
+    if (body.mode === "sealed" && !body.awaitFiles) await enqueueSealedSet(party.id, "create");
     await partyJobs.add("start", { kind: "start", partyId: party.id }, { delay: Math.max(0, startsAt.getTime() - Date.now()), jobId: `start-${party.id}` });
     return reply.code(201).send({ ...party, questions: questionDisclosure(party), playerCount: seated, potKobo: potKobo(party, seated) });
   });

@@ -190,8 +190,13 @@ export const createPartySchema = z.object({
   category: z.enum(CATEGORIES).optional(),
   difficulty: z.enum(DIFFICULTIES).default("mixed"),
   formats: z.array(z.enum(QUESTION_FORMATS)).min(1).max(QUESTION_FORMATS.length).default([...QUESTION_FORMATS]),
-  /** sealed: generated at start, the host plays. curate: the host reviews drafts and can't play. */
+  /** sealed: generated at creation, the host plays. curate: the host reviews drafts and can't play. */
   mode: z.enum(["sealed", "curate"]).default("sealed"),
+  /**
+   * The host attaches source files right after creating (they need the party's id). A sealed set then
+   * waits for them: it's made once every file is read, instead of straight away from the brief alone.
+   */
+  awaitFiles: z.boolean().default(false),
   entryKobo: z.number().int().min(0).max(kobo(50_000)),
   maxPlayers: z.number().int().min(2).max(100),
   funding: z.enum(["pooled", "host"]),

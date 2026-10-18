@@ -20,6 +20,7 @@ import { recordPlay } from "./pipeline/recordPlay.js";
 import { regenerateOne } from "./pipeline/regenerateOne.js";
 import { questionVoided, retireSweep } from "./pipeline/retire.js";
 import { parseFile } from "./files/parseFile.js";
+import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
 
 /** Daily, at 04:00 server time: retire flagged and underperforming bank questions. */
 const RETIRE_SWEEP_CRON = "0 4 * * *";
@@ -28,6 +29,7 @@ const connection = makeRedis();
 const pub = makeRedis();
 const partyJobs = partyQueue();
 const notifyJobs = notifyQueue();
+const questionJobs = questionsQueue();
 const providers = selectProviders();
 const store = objectStoreFromEnv();
 const publish = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
@@ -39,7 +41,10 @@ const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
     case "reseal_for_roster": return resealForRoster(d.partyId, { providers, publish });
     case "record_play": return recordPlay(d.partyId);
     case "regenerate_one": return regenerateOne(d, { providers });
-    case "parse_file": return parseFile(d.fileId, { store, embedder: providers.embedder });
+    case "parse_file":
+      await parseFile(d.fileId, { store, embedder: providers.embedder });
+      // The same job id as an API-queued build, so two files read at once still build the set once.
+      return sealWhenFilesRead(d.fileId, (partyId) => questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}` }));
     case "question_voided": return questionVoided(d);
     case "retire_sweep": return retireSweep();
   }
@@ -78,7 +83,7 @@ function hostReason(err: Error): string {
   return "Something went wrong making your questions. Try again.";
 }
 
-await questionsQueue().upsertJobScheduler("retire-sweep", { pattern: RETIRE_SWEEP_CRON }, { name: "retire_sweep", data: { kind: "retire_sweep" } });
+await questionJobs.upsertJobScheduler("retire-sweep", { pattern: RETIRE_SWEEP_CRON }, { name: "retire_sweep", data: { kind: "retire_sweep" } });
 if (process.env.NODE_ENV !== "production") await store.ensureBucket();
 
 console.log(`questions running: queue ${QUEUES.questions}, providers ${process.env.QUESTIONS_GENERATOR ?? "mock"}/${process.env.QUESTIONS_VERIFIER ?? "mock"}/${process.env.QUESTIONS_EMBEDDER ?? "mock"}`);

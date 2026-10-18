@@ -70,3 +70,8 @@ only moves in the worker.
   set; don't reuse it as "when the first question opened".
 - Parties created before `questions_status` existed are `not_started`; at start the worker builds
   their set then, the old way.
+- A file can only be attached once the party exists, so a sealed party built from a file is created
+  with `awaitFiles: true`: the API doesn't queue its set, and the questions service queues it when the
+  last of its files has been read (or failed, which fails the set with the file's reason). Until then
+  the set shows as `generating`. A file that never arrives leaves it there; at start the watchdog's
+  generation timeout cancels and refunds, as for any set still being built.
