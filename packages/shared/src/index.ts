@@ -732,6 +732,7 @@ export type RoomChatMessage = z.infer<typeof roomChatMessageSchema>;
 export type RoomVoided = z.infer<typeof roomVoidedSchema>;
 export type RoomQuestionsStatus = z.infer<typeof roomQuestionsStatusSchema>;
 export type RetryQuestionsInput = z.infer<typeof retryQuestionsSchema>;
+export type EditDraftInput = z.infer<typeof editDraftSchema>;
 export type RoomError = z.infer<typeof roomErrorSchema>;
 
 /** Curate review (host's team only): drafts carry full payloads, so they come after the payload schemas. */
