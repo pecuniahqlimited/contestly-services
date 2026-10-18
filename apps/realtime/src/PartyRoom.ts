@@ -30,6 +30,8 @@ interface Member {
 const toMatchQuestion = (q: typeof partyQuestions.$inferSelect): MatchQuestion =>
   ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined });
 
+const QUESTIONS_PROGRESS = "questions_progress";
+
 type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "finished" | "cancelled";
 
 const settleQueue = partyQueue();
@@ -172,10 +174,14 @@ export class PartyRoom extends Room {
     this.heartbeat?.clear();
   }
 
-  /** Re-read the party, tell the room where its question set is, and start the round if it's due. */
+  /**
+   * Re-read the party, tell the room where its question set is, and start the round if it's due.
+   * "questions_progress" is the Forge moving a stage: the room hears it, but nothing is due.
+   */
   private async onSetOrLifecycleChange(status: string) {
     await this.refreshParty();
     if (status.startsWith("questions_")) this.broadcast(MSG.questionsStatus, questionDisclosure(this.party));
+    if (status === QUESTIONS_PROGRESS) return;
     if (this.party.status === "live") await this.startMatch();
   }
 

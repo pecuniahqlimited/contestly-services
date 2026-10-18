@@ -405,24 +405,43 @@ export const partiesResponseSchema = z.array(partySummarySchema);
 export const QUESTIONS_STATUSES = ["not_started", "generating", "ready", "failed"] as const;
 export type QuestionsStatus = (typeof QUESTIONS_STATUSES)[number];
 
+/** The question engine's pipeline, in order, as the Forge names it while the deck is made. */
+export const FORGE_STAGES = ["reading", "drafting", "checking", "dedupe", "balance"] as const;
+export type ForgeStage = (typeof FORGE_STAGES)[number];
+/**
+ * How far the deck is: the stage the engine is at, and the cards made so far (questions that passed
+ * every check, of `total`) with each card's format. Nothing else about any question, so it's safe to
+ * show everyone, sealed or not. The last report of a ready set holds the play order's formats.
+ */
+export const forgeProgressSchema = z.object({
+  stage: z.enum(FORGE_STAGES),
+  done: z.number().int().min(0),
+  total: z.number().int().min(0),
+  formats: z.array(z.enum(QUESTION_FORMATS)),
+});
+export type ForgeProgress = z.infer<typeof forgeProgressSchema>;
+
 /**
  * Always disclosed in the lobby and the game: AI-generated, sealed or host-reviewed, and the set's
  * state. Never any content: `error` is a plain reason for the host ("make the brief broader"), not
- * anything from the questions.
+ * anything from the questions; `forge` is stages and formats only.
  */
 export const questionDisclosureSchema = z.object({
   aiGenerated: z.boolean(),
   review: z.enum(["sealed", "host_reviewed"]),
   status: z.enum(QUESTIONS_STATUSES),
   error: z.string().nullable(),
+  /** While the set is being made and once it's ready; null before, and when it failed. */
+  forge: forgeProgressSchema.nullable(),
 });
 
 /** The disclosure for a party row. One builder for the API and the room. */
-export const questionDisclosure = (p: { mode: "sealed" | "curate"; questionsStatus: QuestionsStatus; questionsError: string | null }): z.infer<typeof questionDisclosureSchema> => ({
+export const questionDisclosure = (p: { mode: "sealed" | "curate"; questionsStatus: QuestionsStatus; questionsError: string | null; forgeProgress: ForgeProgress | null }): z.infer<typeof questionDisclosureSchema> => ({
   aiGenerated: true,
   review: p.mode === "curate" ? "host_reviewed" : "sealed",
   status: p.questionsStatus,
   error: p.questionsStatus === "failed" ? p.questionsError : null,
+  forge: p.questionsStatus === "generating" || p.questionsStatus === "ready" ? p.forgeProgress : null,
 });
 
 /** POST /parties/:id/questions/retry → 202: the set is being made again. */

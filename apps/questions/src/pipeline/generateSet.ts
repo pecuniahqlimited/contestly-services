@@ -22,6 +22,7 @@ import { fillQuestions, persistFill } from "./fill.js";
 import { assertSetFilled } from "./gate.js";
 import { specFor } from "./partySpec.js";
 import { resealForRoster } from "./reseal.js";
+import { deckProgress, forgeReporter } from "./forge.js";
 
 export interface GenerateSetDeps {
   providers: Providers;
@@ -46,7 +47,10 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
   const need = party.questionCount + cfg.reserveCount;
   // Nobody seated gets a question they've already seen; if that leaves the bank short, generation fills the gap.
   const seen = await seenBySeated(partyId);
-  const fill = await fillQuestions({ spec, providers: deps.providers, want: need, excludeBankIds: seen.map((s) => s.bankId), avoidPayloads: seen.map((s) => s.payload) });
+  const fill = await fillQuestions({
+    spec, providers: deps.providers, want: need, excludeBankIds: seen.map((s) => s.bankId), avoidPayloads: seen.map((s) => s.payload),
+    progress: forgeReporter(partyId, party.questionCount, deps.publish),
+  });
 
   if (fill.picked.length < need) {
     // Keep the audit trail of the failed attempt (nothing enters the bank or the party set), then fail closed.
@@ -71,7 +75,9 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
     }))).onConflictDoNothing();
     // A sealed party that started while we were building isn't ready until the roster re-check has run.
     const live = locked.mode === "sealed" && locked.status === "live";
-    await tx.update(parties).set({ specSummary: spec.summary, category: spec.categoryTag, questionsStatus: live ? "generating" : "ready", questionsError: null }).where(eq(parties.id, partyId));
+    // The deck as it will play: the play order's formats (reserves aren't cards).
+    const deck = deckProgress("balance", fill.picked.map((q) => q.format), party.questionCount);
+    await tx.update(parties).set({ specSummary: spec.summary, category: spec.categoryTag, questionsStatus: live ? "generating" : "ready", questionsError: null, forgeProgress: deck }).where(eq(parties.id, partyId));
     return live;
   });
   if (wentLive === null) return;

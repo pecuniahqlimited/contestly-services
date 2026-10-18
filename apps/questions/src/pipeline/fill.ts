@@ -6,6 +6,7 @@
  * Writes nothing; persistFill() does, inside the caller's transaction.
  */
 import { questionGenerations, bankQuestions, getQuestionsConfig, type BankQuestion, type Tx } from "@contestly/db";
+import type { ForgeStage, QuestionFormat } from "@contestly/shared";
 import type { GenerationSpec, Providers, SourceChunk } from "../providers/types.js";
 import { draftAndJudge, type JudgedDraft } from "./judge.js";
 import { bankRow, generationRecord } from "./records.js";
@@ -21,7 +22,11 @@ export interface FillRequest {
   excludeBankIds: string[];
   /** Question texts the generator must steer clear of, for the same reasons. */
   avoidPayloads: unknown[];
+  /** Told each stage the fill reaches, with the formats of the questions it has so far (bank picks first). */
+  progress?: FillProgress;
 }
+
+export type FillProgress = (stage: ForgeStage, formats: QuestionFormat[]) => Promise<unknown>;
 
 export interface Picked {
   format: BankQuestion["format"];
@@ -40,6 +45,7 @@ export interface Fill {
 
 export async function fillQuestions(req: FillRequest): Promise<Fill> {
   const cfg = await getQuestionsConfig();
+  await req.progress?.("reading", []);
   const [specEmbedding] = await req.providers.embedder.embed([`${req.spec.topic} · ${req.spec.categoryTag}`]);
   let retrieved: BankQuestion[] = [];
   let sources: SourceChunk[] | undefined;
@@ -48,8 +54,12 @@ export async function fillQuestions(req: FillRequest): Promise<Fill> {
 
   const gap = req.want - retrieved.length;
   const avoid = [...retrieved.map((q) => questionText(q.payload)), ...req.avoidPayloads.map(questionText)];
+  const fromRetrieval = retrieved.map((q) => q.format);
   const { judged, accepted } = gap > 0
-    ? await draftAndJudge({ spec: req.spec, providers: req.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: gap, avoid, sources })
+    ? await draftAndJudge(
+      { spec: req.spec, providers: req.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: gap, avoid, sources },
+      req.progress && ((stage, formats) => req.progress!(stage, [...fromRetrieval, ...formats])),
+    )
     : { judged: [], accepted: [] };
 
   const fromBank = (q: BankQuestion): Picked => ({ format: q.format, payload: q.payload, explanation: q.explanation, bankId: q.id, from: "bank" });
@@ -66,6 +76,7 @@ export async function fillQuestions(req: FillRequest): Promise<Fill> {
     const reused = await reusableAmong(req.spec, nearIds, [...req.excludeBankIds, ...picked.map((p) => p.bankId)]);
     picked.push(...reused.slice(0, short).map(fromBank));
   }
+  await req.progress?.("balance", picked.map((p) => p.format));
   return { picked, judged, accepted, retrievedCount: picked.filter((p) => p.from === "bank").length };
 }
 

@@ -45,7 +45,7 @@ export async function requestDrafts(partyId: string, user: User): Promise<void> 
     if (files.some((f) => f.status !== "parsed")) throw httpError(409, "source_file_not_ready");
     const existing = await tx.select({ id: partyQuestions.id }).from(partyQuestions).where(eq(partyQuestions.partyId, partyId)).limit(1);
     if (existing.length) throw httpError(409, "drafts_already_generated");
-    await tx.update(parties).set({ questionsStatus: "generating", questionsError: null }).where(eq(parties.id, partyId));
+    await tx.update(parties).set({ questionsStatus: "generating", questionsError: null, forgeProgress: null }).where(eq(parties.id, partyId));
   });
   // A fresh job id each time: an earlier attempt that failed keeps its id in the queue's history.
   await questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}-${Date.now()}` });

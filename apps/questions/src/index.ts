@@ -73,7 +73,7 @@ async function setFailed(partyId: string, err: Error) {
   }
   if (party.status !== "open") return;
   const reason = hostReason(err);
-  await db.update(parties).set({ questionsStatus: "failed", questionsError: reason }).where(eq(parties.id, partyId));
+  await db.update(parties).set({ questionsStatus: "failed", questionsError: reason, forgeProgress: null }).where(eq(parties.id, partyId));
   await notifyJobs.add("questions_failed", { kind: "questions_failed", partyId, hostId: party.createdByUserId, reason }, { jobId: `questions-failed-${partyId}-${Date.now()}` });
   await publish({ partyId, status: "questions_failed" });
 }

@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { EMBEDDING_DIM, PARTY_FILE_STATUSES, QUESTIONS_STATUSES } from "@contestly/shared";
+import { EMBEDDING_DIM, PARTY_FILE_STATUSES, QUESTIONS_STATUSES, type ForgeProgress } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -74,6 +74,8 @@ export const parties = pgTable("parties", {
   questionsStatus: questionsStatus("questions_status").notNull().default("not_started"),
   /** Why the set failed, worded for the host. Never anything from the questions themselves. */
   questionsError: text("questions_error"),
+  /** The Forge: the engine's stage and the cards made so far (formats only), written as it goes. */
+  forgeProgress: jsonb("forge_progress").$type<ForgeProgress>(),
   entryKobo: integer("entry_kobo").notNull().default(0),
   maxPlayers: integer("max_players").notNull(),
   questionCount: integer("question_count").notNull().default(5),

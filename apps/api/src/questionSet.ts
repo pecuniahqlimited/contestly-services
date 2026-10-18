@@ -34,6 +34,7 @@ export async function retrySealedSet(partyId: string, user: User, edit: RetryQue
       ...(edit.formats === undefined ? {} : { formats: edit.formats }),
       questionsStatus: "generating",
       questionsError: null,
+      forgeProgress: null,
     }).where(eq(parties.id, partyId));
     const reading = await tx.select({ id: partyFiles.id }).from(partyFiles).where(and(eq(partyFiles.partyId, partyId), eq(partyFiles.status, "parsing"))).limit(1);
     return reading.length > 0;
