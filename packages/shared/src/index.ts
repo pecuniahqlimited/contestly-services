@@ -454,6 +454,44 @@ export const userProfileSchema = publicUserSchema.extend({
   hosting: z.array(partyRowSchema),
 });
 
+/** POST /parties → 201: the new party, its question set's state, and the host's own seat (sealed) counted. */
+export const createPartyResponseSchema = partyRowSchema.extend({
+  questions: questionDisclosureSchema,
+  playerCount: z.number().int(),
+  potKobo: z.number().int(),
+});
+
+/** A presigned PUT straight to object storage. Send `headers` exactly as given: they're part of the signature. */
+export const presignedUploadSchema = z.object({
+  url: z.string().url(),
+  method: z.literal("PUT"),
+  headers: z.record(z.string()),
+  expiresAt: z.string().datetime(),
+});
+/** POST /parties/:id/files → 201. Then PUT the bytes to `upload`, then POST …/files/:fileId/ingest. */
+export const requestUploadResponseSchema = z.object({ fileId: z.string().uuid(), upload: presignedUploadSchema });
+/** POST /parties/:id/files/:fileId/ingest → 202: the questions service is reading it. */
+export const ingestFileResponseSchema = z.object({ status: z.literal("parsing") });
+
+export const PARTY_FILE_STATUSES = ["uploading", "parsing", "parsed", "failed"] as const;
+export type PartyFileStatus = (typeof PARTY_FILE_STATUSES)[number];
+/** GET /parties/:id/files (host's team): each source file and how reading it went. `error` is worded for the host. */
+export const partyFileSchema = z.object({
+  id: z.string().uuid(),
+  filename: z.string(),
+  contentType: z.string(),
+  sizeBytes: z.number().int(),
+  status: z.enum(PARTY_FILE_STATUSES),
+  error: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+export const partyFilesResponseSchema = z.array(partyFileSchema);
+
+/** POST /parties/:id/drafts → 202: the curate set is being drafted. */
+export const requestDraftsResponseSchema = z.object({ status: z.literal("generating") });
+/** POST /parties/:id/drafts/:qid/regenerate → 202: a fresh draft replaces this one when it passes the gate. */
+export const regenerateDraftResponseSchema = z.object({ status: z.literal("regenerating") });
+
 /** The `error` code in a refused request's body, e.g. insufficient_funds (402), party_full (409). */
 export const apiErrorBodySchema = z.object({ error: z.string() });
 
@@ -473,6 +511,13 @@ export type JoinPartyResponse = z.infer<typeof joinPartyResponseSchema>;
 export type UserProfile = z.infer<typeof userProfileSchema>;
 export type CreatePartyInput = z.infer<typeof createPartySchema>;
 export type UpsertMeInput = z.infer<typeof upsertMeSchema>;
+export type CreatePartyResponse = z.infer<typeof createPartyResponseSchema>;
+export type PresignedUpload = z.infer<typeof presignedUploadSchema>;
+export type RequestUploadInput = z.infer<typeof requestUploadSchema>;
+export type RequestUploadResponse = z.infer<typeof requestUploadResponseSchema>;
+export type PartyFile = z.infer<typeof partyFileSchema>;
+export type DraftQuestion = z.infer<typeof draftQuestionSchema>;
+export type DraftsResponse = z.infer<typeof draftsResponseSchema>;
 
 /**
  * The party room protocol: every message the room sends, as the app parses it. The room builds these
@@ -497,6 +542,51 @@ export const answerSchemas = {
   picture: z.object({ index: z.number().int().min(0).max(5) }),
 } as const satisfies Record<QuestionFormat, z.ZodTypeAny>;
 export type AnswerFor<F extends QuestionFormat> = z.infer<(typeof answerSchemas)[F]>;
+
+const payloadOptions = z.array(z.string().min(1)).min(2).max(6);
+const payloadIndexes = z.array(z.number().int().min(0)).min(1);
+/** `xs` uses each of 0..n-1 exactly once. */
+const isPermutation = (xs: number[], n: number) => xs.length === n && new Set(xs).size === n && xs.every((i) => i < n);
+
+/**
+ * A question's full payload, answers included: what the engine stores and grades against, and what a
+ * curate host's team reviews. Answer keys must point inside the question, so neither a generator slip
+ * nor a host edit can make a question unanswerable. Never sent to a player before the question closes.
+ */
+export const questionPayloadSchemas = {
+  pick_one: z.object({
+    question: z.string().min(1),
+    options: payloadOptions,
+    correctIndex: z.number().int().min(0),
+  }).refine((p) => p.correctIndex < p.options.length, "correctIndex must point at an option"),
+  pick_all: z.object({
+    question: z.string().min(1),
+    options: payloadOptions,
+    correctIndexes: payloadIndexes,
+  }).refine((p) => new Set(p.correctIndexes).size === p.correctIndexes.length && p.correctIndexes.every((i) => i < p.options.length), "correctIndexes must be distinct options"),
+  /** `items` is the display order (pre-shuffled by the author/generator); `correctOrder` lists item indexes in the right sequence. */
+  order: z.object({
+    question: z.string().min(1),
+    items: z.array(z.string().min(1)).min(3).max(6),
+    correctOrder: payloadIndexes,
+  }).refine((p) => isPermutation(p.correctOrder, p.items.length), "correctOrder must use every item exactly once"),
+  /** `right` is pre-shuffled; `pairs[i]` is the index into `right` that matches `left[i]`. */
+  match: z.object({
+    question: z.string().min(1),
+    left: z.array(z.string().min(1)).min(2).max(6),
+    right: z.array(z.string().min(1)).min(2).max(6),
+    pairs: payloadIndexes,
+  }).refine((p) => p.left.length === p.right.length && isPermutation(p.pairs, p.right.length), "pairs must match every left item to a distinct right item"),
+  /** An image with a caption, then pick one. Images come from a licensed/generated pool with alt text. */
+  picture: z.object({
+    question: z.string().min(1),
+    imageUrl: z.string().min(1),
+    imageAlt: z.string().min(1),
+    options: payloadOptions,
+    correctIndex: z.number().int().min(0),
+  }).refine((p) => p.correctIndex < p.options.length, "correctIndex must point at an option"),
+} as const satisfies Record<QuestionFormat, z.ZodTypeAny>;
+export type QuestionPayload<F extends QuestionFormat = QuestionFormat> = z.infer<(typeof questionPayloadSchemas)[F]>;
 
 const openQuestion = {
   /** Echoed when flagging, so a late flag never lands on the next question. */
@@ -605,3 +695,30 @@ export type RoomQuestionsStatus = z.infer<typeof roomQuestionsStatusSchema>;
 export type RetryQuestionsInput = z.infer<typeof retryQuestionsSchema>;
 export type RoomError = z.infer<typeof roomErrorSchema>;
 
+/** Curate review (host's team only): drafts carry full payloads, so they come after the payload schemas. */
+export const PARTY_QUESTION_STATUSES = ["draft", "pending", "played", "voided"] as const;
+const draftFields = {
+  id: z.string().uuid(),
+  idx: z.number().int(),
+  /** Reserves stand by for swaps and voids; they aren't in the play order. */
+  reserve: z.boolean(),
+  /** draft: awaiting approval; pending: approved, ready to play; voided: swapped out. */
+  status: z.enum(PARTY_QUESTION_STATUSES),
+  explanation: z.string().nullable(),
+  hostAuthored: z.boolean(),
+  /** The independent fact-check: the sources it checked against. Null for host-authored questions. */
+  verification: z.object({ sources: z.array(z.string()), difficulty: z.unknown() }).nullable(),
+};
+/** One curate draft, answers included (host's team only; looking bars the viewer from playing). */
+export const draftQuestionSchema = z.discriminatedUnion("format", [
+  z.object({ ...draftFields, format: z.literal("pick_one"), payload: questionPayloadSchemas.pick_one }),
+  z.object({ ...draftFields, format: z.literal("pick_all"), payload: questionPayloadSchemas.pick_all }),
+  z.object({ ...draftFields, format: z.literal("order"), payload: questionPayloadSchemas.order }),
+  z.object({ ...draftFields, format: z.literal("match"), payload: questionPayloadSchemas.match }),
+  z.object({ ...draftFields, format: z.literal("picture"), payload: questionPayloadSchemas.picture }),
+]);
+/** GET /parties/:id/drafts: the engine's one-line "what we understood", and the drafts in play order (reserves last). */
+export const draftsResponseSchema = z.object({
+  specSummary: z.string().nullable(),
+  questions: z.array(draftQuestionSchema),
+});
