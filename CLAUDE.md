@@ -92,7 +92,7 @@ Decides what each surface leads with: Home hero and mode order, the Parties tab 
 
 ### Question engine (its own service)
 
-Hosts give the party a name and **anything as the source**: free text of any length (a topic, a vibe, a list of facts, in-jokes) and/or an uploaded file (PDF, DOCX, slides, images of notes). There is no category picker; the engine infers topic, audience and tone from the input and shows a one-line "what we understood" back. Then parameters: difficulty (easy / mixed / hard / brutal), seconds per question, formats to allow, how many questions. The engine does the rest. Uploaded files are parsed server-side (text extraction + OCR), chunked and used as the retrieval source for that party; questions from a file must be answerable from the file, and the record stores which chunk each question came from. A derived category tag is still stored on the party for discovery and recommendations, inferred rather than chosen.
+Hosts give the party a name and **anything as the source**: free text of any length (a topic, a vibe, a list of facts, in-jokes) and/or an uploaded file (PDF, DOCX, slides, images of notes). There is no category picker; the engine infers topic, audience and tone from the input and shows a one-line "what we understood" back. Then parameters: difficulty (easy / mixed / hard / brutal), seconds per question, formats to allow, how many questions. The engine does the rest. **Source files are read, never stored.** The app sends the file straight to the API (multipart, size-capped); the API extracts the text in memory (off the event loop), discards the bytes, and keeps only the extracted text, chunked, as that party's retrieval source. No source file ever goes to object storage or into a queue payload. Questions from a file must be answerable from it, and the record stores which chunk each came from. The chunks live only as long as they're needed: they're deleted a set retention window after the party finishes (config, default 30 days, for disputes and flag review). Replacing a file means sending a new one; its chunks replace the old. A derived category tag is still stored on the party for discovery and recommendations, inferred rather than chosen.
 
 **Creation is a builder, not a form.** Six scenes on the game surface: About (name; type anything or attach a file; a live party poster builds as you type), Dial it in (difficulty faces, a pace dial, question count, format tiles), Your role (playing vs hosting), Stakes (coin stacks for entry, seats as a filling circle, pot or prize), Doors (public/private, cover), and the **Forge**: the generation itself shown to everyone as a deck of cards appearing one by one with the pipeline stage named (reading, drafting, checking, dedupe, balance). In sealed mode the cards appear face-down with a lock and a format icon; in curate mode they flip to reveal the question for approve/swap. The host always sees the deck being made; whether they see its contents depends on the mode.
 
@@ -143,7 +143,7 @@ packages/db         Drizzle schema, postgres-js client, append-only ledger, seed
 packages/auth       resolveUser(): dev header or Firebase ID token → users row
 packages/queue      BullMQ queues + ioredis connections
 packages/game       pure game logic: party round, payout ladder, scoring, tie-breaks, flag → void. No I/O.
-packages/storage    ObjectStore interface + S3 implementation (DO Spaces in prod, SeaweedFS locally): presigned uploads, reads
+packages/storage    ObjectStore interface + S3 implementation (DO Spaces in prod, SeaweedFS locally): presigned uploads, reads. For media only; never party source files
 ```
 
 `contestly-app` (sibling repo, `../contestly-app`): the Expo mobile app, the Vite web app (admin, brand console, share pages), design tokens, and `@contestly/api-client`, a typed client hand-written on top of the zod schemas in `@contestly/shared` for now (codegen later). It links `@contestly/shared` from this repo with `file:` until the package is published (see README). Changing a schema in `packages/shared` changes the app's contract: rebuild shared and typecheck the app repo too.
@@ -162,7 +162,7 @@ npm run build && npm run typecheck
 npm test                # unit tests (packages/game, apps/questions)
 scripts/smoke.sh        # end-to-end check against the running stack
 npm run sim             # both sims against the running stack: sim:sealed (generated set, 3 players) then
-                        # sim:curate (PDF upload → curate review → play with two flag-voids → settle)
+                        # sim:curate (PDF read → curate review → play with two flag-voids → settle)
 ```
 
 Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handles are auto-created.
@@ -178,7 +178,7 @@ Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handle
 - **Live rooms live in process; everything around them lives in Valkey.** Colyseus keeps each room's state in memory on the one realtime process hosting it. Do not try to move live room state into Valkey. Valkey holds presence, room discovery (Colyseus Redis presence and driver) and pub/sub, so any instance can find any room and adding a second instance is config, not code. Results are persisted to Postgres when a round ends; if a room disappears mid-round (process crash, deploy), the worker cancels and refunds that party through the ledger. Clients reconnect with Colyseus reconnection tokens. Worker → realtime communication goes over the `party:events` Valkey channel, never direct calls.
 - **Services never call each other over HTTP.** API enqueues jobs; worker processes them; realtime subscribes.
 - **Validate at the edge with zod** from `@contestly/shared`; the same schemas are used by the UI's api-client.
-- Uploads (avatars, covers, logos) go to object storage via presigned URLs, never through the API.
+- Media people keep (avatars, covers, logos, voice notes) goes to object storage via presigned URLs, never through the API. Party source files are the opposite: sent to the API, read, and never stored (see Question engine).
 - **Never present fake presence.** Bots or sample data in a prototype are fine; in the product, "online", "playing now" and "N people in your round" must be true.
 
 ## Conventions
