@@ -9,7 +9,6 @@ import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { db, parties } from "@contestly/db";
 import { makeRedis, notifyQueue, partyQueue, questionsQueue } from "@contestly/queue";
-import { objectStoreFromEnv } from "@contestly/storage";
 import { PARTY_EVENTS_CHANNEL, QUEUES, type QuestionsJob } from "@contestly/shared";
 import { selectProviders } from "./providers/index.js";
 import { generateSet } from "./pipeline/generateSet.js";
@@ -19,11 +18,14 @@ import { FilesNotReady } from "./pipeline/sources.js";
 import { recordPlay } from "./pipeline/recordPlay.js";
 import { regenerateOne } from "./pipeline/regenerateOne.js";
 import { questionVoided, retireSweep } from "./pipeline/retire.js";
-import { parseFile } from "./files/parseFile.js";
+import { embedFile } from "./files/embedFile.js";
+import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
 
 /** Daily, at 04:00 server time: retire flagged and underperforming bank questions. */
 const RETIRE_SWEEP_CRON = "0 4 * * *";
+/** Daily, at 04:30: delete source chunks past their retention window. */
+const SOURCE_SWEEP_CRON = "30 4 * * *";
 
 const connection = makeRedis();
 const pub = makeRedis();
@@ -31,7 +33,6 @@ const partyJobs = partyQueue();
 const notifyJobs = notifyQueue();
 const questionJobs = questionsQueue();
 const providers = selectProviders();
-const store = objectStoreFromEnv();
 const publish = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 
 const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
@@ -41,12 +42,13 @@ const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
     case "reseal_for_roster": return resealForRoster(d.partyId, { providers, publish });
     case "record_play": return recordPlay(d.partyId);
     case "regenerate_one": return regenerateOne(d, { providers });
-    case "parse_file":
-      await parseFile(d.fileId, { store, embedder: providers.embedder });
-      // The same job id as an API-queued build, so two files read at once still build the set once.
-      return sealWhenFilesRead(d.fileId, (partyId) => questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}` }));
+    case "file_read":
+      await embedFile(d.fileId, { embedder: providers.embedder });
+      // A fresh job id: an earlier build of this party that failed keeps its id in the queue's history.
+      return sealWhenFilesRead(d.fileId, (partyId) => questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}-${Date.now()}` }));
     case "question_voided": return questionVoided(d);
     case "retire_sweep": return retireSweep();
+    case "source_sweep": return sourceSweep();
   }
 }, { connection });
 
@@ -84,6 +86,6 @@ function hostReason(err: Error): string {
 }
 
 await questionJobs.upsertJobScheduler("retire-sweep", { pattern: RETIRE_SWEEP_CRON }, { name: "retire_sweep", data: { kind: "retire_sweep" } });
-if (process.env.NODE_ENV !== "production") await store.ensureBucket();
+await questionJobs.upsertJobScheduler("source-sweep", { pattern: SOURCE_SWEEP_CRON }, { name: "source_sweep", data: { kind: "source_sweep" } });
 
 console.log(`questions running: queue ${QUEUES.questions}, providers ${process.env.QUESTIONS_GENERATOR ?? "mock"}/${process.env.QUESTIONS_VERIFIER ?? "mock"}/${process.env.QUESTIONS_EMBEDDER ?? "mock"}`);

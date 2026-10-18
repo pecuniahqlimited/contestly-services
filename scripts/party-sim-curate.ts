@@ -1,7 +1,8 @@
 /**
  * Step 2b sim: a curate-mode party built from an uploaded PDF, reviewed by its host, then played
  * by three players who flag two questions until they're voided (one while open, one during its
- * reveal). Asserts the presigned upload → parse → chunk → cite path, the curate review actions
+ * reveal). Asserts the send → read in memory → chunk → embed → cite path (the file itself is never
+ * stored, and a new one replaces the old), the curate review actions
  * and lockout, flag → void → replace with its log, scores after voids, settlement, bank updates
  * and retirement.
  *
@@ -13,13 +14,13 @@
 import { Client, type Room } from "colyseus.js";
 import { and, eq, inArray } from "drizzle-orm";
 import {
-  db, partyQuestions, partyAnswers, partyQuestionEvents, partyDraftViews, partyFiles, fileChunks, bankQuestions, ledgerEntries,
+  db, parties, partyQuestions, partyAnswers, partyQuestionEvents, partyDraftViews, partyFiles, fileChunks, bankQuestions, ledgerEntries,
   getQuestionsConfig, setQuestionsConfig,
 } from "@contestly/db";
 import { partyQueue, questionsQueue } from "@contestly/queue";
-import { MSG, PARTY_ROOM } from "@contestly/shared";
+import { MAX_UPLOAD_BYTES, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
+import { RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 import { minimalPdf } from "./sim-pdf.js";
 
 const HOST = "tunde";
@@ -73,29 +74,36 @@ console.log("curate party with an unreviewed set: start must cancel and refund�
   }
 }
 
-// ---- create + upload a source file ---------------------------------------------------------
+// ---- create + send a source file -----------------------------------------------------------
 
-console.log("\ncurate party from an uploaded PDF…");
+console.log("\ncurate party from a PDF sent to the API…");
 const party = await api(HOST, "POST", "/parties", curateParty("Curate sim party"));
 const partyId: string = party.id;
 ok(party.playerCount === 0 && party.questions?.review === "host_reviewed" && party.questions?.aiGenerated === true, "curate host isn't seated; party discloses AI-generated, host-reviewed questions");
 ok((await partyNetKobo(userIds.get(HOST)!, partyId)) === 0, "curate host isn't charged an entry");
 
+const PDF = "application/pdf";
 const pdf = minimalPdf(FACTS);
-const notHost = await call(PLAYERS[0], "POST", `/parties/${partyId}/files`, { filename: "x.pdf", contentType: "application/pdf", sizeBytes: pdf.length });
-ok(notHost.status === 403, `only the host's team can attach files (got ${notHost.status})`);
-const { fileId, upload } = await api(HOST, "POST", `/parties/${partyId}/files`, { filename: "Lagos bridges.pdf", contentType: "application/pdf", sizeBytes: pdf.length });
-const { "content-length": _len, ...uploadHeaders } = upload.headers; // fetch sets content-length itself (same value, still signed)
-const tampered = upload.url.replace(/(X-Amz-Signature=)([0-9a-f])/, (_: string, k: string, c: string) => k + (c === "0" ? "1" : "0"));
-const forged = await fetch(tampered, { method: upload.method, headers: uploadHeaders, body: pdf });
-ok(forged.status === 403, `storage refuses an upload whose signature was tampered with (${forged.status})`);
-const put = await fetch(upload.url, { method: upload.method, headers: uploadHeaders, body: pdf });
-ok(put.ok, `uploaded straight to object storage via the presigned URL (${put.status})`);
-await api(HOST, "POST", `/parties/${partyId}/files/${fileId}/ingest`);
+const notHost = await sendFile(PLAYERS[0], partyId, { filename: "x.pdf", contentType: PDF, bytes: pdf });
+ok(notHost.status === 403, `only the host's team can send a file (got ${notHost.status})`);
+const wrongType = await sendFile(HOST, partyId, { filename: "notes.png", contentType: "image/png", bytes: pdf });
+ok(wrongType.status === 415, `a type we can't read is refused before reading (got ${wrongType.status})`);
+const tooBig = await sendFile(HOST, partyId, { filename: "huge.pdf", contentType: PDF, bytes: new Uint8Array(MAX_UPLOAD_BYTES + 1) });
+ok(tooBig.status === 413, `a file over ${MAX_UPLOAD_BYTES} bytes is refused (got ${tooBig.status})`);
+
+const unreadable = await sendFile(HOST, partyId, { filename: "scan.pdf", contentType: PDF, bytes: minimalPdf(["Lagos."]) });
+ok(unreadable.status === 201 && unreadable.body.status === "failed" && /enough readable text/.test(unreadable.body.error ?? ""), `a file without enough text fails with a reason for the host ("${unreadable.body.error}")`);
+ok((await db.select().from(fileChunks).where(eq(fileChunks.fileId, unreadable.body.id))).length === 0, "a failed read keeps no text");
+
+const sent = await sendFile(HOST, partyId, { filename: "Lagos bridges.pdf", contentType: PDF, bytes: pdf });
+ok(sent.status === 201 && sent.body.status === "parsing", `the text is read in the request and kept as chunks (${sent.status} ${sent.body.status})`);
+const fileId: string = sent.body.id;
 const parsed = await waitFor(async () => (await api(HOST, "GET", `/parties/${partyId}/files`)).find((f: any) => f.id === fileId && f.status !== "parsing"));
-ok(parsed?.status === "parsed", `file parsed server-side (${parsed?.status}${parsed?.error ? `: ${parsed.error}` : ""})`);
+ok(parsed?.status === "parsed", `chunks indexed by the questions service (${parsed?.status}${parsed?.error ? `: ${parsed.error}` : ""})`);
+const listed = await api(HOST, "GET", `/parties/${partyId}/files`);
+ok(listed.length === 1 && listed[0].id === fileId, "the new file replaced the failed one");
 const chunks = await db.select().from(fileChunks).where(eq(fileChunks.fileId, fileId));
-ok(chunks.length >= 1 && chunks.every((c) => c.text.length > 0), `file chunked and embedded (${chunks.length} chunk(s))`);
+ok(chunks.length >= 1 && chunks.every((c) => c.text.length > 0 && c.embedding !== null), `file chunked and embedded (${chunks.length} chunk(s))`);
 
 // ---- curate review --------------------------------------------------------------------------
 
@@ -113,6 +121,8 @@ const filledIn = (p: any) => (/"(.*)"$/.exec(p.question)?.[1] ?? "").split("____
 ok(drafts.every((q) => FACTS.includes(filledIn(q.payload))), "every draft is answerable from a sentence in the file");
 
 ok((await call(PLAYERS[0], "GET", `/parties/${partyId}/drafts`)).status === 403, "drafts are visible to the host's team only");
+const late = await sendFile(HOST, partyId, { filename: "Other.pdf", contentType: PDF, bytes: pdf });
+ok(late.status === 409, `the file can't be swapped once questions are made from it (got ${late.status})`);
 const [hostView] = await db.select().from(partyDraftViews).where(and(eq(partyDraftViews.partyId, partyId)));
 ok(!!hostView, "viewing the drafts was recorded");
 
@@ -310,6 +320,21 @@ try {
 
 const files = await db.select().from(partyFiles).where(eq(partyFiles.partyId, partyId));
 ok(files.length === 1 && files[0].status === "parsed", "one parsed source file on record for the party");
+
+// ---- source retention -------------------------------------------------------------------------
+
+ok(schedulers.some((s) => s.key === "source-sweep" || s.id === "source-sweep"), "daily source sweep is scheduled");
+const [ended] = await db.select({ endedAt: parties.endedAt }).from(parties).where(eq(parties.id, partyId));
+ok(!!ended?.endedAt, "the finished party records when it ended");
+const retentionDays = (await getQuestionsConfig()).sourceRetentionDays;
+await questionsQueue().add("source_sweep", { kind: "source_sweep" });
+await sleep(1500);
+ok((await db.select().from(fileChunks).where(eq(fileChunks.fileId, fileId))).length > 0, `chunks are kept inside the ${retentionDays}-day retention window`);
+// TEST-ONLY: age the party past its window, then sweep.
+await db.update(parties).set({ endedAt: new Date(Date.now() - (retentionDays + 1) * 24 * 60 * 60 * 1000) }).where(eq(parties.id, partyId));
+await questionsQueue().add("source_sweep", { kind: "source_sweep" });
+const swept = await waitFor(async () => ((await db.select().from(partyFiles).where(eq(partyFiles.partyId, partyId))).length === 0 ? true : null), { tries: 20 });
+ok(!!swept && (await db.select().from(fileChunks).where(eq(fileChunks.fileId, fileId))).length === 0, "past the window, the sweep deletes the file record and its chunks");
 
 await Promise.race([Promise.allSettled(rooms.map((r) => r.leave())), sleep(3000)]);
 const failures = failureCount();

@@ -90,6 +90,8 @@ export const questionsConfigSchema = z.object({
   retireAboveSkipPct: z.number().min(0).max(100),
   /** Retire when flags across all parties reach this many, played or not. */
   retireFlagCount: z.number().int().min(1),
+  /** A party's source-file chunks are deleted this many days after it finishes (kept that long for disputes and flag review). */
+  sourceRetentionDays: z.number().int().min(1).max(365),
 });
 export type QuestionsConfig = z.infer<typeof questionsConfigSchema>;
 export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
@@ -102,6 +104,7 @@ export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
   retireBelowCorrectPct: 5,
   retireAboveSkipPct: 50,
   retireFlagCount: 5,
+  sourceRetentionDays: 30,
 };
 
 export * from "./safety.js";
@@ -115,17 +118,18 @@ export const flagSchema = z.object({ questionId: z.string().uuid(), reason: z.en
 /** Bonus coins every new user starts with (never withdrawable). */
 export const WELCOME_BONUS_KOBO = kobo(500);
 
-/** Host source files: parsed server-side into chunks the questions are generated from. */
+/**
+ * Host source files: sent to the API as multipart (one file, field SOURCE_FILE_FIELD), read in memory
+ * and never stored. Only the extracted text is kept, chunked, as the party's retrieval source.
+ */
 export const UPLOAD_CONTENT_TYPES = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
 } as const;
+export type UploadContentType = keyof typeof UPLOAD_CONTENT_TYPES;
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-export const requestUploadSchema = z.object({
-  filename: z.string().min(1).max(200),
-  contentType: z.enum(Object.keys(UPLOAD_CONTENT_TYPES) as [keyof typeof UPLOAD_CONTENT_TYPES, ...(keyof typeof UPLOAD_CONTENT_TYPES)[]]),
-  sizeBytes: z.number().int().min(1).max(MAX_UPLOAD_BYTES),
-});
+export const MAX_UPLOAD_FILENAME_CHARS = 200;
+export const SOURCE_FILE_FIELD = "file";
 
 /** Curate mode: a host edit replaces the question's payload (validated against its format) and explanation. */
 export const editDraftSchema = z.object({
@@ -299,12 +303,14 @@ export type QuestionsJob =
   | { kind: "record_play"; partyId: string }
   /** Curate mode: replace one draft with a freshly generated, gated question. */
   | { kind: "regenerate_one"; partyId: string; partyQuestionId: string; requestedBy: string }
-  /** Extract, chunk and embed an uploaded source file. */
-  | { kind: "parse_file"; fileId: string }
+  /** The API has read a source file (or failed to): embed its chunks, then build a set that was waiting for it. */
+  | { kind: "file_read"; fileId: string }
   /** A question was voided by flags in a room: take it out of retrieval pending review. */
   | { kind: "question_voided"; partyQuestionId: string; flags: number }
   /** Repeatable: retire flagged and underperforming bank questions. */
-  | { kind: "retire_sweep" };
+  | { kind: "retire_sweep" }
+  /** Repeatable: delete the source chunks of parties that finished more than sourceRetentionDays ago. */
+  | { kind: "source_sweep" };
 
 /** Response shapes. The UI's api-client parses every response with these. */
 export const healthResponseSchema = z.object({ ok: z.boolean(), service: z.string(), time: z.string() });
@@ -485,21 +491,14 @@ export const createPartyResponseSchema = partyRowSchema.extend({
   potKobo: z.number().int(),
 });
 
-/** A presigned PUT straight to object storage. Send `headers` exactly as given: they're part of the signature. */
-export const presignedUploadSchema = z.object({
-  url: z.string().url(),
-  method: z.literal("PUT"),
-  headers: z.record(z.string()),
-  expiresAt: z.string().datetime(),
-});
-/** POST /parties/:id/files → 201. Then PUT the bytes to `upload`, then POST …/files/:fileId/ingest. */
-export const requestUploadResponseSchema = z.object({ fileId: z.string().uuid(), upload: presignedUploadSchema });
-/** POST /parties/:id/files/:fileId/ingest → 202: the questions service is reading it. */
-export const ingestFileResponseSchema = z.object({ status: z.literal("parsing") });
-
-export const PARTY_FILE_STATUSES = ["uploading", "parsing", "parsed", "failed"] as const;
+/** parsing: the text is out and chunked, the questions service is indexing it. parsed: ready to make questions from. */
+export const PARTY_FILE_STATUSES = ["parsing", "parsed", "failed"] as const;
 export type PartyFileStatus = (typeof PARTY_FILE_STATUSES)[number];
-/** GET /parties/:id/files (host's team): each source file and how reading it went. `error` is worded for the host. */
+/**
+ * A party's source file, as metadata only (the bytes were never kept). PUT /parties/:id/files → 201 with
+ * one of these, replacing any file before it; GET /parties/:id/files (host's team) lists them. `error` is
+ * worded for the host.
+ */
 export const partyFileSchema = z.object({
   id: z.string().uuid(),
   filename: z.string(),
@@ -536,9 +535,6 @@ export type UserProfile = z.infer<typeof userProfileSchema>;
 export type CreatePartyInput = z.infer<typeof createPartySchema>;
 export type UpsertMeInput = z.infer<typeof upsertMeSchema>;
 export type CreatePartyResponse = z.infer<typeof createPartyResponseSchema>;
-export type PresignedUpload = z.infer<typeof presignedUploadSchema>;
-export type RequestUploadInput = z.infer<typeof requestUploadSchema>;
-export type RequestUploadResponse = z.infer<typeof requestUploadResponseSchema>;
 export type PartyFile = z.infer<typeof partyFileSchema>;
 export type DraftQuestion = z.infer<typeof draftQuestionSchema>;
 export type DraftsResponse = z.infer<typeof draftsResponseSchema>;

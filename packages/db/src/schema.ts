@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { EMBEDDING_DIM, QUESTIONS_STATUSES } from "@contestly/shared";
+import { EMBEDDING_DIM, PARTY_FILE_STATUSES, QUESTIONS_STATUSES } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -11,7 +11,7 @@ export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all",
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
 export const partyMode = pgEnum("party_mode", ["sealed", "curate"]);
 export const questionsStatus = pgEnum("questions_status", QUESTIONS_STATUSES);
-export const partyFileStatus = pgEnum("party_file_status", ["uploading", "parsing", "parsed", "failed"]);
+export const partyFileStatus = pgEnum("party_file_status", PARTY_FILE_STATUSES);
 export const questionEventKind = pgEnum("question_event_kind", ["flag", "void", "replace", "approve", "edit", "swap", "regenerate"]);
 export const prizeKind = pgEnum("prize_kind", ["cash", "noncash"]);
 export const fulfilmentStatus = pgEnum("fulfilment_status", ["awarded", "arranged", "delivered", "disputed"]);
@@ -93,6 +93,8 @@ export const parties = pgTable("parties", {
   startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
   /** When the party went live; the worker's watchdog cancels if no set lands within the generation timeout. */
   liveAt: timestamp("live_at", { withTimezone: true }),
+  /** When it finished or was cancelled; the source sweep counts its retention window from here. */
+  endedAt: timestamp("ended_at", { withTimezone: true }),
   /** Set when record_play has folded this party's answer stats into the bank (job idempotency). */
   playStatsRecordedAt: timestamp("play_stats_recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -153,19 +155,19 @@ export const partyDraftViews = pgTable("party_draft_views", {
 }, (t) => [primaryKey({ columns: [t.partyId, t.userId] })]);
 
 /**
- * A source file the host attached to a party (PDF/DOCX), uploaded straight to object storage via a
- * presigned URL, then parsed and chunked by the questions service. Questions are generated only
- * from its chunks and cite the chunk they came from.
+ * A source file the host attached to a party (PDF/DOCX), as metadata only: the API read it in memory
+ * and kept just its text, chunked (file_chunks); the bytes were never stored. The questions service
+ * embeds the chunks. Questions are generated only from them and cite the chunk they came from. A new
+ * file replaces the old one; the source sweep deletes both a retention window after the party ends.
  */
 export const partyFiles = pgTable("party_files", {
   id: uuid("id").primaryKey().defaultRandom(),
   partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
   uploaderId: uuid("uploader_id").notNull().references(() => users.id),
-  storageKey: text("storage_key").notNull(),
   filename: text("filename").notNull(),
   contentType: text("content_type").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
-  status: partyFileStatus("status").notNull().default("uploading"),
+  status: partyFileStatus("status").notNull().default("parsing"),
   error: text("error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("party_files_party_idx").on(t.partyId)]);
@@ -175,7 +177,8 @@ export const fileChunks = pgTable("file_chunks", {
   fileId: uuid("file_id").notNull().references(() => partyFiles.id, { onDelete: "cascade" }),
   idx: integer("idx").notNull(),
   text: text("text").notNull(),
-  embedding: vector("embedding", { dimensions: EMBEDDING_DIM }).notNull(),
+  /** Null until the questions service has embedded it (file status "parsing"). */
+  embedding: vector("embedding", { dimensions: EMBEDDING_DIM }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex("file_chunks_file_idx").on(t.fileId, t.idx)]);
 

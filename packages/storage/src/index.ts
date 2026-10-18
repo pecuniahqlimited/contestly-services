@@ -1,10 +1,11 @@
 /**
- * Object storage behind a small vendor-neutral interface. Clients upload straight to storage via
- * presigned URLs (never through the API); services read objects back by key. The S3 implementation
- * covers DO Spaces in production and SeaweedFS locally; tests pass an in-memory fake. No AWS SDK
- * type leaves this file.
+ * Object storage for media people keep (avatars, covers, logos, voice notes), behind a small
+ * vendor-neutral interface. Clients upload straight to storage via presigned URLs, never through the
+ * API. Party source files never come here: they're read in memory and dropped (apps/api/src/files.ts).
+ * The S3 implementation covers DO Spaces in production and SeaweedFS locally. No AWS SDK type leaves
+ * this file.
  */
-import { CreateBucketCommand, GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CreateBucketCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export interface PresignedUpload {
@@ -15,12 +16,8 @@ export interface PresignedUpload {
   expiresAt: string;
 }
 
-/** The key doesn't exist (e.g. the client never completed its upload). */
-export class ObjectNotFound extends Error {}
-
 export interface ObjectStore {
   presignPut(input: { key: string; contentType: string; contentLength: number; expiresSeconds: number }): Promise<PresignedUpload>;
-  get(key: string): Promise<Uint8Array>;
 }
 
 export interface S3StoreConfig {
@@ -53,16 +50,6 @@ export function s3ObjectStore(cfg: S3StoreConfig): ObjectStore & { ensureBucket(
         headers: { "content-type": contentType, "content-length": String(contentLength) },
         expiresAt: new Date(Date.now() + expiresSeconds * 1000).toISOString(),
       };
-    },
-    async get(key) {
-      try {
-        const res = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: key }));
-        if (!res.Body) throw new ObjectNotFound(`object ${key} has no body`);
-        return await res.Body.transformToByteArray();
-      } catch (err) {
-        if ((err as { name?: string }).name === "NoSuchKey") throw new ObjectNotFound(`object ${key} not found`);
-        throw err;
-      }
     },
     /** Local dev convenience: create the bucket if it doesn't exist. Production buckets are provisioned. */
     async ensureBucket() {

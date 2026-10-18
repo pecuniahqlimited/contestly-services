@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import multipart from "@fastify/multipart";
+import { MAX_UPLOAD_BYTES } from "@contestly/shared";
 import { ZodError } from "zod";
 import { InsufficientFunds } from "@contestly/db";
 import { Unauthorized } from "@contestly/auth";
@@ -15,6 +17,8 @@ const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 await app.register(cors, { origin: (process.env.WEB_ORIGIN ?? "http://localhost:5173").split(","), credentials: true });
 await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
 await app.register(authPlugin);
+// Source files only (PUT /parties/:id/files): one file, no other fields. The route sets the size cap.
+await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES + 1, files: 1, fields: 0 } });
 
 // Allow empty JSON bodies (e.g. POST /users/:id/follow with no payload).
 app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {

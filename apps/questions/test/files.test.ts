@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_QUESTIONS_CONFIG, QUESTION_FORMATS } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
-import { chunkText } from "../src/files/chunk.js";
 import { draftsFromFile } from "../src/providers/mock/fromFile.js";
 import { mockGenerator } from "../src/providers/mock/generator.js";
 import { mockVerifier } from "../src/providers/mock/verifier.js";
@@ -15,32 +14,12 @@ const SOURCE = [
   "Eko Bridge was completed in 1975 to ease traffic on Carter Bridge.",
   "The Lekki toll bridge, opened in 2013, connects Lekki with Ikoyi across the lagoon.",
   "Ferries from Falomo and Ikorodu carry thousands of commuters across the water every day.",
-].join(" ");
-
-describe("chunkText", () => {
-  it("keeps sentences whole and overlaps neighbouring chunks", () => {
-    const chunks = chunkText(SOURCE, 160, 80);
-    expect(chunks.length).toBeGreaterThan(2);
-    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(160);
-    for (const c of chunks) expect(c.endsWith(".")).toBe(true);
-    // the last sentence of one chunk opens the next
-    const lastOfFirst = chunks[0].split(/(?<=\.)\s+/).pop()!;
-    expect(chunks[1].startsWith(lastOfFirst)).toBe(true);
-  });
-
-  it("hard-splits a sentence longer than a chunk instead of dropping it", () => {
-    const long = "a".repeat(500) + ".";
-    const chunks = chunkText(long, 200, 0);
-    expect(chunks.join("")).toBe(long);
-  });
-
-  it("returns nothing for empty text", () => {
-    expect(chunkText("   \n ")).toEqual([]);
-  });
-});
+];
+/** Two sentences a chunk, as the API's chunker would roughly cut them. */
+const CHUNKS = [0, 2, 4].map((i) => SOURCE.slice(i, i + 2).join(" "));
 
 describe("file-sourced mock generation", () => {
-  const sources = chunkText(SOURCE, 400, 0).map((text, i) => ({ id: `chunk-${i}`, text }));
+  const sources = CHUNKS.map((text, i) => ({ id: `chunk-${i}`, text }));
 
   it("drafts valid pick-one questions answerable only from the file, each citing its chunk", () => {
     const drafts = draftsFromFile(sources, 10, new Set());

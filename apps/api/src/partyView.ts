@@ -6,6 +6,6 @@ import type { Party } from "@contestly/db";
  * state; the question set's state goes out as questionDisclosure() instead.
  */
 export function publicParty(p: Party) {
-  const { createdByUserId: _creator, brief: _brief, specSummary: _spec, questionsError: _error, liveAt: _live, playStatsRecordedAt: _stats, ...view } = p;
+  const { createdByUserId: _creator, brief: _brief, specSummary: _spec, questionsError: _error, liveAt: _live, endedAt: _ended, playStatsRecordedAt: _stats, ...view } = p;
   return view;
 }

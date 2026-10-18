@@ -6,6 +6,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db, ledgerAccounts, ledgerEntries } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
+import { SOURCE_FILE_FIELD } from "@contestly/shared";
 
 export const API = process.env.API_URL ?? "http://localhost:4000";
 export const RT = process.env.RT_URL ?? "ws://localhost:4001";
@@ -40,6 +41,14 @@ export async function call<T = any>(handle: string, method: string, path: string
   });
   const json = res.status === 204 ? ({} as T) : ((await res.json().catch(() => ({}))) as T);
   return { status: res.status, body: json };
+}
+
+/** Sends a party's source file as multipart, as the app does. Returns { status, body }. */
+export async function sendFile<T = any>(handle: string, partyId: string, file: { filename: string; contentType: string; bytes: Uint8Array<ArrayBuffer> }): Promise<{ status: number; body: T }> {
+  const form = new FormData();
+  form.append(SOURCE_FILE_FIELD, new Blob([file.bytes], { type: file.contentType }), file.filename);
+  const res = await fetch(`${API}/parties/${partyId}/files`, { method: "PUT", headers: { "x-dev-user": handle }, body: form });
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as T };
 }
 
 /** Like call(), but throws on any non-2xx (except 402, which the sims assert on). */

@@ -40,7 +40,7 @@ async function refundParty(tx: Tx, p: Party, message: string) {
   if (p.funding === "host" && p.prizeKind === "cash" && p.hostPoolKobo > 0) {
     await ledger.post(tx, { userId: p.createdByUserId, kind: "cash", amountKobo: p.hostPoolKobo, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
   }
-  await tx.update(parties).set({ status: "cancelled" }).where(eq(parties.id, p.id));
+  await tx.update(parties).set({ status: "cancelled", endedAt: new Date() }).where(eq(parties.id, p.id));
   await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: message });
   await emit({ partyId: p.id, status: "cancelled" });
   return players.length;
@@ -129,7 +129,7 @@ async function settle(partyId: string) {
       console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)`);
     }
 
-    await tx.update(parties).set({ status: "finished" }).where(eq(parties.id, partyId));
+    await tx.update(parties).set({ status: "finished", endedAt: new Date() }).where(eq(parties.id, partyId));
     await tx.insert(chatMessages).values({ partyId, system: true, text: "That's a wrap! Results are in." });
     await emit({ partyId, status: "finished" });
     return true;

@@ -1,6 +1,6 @@
 /**
- * A party's source scope. No files: open knowledge. Files: questions come only from their chunks,
- * so every file must be parsed first — a party whose file is still parsing or failed does not
+ * A party's source scope. No file: open knowledge. A file: questions come only from its chunks, so it
+ * must be read and indexed first — a party whose file is still being read, or couldn't be, does not
  * quietly fall back to open knowledge (fail closed).
  */
 import { asc, cosineDistance, eq, inArray } from "drizzle-orm";
