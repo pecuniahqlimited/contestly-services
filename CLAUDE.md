@@ -234,4 +234,4 @@ Next, in order:
 9. **Step 7, nudges**: device tokens + FCM/APNs in the worker; the nudge table above with triggers, caps, quiet hours, per-category toggles, and send/open/dismiss logging; in-app banner for the same events.
 10. **Step 8, Paystack**: top-ups via webhook, payouts via pluggable rail, nightly reconciliation. Removes the dev top-up.
 11. **Step 9, trust and safety**: block/mute/report, profanity filter, moderation queue, ban + wallet freeze.
-12. **Step 11, deploy**: Caddy, CI, staging, then production. Includes a public endpoint for presigned storage URLs (containers can't hand out storage:8333).
+12. **Step 11, deploy**: Caddy, CI, staging, then production. Includes a public endpoint for presigned storage URLs (containers can't hand out storage:8333). Before launch, make bank retrieval use the pgvector HNSW index (today it's an exact full scan, fine for a small bank).
