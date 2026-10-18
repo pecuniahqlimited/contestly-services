@@ -3,6 +3,7 @@
  *
  *   npm run dev:bots                       new party (hosted by a bot), 3 bots, starts in 3 minutes
  *   npm run dev:bots -- <partyId>          3 bots join an existing open party
+ *   npm run dev:bots -- --latest tunde     3 bots join tunde's newest open party
  *   npm run dev:bots -- --bots 5 --starts-in 2 --free --brief "Nollywood classics"
  *
  * Bots are real dev users, fresh each run and named "(bot)" with a 🤖, who join through the API, sit in the room and answer
@@ -13,8 +14,8 @@
  */
 import { createInterface } from "node:readline";
 import { Client, type Room } from "colyseus.js";
-import { eq } from "drizzle-orm";
-import { db, partyQuestions } from "@contestly/db";
+import { and, desc, eq } from "drizzle-orm";
+import { db, parties, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, kobo, type QuestionFormat } from "@contestly/shared";
 import { RT, api, correctAnswer, inMinutes, sleep, wrongAnswer } from "./sim-lib.js";
@@ -53,7 +54,7 @@ const STICKER_CHANCE = 0.3;
 const STICKERS = ["🔥", "😤", "😂", "🙌🏾", "👀"];
 
 /** Flags that take a value; anything else not starting with -- is the party id. */
-const VALUE_FLAGS = new Set(["--bots", "--starts-in", "--brief"]);
+const VALUE_FLAGS = new Set(["--bots", "--starts-in", "--brief", "--latest"]);
 const args = process.argv.slice(2);
 const flag = (name: string) => {
   const i = args.indexOf(name);
@@ -64,6 +65,19 @@ const startsInMinutes = Math.max(1, Number(flag("--starts-in") ?? DEFAULT_STARTS
 const free = args.includes("--free");
 const brief = flag("--brief") ?? BRIEFS[Math.floor(Math.random() * BRIEFS.length)];
 const partyArg = args.find((a, i) => !a.startsWith("--") && !VALUE_FLAGS.has(args[i - 1]));
+const latestOf = flag("--latest")?.trim().toLowerCase();
+
+/** The newest open party this handle created, so you needn't copy its id off the phone. */
+async function latestOpenParty(handle: string): Promise<string> {
+  const [host] = await db.select({ id: users.id }).from(users).where(eq(users.handle, handle));
+  if (!host) throw new Error(`No user @${handle}.`);
+  const [p] = await db.select({ id: parties.id, title: parties.title }).from(parties)
+    .where(and(eq(parties.createdByUserId, host.id), eq(parties.status, "open")))
+    .orderBy(desc(parties.createdAt)).limit(1);
+  if (!p) throw new Error(`@${handle} has no open party.`);
+  console.log(`@${handle}'s newest open party: "${p.title}" (${p.id}).`);
+  return p.id;
+}
 
 const between = ({ min, max }: { min: number; max: number }) => min + Math.random() * (max - min);
 const bots = BOTS.slice(0, count).map((b) => ({ ...b, accuracy: between(ACCURACY), id: "" }));
@@ -74,7 +88,7 @@ for (const b of bots) {
   if (!free) await api(b.handle, "POST", "/wallet/dev-topup", { nairaAmount: 1000 });
 }
 
-let partyId = partyArg;
+let partyId = partyArg ?? (latestOf ? await latestOpenParty(latestOf) : undefined);
 if (!partyId) {
   const host = bots[0];
   const party = await api(host.handle, "POST", "/parties", {
