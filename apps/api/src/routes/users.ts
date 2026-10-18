@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, sql, count, inArray, desc } from "drizzle-orm";
 import { db, users, follows, partyPlayers, ledger, partiesHostedBy } from "@contestly/db";
-import { upsertMeSchema, kobo } from "@contestly/shared";
+import { upsertMeSchema } from "@contestly/shared";
 import { Unauthorized } from "@contestly/auth";
 import { requireUser, uuidParam } from "../auth.js";
 import { publicParty } from "../partyView.js";
@@ -22,7 +22,7 @@ export async function usersRoutes(app: FastifyInstance) {
     const [u] = existing
       ? await db.update(users).set(body).where(eq(users.id, existing.id)).returning()
       : await db.insert(users).values({ ...body, firebaseUid: req.auth.firebaseUid, phone: req.auth.phone }).returning();
-    await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: kobo(500), type: "welcome_bonus", idempotencyKey: `welcome:${u.id}` }));
+    await db.transaction((tx) => ledger.grantWelcome(tx, u.id));
     return { ...publicUser(u), wallet: await ledger.balances(u.id) };
   });
 

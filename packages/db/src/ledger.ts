@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql as dsql } from "drizzle-orm";
+import { WELCOME_BONUS_KOBO } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { ledgerAccounts, ledgerEntries, users } from "./schema.js";
 
@@ -36,6 +37,10 @@ export async function post(tx: Tx, p: { userId: string; kind: Kind; amountKobo: 
   await tx.update(ledgerAccounts).set({ balanceKobo: next }).where(eq(ledgerAccounts.id, acct.id));
   return { replayed: false, balanceKobo: next };
 }
+
+/** The welcome bonus coins, granted exactly once per user however many times it's asked for. */
+export const grantWelcome = (tx: Tx, userId: string) =>
+  post(tx, { userId, kind: "bonus", amountKobo: WELCOME_BONUS_KOBO, type: "welcome_bonus", idempotencyKey: `welcome:${userId}` });
 
 /** Charge an entry fee: bonus coins first, then cash. Throws InsufficientFunds if both together can't cover it. */
 export async function charge(tx: Tx, p: { userId: string; amountKobo: number; type: string; refType: string; refId: string; idempotencyKey: string }) {

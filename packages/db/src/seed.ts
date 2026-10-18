@@ -4,7 +4,7 @@
  * Wallets are the exception: the ledger is append-only, so the one-off seed credits are posted once and never reset.
  */
 import { and, inArray, sql as dsql } from "drizzle-orm";
-import { kobo, DEFAULT_PAYOUT_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG } from "@contestly/shared";
+import { kobo, WELCOME_BONUS_KOBO, DEFAULT_PAYOUT_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG } from "@contestly/shared";
 import { db, sql } from "./client.js";
 import { users, follows, parties, partyPlayers, chatMessages, appConfig } from "./schema.js";
 import * as ledger from "./ledger.js";
@@ -41,7 +41,7 @@ await db.transaction(async (tx) => {
   ]);
 
   for (const u of rows) {
-    await ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: kobo(500), type: "welcome_bonus", idempotencyKey: `seed:welcome:${u.id}` });
+    await ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: WELCOME_BONUS_KOBO, type: "welcome_bonus", idempotencyKey: `seed:welcome:${u.id}` });
     if (u.isBrand) await ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: kobo(200_000), type: "topup", idempotencyKey: `seed:brandcash:${u.id}` });
   }
 

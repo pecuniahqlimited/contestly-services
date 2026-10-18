@@ -112,6 +112,9 @@ export type FlagReason = (typeof FLAG_REASONS)[number];
 /** Flags name their question, so a flag that arrives late never lands on the next one. */
 export const flagSchema = z.object({ questionId: z.string().uuid(), reason: z.enum(FLAG_REASONS) });
 
+/** Bonus coins every new user starts with (never withdrawable). */
+export const WELCOME_BONUS_KOBO = kobo(500);
+
 /** Host source files: parsed server-side into chunks the questions are generated from. */
 export const UPLOAD_CONTENT_TYPES = {
   "application/pdf": "pdf",
