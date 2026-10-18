@@ -437,6 +437,8 @@ export const chatMessageSchema = z.object({
 
 /** GET /parties/:id: the lobby before the room is joined. `joined` is the viewer's seat. */
 export const partyDetailSchema = partySummarySchema.extend({
+  /** The host's own brief, so their team can fix a failed set; null for everyone else (it can give the answers away). */
+  brief: z.string().nullable(),
   questions: questionDisclosureSchema,
   players: z.array(partyPlayerSchema),
   joined: z.boolean(),

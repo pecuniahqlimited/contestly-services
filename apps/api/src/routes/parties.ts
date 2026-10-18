@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, desc, asc, sql, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, chatMessages, follows, ledger, publicHost, publicHosts, getPartyConfig } from "@contestly/db";
+import { db, users, parties, partyPlayers, chatMessages, follows, ledger, publicHost, publicHosts, getPartyConfig, isHostTeam } from "@contestly/db";
 import { createPartySchema, inferCategory, questionDisclosure } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
 import { enqueueSealedSet } from "../questionSet.js";
+import { publicParty } from "../partyView.js";
 
 const notify = notifyQueue();
 const partyJobs = partyQueue();
@@ -29,7 +30,7 @@ export async function partiesRoutes(app: FastifyInstance) {
       rows = rows.filter((r) => ids.has(hosts.get(r.p.id)!.id));
     }
     if (!filter && me?.interests.length) rows.sort((a, b) => Number(me.interests.includes(b.p.category)) - Number(me.interests.includes(a.p.category)));
-    return rows.map((r) => ({ ...r.p, host: hosts.get(r.p.id), playerCount: Number(r.players), potKobo: potKobo(r.p, Number(r.players)) }));
+    return rows.map((r) => ({ ...publicParty(r.p), host: hosts.get(r.p.id), playerCount: Number(r.players), potKobo: potKobo(r.p, Number(r.players)) }));
   });
 
   app.post("/parties", async (req, reply) => {
@@ -58,7 +59,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     // With files on the way, the questions service builds it once they're read (sealWhenFilesRead).
     if (body.mode === "sealed" && !body.awaitFiles) await enqueueSealedSet(party.id, "create");
     await partyJobs.add("start", { kind: "start", partyId: party.id }, { delay: Math.max(0, startsAt.getTime() - Date.now()), jobId: `start-${party.id}` });
-    return reply.code(201).send({ ...party, questions: questionDisclosure(party), playerCount: seated, potKobo: potKobo(party, seated) });
+    return reply.code(201).send({ ...publicParty(party), questions: questionDisclosure(party), playerCount: seated, potKobo: potKobo(party, seated) });
   });
 
   app.get("/parties/:id", async (req, reply) => {
@@ -66,10 +67,10 @@ export async function partiesRoutes(app: FastifyInstance) {
     const [p] = await db.select().from(parties).where(eq(parties.id, id));
     if (!p) return reply.code(404).send({ error: "not_found" });
     const host = await publicHost(p);
+    const me = req.auth?.user;
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
     const chat = await db.select({ m: chatMessages, handle: users.handle, avatarEmoji: users.avatarEmoji }).from(chatMessages).leftJoin(users, eq(users.id, chatMessages.userId)).where(eq(chatMessages.partyId, id)).orderBy(desc(chatMessages.createdAt)).limit(50);
-    const me = req.auth?.user;
-    return { ...p, questions: questionDisclosure(p), host, players, playerCount: players.length, potKobo: potKobo(p, players.length), joined: !!me && players.some((x) => x.id === me.id), chat: chat.reverse().map((c) => ({ ...c.m, handle: c.handle, avatarEmoji: c.avatarEmoji })) };
+    return { ...publicParty(p), brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), host, players, playerCount: players.length, potKobo: potKobo(p, players.length), joined: !!me && players.some((x) => x.id === me.id), chat: chat.reverse().map((c) => ({ ...c.m, handle: c.handle, avatarEmoji: c.avatarEmoji })) };
   });
 
   /** Join: charges bonus coins first, then cash, inside one transaction with a row lock on the party. */
