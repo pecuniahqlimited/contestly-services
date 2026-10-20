@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { and, asc, eq, count } from "drizzle-orm";
+import { and, asc, eq, count, lte } from "drizzle-orm";
 import { db, parties, partyPlayers, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, seenInSet, type Party, type Tx } from "@contestly/db";
 import { makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { QUEUES, PARTY_EVENTS_CHANNEL, partyRoomKey, type NotifyJob, type PartyJob } from "@contestly/shared";
@@ -182,13 +182,33 @@ async function watchdog(partyId: string) {
   });
 }
 
+const SWEEP_EVERY_MS = 60_000;
+/** A start job normally fires on time; the sweep leaves a party this long so it only picks up what was missed. */
+const SWEEP_GRACE_MS = 30_000;
+const SWEEP_BATCH = 100;
+
+/**
+ * Every minute: any open party past its startsAt (its start job lost to a Valkey flush or a crash, or a
+ * party written straight to the database) starts or cancels with refunds now. startOrCancel locks the
+ * row and re-checks the status, so racing the real start job is harmless.
+ */
+async function sweepOverdue() {
+  const overdue = await db.select({ id: parties.id }).from(parties)
+    .where(and(eq(parties.status, "open"), lte(parties.startsAt, new Date(Date.now() - SWEEP_GRACE_MS))))
+    .orderBy(asc(parties.startsAt)).limit(SWEEP_BATCH);
+  for (const p of overdue) await startOrCancel(p.id);
+  if (overdue.length) console.log(`[party] sweep: ${overdue.length} overdue ${overdue.length === 1 ? "party" : "parties"} started or cancelled`);
+}
+
 const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
-  const { kind, partyId } = job.data;
-  if (kind === "start" || kind === "cancel_if_empty") return startOrCancel(partyId);
-  if (kind === "settle") return settle(partyId);
-  if (kind === "watchdog") return watchdog(partyId);
-  if (kind === "cancel_generation_failed") return cancelGenerationFailed(partyId);
+  const d = job.data;
+  if (d.kind === "sweep") return sweepOverdue();
+  if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(d.partyId);
+  if (d.kind === "settle") return settle(d.partyId);
+  if (d.kind === "watchdog") return watchdog(d.partyId);
+  if (d.kind === "cancel_generation_failed") return cancelGenerationFailed(d.partyId);
 }, { connection });
+await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "sweep", data: { kind: "sweep" } });
 
 for (const w of [notifyWorker, partyWorker]) {
   w.on("failed", (job, err) => console.error(`[${w.name}] job ${job?.id} failed:`, err.message));

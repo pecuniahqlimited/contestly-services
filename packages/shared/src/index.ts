@@ -289,7 +289,10 @@ export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFa
  * re-check couldn't be completed); the worker refunds (money only moves in the worker). Before
  * start, a failed generation never cancels: the host is notified and can retry.
  */
-export type PartyJob = { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string };
+export type PartyJob =
+  | { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string }
+  /** Every minute: starts or cancels any open party past its startsAt whose start job was lost. */
+  | { kind: "sweep" };
 /**
  * Questions-service jobs (ADR 0002). `generate_set` builds and seals the set when the party is
  * created (curate: when the host asks for drafts) and publishes the set's state on
