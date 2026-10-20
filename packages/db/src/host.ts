@@ -51,6 +51,9 @@ export function isHostTeam(party: PartyHostFields, userId: string): boolean {
   return party.createdByUserId === userId;
 }
 
+/** isHostTeam as a query condition on parties: the parties this user may act for. */
+export const hostTeamOf = (userId: string) => eq(parties.createdByUserId, userId);
+
 /** Parties publicly hosted by this user (step 4 extends to brands). */
 export async function partiesHostedBy(userId: string) {
   return db.select().from(parties).where(eq(parties.createdByUserId, userId));

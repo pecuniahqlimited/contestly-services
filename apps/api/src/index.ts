@@ -7,6 +7,7 @@ import { ZodError } from "zod";
 import { InsufficientFunds } from "@contestly/db";
 import { Unauthorized } from "@contestly/auth";
 import { authPlugin } from "./auth.js";
+import { meRoutes } from "./routes/me.js";
 import { usersRoutes } from "./routes/users.js";
 import { partiesRoutes } from "./routes/parties.js";
 import { walletRoutes } from "./routes/wallet.js";
@@ -37,6 +38,7 @@ app.setErrorHandler((err: any, _req, reply) => {
 });
 
 app.get("/health", async () => ({ ok: true, service: "api", time: new Date().toISOString() }));
+await app.register(meRoutes);
 await app.register(usersRoutes);
 await app.register(partiesRoutes);
 await app.register(walletRoutes);

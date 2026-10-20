@@ -328,12 +328,36 @@ export const publicUserSchema = z.object({
 });
 export const meResponseSchema = publicUserSchema.extend({ wallet: walletSchema });
 
+/** A person as a face, a list row or a mention shows them. */
+export const personSchema = z.object({
+  id: z.string().uuid(),
+  handle: z.string(),
+  displayName: z.string(),
+  avatarEmoji: z.string(),
+  isVerified: z.boolean(),
+});
+
+/** How the viewer stands with someone: follows them (with party alerts on or off), is followed back. All false signed out. */
+export const viewerFollowSchema = z.object({ following: z.boolean(), notify: z.boolean(), followsYou: z.boolean() });
+
+/** POST/DELETE/PATCH /users/:id/follow → the viewer's follow state for that person. */
+export const followStateSchema = z.object({ following: z.boolean(), notify: z.boolean() });
+/** PATCH /users/:id/follow: party alerts for this one follow. */
+export const followAlertSchema = z.object({ notify: z.boolean() });
+
+/** GET /users/:handle/followers and /following: people the viewer follows come first. */
+export const followListEntrySchema = personSchema.extend({ viewer: viewerFollowSchema });
+export const followListResponseSchema = z.array(followListEntrySchema);
+
+/** GET /me/played-with: people from finished parties I played, whom I don't follow yet. Most parties together first. */
+export const playedWithEntrySchema = personSchema.extend({ partiesTogether: z.number().int(), lastPlayedAt: z.string().datetime() });
+export const playedWithResponseSchema = z.array(playedWithEntrySchema);
+
 /** GET /users/:handle: a profile with counts, play stats, the viewer's follow state and open parties hosted. */
 export const userStatsSchema = z.object({
   parties: z.number().int(),
   wins: z.number().int(),
-  bestPrizeKobo: z.number().int(),
-  /** Best finishing rank in any played party; null until one has been played. */
+  /** Best finishing rank in any finished party; null until one has been played. No prize amounts: profiles lead with play. */
   bestRank: z.number().int().nullable(),
 });
 
@@ -390,12 +414,26 @@ export const partyRowSchema = z.object({
   startsAt: z.string().datetime(),
 });
 
+/** Faces on a party card. */
+export const MAX_PARTY_FACES = 4;
+/** People the viewer follows, named on a card ("Ada and 2 you follow are in"). */
+export const MAX_FRIENDS_NAMED = 2;
+
+/**
+ * Who's in a party, as a card shows it: the first faces (the host's, if they play, then by join time),
+ * and the people the viewer follows who are in it, the first few named, with how many in all.
+ */
+export const partyPeopleSchema = z.object({
+  faces: z.array(personSchema),
+  friendsIn: z.object({ people: z.array(personSchema), count: z.number().int() }),
+});
+
 /** GET /parties: one card in Discover. */
 export const partySummarySchema = partyRowSchema.extend({
   host: publicHostSchema,
   playerCount: z.number().int(),
   potKobo: z.number().int(),
-});
+}).merge(partyPeopleSchema);
 export const partiesResponseSchema = z.array(partySummarySchema);
 
 /**
@@ -477,8 +515,16 @@ export const chatMessageSchema = z.object({
   avatarEmoji: z.string().nullable(),
 });
 
+/** The app's URL scheme (app.json "scheme"): contestly://party/<id> opens party detail. */
+export const APP_LINK_SCHEME = "contestly";
+/** A party's links to share: the app's own scheme, and a web link that opens the app or the store. */
+export const partyLinksSchema = z.object({ app: z.string(), web: z.string().url() });
+
 /** GET /parties/:id: the lobby before the room is joined. `joined` is the viewer's seat. */
 export const partyDetailSchema = partySummarySchema.extend({
+  invite: partyLinksSchema,
+  /** Who invited the viewer, while the invite is pending. */
+  invitedBy: personSchema.nullable(),
   /** The host's own brief, so their team can fix a failed set; null for everyone else (it can give the answers away). */
   brief: z.string().nullable(),
   questions: questionDisclosureSchema,
@@ -495,13 +541,64 @@ export const joinPartyResponseSchema = z.object({
   potKobo: z.number().int().optional(),
 });
 
+/** In finished parties both played: how often each placed above the other. Ties count for neither. */
+export const headToHeadSchema = z.object({ me: z.number().int(), them: z.number().int(), played: z.number().int() });
+
+/** One of someone's finished parties on their profile, with where they placed. */
+export const recentPartySchema = partyRowSchema.pick({ id: true, title: true, category: true, coverColor: true, coverEmoji: true, startsAt: true }).extend({
+  rank: z.number().int().nullable(),
+  playerCount: z.number().int(),
+});
+/** Finished parties on a profile. Only public ones, and private ones the viewer was also in. */
+export const MAX_PROFILE_RECENT_PARTIES = 5;
+
 export const userProfileSchema = publicUserSchema.extend({
   followers: z.number().int(),
   following: z.number().int(),
   stats: userStatsSchema,
-  viewer: z.object({ following: z.boolean(), notify: z.boolean() }),
+  viewer: viewerFollowSchema,
+  /** Null signed out and on your own profile. */
+  headToHead: headToHeadSchema.nullable(),
+  recent: z.array(recentPartySchema),
   hosting: z.array(partyRowSchema),
 });
+
+/** Each party in GET /me/parties: why it's mine, its last chat line, who invited me, and where I placed. */
+export const MY_PARTY_ROLES = ["hosting", "playing", "invited"] as const;
+export const lastChatLineSchema = z.object({
+  /** Null for system lines ("Ada joined"). */
+  author: personSchema.pick({ handle: true, displayName: true }).nullable(),
+  text: z.string().nullable(),
+  sticker: z.string().nullable(),
+  createdAt: z.string().datetime(),
+});
+export const myPartySchema = partySummarySchema.extend({
+  role: z.enum(MY_PARTY_ROLES),
+  lastLine: lastChatLineSchema.nullable(),
+  invitedBy: personSchema.nullable(),
+  myRank: z.number().int().nullable(),
+});
+/**
+ * GET /me/parties. invited: pending invites to open parties, soonest first. live, then upcoming
+ * (soonest first), then recent: finished or cancelled in the last MY_RECENT_DAYS, newest first.
+ */
+export const MY_RECENT_DAYS = 14;
+export const MY_RECENT_LIMIT = 20;
+export const myPartiesResponseSchema = z.object({
+  invited: z.array(myPartySchema),
+  live: z.array(myPartySchema),
+  upcoming: z.array(myPartySchema),
+  recent: z.array(myPartySchema),
+});
+
+/** Invites per party, from everyone in it together. */
+export const MAX_INVITES_PER_PARTY = 50;
+/** POST /parties/:id/invites: only people the inviter follows, is followed by, or has played with. */
+export const inviteToPartySchema = z.object({ userIds: z.array(z.string().uuid()).min(1).max(MAX_INVITES_PER_PARTY) });
+/** → 201: how many were newly invited (already invited, already in, or yourself are skipped). */
+export const inviteToPartyResponseSchema = z.object({ invited: z.number().int() });
+/** POST /parties/:id/invite/dismiss → the viewer's invite to this party, dismissed. */
+export const dismissInviteResponseSchema = z.object({ status: z.literal("dismissed") });
 
 /** POST /parties → 201: the new party, its question set's state, and the host's own seat (sealed) counted. */
 export const createPartyResponseSchema = partyRowSchema.extend({
@@ -551,6 +648,20 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type QuestionDisclosure = z.infer<typeof questionDisclosureSchema>;
 export type JoinPartyResponse = z.infer<typeof joinPartyResponseSchema>;
 export type UserProfile = z.infer<typeof userProfileSchema>;
+export type Person = z.infer<typeof personSchema>;
+export type ViewerFollow = z.infer<typeof viewerFollowSchema>;
+export type FollowState = z.infer<typeof followStateSchema>;
+export type FollowListEntry = z.infer<typeof followListEntrySchema>;
+export type PlayedWithEntry = z.infer<typeof playedWithEntrySchema>;
+export type PartyPeople = z.infer<typeof partyPeopleSchema>;
+export type PartyLinks = z.infer<typeof partyLinksSchema>;
+export type HeadToHead = z.infer<typeof headToHeadSchema>;
+export type RecentParty = z.infer<typeof recentPartySchema>;
+export type MyPartyRole = (typeof MY_PARTY_ROLES)[number];
+export type LastChatLine = z.infer<typeof lastChatLineSchema>;
+export type MyParty = z.infer<typeof myPartySchema>;
+export type MyPartiesResponse = z.infer<typeof myPartiesResponseSchema>;
+export type InviteToPartyInput = z.infer<typeof inviteToPartySchema>;
 export type CreatePartyInput = z.infer<typeof createPartySchema>;
 export type UpsertMeInput = z.infer<typeof upsertMeSchema>;
 export type CreatePartyResponse = z.infer<typeof createPartyResponseSchema>;

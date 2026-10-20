@@ -1,36 +1,35 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq, inArray, desc, asc, sql, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, chatMessages, follows, ledger, publicHost, publicHosts, getPartyConfig, isHostTeam } from "@contestly/db";
-import { createPartySchema, inferCategory, questionDisclosure, startsAtFor } from "@contestly/shared";
+import { and, eq, inArray, desc, asc, count } from "drizzle-orm";
+import { db, users, parties, partyPlayers, chatMessages, follows, ledger, getPartyConfig, isHostTeam } from "@contestly/db";
+import { createPartySchema, inferCategory, inviteToPartySchema, questionDisclosure, startsAtFor } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
 import { enqueueSealedSet } from "../questionSet.js";
 import { publicParty } from "../partyView.js";
+import { partySummaries, potKobo } from "../partySummaries.js";
+import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 
 const notify = notifyQueue();
 const partyJobs = partyQueue();
-
-export const potKobo = (p: { funding: string; hostPoolKobo: number; entryKobo: number }, players: number) => (p.funding === "host" ? p.hostPoolKobo : p.entryKobo * players);
 
 export async function partiesRoutes(app: FastifyInstance) {
   /** Discover feed. ?filter=following|brands|soon. Personalised by the viewer's interests when signed in. */
   app.get("/parties", async (req) => {
     const me = req.auth?.user;
     const { filter } = (req.query ?? {}) as { filter?: string };
-    let rows = await db.select({ p: parties, players: sql<number>`(select count(*) from ${partyPlayers} pp where pp.party_id = ${parties.id})` })
-      .from(parties)
+    const rows = await db.select().from(parties)
       .where(and(inArray(parties.status, ["open", "live"]), eq(parties.visibility, "public")))
       .orderBy(asc(parties.startsAt)).limit(50);
-    const hosts = await publicHosts(rows.map((r) => r.p));
-    if (filter === "brands") rows = rows.filter((r) => hosts.get(r.p.id)!.isBrand);
+    let cards = await partySummaries(rows, me?.id);
+    if (filter === "brands") cards = cards.filter((c) => c.host.isBrand);
     if (filter === "following" && me) {
       const f = await db.select({ id: follows.followeeId }).from(follows).where(eq(follows.followerId, me.id));
       const ids = new Set(f.map((x) => x.id));
-      rows = rows.filter((r) => ids.has(hosts.get(r.p.id)!.id));
+      cards = cards.filter((c) => ids.has(c.host.id));
     }
-    if (!filter && me?.interests.length) rows.sort((a, b) => Number(me.interests.includes(b.p.category)) - Number(me.interests.includes(a.p.category)));
-    return rows.map((r) => ({ ...publicParty(r.p), host: hosts.get(r.p.id), playerCount: Number(r.players), potKobo: potKobo(r.p, Number(r.players)) }));
+    if (!filter && me?.interests.length) cards.sort((a, b) => Number(me.interests.includes(b.category)) - Number(me.interests.includes(a.category)));
+    return cards;
   });
 
   app.post("/parties", async (req, reply) => {
@@ -38,7 +37,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const body = createPartySchema.parse(req.body);
     const startsAt = startsAtFor(body);
     const split = body.split ?? (await getPartyConfig()).defaultSplit;
-    const party = await db.transaction(async (tx) => {
+    const { party, invited } = await db.transaction(async (tx) => {
       const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode: body.mode, questionsStatus: body.mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, prizeText: body.prizeText, prizeValueKobo: body.prizeValueKobo, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
       // Host funds a cash pot up front so it can't be spent elsewhere; refunded by the worker if the party is cancelled.
       // A non-cash prize moves no money: it becomes a fulfilment record at settlement.
@@ -50,11 +49,12 @@ export async function partiesRoutes(app: FastifyInstance) {
         await tx.insert(partyPlayers).values({ partyId: p.id, userId: me.id });
       }
       await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: body.visibility === "public" ? "Party is open. Your followers have been told." : "Private party. Share the link to fill seats." });
-      return p;
+      // Same guards as inviting later; a refused invite refuses the whole party, so nothing is half made.
+      return { party: p, invited: await inviteToParty(tx, p, me, body.inviteUserIds) };
     });
     const seated = body.mode === "sealed" ? 1 : 0;
     if (body.visibility === "public") await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
-    if (body.inviteUserIds.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: body.inviteUserIds });
+    if (invited.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: invited });
     // Sealed sets are built now, so they're ready long before start and a failure reaches the host in time (ADR 0002).
     // With files on the way, the questions service builds it once they're read (sealWhenFilesRead).
     if (body.mode === "sealed" && !body.awaitFiles) await enqueueSealedSet(party.id, "create");
@@ -66,11 +66,32 @@ export async function partiesRoutes(app: FastifyInstance) {
     const id = uuidParam(req);
     const [p] = await db.select().from(parties).where(eq(parties.id, id));
     if (!p) return reply.code(404).send({ error: "not_found" });
-    const host = await publicHost(p);
     const me = req.auth?.user;
+    const [[summary], invitedBy] = await Promise.all([partySummaries([p], me?.id), pendingInviter(p.id, me?.id)]);
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
     const chat = await db.select({ m: chatMessages, handle: users.handle, avatarEmoji: users.avatarEmoji }).from(chatMessages).leftJoin(users, eq(users.id, chatMessages.userId)).where(eq(chatMessages.partyId, id)).orderBy(desc(chatMessages.createdAt)).limit(50);
-    return { ...publicParty(p), brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), host, players, playerCount: players.length, potKobo: potKobo(p, players.length), joined: !!me && players.some((x) => x.id === me.id), chat: chat.reverse().map((c) => ({ ...c.m, handle: c.handle, avatarEmoji: c.avatarEmoji })) };
+    return { ...summary, brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, players, joined: !!me && players.some((x) => x.id === me.id), chat: chat.reverse().map((c) => ({ ...c.m, handle: c.handle, avatarEmoji: c.avatarEmoji })) };
+  });
+
+  /** Invite people I'm connected to. Players and the host's team, while the party is open (invites.ts has the guards). */
+  app.post("/parties/:id/invites", async (req, reply) => {
+    const me = requireUser(req);
+    const id = uuidParam(req);
+    const { userIds } = inviteToPartySchema.parse(req.body);
+    const invited = await db.transaction(async (tx) => {
+      const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
+      if (!p) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+      return inviteToParty(tx, p, me, userIds);
+    });
+    if (invited.length) await notify.add("party_invite", { kind: "party_invite", partyId: id, fromUserId: me.id, toUserIds: invited });
+    return reply.code(201).send({ invited: invited.length });
+  });
+
+  /** The viewer turns down their invite to this party. Joining accepts it instead. */
+  app.post("/parties/:id/invite/dismiss", async (req) => {
+    const me = requireUser(req);
+    await dismissInvite(uuidParam(req), me.id);
+    return { status: "dismissed" as const };
   });
 
   /** Join: charges bonus coins first, then cash, inside one transaction with a row lock on the party. */
@@ -88,6 +109,7 @@ export async function partiesRoutes(app: FastifyInstance) {
       if (already.length) return { status: 200, body: { joined: true, replayed: true } };
       const paid = await ledger.charge(tx, { userId: me.id, amountKobo: p.entryKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
       await tx.insert(partyPlayers).values({ partyId: id, userId: me.id });
+      await acceptInvite(tx, id, me.id);
       await tx.insert(chatMessages).values({ partyId: id, system: true, text: `${me.displayName} joined` });
       return { status: 201, body: { joined: true, paid, potKobo: potKobo(p, Number(n) + 1) } };
     });
