@@ -2,6 +2,7 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { db, chatMessages, hostTeamOf, isHostTeam, parties, partyInvites, partyPlayers, users, type Party, type User } from "@contestly/db";
 import { MY_RECENT_DAYS, type LastChatLine, type MyPartyRole, type Person } from "@contestly/shared";
+import { partyLinks } from "./invites.js";
 import { partySummaries } from "./partySummaries.js";
 import { personColumns } from "./people.js";
 import { groupMyParties } from "./social.js";
@@ -49,6 +50,6 @@ export async function myParties(me: User, now = new Date()) {
   ]);
   const summaryOf = new Map(summaries.map((s) => [s.id, s]));
   const rankOf = new Map(ranks.map((r) => [r.partyId, r.rank]));
-  const view = (m: Mine) => ({ ...summaryOf.get(m.p.id)!, role: m.role, lastLine: lines.get(m.p.id) ?? null, invitedBy: m.invitedBy, myRank: rankOf.get(m.p.id) ?? null });
+  const view = (m: Mine) => ({ ...summaryOf.get(m.p.id)!, role: m.role, invite: partyLinks(m.p.id), lastLine: lines.get(m.p.id) ?? null, invitedBy: m.invitedBy, myRank: rankOf.get(m.p.id) ?? null });
   return { invited: groups.invited.map(view), live: groups.live.map(view), upcoming: groups.upcoming.map(view), recent: groups.recent.map(view) };
 }

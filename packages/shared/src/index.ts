@@ -574,6 +574,8 @@ export const lastChatLineSchema = z.object({
 });
 export const myPartySchema = partySummarySchema.extend({
   role: z.enum(MY_PARTY_ROLES),
+  /** To invite people from Home without opening the party. */
+  invite: partyLinksSchema,
   lastLine: lastChatLineSchema.nullable(),
   invitedBy: personSchema.nullable(),
   myRank: z.number().int().nullable(),
