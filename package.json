@@ -1,7 +1,9 @@
 {
   "name": "contestly-services",
   "private": true,
-  "engines": { "node": ">=22 <23" },
+  "engines": {
+    "node": ">=22 <23"
+  },
   "type": "module",
   "workspaces": [
     "packages/*",
@@ -16,7 +18,9 @@
     "dev:bots": "tsx --env-file=.env scripts/dev-bots.ts",
     "infra:up": "docker compose up -d --wait postgres valkey storage",
     "infra:down": "docker compose down",
-    "db:push": "npm run push -w @contestly/db",
+    "db:generate": "npm run generate -w @contestly/db",
+    "db:migrate": "npm run migrate -w @contestly/db",
+    "db:baseline": "npm run baseline -w @contestly/db",
     "db:seed": "npm run seed -w @contestly/db",
     "dev": "concurrently -n api,rt,worker,questions -c blue,magenta,yellow,cyan \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\" \"npm run dev -w @contestly/questions\"",
     "build": "npm run prepare && npm run build -w apps --if-present",

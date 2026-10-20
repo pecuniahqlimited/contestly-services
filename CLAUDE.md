@@ -154,8 +154,10 @@ One Dockerfile per service repo build (`APP` build arg picks the process); each 
 
 ```bash
 cp .env.example .env && npm install     # install also builds the shared packages
-npm run infra:up        # docker compose: postgres (pgvector image) + valkey + storage (SeaweedFS, S3 API on :8333). After pulling the pgvector switch: docker compose down -v once, then infra:up + db:push + db:seed.
-npm run db:push         # drizzle-kit push (dev). Use db:generate + db:migrate once schema stabilises.
+npm run infra:up        # docker compose: postgres (pgvector image) + valkey + storage (SeaweedFS, S3 API on :8333)
+npm run db:migrate      # apply packages/db/drizzle migrations (a fresh database starts from 0000_baseline)
+npm run db:generate -- --name <what_changed>   # after editing packages/db/src/schema.ts: writes the next migration; review the SQL, commit it with the schema change
+npm run db:baseline     # once, only on a database db:push built before migrations (Oct 2026): marks 0000 applied, then db:migrate
 npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 brands) and 3 parties
 npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
@@ -185,6 +187,7 @@ Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handle
 
 - TypeScript, ESM, Node 22. `tsx watch` in dev, `tsc` build.
 - Drizzle for all queries; raw `sql` only for aggregates Drizzle can't express.
+- Every schema change ships as a migration: edit `schema.ts`, `npm run db:generate -- --name <what_changed>`, read the SQL (renames and enum changes need care; hand-edit it where Drizzle guesses wrong), commit both together, then `db:migrate`. Never `drizzle-kit push`, and never change a migration that has been committed.
 - Route handlers stay thin; anything touching money or game state lives in `packages/db`, `packages/game` or a service module so API, realtime and worker share it.
 - Errors: throw `Unauthorized`, `InsufficientFunds`, or an Error with `statusCode`; the API error handler maps them. Validate `:id` params with `uuidParam()`.
 - Heartbeats on sockets stay under 30s (Cloudflare drops idle WebSockets at ~100s). Clients reconnect and rejoin their room automatically.

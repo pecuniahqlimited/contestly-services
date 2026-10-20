@@ -65,7 +65,7 @@ only moves in the worker.
 
 - pgvector is assumed: local dev uses the `pgvector/pgvector:pg16` image with
   `packages/db/init/01-pgvector.sql` creating the extension on a fresh volume. On DO Managed
-  Postgres, run `CREATE EXTENSION IF NOT EXISTS vector;` once per database before `db:push`.
+  Postgres, run `CREATE EXTENSION IF NOT EXISTS vector;` once per database before `db:migrate` (the baseline migration also runs it, which needs the privilege).
 - `parties.live_at` exists so the watchdog can measure how long a live party has waited for a ready
   set; don't reuse it as "when the first question opened".
 - Parties created before `questions_status` existed are `not_started`; at start the worker builds

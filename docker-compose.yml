@@ -5,7 +5,7 @@ name: contestly-services
 services:
   postgres:
     # pgvector-enabled Postgres for question-bank retrieval. The init script only runs on a
-    # fresh volume: after switching images, `docker compose down -v` once, then infra:up + db:push + db:seed.
+    # fresh volume: after switching images, `docker compose down -v` once, then infra:up + db:migrate + db:seed.
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: contestly

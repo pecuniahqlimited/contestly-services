@@ -26,7 +26,7 @@ The UI (Expo mobile app, Vite web app, design tokens, API client and the prototy
 cp .env.example .env
 npm install            # also builds the shared packages (prepare script)
 npm run infra:up        # postgres + valkey in docker
-npm run db:push         # create tables
+npm run db:migrate      # create tables (drizzle migrations)
 npm run db:seed         # demo users + parties
 npm run dev             # api, realtime, worker with hot reload
 scripts/smoke.sh        # end-to-end check against the running stack
