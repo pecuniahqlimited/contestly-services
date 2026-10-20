@@ -5,8 +5,10 @@
  *   npm run dev:bots -- <partyId>          3 bots join an existing open party
  *   npm run dev:bots -- --latest tunde     3 bots join tunde's newest open party
  *   npm run dev:bots -- --bots 5 --starts-in 2 --free --brief "Nollywood classics"
+ *   npm run dev:bots -- --regulars --latest tunde   the same bots every run (@bot.bisi, @bot.chuks, …), to follow and play again
+ *   npm run dev:bots -- --regulars --invite tunde   a new party hosted by @bot.bisi, who invites @tunde to it
  *
- * Bots are real dev users, fresh each run and named "(bot)" with a 🤖, who join through the API, sit in the room and answer
+ * Bots are real dev users, named "(bot)" with a 🤖, who join through the API, sit in the room and answer
  * with their own pace and accuracy. Like the sims, they read the right answers from Postgres; nothing like
  * this exists in the product. Press Enter while they wait to start the party now instead of at its time.
  *
@@ -18,7 +20,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db, parties, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, kobo, type QuestionFormat } from "@contestly/shared";
-import { RT, api, correctAnswer, inMinutes, sleep, wrongAnswer } from "./sim-lib.js";
+import { RT, api, call, correctAnswer, inMinutes, sleep, wrongAnswer } from "./sim-lib.js";
 
 if (process.env.AUTH_MODE !== "dev") {
   console.error("dev:bots only runs with AUTH_MODE=dev.");
@@ -27,11 +29,13 @@ if (process.env.AUTH_MODE !== "dev") {
 
 const BOT_NAMES = ["Bisi", "Chuks", "Funmi", "Musa", "Ngozi", "Tobi"];
 /**
- * Fresh bots every run: the engine never repeats a question to anyone seated, so bots that have played before
- * would shrink the pool of questions a new party can use (with the mock generator, enough to cancel it).
+ * Fresh bots every run unless --regulars: the engine never repeats a question to anyone seated, so bots that
+ * have played before shrink the pool of questions a new party can use (with the mock generator, enough to
+ * cancel it after many runs). Regulars trade that for people you can follow, invite and play again.
  */
+const regulars = process.argv.includes("--regulars");
 const RUN = Date.now().toString(36).slice(-4);
-const BOTS = BOT_NAMES.map((name) => ({ handle: `bot.${name.toLowerCase()}.${RUN}`, displayName: `${name} (bot)` }));
+const BOTS = BOT_NAMES.map((name) => ({ handle: regulars ? `bot.${name.toLowerCase()}` : `bot.${name.toLowerCase()}.${RUN}`, displayName: `${name} (bot)` }));
 /** A new party's brief, picked at random unless --brief is given: spreads play across the question bank. */
 const BRIEFS = [
   "Nigerian general knowledge: cities, food, music and football",
@@ -54,7 +58,7 @@ const STICKER_CHANCE = 0.3;
 const STICKERS = ["🔥", "😤", "😂", "🙌🏾", "👀"];
 
 /** Flags that take a value; anything else not starting with -- is the party id. */
-const VALUE_FLAGS = new Set(["--bots", "--starts-in", "--brief", "--latest"]);
+const VALUE_FLAGS = new Set(["--bots", "--starts-in", "--brief", "--latest", "--invite"]);
 const args = process.argv.slice(2);
 const flag = (name: string) => {
   const i = args.indexOf(name);
@@ -66,6 +70,11 @@ const free = args.includes("--free");
 const brief = flag("--brief") ?? BRIEFS[Math.floor(Math.random() * BRIEFS.length)];
 const partyArg = args.find((a, i) => !a.startsWith("--") && !VALUE_FLAGS.has(args[i - 1]));
 const latestOf = flag("--latest")?.trim().toLowerCase();
+const inviteHandle = flag("--invite")?.trim().toLowerCase();
+if (inviteHandle && (partyArg || latestOf)) {
+  console.error("--invite makes a new party; leave out the party id and --latest.");
+  process.exit(1);
+}
 
 /** The newest open party this handle created, so you needn't copy its id off the phone. */
 async function latestOpenParty(handle: string): Promise<string> {
@@ -77,6 +86,18 @@ async function latestOpenParty(handle: string): Promise<string> {
   if (!p) throw new Error(`@${handle} has no open party.`);
   console.log(`@${handle}'s newest open party: "${p.title}" (${p.id}).`);
   return p.id;
+}
+
+/** The host bot invites someone through the API, so the same guards apply: they must follow, be followed by, or have played with the bot. */
+async function inviteFrom(hostHandle: string, partyId: string, handle: string) {
+  const [u] = await db.select({ id: users.id }).from(users).where(eq(users.handle, handle));
+  if (!u) throw new Error(`No user @${handle}.`);
+  const { status, body } = await call<{ error?: string }>(hostHandle, "POST", `/parties/${partyId}/invites`, { userIds: [u.id] });
+  if (status !== 201) {
+    console.error(`@${hostHandle} couldn't invite @${handle} (${body.error}). Play a round with --regulars first, or follow @${hostHandle}.`);
+    process.exit(1);
+  }
+  console.log(`@${hostHandle} invited @${handle}; it's in their Chats › Parties.`);
 }
 
 const between = ({ min, max }: { min: number; max: number }) => min + Math.random() * (max - min);
@@ -102,6 +123,7 @@ if (!partyId) {
   });
   partyId = party.id as string;
   console.log(`Created "${party.title}" (${partyId}) about "${brief}", hosted by ${host.displayName}, starting in ${startsInMinutes} min.`);
+  if (inviteHandle) await inviteFrom(host.handle, partyId, inviteHandle);
 }
 
 const detail = await api(bots[0].handle, "GET", `/parties/${partyId}`);
