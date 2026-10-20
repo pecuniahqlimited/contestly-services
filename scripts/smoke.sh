@@ -9,7 +9,7 @@ for u in tunde zee; do
   echo "topup $u: $(curl -s -H "x-dev-user: $u" -H 'content-type: application/json' -X POST localhost:4000/wallet/dev-topup -d '{"nairaAmount":1000}')"
 done
 echo "me:       $(curl "${H[@]}" localhost:4000/me | j "d['handle'], d['wallet']")"
-PID=$(curl "${H[@]}" -X POST localhost:4000/parties -d '{"title":"Smoke test party","brief":"Nigerian tech startups and the people behind them","entryKobo":20000,"maxPlayers":6,"funding":"pooled","split":[70,30],"startsAt":"'"$(date -u -v+2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "+2 minutes" +%Y-%m-%dT%H:%M:%SZ)"'"}' | j "d['id']")
+PID=$(curl "${H[@]}" -X POST localhost:4000/parties -d '{"title":"Smoke test party","brief":"Nigerian tech startups and the people behind them","entryKobo":20000,"maxPlayers":6,"funding":"pooled","split":"70_30","startsAt":"'"$(date -u -v+2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "+2 minutes" +%Y-%m-%dT%H:%M:%SZ)"'"}' | j "d['id']")
 echo "created:  $PID"
 echo "join zee: $(curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/$PID/join)"
 echo "replay:   $(curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/$PID/join)"

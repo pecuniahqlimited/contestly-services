@@ -1,6 +1,6 @@
 /**
  * Demo data. Safe to re-run: the demo users (fixed IDs) are upserted back to their demo state and the follows
- * between them replaced. Each run opens three new demo parties, scheduled like any party the API creates: entries
+ * between them replaced. Each run opens four new demo parties, scheduled like any party the API creates: entries
  * and the host's prize go through the ledger, the sealed sets are queued now and the start jobs for startsAt.
  * Parties from earlier runs are left alone; the worker's sweep starts or cancels them once they're overdue.
  * Wallets are append-only: the one-off seed credits are posted once, and each seat or prize is topped up by
@@ -8,10 +8,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, inArray, sql as dsql } from "drizzle-orm";
-import { kobo, WELCOME_BONUS_KOBO, DEFAULT_PAYOUT_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG } from "@contestly/shared";
+import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_PAYOUT_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG, type SplitId } from "@contestly/shared";
 import { closeQueues, partyQueue, questionsQueue } from "@contestly/queue";
 import { db, sql, type Tx } from "./client.js";
-import { users, follows, parties, partyPlayers, chatMessages, appConfig } from "./schema.js";
+import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig } from "./schema.js";
 import * as ledger from "./ledger.js";
 
 const uid = (n: number) => `00000000-0000-4000-8000-1000000000${String(n).padStart(2, "0")}`;
@@ -54,23 +54,33 @@ await db.transaction(async (tx) => {
   }
 
   const soon = (m: number) => new Date(Date.now() + m * 60_000);
+  const split = (id: SplitId) => [...SPLITS[id].shares];
+  const limits = DEFAULT_PARTY_CONFIG.limits;
   const demoParties = [
-    { id: randomUUID(), createdByUserId: by["afrobeatsweekly"], title: "Afrobeats 2010s throwback", brief: "2010s Afrobeats — the hits, the artists, the moments that made the decade", category: "Afrobeats", entryKobo: kobo(200), maxPlayers: 10, funding: "pooled" as const, hostPoolKobo: 0, split: [60, 30, 10], visibility: "public" as const, coverColor: "#7B5CFF", coverEmoji: "🎶", questionsStatus: "generating" as const, startsAt: soon(15) },
-    { id: randomUUID(), createdByUserId: by["tunde"], title: "Friday night football", brief: "Football: Super Eagles history, Premier League and classic World Cup moments", category: "Football", entryKobo: kobo(500), maxPlayers: 6, funding: "pooled" as const, hostPoolKobo: 0, split: [70, 30], visibility: "public" as const, coverColor: "#0FA97A", coverEmoji: "⚽", questionsStatus: "generating" as const, startsAt: soon(30) },
-    { id: randomUUID(), createdByUserId: by["jollofrepublic"], title: "Jollof Republic lunch break", brief: "Nigerian food: dishes, ingredients and which city claims them", category: "Food", entryKobo: 0, maxPlayers: 50, funding: "host" as const, hostPoolKobo: kobo(20_000), split: [50, 30, 20], visibility: "public" as const, coverColor: "#FF8A3D", coverEmoji: "🍛", questionsStatus: "generating" as const, startsAt: soon(60) },
+    { id: randomUUID(), createdByUserId: by["afrobeatsweekly"], title: "Afrobeats 2010s throwback", brief: "2010s Afrobeats — the hits, the artists, the moments that made the decade", category: "Afrobeats", entryKobo: kobo(200), maxPlayers: 10, funding: "pooled" as const, hostPoolKobo: 0, split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#7B5CFF", coverEmoji: "🎶", questionsStatus: "generating" as const, startsAt: soon(15) },
+    { id: randomUUID(), createdByUserId: by["tunde"], title: "Friday night football", brief: "Football: Super Eagles history, Premier League and classic World Cup moments", category: "Football", entryKobo: kobo(500), maxPlayers: 6, funding: "pooled" as const, hostPoolKobo: 0, split: split("70_30"), limits, visibility: "public" as const, coverColor: "#0FA97A", coverEmoji: "⚽", questionsStatus: "generating" as const, startsAt: soon(30) },
+    { id: randomUUID(), createdByUserId: by["jollofrepublic"], title: "Jollof Republic lunch break", brief: "Nigerian food: dishes, ingredients and which city claims them", category: "Food", entryKobo: 0, maxPlayers: 50, funding: "host" as const, hostPoolKobo: kobo(20_000), split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#FF8A3D", coverEmoji: "🍛", questionsStatus: "generating" as const, startsAt: soon(60) },
+    { id: randomUUID(), createdByUserId: by["afrobeatsweekly"], title: "Afrobeats Weekly giveaway", brief: "Afrobeats in the 2020s: the albums, the collaborations and the global hits", category: "Afrobeats", entryKobo: 0, maxPlayers: 30, funding: "host" as const, hostPoolKobo: 0, prizeKind: "product" as const, split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#E8467C", coverEmoji: "🎧", questionsStatus: "generating" as const, startsAt: soon(90) },
   ];
-  const [afro, football, jollof] = demoParties;
+  const [afro, football, jollof, giveaway] = demoParties;
   await tx.insert(parties).values(demoParties);
 
   // The host's prize is held up front, as POST /parties does.
   await topUp(tx, jollof.createdByUserId, jollof.hostPoolKobo, `party_fund:${jollof.id}`);
-  await ledger.post(tx, { userId: jollof.createdByUserId, kind: "cash", amountKobo: -jollof.hostPoolKobo, type: "party_fund", refType: "party", refId: jollof.id, idempotencyKey: `party_fund:${jollof.id}` });
+  await ledger.hold(tx, { userId: jollof.createdByUserId, amountKobo: jollof.hostPoolKobo, type: "party_fund", refType: "party", refId: jollof.id, idempotencyKey: `party_fund:${jollof.id}` });
+  // A verified brand's goods: one prize per winning place.
+  await tx.insert(partyPrizes).values([
+    { partyId: giveaway.id, place: 1, text: "Two tickets to Afro Nation", valueKobo: kobo(250_000) },
+    { partyId: giveaway.id, place: 2, text: "Wireless headphones", valueKobo: kobo(60_000) },
+    { partyId: giveaway.id, place: 3, text: "An Afrobeats Weekly hoodie" },
+  ]);
 
   // Sealed hosts play, so Tunde holds a seat in his own party; the brands don't.
   const seats = [
     [afro, "kemz"], [afro, "zee"], [afro, "ada.o"],
     [football, "tunde"], [football, "segunola"],
     [jollof, "ada.o"], [jollof, "kemz"],
+    [giveaway, "zee"],
   ] as const;
   for (const [p, handle] of seats) {
     const key = `party_entry:${p.id}:${by[handle]}`;
@@ -102,5 +112,5 @@ for (const p of scheduled) {
 }
 await closeQueues(partyJobs, questionJobs);
 
-console.log(`Seeded ${people.length} users and ${scheduled.length} parties starting in 15, 30 and 60 minutes. Try: curl -H 'x-dev-user: tunde' http://localhost:4000/me`);
+console.log(`Seeded ${people.length} users and ${scheduled.length} parties starting in 15, 30, 60 and 90 minutes. Try: curl -H 'x-dev-user: tunde' http://localhost:4000/me`);
 await sql.end();

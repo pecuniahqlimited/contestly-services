@@ -52,7 +52,7 @@ const promoteStart = async (partyId: string) => {
 };
 const curateParty = (title: string) => ({
   title, brief: "Lagos bridges, ports and waterways", mode: "curate",
-  entryKobo: 20_000, maxPlayers: 6, funding: "pooled", startsAt: inMinutes(30), questionCount: 4, secondsPerQuestion: 5,
+  entryKobo: 20_000, maxPlayers: 6, funding: "pooled", split: "winner", startsAt: inMinutes(30), questionCount: 4, secondsPerQuestion: 5,
 });
 
 for (const h of [HOST, ...PLAYERS]) await topUp(h);

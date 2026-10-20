@@ -49,6 +49,8 @@ const BOT_EMOJI = "🤖";
 const DEFAULT_BOTS = 3;
 const DEFAULT_STARTS_IN_MINUTES = 3;
 const ENTRY_KOBO = kobo(100);
+/** --free: the host bot puts up the smallest cash prize the default limits allow; only verified brands offer goods. */
+const FREE_PRIZE_KOBO = kobo(500);
 /** Each bot gets its own accuracy and pace, so the standings move. */
 const ACCURACY = { min: 0.35, max: 0.85 };
 /** Bots answer between these shares of the question's time. */
@@ -106,7 +108,7 @@ const bots = BOTS.slice(0, count).map((b) => ({ ...b, accuracy: between(ACCURACY
 for (const b of bots) {
   await api(b.handle, "POST", "/me", { handle: b.handle, displayName: b.displayName, avatarEmoji: BOT_EMOJI });
   b.id = (await api(b.handle, "GET", "/me")).id;
-  if (!free) await api(b.handle, "POST", "/wallet/dev-topup", { nairaAmount: 1000 });
+  await api(b.handle, "POST", "/wallet/dev-topup", { nairaAmount: 1000 });
 }
 
 let partyId = partyArg ?? (latestOf ? await latestOpenParty(latestOf) : undefined);
@@ -117,8 +119,9 @@ if (!partyId) {
     brief,
     startsAt: inMinutes(startsInMinutes),
     maxPlayers: 10,
+    split: "winner",
     ...(free
-      ? { entryKobo: 0, funding: "host", prizeKind: "noncash", prizeText: "Bragging rights" }
+      ? { entryKobo: 0, funding: "host", prizeKind: "cash", hostPoolKobo: FREE_PRIZE_KOBO }
       : { entryKobo: ENTRY_KOBO, funding: "pooled" }),
   });
   partyId = party.id as string;

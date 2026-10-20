@@ -69,7 +69,7 @@ const playOrderBankIds = async (partyId: string) =>
 /** Create a sealed party as tunde and wait for its set; asserts the lifecycle shows and the content doesn't. */
 async function createSealedParty(title: string, extra: Record<string, unknown> = {}) {
   const party = await api("tunde", "POST", "/parties", {
-    title, brief: BRIEF, entryKobo: 20_000, maxPlayers: 5, funding: "pooled", startsAt: inMinutes(30), questionCount: 5, secondsPerQuestion: 5, ...extra,
+    title, brief: BRIEF, entryKobo: 20_000, maxPlayers: 5, funding: "pooled", split: "winner", startsAt: inMinutes(30), questionCount: 5, secondsPerQuestion: 5, ...extra,
   });
   ok(party.questions?.status === "generating", `${title}: set starts generating the moment the party is created`);
   return party as { id: string; split: number[]; category: string };
@@ -131,7 +131,7 @@ interface Played {
 
 async function playParty(round: number, partyId: string, party: { split: number[]; category: string }): Promise<Played> {
   console.log(`\n==== party ${round}: playing ====`);
-  ok(Array.isArray(party.split) && party.split.reduce((a, b) => a + b, 0) === 100, "split defaulted from party config");
+  ok(party.split.join() === "100", "winner takes all is stored as its shares");
   ok(typeof party.category === "string" && party.category.length > 0, `category inferred from the brief (${party.category})`);
 
   let questionLeaks = 0;
