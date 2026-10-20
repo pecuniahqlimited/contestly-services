@@ -279,6 +279,8 @@ export const chatMessages = pgTable("chat_messages", {
   text: text("text"),
   sticker: text("sticker"),
   system: boolean("system").notNull().default(false),
+  /** Handles of the real users this line @-mentions, resolved when it's sent; only these are tappable. */
+  mentions: text("mentions").array().notNull().default(sql`'{}'::text[]`),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("chat_party_created_idx").on(t.partyId, t.createdAt)]);
 

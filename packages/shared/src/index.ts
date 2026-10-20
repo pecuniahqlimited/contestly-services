@@ -505,7 +505,14 @@ export const partyPlayerSchema = z.object({
   prizeKobo: z.number().int().nullable(),
 });
 
-/** A persisted party chat line. System lines have no author. */
+/** "@ada.o" in chat: a handle token, never ending in "." so "@kemz." is kemz at the end of a sentence. */
+const MENTION_TOKEN = /(@[A-Za-z0-9_.]*[A-Za-z0-9_])/;
+/** A chat line split around its @handle tokens: the odd indices are the tokens, "@" included. */
+export const splitMentions = (text: string) => text.split(MENTION_TOKEN);
+/** The handles a chat line mentions, lowercased and once each. The server keeps only those that are real users. */
+export const mentionedHandles = (text: string) => [...new Set(splitMentions(text).filter((_, i) => i % 2).map((t) => t.slice(1).toLowerCase()))];
+
+/** A persisted party chat line. System lines have no author. `mentions`: the real users it @-mentions, resolved when sent. */
 export const chatMessageSchema = z.object({
   id: z.string().uuid(),
   partyId: z.string().uuid(),
@@ -513,6 +520,7 @@ export const chatMessageSchema = z.object({
   text: z.string().nullable(),
   sticker: z.string().nullable(),
   system: z.boolean(),
+  mentions: z.array(z.string()),
   createdAt: z.string().datetime(),
   handle: z.string().nullable(),
   avatarEmoji: z.string().nullable(),

@@ -1,0 +1,1 @@
+ALTER TABLE "chat_messages" ADD COLUMN "mentions" text[] DEFAULT '{}'::text[] NOT NULL;

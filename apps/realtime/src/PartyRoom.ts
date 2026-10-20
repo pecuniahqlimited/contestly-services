@@ -12,7 +12,7 @@ import colyseus from "colyseus";
 import type { Client } from "colyseus";
 const { Room } = colyseus;
 import { and, asc, eq, notInArray } from "drizzle-orm";
-import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, chatMessages, getPartyConfig, getQuestionsConfig, type Party } from "@contestly/db";
+import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, chatMessages, getPartyConfig, getQuestionsConfig, resolveMentions, type Party } from "@contestly/db";
 import { resolveUser } from "@contestly/auth";
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, flagSchema, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
@@ -108,7 +108,8 @@ export class PartyRoom extends Room {
       if (!["lobby", "generating", "standings", "finished"].includes(this.phase)) return client.send(MSG.error, { error: "chat_closed" });
       const parsed = chatSendSchema.safeParse(raw);
       if (!parsed.success) return client.send(MSG.error, { error: "validation", issues: parsed.error.issues });
-      const [saved] = await db.insert(chatMessages).values({ partyId: this.partyId, userId: me.id, text: parsed.data.text, sticker: parsed.data.sticker }).returning();
+      const mentions = await resolveMentions(parsed.data.text);
+      const [saved] = await db.insert(chatMessages).values({ partyId: this.partyId, userId: me.id, text: parsed.data.text, sticker: parsed.data.sticker, mentions }).returning();
       this.broadcast(MSG.chatMessage, { ...saved, handle: me.handle, displayName: me.displayName, avatarEmoji: me.avatarEmoji });
     });
 
