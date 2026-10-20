@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { EMBEDDING_DIM, PARTY_FILE_STATUSES, QUESTIONS_STATUSES, type ForgeProgress } from "@contestly/shared";
+import { EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ForgeProgress, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -14,7 +14,7 @@ export const questionsStatus = pgEnum("questions_status", QUESTIONS_STATUSES);
 export const partyFileStatus = pgEnum("party_file_status", PARTY_FILE_STATUSES);
 export const questionEventKind = pgEnum("question_event_kind", ["flag", "void", "replace", "approve", "edit", "swap", "regenerate"]);
 export const inviteStatus = pgEnum("invite_status", ["pending", "accepted", "dismissed"]);
-export const prizeKind = pgEnum("prize_kind", ["cash", "noncash"]);
+export const prizeKind = pgEnum("prize_kind", PRIZE_KINDS);
 export const fulfilmentStatus = pgEnum("fulfilment_status", ["awarded", "arranged", "delivered", "disputed"]);
 export const partyDifficulty = pgEnum("party_difficulty", ["easy", "mixed", "hard", "brutal"]);
 export const difficultySource = pgEnum("difficulty_source", ["model_estimate", "play_stats"]);
@@ -83,12 +83,12 @@ export const parties = pgTable("parties", {
   questionSeconds: integer("question_seconds").notNull().default(15),
   funding: fundingKind("funding").notNull(),
   hostPoolKobo: integer("host_pool_kobo").notNull().default(0),
-  /** Non-cash prizes (a product, an experience) are a fulfilment state machine, never a ledger entry. */
+  /** Goods (a product, an experience) are a fulfilment state machine per winning place, never a ledger entry; their prizes are party_prizes. */
   prizeKind: prizeKind("prize_kind").notNull().default("cash"),
-  prizeText: text("prize_text"),
-  /** Non-cash prizes only: what it's roughly worth, for display. No money moves on it. */
-  prizeValueKobo: integer("prize_value_kobo"),
+  /** The split's shares by place (SPLITS in shared); host cash and pooled pots are paid by it, goods use its number of places. */
   split: integer("split").array().notNull(),
+  /** The admin's party limits when this party was created; later changes to the limits never apply to it. Null before limits existed. */
+  limits: jsonb("limits").$type<PartyLimits>(),
   visibility: visibilityKind("visibility").notNull().default("public"),
   coverColor: text("cover_color").notNull().default("#7B5CFF"),
   coverEmoji: text("cover_emoji").notNull().default("🎉"),
@@ -304,9 +304,17 @@ export const ledgerEntries = pgTable("ledger_entries", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("ledger_entries_account_idx").on(t.accountId, t.createdAt)]);
 
+/** A goods party's prize for one winning place: what it is and, optionally, roughly what it's worth (no money moves on it). */
+export const partyPrizes = pgTable("party_prizes", {
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  place: integer("place").notNull(),
+  text: text("text").notNull(),
+  valueKobo: integer("value_kobo"),
+}, (t) => [primaryKey({ columns: [t.partyId, t.place] })]);
+
 /**
- * Non-cash prize fulfilment: awarded → arranged → delivered, or disputed. Winner and host are
- * both notified by the worker (day 3 and 7 nudges land in roadmap step 7). One prize per party.
+ * Goods prize fulfilment, one per winning place: awarded → arranged → delivered, or disputed. Winner and host are
+ * both notified by the worker (day 3 and 7 nudges land in roadmap step 7). The prize is copied in when awarded.
  */
 export const prizeFulfilments = pgTable("prize_fulfilments", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -314,11 +322,13 @@ export const prizeFulfilments = pgTable("prize_fulfilments", {
   winnerUserId: uuid("winner_user_id").notNull().references(() => users.id),
   /** Who owes delivery: the party's creator today, the brand's team from step 4. */
   hostUserId: uuid("host_user_id").notNull().references(() => users.id),
+  place: integer("place").notNull().default(1),
   prizeText: text("prize_text").notNull(),
+  prizeValueKobo: integer("prize_value_kobo"),
   status: fulfilmentStatus("status").notNull().default("awarded"),
   awardedAt: timestamp("awarded_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex("prize_fulfilments_party").on(t.partyId)]);
+}, (t) => [uniqueIndex("prize_fulfilments_party_place").on(t.partyId, t.place)]);
 
 /** Admin-editable settings, one JSON document per key (e.g. "payout"). Read through packages/db/src/config.ts, which validates. */
 export const appConfig = pgTable("app_config", {
@@ -330,6 +340,7 @@ export const appConfig = pgTable("app_config", {
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Party = typeof parties.$inferSelect;
+export type PartyPrize = typeof partyPrizes.$inferSelect;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 export type BankQuestion = typeof bankQuestions.$inferSelect;
 export type PartyQuestion = typeof partyQuestions.$inferSelect;

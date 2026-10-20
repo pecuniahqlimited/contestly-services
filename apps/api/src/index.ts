@@ -12,6 +12,7 @@ import { usersRoutes } from "./routes/users.js";
 import { partiesRoutes } from "./routes/parties.js";
 import { walletRoutes } from "./routes/wallet.js";
 import { questionsRoutes } from "./routes/questions.js";
+import { adminRoutes } from "./routes/admin.js";
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
 
@@ -43,6 +44,7 @@ await app.register(usersRoutes);
 await app.register(partiesRoutes);
 await app.register(walletRoutes);
 await app.register(questionsRoutes);
+await app.register(adminRoutes);
 
 const port = Number(process.env.API_PORT ?? 4000);
 await app.listen({ port, host: "0.0.0.0" });

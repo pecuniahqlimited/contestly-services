@@ -1,9 +1,9 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count, lte } from "drizzle-orm";
-import { db, parties, partyPlayers, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, seenInSet, type Party, type Tx } from "@contestly/db";
+import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, seenInSet, type Party, type Tx } from "@contestly/db";
 import { makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
-import { QUEUES, PARTY_EVENTS_CHANNEL, partyRoomKey, type NotifyJob, type PartyJob } from "@contestly/shared";
-import { computeSettlement } from "@contestly/game";
+import { QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { computeSettlement, goodsAwards } from "@contestly/game";
 
 const connection = makeRedis();
 const pub = makeRedis();
@@ -33,13 +33,11 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   }
 }, { connection });
 
-/** Refund everything a party took in: every entry leg by leg, and the host's cash pot. Idempotent. */
+/** Refund everything a party took in: every entry leg by leg, and release exactly what was held for the host's cash prize. Idempotent. */
 async function refundParty(tx: Tx, p: Party, message: string) {
   const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, p.id));
   for (const pl of players) await ledger.refund(tx, { chargeKey: `party_entry:${p.id}:${pl.userId}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
-  if (p.funding === "host" && p.prizeKind === "cash" && p.hostPoolKobo > 0) {
-    await ledger.post(tx, { userId: p.createdByUserId, kind: "cash", amountKobo: p.hostPoolKobo, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
-  }
+  await ledger.release(tx, { holdKey: `party_fund:${p.id}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
   await tx.update(parties).set({ status: "cancelled", endedAt: new Date() }).where(eq(parties.id, p.id));
   await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: message });
   await emit({ partyId: p.id, status: "cancelled" });
@@ -103,7 +101,7 @@ async function sealedFollowUp(p: Party): Promise<StartFollowUp> {
 
 /**
  * Settle a finished round: rake taken once, pot split via the ledger with idempotency keys,
- * non-cash prizes become a fulfilment record, party → finished with ranks. A replayed job is a no-op.
+ * goods become one fulfilment record per winning place, party → finished with ranks. A replayed job is a no-op.
  */
 async function settle(partyId: string) {
   const cfg = await getPartyConfig();
@@ -114,9 +112,15 @@ async function settle(partyId: string) {
     const ranked = players.filter((x) => x.rank !== null).map((x) => x.userId);
     if (!ranked.length) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
 
-    if (p.prizeKind === "noncash") {
-      await tx.insert(prizeFulfilments).values({ partyId: p.id, winnerUserId: ranked[0], hostUserId: p.createdByUserId, prizeText: p.prizeText ?? "" }).onConflictDoNothing();
-      console.log(`[party] ${p.title}: non-cash prize awarded to winner (fulfilment record created)`);
+    if (isGoods(p.prizeKind)) {
+      const prizes = await tx.select().from(partyPrizes).where(eq(partyPrizes.partyId, p.id));
+      const prizeAt = new Map(prizes.map((g) => [g.place, g]));
+      const awards = goodsAwards(ranked, prizes.length);
+      for (const a of awards) {
+        const g = prizeAt.get(a.place)!;
+        await tx.insert(prizeFulfilments).values({ partyId: p.id, place: a.place, winnerUserId: a.userId, hostUserId: p.createdByUserId, prizeText: g.text, prizeValueKobo: g.valueKobo }).onConflictDoNothing();
+      }
+      console.log(`[party] ${p.title}: ${awards.length} goods prize(s) awarded (one fulfilment record per place)`);
     } else {
       const s = computeSettlement({ funding: p.funding, entryKobo: p.entryKobo, playerCount: players.length, hostPoolKobo: p.hostPoolKobo, split: p.split, ranked }, cfg);
       if (s.rakeKobo > 0) await ledger.post(tx, { userId: await ledger.treasuryUserId(tx), kind: "cash", amountKobo: s.rakeKobo, type: "party_rake", refType: "party", refId: p.id, idempotencyKey: `party_rake:${p.id}` });

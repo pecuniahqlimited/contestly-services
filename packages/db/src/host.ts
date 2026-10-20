@@ -44,6 +44,22 @@ export async function publicHosts(list: PartyHostFields[]): Promise<Map<string, 
 }
 
 /**
+ * Who would publicly host a party this user creates now: themselves today; from step 4 the brand they create as.
+ * The stakes check runs before the party exists, so it can't go through publicHost().
+ */
+export async function prospectiveHost(creatorId: string): Promise<PublicHost> {
+  const [u] = await db.select().from(users).where(eq(users.id, creatorId));
+  return toPublicHost(u);
+}
+
+/**
+ * Who may offer goods (a product or an experience) instead of cash: a party publicly hosted by a verified brand.
+ * The ONLY place this is decided; row 8's brand verification changes this body, never its callers. Everyone
+ * else's host-funded prize is cash.
+ */
+export const canOfferNonCashPrize = (host: Pick<PublicHost, "isBrand" | "isVerified">) => host.isBrand && host.isVerified;
+
+/**
  * Who may act for the host: review curate drafts, attach source files. Today only the creator;
  * step 4 extends this to the brand's team with roles. Callers never check created_by_user_id directly.
  */

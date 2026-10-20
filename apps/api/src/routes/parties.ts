@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, desc, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, chatMessages, follows, ledger, getPartyConfig, isHostTeam } from "@contestly/db";
-import { createPartySchema, inferCategory, inviteToPartySchema, questionDisclosure, startsAtFor } from "@contestly/shared";
+import { db, users, parties, partyPlayers, partyPrizes, chatMessages, follows, ledger, getPartyConfig, isHostTeam, prospectiveHost, canOfferNonCashPrize } from "@contestly/db";
+import { checkStakes, createPartySchema, inferCategory, inviteToPartySchema, isGoods, questionDisclosure, SPLITS, startsAtFor, visibleLimits } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
 import { enqueueSealedSet } from "../questionSet.js";
-import { publicParty } from "../partyView.js";
-import { partySummaries, potKobo } from "../partySummaries.js";
+import { partySummaries } from "../partySummaries.js";
+import { potKobo } from "../places.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 
 const notify = notifyQueue();
@@ -32,16 +32,27 @@ export async function partiesRoutes(app: FastifyInstance) {
     return cards;
   });
 
+  /** What the signed-in host may choose in the Stakes scene now, the rake a pot preview takes, and whether they may offer goods. */
+  app.get("/parties/limits", async (req) => {
+    const me = requireUser(req);
+    const [cfg, host] = await Promise.all([getPartyConfig(), prospectiveHost(me.id)]);
+    return { limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host) };
+  });
+
   app.post("/parties", async (req, reply) => {
     const me = requireUser(req);
     const body = createPartySchema.parse(req.body);
     const startsAt = startsAtFor(body);
-    const split = body.split ?? (await getPartyConfig()).defaultSplit;
+    // The server decides: the current limits, and whether this host may offer goods (canOfferNonCashPrize, the one place that says).
+    const [cfg, host] = await Promise.all([getPartyConfig(), prospectiveHost(me.id)]);
+    const [refused] = checkStakes(body, cfg.limits, canOfferNonCashPrize(host));
+    if (refused) return reply.code(422).send({ error: refused });
     const { party, invited } = await db.transaction(async (tx) => {
-      const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode: body.mode, questionsStatus: body.mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, prizeText: body.prizeText, prizeValueKobo: body.prizeValueKobo, split, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
-      // Host funds a cash pot up front so it can't be spent elsewhere; refunded by the worker if the party is cancelled.
-      // A non-cash prize moves no money: it becomes a fulfilment record at settlement.
-      if (body.funding === "host" && body.prizeKind === "cash") await ledger.post(tx, { userId: me.id, kind: "cash", amountKobo: -body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
+      const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode: body.mode, questionsStatus: body.mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, split: [...SPLITS[body.split].shares], limits: cfg.limits, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt }).returning();
+      // The host's cash prize is held now, so it can't be spent elsewhere: paid out by place at settlement, released if cancelled.
+      // Goods move no money: one fulfilment record per winning place at settlement.
+      if (body.funding === "host" && body.prizeKind === "cash") await ledger.hold(tx, { userId: me.id, amountKobo: body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
+      if (isGoods(body.prizeKind)) await tx.insert(partyPrizes).values(body.places.map((g, i) => ({ partyId: p.id, place: i + 1, text: g.text, valueKobo: g.valueKobo ?? null })));
       // A sealed party's host plays: seated, and pooled hosts pay their own entry like everyone else.
       // A curate host reviews the questions and so never plays: not seated, never charged an entry.
       if (body.mode === "sealed") {
@@ -52,14 +63,14 @@ export async function partiesRoutes(app: FastifyInstance) {
       // Same guards as inviting later; a refused invite refuses the whole party, so nothing is half made.
       return { party: p, invited: await inviteToParty(tx, p, me, body.inviteUserIds) };
     });
-    const seated = body.mode === "sealed" ? 1 : 0;
     if (body.visibility === "public") await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
     if (invited.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: invited });
     // Sealed sets are built now, so they're ready long before start and a failure reaches the host in time (ADR 0002).
     // With files on the way, the questions service builds it once they're read (sealWhenFilesRead).
     if (body.mode === "sealed" && !body.awaitFiles) await enqueueSealedSet(party.id, "create");
     await partyJobs.add("start", { kind: "start", partyId: party.id }, { delay: Math.max(0, startsAt.getTime() - Date.now()), jobId: `start-${party.id}` });
-    return reply.code(201).send({ ...publicParty(party), questions: questionDisclosure(party), playerCount: seated, potKobo: potKobo(party, seated) });
+    const [summary] = await partySummaries([party], me.id);
+    return reply.code(201).send({ ...summary, questions: questionDisclosure(party) });
   });
 
   app.get("/parties/:id", async (req, reply) => {

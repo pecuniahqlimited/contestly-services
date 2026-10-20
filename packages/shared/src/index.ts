@@ -1,6 +1,10 @@
 import { z } from "zod";
+import { DEFAULT_PARTY_LIMITS, goodsPlaceSchema, MAX_WINNERS, partyLimitsSchema, PRIZE_KINDS, SPLIT_IDS, type SplitId } from "./stakes.js";
+
+export * from "./stakes.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
+const KOBO_PER_NAIRA = 100;
 export const kobo = (naira: number) => Math.round(naira * 100);
 export const naira = (k: number) => "₦" + (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
 
@@ -49,8 +53,8 @@ export const partyConfigSchema = z.object({
   rakeBps: z.number().int().min(0).max(5000),
   /** Host's cut of pooled pots, in basis points. 0 today; a planned product lever. */
   hostCutBps: z.number().int().min(0).max(5000),
-  /** Default pot split by rank when the creator doesn't choose one. */
-  defaultSplit: z.array(z.number().int().positive()).min(1).max(5).refine((s) => s.reduce((a, b) => a + b, 0) === 100, "split must add up to 100"),
+  /** What hosts may choose in the Stakes scene: entry, seats, host cash prize, quick picks and splits. */
+  limits: partyLimitsSchema,
 });
 export type PartyConfig = z.infer<typeof partyConfigSchema>;
 export const DEFAULT_PARTY_CONFIG: PartyConfig = {
@@ -64,7 +68,7 @@ export const DEFAULT_PARTY_CONFIG: PartyConfig = {
   reconnectGraceSeconds: 60,
   rakeBps: 1000,
   hostCutBps: 0,
-  defaultSplit: [100],
+  limits: DEFAULT_PARTY_LIMITS,
 };
 
 /**
@@ -216,17 +220,21 @@ export const createPartySchema = z.object({
    * waits for them: it's made once every file is read, instead of straight away from the brief alone.
    */
   awaitFiles: z.boolean().default(false),
-  entryKobo: z.number().int().min(0).max(kobo(50_000)),
-  maxPlayers: z.number().int().min(2).max(100),
+  /**
+   * Stakes. The ranges (entry, seats, host prize) and the allowed splits are the admin's party limits, checked by
+   * checkStakes() on the server; this schema only holds the shape. Amounts are whole naira, in kobo.
+   */
+  entryKobo: z.number().int().min(0).multipleOf(KOBO_PER_NAIRA),
+  maxPlayers: z.number().int().min(2),
   funding: z.enum(["pooled", "host"]),
-  hostPoolKobo: z.number().int().min(0).default(0),
-  /** Host-funded parties may offer a product or experience instead of cash: a fulfilment record, not a ledger entry. */
-  prizeKind: z.enum(["cash", "noncash"]).default("cash"),
-  prizeText: z.string().min(3).max(120).optional(),
-  /** What a non-cash prize is roughly worth, shown as "worth about ₦X" on the party and the join sheet. Informational: no money moves. */
-  prizeValueKobo: z.number().int().positive().max(kobo(10_000_000)).optional(),
-  /** Pot split by rank. Omitted → the admin default from party config (winner takes all). */
-  split: z.array(z.number().int().positive()).min(1).max(5).refine((s) => s.reduce((a, b) => a + b, 0) === 100, "split must add up to 100").optional(),
+  /** The host's cash prize, held from their wallet at creation. */
+  hostPoolKobo: z.number().int().min(0).multipleOf(KOBO_PER_NAIRA).default(0),
+  /** Product and experience (goods) are a fulfilment record per winning place, never a ledger entry; verified brands only. */
+  prizeKind: z.enum(PRIZE_KINDS).default("cash"),
+  /** Goods only: the prize for each winning place, best first, one per winner of the split. */
+  places: z.array(goodsPlaceSchema).max(MAX_WINNERS).default([]),
+  /** How the prize is shared by place: the pooled pot, the host's cash prize, or how many places win goods. */
+  split: z.enum(SPLIT_IDS as [SplitId, ...SplitId[]]),
   questionCount: z.number().int().min(3).max(30).default(5),
   secondsPerQuestion: z.number().int().min(5).max(60).default(15),
   visibility: z.enum(["public", "private"]).default("public"),
@@ -235,10 +243,8 @@ export const createPartySchema = z.object({
   /** When the first question drops. Omitted → DEFAULT_START_MINUTES from now. */
   startsAt: z.string().datetime({ offset: true }).optional(),
   inviteUserIds: z.array(z.string().uuid()).max(20).default([]),
-}).refine((p) => p.funding === "pooled" ? p.entryKobo > 0 && p.prizeKind === "cash" : true, { message: "pooled parties need an entry fee and pay cash" })
-  .refine((p) => p.funding === "host" && p.prizeKind === "cash" ? p.hostPoolKobo > 0 : true, { message: "host-funded cash parties need a pot" })
-  .refine((p) => p.prizeKind === "noncash" ? !!p.prizeText && p.hostPoolKobo === 0 : true, { message: "non-cash parties describe the prize and carry no cash pot" })
-  .refine((p) => p.prizeValueKobo === undefined || p.prizeKind === "noncash", { message: "only a non-cash prize carries a value" })
+}).refine((p) => p.funding === "pooled" ? p.prizeKind === "cash" && p.hostPoolKobo === 0 : p.entryKobo === 0, { message: "pooled parties pay cash from the entries; host-funded parties are free to enter" })
+  .refine((p) => p.prizeKind === "cash" ? p.places.length === 0 : p.hostPoolKobo === 0, { message: "a cash prize has no goods places, and goods carry no cash prize" })
   .refine((p) => p.startsAt === undefined || startWindowHolds(new Date(p.startsAt)), { message: `a party starts between ${MIN_START_LEAD_MINUTES} minute and ${MAX_START_LEAD_DAYS} days from now`, path: ["startsAt"] });
 
 /** Chat is room-scoped in Colyseus; the party comes from the room, not the message. */
@@ -405,11 +411,10 @@ export const partyRowSchema = z.object({
   questionSeconds: z.number().int(),
   funding: z.enum(["pooled", "host"]),
   hostPoolKobo: z.number().int(),
-  prizeKind: z.enum(["cash", "noncash"]),
-  prizeText: z.string().nullable(),
-  /** Non-cash prizes only: roughly what it's worth. */
-  prizeValueKobo: z.number().int().nullable(),
+  prizeKind: z.enum(PRIZE_KINDS),
   split: z.array(z.number().int()),
+  /** The split's id; null for a party made before splits were a fixed list. */
+  splitId: z.enum(SPLIT_IDS as [SplitId, ...SplitId[]]).nullable(),
   visibility: z.enum(["public", "private"]),
   coverColor: z.string(),
   coverEmoji: z.string(),
@@ -431,11 +436,24 @@ export const partyPeopleSchema = z.object({
   friendsIn: z.object({ people: z.array(personSchema), count: z.number().int() }),
 });
 
-/** GET /parties: one card in Discover. */
+/**
+ * What one winning place gets, worked out by the server. Cash (pooled or the host's): `amountKobo`, for a pooled pot
+ * its share right now after the rake, growing with every seat. Goods: `text` and, if the host gave one, `valueKobo`.
+ */
+export const placePrizeSchema = z.object({
+  place: z.number().int().positive(),
+  amountKobo: z.number().int().nullable(),
+  text: z.string().nullable(),
+  valueKobo: z.number().int().nullable(),
+});
+export type PlacePrize = z.infer<typeof placePrizeSchema>;
+
+/** GET /parties: one card in Discover. `potKobo` is the pooled pot before the rake, or the host's cash prize. */
 export const partySummarySchema = partyRowSchema.extend({
   host: publicHostSchema,
   playerCount: z.number().int(),
   potKobo: z.number().int(),
+  places: z.array(placePrizeSchema),
 }).merge(partyPeopleSchema);
 export const partiesResponseSchema = z.array(partySummarySchema);
 
@@ -618,7 +636,19 @@ export const createPartyResponseSchema = partyRowSchema.extend({
   questions: questionDisclosureSchema,
   playerCount: z.number().int(),
   potKobo: z.number().int(),
+  places: z.array(placePrizeSchema),
 });
+
+/** GET /parties/limits: what the signed-in host may choose now, the rake the pot preview takes, and whether they may offer goods. */
+export const partyLimitsResponseSchema = z.object({
+  limits: partyLimitsSchema,
+  rakeBps: z.number().int(),
+  hostCutBps: z.number().int(),
+  canOfferGoods: z.boolean(),
+});
+export type PartyLimitsResponse = z.infer<typeof partyLimitsResponseSchema>;
+/** GET and PUT /admin/party-limits: the limits as stored, quick picks outside their range included. */
+export const adminPartyLimitsSchema = z.object({ limits: partyLimitsSchema });
 
 /** parsing: the text is out and chunked, the questions service is indexing it. parsed: ready to make questions from. */
 export const PARTY_FILE_STATUSES = ["parsing", "parsed", "failed"] as const;

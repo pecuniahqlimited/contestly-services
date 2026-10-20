@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeSettlement } from "../src/settlement.js";
+import { computeSettlement, goodsAwards } from "../src/settlement.js";
 
 const cfg = { rakeBps: 1000, hostCutBps: 0 };
 
@@ -45,6 +45,18 @@ describe("host-funded pots", () => {
       { userId: "a", rank: 1, amountKobo: 1_400_000 },
       { userId: "b", rank: 2, amountKobo: 600_000 },
     ]);
+  });
+
+  it("pays a place nobody reached to 1st", () => {
+    const s = computeSettlement({ funding: "host", entryKobo: 0, playerCount: 1, hostPoolKobo: 1_000_000, split: [70, 30], ranked: ["a"] }, { rakeBps: 1000, hostCutBps: 0 });
+    expect(s.prizes).toEqual([{ userId: "a", rank: 1, amountKobo: 1_000_000 }]);
+  });
+});
+
+describe("goods", () => {
+  it("awards each place someone finished in, best first", () => {
+    expect(goodsAwards(["a", "b", "c", "d"], 3)).toEqual([{ userId: "a", place: 1 }, { userId: "b", place: 2 }, { userId: "c", place: 3 }]);
+    expect(goodsAwards(["a", "b"], 3)).toEqual([{ userId: "a", place: 1 }, { userId: "b", place: 2 }]);
   });
 });
 

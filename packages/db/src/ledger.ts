@@ -64,6 +64,23 @@ export async function refund(tx: Tx, p: { chargeKey: string; type: string; refTy
   return { toBonus: -(legs.find((l) => l.kind === "bonus")?.amountKobo ?? 0), toCash: -(legs.find((l) => l.kind === "cash")?.amountKobo ?? 0) };
 }
 
+/**
+ * Hold cash from a wallet for something it has promised, like a host's cash prize: taken now so it can't be spent
+ * elsewhere, then paid out or released. Throws InsufficientFunds if the cash isn't there. Idempotent on idempotencyKey.
+ */
+export const hold = (tx: Tx, p: { userId: string; amountKobo: number; type: string; refType: string; refId: string; idempotencyKey: string }) =>
+  post(tx, { ...p, kind: "cash", amountKobo: -p.amountKobo });
+
+/** Give back exactly what a hold() took under `holdKey`, and nothing if it never took anything. Idempotent. */
+export async function release(tx: Tx, p: { holdKey: string; type: string; refType: string; refId: string; idempotencyKey: string }) {
+  const [held] = await tx.select({ userId: ledgerAccounts.userId, amountKobo: ledgerEntries.amountKobo })
+    .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerEntries.accountId, ledgerAccounts.id))
+    .where(eq(ledgerEntries.idempotencyKey, p.holdKey));
+  if (!held) return 0;
+  await post(tx, { userId: held.userId, kind: "cash", amountKobo: -held.amountKobo, type: p.type, refType: p.refType, refId: p.refId, idempotencyKey: p.idempotencyKey });
+  return -held.amountKobo;
+}
+
 export async function balances(userId: string) {
   const rows = await db.select().from(ledgerAccounts).where(eq(ledgerAccounts.userId, userId));
   return { cashKobo: rows.find((r) => r.kind === "cash")?.balanceKobo ?? 0, bonusKobo: rows.find((r) => r.kind === "bonus")?.balanceKobo ?? 0 };
