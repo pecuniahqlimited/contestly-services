@@ -12,3 +12,10 @@ const conn = () => (connection ??= makeRedis());
 export const notifyQueue = () => new Queue<NotifyJob>(QUEUES.notify, { connection: conn(), defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 2000 }, removeOnComplete: 500, removeOnFail: 1000 } });
 export const partyQueue = () => new Queue<PartyJob>(QUEUES.party, { connection: conn(), defaultJobOptions: { attempts: 3, removeOnComplete: 500 } });
 export const questionsQueue = () => new Queue<QuestionsJob>(QUEUES.questions, { connection: conn(), defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 500, removeOnFail: 1000 } });
+
+/** For one-off scripts: close these queues and the shared connection so the process can exit. */
+export async function closeQueues(...queues: Queue[]) {
+  await Promise.all(queues.map((q) => q.close()));
+  await connection?.quit();
+  connection = undefined;
+}

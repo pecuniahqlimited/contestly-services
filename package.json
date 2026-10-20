@@ -10,7 +10,7 @@
     "apps/*"
   ],
   "scripts": {
-    "prepare": "npm run build -w @contestly/shared -w @contestly/game -w @contestly/db -w @contestly/queue -w @contestly/auth -w @contestly/storage",
+    "prepare": "npm run build -w @contestly/shared -w @contestly/game -w @contestly/queue -w @contestly/db -w @contestly/auth -w @contestly/storage",
     "test": "npm test -w @contestly/game -w @contestly/questions -w @contestly/api",
     "sim": "npm run sim:sealed && npm run sim:curate",
     "sim:sealed": "tsx --env-file=.env scripts/party-sim.ts",
