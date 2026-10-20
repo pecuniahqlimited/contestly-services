@@ -18,7 +18,7 @@
     "dev:bots": "tsx --env-file=.env scripts/dev-bots.ts",
     "infra:up": "docker compose up -d --wait postgres valkey storage",
     "infra:down": "docker compose down",
-    "db:generate": "npm run generate -w @contestly/db",
+    "db:generate": "npm run generate -w @contestly/db --",
     "db:migrate": "npm run migrate -w @contestly/db",
     "db:baseline": "npm run baseline -w @contestly/db",
     "db:seed": "npm run seed -w @contestly/db",

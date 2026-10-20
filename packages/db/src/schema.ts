@@ -13,6 +13,7 @@ export const partyMode = pgEnum("party_mode", ["sealed", "curate"]);
 export const questionsStatus = pgEnum("questions_status", QUESTIONS_STATUSES);
 export const partyFileStatus = pgEnum("party_file_status", PARTY_FILE_STATUSES);
 export const questionEventKind = pgEnum("question_event_kind", ["flag", "void", "replace", "approve", "edit", "swap", "regenerate"]);
+export const inviteStatus = pgEnum("invite_status", ["pending", "accepted", "dismissed"]);
 export const prizeKind = pgEnum("prize_kind", ["cash", "noncash"]);
 export const fulfilmentStatus = pgEnum("fulfilment_status", ["awarded", "arranged", "delivered", "disputed"]);
 export const partyDifficulty = pgEnum("party_difficulty", ["easy", "mixed", "hard", "brutal"]);
@@ -109,7 +110,21 @@ export const partyPlayers = pgTable("party_players", {
   score: integer("score"),
   rank: integer("rank"),
   prizeKobo: integer("prize_kobo"),
-}, (t) => [primaryKey({ columns: [t.partyId, t.userId] })]);
+}, (t) => [primaryKey({ columns: [t.partyId, t.userId] }), index("party_players_user_idx").on(t.userId)]);
+
+/**
+ * Someone asked to a party by a player or the host's team. Only people the inviter is connected to
+ * (follows, is followed by, or has played with), capped per party. Shown in the invitee's Chats ›
+ * Parties until they join (accepted) or dismiss it; nudges deliver it from step 7.
+ */
+export const partyInvites = pgTable("party_invites", {
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  inviteeId: uuid("invitee_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  inviterId: uuid("inviter_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  status: inviteStatus("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+}, (t) => [primaryKey({ columns: [t.partyId, t.inviteeId] }), index("party_invites_invitee_idx").on(t.inviteeId, t.status)]);
 
 /**
  * The set attached to a party when it goes live. `payload` is the full server payload, correct
@@ -310,6 +325,7 @@ export const appConfig = pgTable("app_config", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type ChatMessage = typeof chatMessages.$inferSelect;
