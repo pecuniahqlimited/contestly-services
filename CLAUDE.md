@@ -125,6 +125,7 @@ Read these before starting a roadmap step. If they disagree with this file, this
 - `docs/product/Contestly-User-Intents.md`: what users are trying to do, screen by screen, and the open product questions.
 - `docs/engineering/contestly-services-architecture.md`: which service owns each step of each flow (party lifecycle, Payout Challenge, wallet, question generation, onboarding, nudges).
 - `../contestly-app/docs/design/contestly-prototype.jsx`: the clickable UI reference (lives only in the app repo).
+- `../contestly-app/docs/design/canvases.md`: the later design canvases (Stakes; The Climb and crews) with links and `.dc.html` sources. Where a canvas covers a screen or admin page, it supersedes the prototype.
 - `docs/adr/`: decisions that could have gone either way (one page each).
 
 ## Layout
