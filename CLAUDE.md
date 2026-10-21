@@ -7,8 +7,8 @@ Social trivia app for the Nigerian market. This is a **ground-up rebuild** that 
 Two game modes and a social layer. Everything else serves these.
 
 - **Party**: Kahoot-style live rounds. One question at a time for everyone in the room, server-timed, ranked in real time, with a chat per party while you play. Hosted by a person or a brand; joined by people. Pot is pooled from entries or provided by the host; a host's prize is cash, or for a verified brand a product or an experience. Every prize is shared by one of a fixed set of splits (winner takes all, 70/30, 60/30/10), and entry, seats and the host's cash prize stay inside admin-set party limits. Many parties run concurrently (plan for thousands), each with a configurable max players (plan for hundreds).
-- **Payout Challenge**: solo, N stages (config-driven, currently 5), puzzle-style rounds (pattern, scramble, word hunt, trivia, sudden death). Clear a stage to hold its prize; a short timer to walk away or risk it; no choice means continue. Entry is coins. Cleared stages earn leaderboard points.
-- **Social**: follow people and verified brands, per-follow party alerts, tappable profiles with head-to-head records and one-tap Challenge, shareable results, referrals, streaks, rematch. The leaderboard is **friends-first** (people you follow), not one global board. Interest-based communities may come later.
+- **The Climb**: solo, free, unlimited runs up a ladder of N stages (config in the database, edited in the admin console; currently 5). Each stage is a few short puzzle rounds of one of its allowed game types (pattern, scramble, word hunt, quick maths, memory); clear enough rounds (default 2 of 3, the final stage 3 of 3) to clear the stage. A run ends when you miss a stage or clear the last one; its points are the sum of the stages cleared (default 10/20/30/40/50). No entry, no walk-away, no prize held per stage. Your daily score is your best run that day, your weekly score is the sum of daily scores plus Today's challenge (an admin-written quiz, one go, up to +100). Weeks run Monday–Sunday and days are Africa/Lagos. Boards: Everyone and Friends (weekly); at week close the top X on Everyone (admin config) win cash prizes after an admin approves them. Streak = consecutive days with a run.
+- **Social**: follow people and verified brands, per-follow party alerts, tappable profiles with head-to-head records and one-tap Challenge, shareable results, referrals, streaks, rematch. The leaderboard is **friends-first** (people you follow); Everyone sits behind a tab and is the board weekly Climb prizes come from. Interest-based communities may come later.
 - **Chats is a top-level tab** (Home · Parties · + · Chats · Me) with Messages, Party rooms and Activity inside it. Activity is not its own tab.
 - **Chat**: two kinds, one composer. Party chat (scoped to a party, lives while the party lives) and one-to-one messages between people. Both support text with @mentions, emoji, and hold-to-record voice notes (short, capped, uploaded to object storage, transcribed later for moderation). **No general chat room.** Brands can message players who've joined their parties, not cold.
 - **Brands host; they don't join parties as players.**
@@ -21,7 +21,7 @@ Two game modes and a social layer. Everything else serves these.
 
 ### Home and recommendations
 
-- **Never a blank Home.** If a user follows nobody and nothing is open, Home still gives them a move: start a party, play Today's Challenge, take a Payout seat, people and brands to follow.
+- **Never a blank Home.** If a user follows nobody and nothing is open, Home still gives them a move: start a party, play Today's challenge, start a Climb run, people and brands to follow.
 - A **recommendation service** decides what Home and the Parties tab lead with, using onboarding picks (interests, "why are you here", flex), follows, and behaviour. It also surfaces parties that are filling up right now ("PlayStation-style: people are in this one, join"), and pairs people who'd enjoy a party together. Users can mark any suggestion "not interested" and it should learn from that.
 - The archetype from onboarding (competitor / host / grinder / fan) only changes what's first; everyone still sees both modes.
 - **Lead with play, not money.** Decided: no screen leads with amounts paid out, pots, or "win cash". The first screen is the brand and one plain line about what the app is (live quiz parties with friends; solo challenges), then Jump in. Home leads with the game and the people in it. Prizes appear where they're relevant (a party's pot, a stage's prize) and nowhere as a headline. Copy says "play", "beat", "climb", "bragging rights"; it never says "win real money" or "cash out" as a pitch. This is a product decision and a store-review one: the app must read as a skill game, not a gambling app.
@@ -30,7 +30,7 @@ Two game modes and a social layer. Everything else serves these.
 
 A 90-second party, not a form, and it ends on Home. Three entry states:
 
-- **Direct** (no invite): Welcome → who's playing → two timed picks about you (lanes, multi-select; why you're here) → a bridge screen that says plainly what the next round earns and what it's for ("bag coins for your first party / Payout run / pot") → three quick-fire questions, right and fast earns coins → result → keep your coins (phone + code) → your people → name and face → **Home**. No "first move" screen; Home already recommends.
+- **Direct** (no invite): Welcome → who's playing → two timed picks about you (lanes, multi-select; why you're here) → a bridge screen that says plainly what the next round earns and what it's for ("bag coins for your first party / pot") → three quick-fire questions, right and fast earns coins → result → keep your coins (phone + code) → your people → name and face → **Home**. No "first move" screen; Home already recommends.
 - **Invite to a free party** (no entry fee, no cash prize): the invite card leads. **Join as a guest** with just a name: play and chat, score not saved, not eligible for prizes, a persistent "sign up" nudge in the lobby and on the result. Or sign up first.
 - **Invite to a staked party** (entry fee, or money to be won): sign-up is required, the Welcome says why in one line, and the flow ends in that party's lobby instead of Home.
 
@@ -70,9 +70,9 @@ Every nudge is an event the worker emits, delivered as push when the app is clos
 | Friend joined your party | Someone the user follows joins a party they're in | Max 1 per party per hour, batched ("Ada and 2 others") |
 | Party filling up | A party in the user's lane crosses 60% full with <10 min to go | Max 1/day, only if the user has no party in the next hour |
 | @mention | Tagged in a party chat or DM | Always, batched per thread |
-| Rival beat you | Head-to-head lead flips, or a followed player beats the user's best Payout stage | Max 1/day |
+| Rival beat you | Head-to-head lead flips, or a followed player passes the user on the Climb Friends board | Max 1/day |
 | Streak at risk | 3 hours before midnight, today's challenge not played, streak ≥ 2 | Once per day |
-| Seats opened | Weekly Payout seats release; priority to new players | Once per release |
+| Climb week closed | Week close; the user played The Climb that week | Once per week; leads with rank and people, never the prize |
 | Prize ready / delivery nudge | Brand confirms a non-cash prize; then day 3 and 7 if not marked delivered | To winner and brand |
 | Guest follow-up | 24h after a guest game | Once |
 | Win-back | Day 3 and day 7 with no session; content is what the user's people did | Twice, then stop |
@@ -123,7 +123,7 @@ Admins can see the generation record for any question: brief, spec, sources, sco
 Read these before starting a roadmap step. If they disagree with this file, this file wins; flag the conflict instead of guessing.
 
 - `docs/product/Contestly-User-Intents.md`: what users are trying to do, screen by screen, and the open product questions.
-- `docs/engineering/contestly-services-architecture.md`: which service owns each step of each flow (party lifecycle, Payout Challenge, wallet, question generation, onboarding, nudges).
+- `docs/engineering/contestly-services-architecture.md`: which service owns each step of each flow (party lifecycle, The Climb, wallet, question generation, onboarding, nudges).
 - `../contestly-app/docs/design/contestly-prototype.jsx`: the clickable UI reference (lives only in the app repo).
 - `../contestly-app/docs/design/canvases.md`: the later design canvases (Stakes; The Climb and crews) with links and `.dc.html` sources. Where a canvas covers a screen or admin page, it supersedes the prototype.
 - `docs/adr/`: decisions that could have gone either way (one page each).
@@ -143,7 +143,7 @@ packages/shared     zod schemas, event names (RT), queue names, money helpers (k
 packages/db         Drizzle schema, postgres-js client, append-only ledger, seed
 packages/auth       resolveUser(): dev header or Firebase ID token → users row
 packages/queue      BullMQ queues + ioredis connections
-packages/game       pure game logic: party round, payout ladder, scoring, tie-breaks, flag → void. No I/O.
+packages/game       pure game logic: party round, Climb game types + ladder, scoring, tie-breaks, flag → void. No I/O.
 packages/storage    ObjectStore interface + S3 implementation (DO Spaces in prod, SeaweedFS locally): presigned uploads, reads. For media only; never party source files
 ```
 
@@ -233,7 +233,7 @@ Next, in order:
 1. **App: play a party** (contestly-app slice B): lobby, live game, result. Plus `npm run dev:bots` here (dev only).
 2. **App: create a party** (slice C): the six-scene builder and the Forge.
 3. **Me and my people** (small, here first): "parties I'm in", follow/unfollow, other people's profiles. Then the app: Home's "your next party" card, Chats › Parties, follow from a party, tappable profiles.
-4. **Step 3, Payout Challenge**: config-driven stages, decision timer, weekly seat allocation and budget, leaderboard points. Then the app's Payout screens and Home's Party/Payout switch.
+4. **Step 3, The Climb**: game-type registry and ladder engine in `packages/game`; ladder config versions edited in the admin console; server-graded runs; daily/weekly scores; Today's challenge; Everyone and Friends boards (Valkey sorted sets over Postgres); week close and admin-approved weekly prizes; streaks. Then the app's Climb home, run and leaderboard screens and the admin pages (canvases in `contestly-app`).
 5. **Step 10, Firebase Auth and onboarding**: auth end to end; the onboarding party against the API, including shared onboarding rounds via matchmaking. Moved up so friends can install a test build and sign in; fill rate is the thing to test.
 6. **Steps 5b + 6, chat and social**: party chat and DMs on one composer; voice notes to object storage with capped length; transcription + moderation queue in the worker. Feed and friends leaderboard queries; profile stats from real results.
 7. **Step 5, recommendation service v1** (`apps/recsys`): rules + weighted scores, logged decisions with reasons; Home ordering, Parties ranking, "filling up now", pairing, not-interested. After real users, so it has behaviour to learn from.

@@ -20,7 +20,7 @@ This is the complete list of what a person can set out to do in Contestly, as de
 | Brand team member | A player attached to a brand with a role | Host on the brand's behalf; the brand is shown as host, the person is recorded |
 | Admin | Internal | Verification review, question bank, flags, configuration; out of scope here |
 
-**Scope.** Two game modes (Party, Payout Challenge), the social layer, accounts and money. Admin tooling, analytics and marketing surfaces are not covered. Every intent below has a corresponding screen or state in the prototype (`Prototype.jsx`, UI flow tab).
+**Scope.** Two game modes (Party, The Climb), the social layer, accounts and money. Admin tooling, analytics and marketing surfaces are not covered. Every intent below has a corresponding screen or state in the prototype (`Prototype.jsx`, UI flow tab).
 
 ## 1. Entry and onboarding
 
@@ -33,7 +33,7 @@ Onboarding is a 90-second game that ends on Home. Three entry states decide what
 | 1.3 | As a visitor with an invite to a staked party, I want to sign up and land in that party so I can put my stake in | Required when entry > 0 or a cash prize exists. Welcome says why in one line. Sign-up ends in that lobby, auto-joined if coins cover the entry | Invite links, onboarding, wallet |
 | 1.4 | As a visitor, I want to say whether I'm a person or a brand so the rest of onboarding fits me | Two tiles. Brand path gets brand picks and the verification checklist afterwards | Accounts |
 | 1.5 | As a new player, I want two quick timed picks about me (lanes, multi-select; why I'm here) so the app knows my interests and archetype without a form | No pick is asked twice. Lanes seed interests; "why" seeds the archetype (competitor / host / grinder / fan). Editable later from Me | Profile, recommendation |
-| 1.6 | As a new player, I want to be told plainly that the next round earns coins and what they're for before I play it | Bridge screen names the target (first party / first Payout run / first pot) and the reward tiers | Onboarding copy |
+| 1.6 | As a new player, I want to be told plainly that the next round earns coins and what they're for before I play it | Bridge screen names the target (first party / first pot) and the reward tiers | Onboarding copy |
 | 1.7 | As a new player, I want to play three quick-fire questions where right and fast earns coins so my first coins feel earned | Server-timed. Points to coins by tier (e.g. 800+ pts to 500 coins). If others are onboarding at the same time we share a round and see a leaderboard; alone I still play and get the solo tier. Never claim someone is online who isn't | Game engine, matchmaking, ledger |
 | 1.8 | As a new player, I want to keep my coins and profile with a phone number and a code so sign-up is 10 seconds | Phone OTP. Coins credited on code success, idempotently | Auth, ledger |
 | 1.9 | As a new player, I want to see which contacts are already here and follow them in one tap, with brands in my lanes pre-followed | Contact match by phone hash; brand pre-follow is reversible on the same screen | Contacts, follows |
@@ -47,9 +47,9 @@ Home is one card and one bar: the mode I'm in, what's happening, what to tap. It
 
 | # | Intent | Acceptance rules | Touches |
 | --- | --- | --- | --- |
-| 2.1 | As a player, I want Home to open on the mode that fits me so I don't have to look for it | Archetype only decides what's first (grinders open on Payout; brands see Host only). Everyone can switch Party / Payout with one toggle | Recommendation |
+| 2.1 | As a player, I want Home to open on the mode that fits me so I don't have to look for it | Archetype only decides what's first (grinders open on The Climb; brands see Host only). Everyone can switch Party / Climb with one toggle | Recommendation |
 | 2.2 | As a player, I want the Party card to tell me what to do now, in my situation | Copy per archetype (competitor: "Settle it" / Challenge a rival; host: "Get your people together" / Start a party; fan: lane brand hosting tonight). No single party is promoted on the card unless I'm in it | Recommendation |
-| 2.3 | As a player with nothing open, I still want a move | Pill reads "No parties open"; actions become Start a party and Invite friends; Today's Challenge and Payout remain | Recommendation, fallback |
+| 2.3 | As a player with nothing open, I still want a move | Pill reads "No parties open"; actions become Start a party and Invite friends; Today's challenge and The Climb remain | Recommendation, fallback |
 | 2.4 | As a player who joined or is hosting a party, I want Home to become that party | Four states by time to start: later (friends' faces, Remind me, Invite, Open the lobby), soon (<15 min), starting (≤2 min, green, live countdown, Enter the room), live (Join the round straight into the question). "+N more parties you're in" opens Chats › Parties | Party state, scheduling |
 | 2.5 | As a player, I want to see when a party near me is filling up so I can get in before it starts | "Filling up" nudge on Home and badge in Parties when ≥60% full and <10 min to start | Recommendation, live counts |
 | 2.6 | As a player, I want today's free challenge one tap away and to know if I've done it | Green quest bar when not done (who leads my friends); dark with tick and reset countdown when done | Daily challenge |
@@ -102,29 +102,29 @@ Every round is three beats on a server clock: question, reveal, standings. Chat 
 | 4.17 | As a player who dropped off, I want to rejoin the round in progress | Reconnect token re-enters the room at the current beat | Realtime |
 | 4.18 | As a player, I want a party that doesn't fill to refund me | Under 2 players at start: cancelled, entries and host pot refunded with idempotent ledger entries | Worker, ledger |
 
-## 5. Payout Challenge
+## 5. The Climb
 
-A solo ladder of N stages, config-driven, where every cleared stage is a decision to walk or risk it.
+A free solo ladder of N stages (config in the database, edited by an admin). Every run starts at stage 1; a run ends when you miss a stage or clear the last one.
 
 | # | Intent | Acceptance rules | Touches |
 | --- | --- | --- | --- |
-| 5.1 | As a player, I want to see the ladder, the entry cost, seats left and the rules before I pay | Intro lists every stage with type, timer and prize; decision timer and seat rule stated; entry in coins | Config |
-| 5.2 | As a player, I want to take a seat when one is available, with new players served first | Weekly seat allocation and budget; priority queue (new players first, past winners last); seat held briefly once offered | Seats service, worker |
-| 5.3 | As a player, I want to play puzzle rounds of different kinds, one per stage | Pattern, scramble, word hunt, trivia, sudden death; no content repeats within a run; each stage has its own timer | Game engine, question engine |
-| 5.4 | As a player, I want to clear a stage and hold its prize, then choose to walk away or risk it | Held amount set to the stage's configured absolute value; decision timer (default 8s); no choice means continue | Game engine, config |
-| 5.5 | As a player, I want my winnings credited and my points counted whether I walk, win or lose | Walk/win: cash credited idempotently; lose: nothing, but cleared stages still earn leaderboard points | Ledger, leaderboard |
-| 5.6 | As a player, I want to beat my best stage | Best stage per user shown on Home and intro for grinders | Profile stats |
-| 5.7 | As a player, I want per-day and per-week win caps applied transparently | Caps enforced server-side; shown before entry when near the cap | Risk controls |
-| 5.8 | As a player, I want to share a walk-away or a full clear | Share card without leading with the amount as a headline | Share |
+| 5.1 | As a player, I want to see the ladder and my week before I play | Climb home: today's best, all-time best run, the stage ladder with each stage's game type, Today's challenge, this week's days played / stages / points / friends rank, my Everyone rank and the gap to the prize line, my week by day, my records | Config, scores |
+| 5.2 | As a player, I want to climb as often as I like, free | No entry, no seats, no walk-away. Only my best run each day counts | Game engine |
+| 5.3 | As a player, I want short puzzle rounds of different kinds | Pattern, scramble, word hunt, quick maths, memory; each stage allows one or more types and a round picks one; generated and graded on the server, answers kept until the round closes | Game engine |
+| 5.4 | As a player, I want to clear a stage by getting enough rounds right | Rounds per stage (default 3), rounds to clear (default 2, the last stage 3), seconds per round, all config. Missing the mark ends the run; stages already cleared keep their points | Game engine, config |
+| 5.5 | As a player, I want points that add up across the week | Run = sum of cleared stages' points (default 10/20/30/40/50). Day = best run that Lagos day. Week = sum of daily bests plus Today's challenge, Monday–Sunday | Scores, leaderboard |
+| 5.6 | As a player, I want a daily quiz that's the same for everyone | Today's challenge: written by an admin, off unless scheduled for the day; one go; options shuffled per player; 8 s a question; up to +100 points | Today's challenge |
+| 5.7 | As a top player, I want the week's prize when I place | At week close the top X on Everyone (admin config, default 10) become pending awards; an admin approves; cash goes to my cash balance through the ledger. Only signed-in accounts are paid; otherwise the award waits | Worker, ledger, admin |
+| 5.8 | As a player, I want to share a good run | Share card leads with the climb (stages, points), never an amount | Share |
 
 ## 6. Daily loop and progression
 
 | # | Intent | Acceptance rules | Touches |
 | --- | --- | --- | --- |
-| 6.1 | As a player, I want a free daily challenge, the same for everyone, so I can compare with friends | 5 questions, 60s, resets at local midnight; result ranks me against friends who played; +50 coins; extends streak | Daily service, leaderboard, ledger |
+| 6.1 | As a player, I want a free daily challenge, the same for everyone, so I can compare with friends | Today's challenge (5.6): admin-written, 8 s a question, resets at Lagos midnight, up to +100 Climb points; no coins | Today's challenge, leaderboard |
 | 6.2 | As a player, I want to dare friends with my score | Share card hides the score until the friend plays | Share |
-| 6.3 | As a player, I want to keep a streak and know when it's at risk | Streak counts party play and the daily; at-risk nudge 3h before midnight | Streaks, nudges |
-| 6.4 | As a player, I want a friends-first weekly leaderboard with the gap to the next rank | Friends by default, Everyone behind a tab; resets Sunday; points from Payout stages cleared and party finishes in the top half; challenge from any row | Leaderboard |
+| 6.3 | As a player, I want to keep a streak and know when it's at risk | Streak = consecutive Lagos days with a Climb run; at-risk nudge 3h before midnight | Streaks, nudges |
+| 6.4 | As a player, I want a friends-first weekly leaderboard with the gap to the next rank | Friends by default, Everyone behind a tab (crews in row 6); Monday–Sunday, Lagos time; points from Climb daily bests plus Today's challenge; weekly prizes from Everyone only; my row pinned; challenge from any row | Leaderboard |
 | 6.5 | As a player, I want to level up from play | XP from daily, parties, stages; level ring on Home | Profile |
 | 6.6 | As a player, I want missions that pay coins | Daily and weekly; progress visible; claim on completion | Missions, ledger |
 | 6.7 | As a player, I want badges for milestones | Earned on events; shown on profile | Profile |
@@ -176,9 +176,9 @@ Every nudge is a worker-emitted event delivered as push when the app is closed a
 | 9.3 | As a player, I want to know when a friend joins my party | Followed user joins a party I'm in | Max 1 per party per hour, batched |
 | 9.4 | As a player, I want to know when a party in my lane is filling up | ≥60% full, <10 min to go | Max 1/day; only if no party of mine in the next hour |
 | 9.5 | As a player, I want to know when I'm @mentioned | Mention in party chat or DM | Always, batched per thread |
-| 9.6 | As a player, I want to know when a rival overtakes me | H2H lead flips, or a followed player beats my best stage | Max 1/day |
+| 9.6 | As a player, I want to know when a rival overtakes me | H2H lead flips, or a followed player passes me on the Climb Friends board | Max 1/day |
 | 9.7 | As a player, I want a warning before my streak ends | 3h before midnight, daily not played, streak ≥ 2 | Once per day |
-| 9.8 | As a player, I want to know when Payout seats open | Weekly release; new players first | Once per release |
+| 9.8 | As a player, I want to know how my Climb week ended | Week close, I played that week | Once per week; rank and people first, never the prize |
 | 9.9 | As a winner or a brand, I want prize delivery prompts | Brand confirms; then day 3 and 7 if not delivered | To both sides |
 | 9.10 | As a guest, I want a follow-up to keep my score | 24h after a guest game | Once |
 | 9.11 | As a lapsed player, I want to hear what my people did | Day 3 and 7 with no session | Twice, then stop |
@@ -206,5 +206,5 @@ Every nudge is a worker-emitted event delivered as push when the app is closed a
 - [ ] Shared onboarding rounds: matchmaking window and minimum group size before falling back to solo.
 - [ ] Voice notes: max length, retention, transcription for moderation, storage cost.
 - [ ] Payout rail per platform and the Play Store policy boundary for cash withdrawal on Android.
-- [ ] Leaderboard scope beyond friends (interest communities later): keep the scope key generic.
+- [ ] Leaderboard scope beyond friends and everyone (crews in row 6, interest communities later): the scope key is generic.
 - [ ] Presence: what counts as "in the room" for live nudges and early-start decisions.

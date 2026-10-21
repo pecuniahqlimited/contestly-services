@@ -2,7 +2,7 @@
 
 Ground-up rebuild. Nothing here depends on the previous app.
 
-Social trivia app: **Party** (play with friends, split the pot) and **Payout Challenge** (solo ladder, walk away or risk it).
+Social trivia app: **Party** (play with friends, split the pot) and **The Climb** (solo puzzle ladder, free runs, weekly boards).
 
 ```
 apps/
@@ -74,4 +74,4 @@ With `startsInMinutes: 1`, watch the worker log: after a minute the party goes `
 
 ## Not built yet (next)
 
-Game engine (question delivery, server-side timing and scoring, prize settlement), Payout Challenge stages and seats, feed and leaderboard queries, device tokens + FCM in the worker, Paystack webhooks and payout rails (cash vs voucher per platform), block/report/moderation, Caddy + CI for deploy.
+Game engine (question delivery, server-side timing and scoring, prize settlement), The Climb, feed and leaderboard queries, device tokens + FCM in the worker, Paystack webhooks and payout rails (cash vs voucher per platform), block/report/moderation, Caddy + CI for deploy.
