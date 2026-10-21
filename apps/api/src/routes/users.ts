@@ -2,13 +2,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, asc, count, desc, eq, min, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db, users, follows, parties, partyPlayers, partiesHostedBy } from "@contestly/db";
-import { followAlertSchema, MAX_PROFILE_RECENT_PARTIES } from "@contestly/shared";
+import { currentStreak, followAlertSchema, lagosDay, MAX_PROFILE_RECENT_PARTIES } from "@contestly/shared";
 import { requireUser, uuidParam } from "../auth.js";
 import { publicParty } from "../partyView.js";
 import { personColumns, viewerRelations } from "../people.js";
 import { headToHead } from "../social.js";
 
-export const publicUser = (u: typeof users.$inferSelect) => ({ id: u.id, handle: u.handle, displayName: u.displayName, avatarEmoji: u.avatarEmoji, bio: u.bio, interests: u.interests, isBrand: u.isBrand, isVerified: u.isVerified, streakDays: u.streakDays });
+export const publicUser = (u: typeof users.$inferSelect) => ({ id: u.id, handle: u.handle, displayName: u.displayName, avatarEmoji: u.avatarEmoji, bio: u.bio, interests: u.interests, isBrand: u.isBrand, isVerified: u.isVerified, streakDays: currentStreak(u.lastPlayedOn, u.streakDays, lagosDay()) });
 
 /** Follow lists, at most this many. */
 const FOLLOW_LIST_LIMIT = 100;

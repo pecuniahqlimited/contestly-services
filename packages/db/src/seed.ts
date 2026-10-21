@@ -8,10 +8,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, inArray, sql as dsql } from "drizzle-orm";
-import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_PAYOUT_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG, type SplitId } from "@contestly/shared";
+import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, lagosDay, addDays, DEFAULT_QUESTIONS_CONFIG, type SplitId } from "@contestly/shared";
 import { closeQueues, partyQueue, questionsQueue } from "@contestly/queue";
 import { db, sql, type Tx } from "./client.js";
-import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig } from "./schema.js";
+import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
 import * as ledger from "./ledger.js";
 
 const uid = (n: number) => `00000000-0000-4000-8000-1000000000${String(n).padStart(2, "0")}`;
@@ -19,6 +19,15 @@ const uid = (n: number) => `00000000-0000-4000-8000-1000000000${String(n).padSta
 /** Credit a demo user exactly `amountKobo` of cash, then spend it the way the API would. */
 const topUp = (tx: Tx, userId: string, amountKobo: number, key: string) =>
   ledger.post(tx, { userId, kind: "cash", amountKobo, type: "topup", idempotencyKey: `seed:topup:${key}` });
+
+/** Demo Today's challenge, written like an admin would in the console. */
+const demoChallenge = [
+  { prompt: "Who sang \"Kpolongo\" (2007)?", options: ["2face Idibia", "Olu Maintain", "Faze", "Sound Sultan"], correctIndex: 0 },
+  { prompt: "Which group released \"Ihe Neme\"?", options: ["P-Square", "Styl-Plus", "Plantashun Boiz", "Remedies"], correctIndex: 1 },
+  { prompt: "\"Yahooze\" was a hit for…", options: ["D'banj", "Olu Maintain", "Timaya", "9ice"], correctIndex: 1 },
+  { prompt: "Which label did D'banj and Don Jazzy found?", options: ["Mo' Hits", "Kennis Music", "Chocolate City", "Storm"], correctIndex: 0 },
+  { prompt: "\"Gongo Aso\" is by…", options: ["9ice", "Wande Coal", "Asa", "Dagrin"], correctIndex: 0 },
+];
 
 const people = [
   { id: uid(1), handle: "tunde", displayName: "Tunde Bakare", avatarEmoji: "🦁", bio: "Football head. I host a party every Friday night.", interests: ["Football", "General knowledge"], isBrand: false, isVerified: false },
@@ -98,7 +107,12 @@ await db.transaction(async (tx) => {
   ]);
   scheduled.push(...demoParties);
 
-  await tx.insert(appConfig).values({ key: "payout", value: DEFAULT_PAYOUT_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_PAYOUT_CONFIG, updatedAt: new Date() } });
+  await tx.insert(appConfig).values({ key: "climb", value: DEFAULT_CLIMB_SETTINGS }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_CLIMB_SETTINGS, updatedAt: new Date() } });
+  // Today's challenge for today and tomorrow (Lagos), unless an admin already wrote one for that day.
+  const today = lagosDay();
+  for (const day of [today, addDays(today, 1)]) {
+    await tx.insert(climbChallenges).values({ day, title: "Naija music, 2000s edition", questions: demoChallenge, seconds: DEFAULT_CLIMB_SETTINGS.challengeSeconds, maxPoints: DEFAULT_CLIMB_SETTINGS.challengeMaxPoints }).onConflictDoNothing();
+  }
   await tx.insert(appConfig).values({ key: "party", value: DEFAULT_PARTY_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_PARTY_CONFIG, updatedAt: new Date() } });
   await tx.insert(appConfig).values({ key: "questions", value: DEFAULT_QUESTIONS_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_QUESTIONS_CONFIG, updatedAt: new Date() } });
 });

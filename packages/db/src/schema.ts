@@ -1,6 +1,6 @@
-import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ForgeProgress, type PartyLimits } from "@contestly/shared";
+import { CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -297,7 +297,7 @@ export const ledgerEntries = pgTable("ledger_entries", {
   id: uuid("id").primaryKey().defaultRandom(),
   accountId: uuid("account_id").notNull().references(() => ledgerAccounts.id),
   amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(), // signed
-  type: text("type").notNull(), // welcome_bonus | party_entry | party_prize | party_refund | payout_entry | payout_prize | topup | withdrawal
+  type: text("type").notNull(), // welcome_bonus | party_entry | party_prize | party_refund | climb_prize | topup | withdrawal
   refType: text("ref_type"),
   refId: text("ref_id"),
   idempotencyKey: text("idempotency_key").notNull().unique(),
@@ -337,6 +337,155 @@ export const appConfig = pgTable("app_config", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ---------------------------------------------------------------- The Climb
+
+export const climbRunStatus = pgEnum("climb_run_status", CLIMB_RUN_STATUSES);
+export const climbAwardStatus = pgEnum("climb_award_status", CLIMB_AWARD_STATUSES);
+
+/** The ladder, one immutable row per admin save. The newest is current; a run keeps the version it started on. */
+export const climbLadders = pgTable("climb_ladders", {
+  version: serial("version").primaryKey(),
+  config: jsonb("config").$type<ClimbLadder>().notNull(),
+  /** Null for the default written on first use. */
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** One climb up the ladder. At most one active run per player; starting another ends it (abandoned, its points kept). */
+export const climbRuns = pgTable("climb_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  ladderVersion: integer("ladder_version").notNull().references(() => climbLadders.version),
+  status: climbRunStatus("status").notNull().default("active"),
+  /** 0-based stage being played, or the last one reached once over. */
+  stageIdx: integer("stage_idx").notNull().default(0),
+  stagesCleared: integer("stages_cleared").notNull().default(0),
+  points: integer("points").notNull().default(0),
+  /** The Lagos day the run started: its points count towards that day (a run can't outlast its ladder's clock). */
+  day: text("day").notNull(),
+  /** Per cleared stage, ms from its first round opening to the answer that cleared it (records: fastest stage 1). */
+  stageMs: integer("stage_ms").array().notNull().default(sql`'{}'::integer[]`),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  endedAt: timestamp("ended_at", { withTimezone: true }),
+}, (t) => [
+  index("climb_runs_user_day_idx").on(t.userId, t.day),
+  uniqueIndex("climb_runs_one_active").on(t.userId).where(sql`status = 'active'`),
+]);
+
+/** One round of a run: generated, stored with its answer, timed and graded on the server. */
+export const climbRounds = pgTable("climb_rounds", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  runId: uuid("run_id").notNull().references(() => climbRuns.id, { onDelete: "cascade" }),
+  /** Order within the run. */
+  seq: integer("seq").notNull(),
+  stageIdx: integer("stage_idx").notNull(),
+  gameType: text("game_type").notNull(),
+  /** The full round, answer included. Only its public view leaves the server while it's open. */
+  payload: jsonb("payload").notNull(),
+  opensAt: timestamp("opens_at", { withTimezone: true }).notNull(),
+  closesAt: timestamp("closes_at", { withTimezone: true }).notNull(),
+  answer: jsonb("answer"),
+  answeredAt: timestamp("answered_at", { withTimezone: true }),
+  /** Null while open; false for a wrong, late or missing answer. */
+  correct: boolean("correct"),
+}, (t) => [uniqueIndex("climb_rounds_run_seq").on(t.runId, t.seq)]);
+
+/** A player's Climb day: the best run's points, and Today's challenge. The record the boards are rebuilt from. */
+export const climbDays = pgTable("climb_days", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  day: text("day").notNull(),
+  /** The Monday of the day's week. */
+  week: text("week").notNull(),
+  runs: integer("runs").notNull().default(0),
+  bestRunPoints: integer("best_run_points").notNull().default(0),
+  bestRunStages: integer("best_run_stages").notNull().default(0),
+  bestRunId: uuid("best_run_id").references(() => climbRuns.id),
+  challengePoints: integer("challenge_points").notNull().default(0),
+}, (t) => [primaryKey({ columns: [t.userId, t.day] }), index("climb_days_week_idx").on(t.week)]);
+
+/** A player's week: the sum of their days. Written with each day, in the same transaction. */
+export const climbWeeks = pgTable("climb_weeks", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  week: text("week").notNull(),
+  points: integer("points").notNull().default(0),
+  /** Best run of the week in stages cleared, and whether it cleared its whole ladder. */
+  bestRunStages: integer("best_run_stages").notNull().default(0),
+  clearedAll: boolean("cleared_all").notNull().default(false),
+  /** When the points last went up: the tie-break for weekly prizes (first there wins). */
+  reachedAt: timestamp("reached_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.userId, t.week] }), index("climb_weeks_week_points_idx").on(t.week, t.points)]);
+
+/** Today's challenge: written by an admin for one Lagos day. Off on days without one. */
+export const climbChallenges = pgTable("climb_challenges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  day: text("day").notNull().unique(),
+  title: text("title").notNull(),
+  questions: jsonb("questions").$type<ChallengeQuestion[]>().notNull(),
+  seconds: integer("seconds").notNull(),
+  maxPoints: integer("max_points").notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A player's one go at a challenge. */
+export const climbChallengeAttempts = pgTable("climb_challenge_attempts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  challengeId: uuid("challenge_id").notNull().references(() => climbChallenges.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  /** Per question, this player's option order: shown[i] = original option index. */
+  optionOrder: jsonb("option_order").$type<number[][]>().notNull(),
+  correct: integer("correct").notNull().default(0),
+  points: integer("points").notNull().default(0),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+}, (t) => [uniqueIndex("climb_attempts_one_per_user").on(t.challengeId, t.userId)]);
+
+/** One question of an attempt, timed and graded on the server. `answer` is in original option order. */
+export const climbChallengeAnswers = pgTable("climb_challenge_answers", {
+  attemptId: uuid("attempt_id").notNull().references(() => climbChallengeAttempts.id, { onDelete: "cascade" }),
+  idx: integer("idx").notNull(),
+  opensAt: timestamp("opens_at", { withTimezone: true }).notNull(),
+  closesAt: timestamp("closes_at", { withTimezone: true }).notNull(),
+  answer: integer("answer"),
+  answeredAt: timestamp("answered_at", { withTimezone: true }),
+  correct: boolean("correct"),
+}, (t) => [primaryKey({ columns: [t.attemptId, t.idx] })]);
+
+/**
+ * A closed week's final standings per board scope ("everyone" now; crews in row 6 add their own scope
+ * and scope id). Written once by the worker at week close.
+ */
+export const climbWeekResults = pgTable("climb_week_results", {
+  week: text("week").notNull(),
+  scope: text("scope").notNull(),
+  scopeId: text("scope_id").notNull().default(""),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  place: integer("place").notNull(),
+  points: integer("points").notNull(),
+  closedAt: timestamp("closed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.week, t.scope, t.scopeId, t.userId] }), uniqueIndex("climb_week_results_place").on(t.week, t.scope, t.scopeId, t.place)]);
+
+/**
+ * A weekly prize. Pending until an admin approves or rejects it. Approving pays it through the ledger
+ * (key climb_award:<id>) when the winner has a signed-in account; otherwise it stays approved, unpaid.
+ */
+export const climbAwards = pgTable("climb_awards", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  week: text("week").notNull(),
+  scope: text("scope").notNull(),
+  scopeId: text("scope_id").notNull().default(""),
+  place: integer("place").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  points: integer("points").notNull(),
+  amountKobo: integer("amount_kobo").notNull(),
+  status: climbAwardStatus("status").notNull().default("pending"),
+  decidedByUserId: uuid("decided_by_user_id").references(() => users.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("climb_awards_place").on(t.week, t.scope, t.scopeId, t.place), index("climb_awards_status_idx").on(t.status)]);
+
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Party = typeof parties.$inferSelect;
@@ -344,3 +493,8 @@ export type PartyPrize = typeof partyPrizes.$inferSelect;
 export type ChatMessage = typeof chatMessages.$inferSelect;
 export type BankQuestion = typeof bankQuestions.$inferSelect;
 export type PartyQuestion = typeof partyQuestions.$inferSelect;
+export type ClimbRunRow = typeof climbRuns.$inferSelect;
+export type ClimbRoundRow = typeof climbRounds.$inferSelect;
+export type ClimbChallengeRow = typeof climbChallenges.$inferSelect;
+export type ClimbAttemptRow = typeof climbChallengeAttempts.$inferSelect;
+export type ClimbAwardRow = typeof climbAwards.$inferSelect;

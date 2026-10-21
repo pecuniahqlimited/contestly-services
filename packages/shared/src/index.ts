@@ -1,7 +1,10 @@
 import { z } from "zod";
+import { personSchema } from "./person.js";
 import { DEFAULT_PARTY_LIMITS, goodsPlaceSchema, MAX_WINNERS, partyLimitsSchema, PRIZE_KINDS, SPLIT_IDS, type SplitId } from "./stakes.js";
 
 export * from "./stakes.js";
+export * from "./person.js";
+export * from "./climb.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
 const KOBO_PER_NAIRA = 100;
@@ -10,30 +13,6 @@ export const naira = (k: number) => "₦" + (k / 100).toLocaleString("en-NG", { 
 
 /** Bonus coins are counted in kobo like cash (1 coin = 100 kobo) but shown without the ₦. */
 export const coins = (k: number) => (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
-
-/** Payout Challenge config. Admin-editable (stored under key "payout" in app_config); this is the default when nothing is stored. */
-export const payoutStageTypes = ["pattern", "scramble", "wordhunt", "trivia", "sudden_death"] as const;
-export const payoutConfigSchema = z.object({
-  entryKobo: z.number().int().positive(),
-  decisionSeconds: z.number().int().min(1).max(60),
-  stages: z.array(z.object({
-    type: z.enum(payoutStageTypes),
-    seconds: z.number().int().min(3).max(120),
-    prizeKobo: z.number().int().positive(),
-  })).min(1).max(20).refine((s) => s.every((x, i) => i === 0 || x.prizeKobo > s[i - 1].prizeKobo), "each stage's prize must be higher than the last"),
-});
-export type PayoutConfig = z.infer<typeof payoutConfigSchema>;
-export const DEFAULT_PAYOUT_CONFIG: PayoutConfig = {
-  entryKobo: kobo(100),
-  decisionSeconds: 8,
-  stages: [
-    { type: "pattern", seconds: 15, prizeKobo: kobo(300) },
-    { type: "scramble", seconds: 15, prizeKobo: kobo(800) },
-    { type: "wordhunt", seconds: 15, prizeKobo: kobo(2000) },
-    { type: "trivia", seconds: 12, prizeKobo: kobo(5000) },
-    { type: "sudden_death", seconds: 10, prizeKobo: kobo(12000) },
-  ],
-};
 
 /**
  * Party round + settlement config. Admin-editable (stored under key "party" in app_config);
@@ -284,7 +263,13 @@ export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */
-export const QUEUES = { notify: "notify", party: "party", questions: "questions" } as const;
+export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb" } as const;
+/**
+ * The Climb's scheduled jobs, both repeatable on the Lagos clock. `day_start`: snapshot this week's
+ * Everyone board for ▲/▼ since yesterday. `week_close`: rank every finished week that hasn't been
+ * closed and write its pending weekly awards.
+ */
+export type ClimbJob = { kind: "day_start" } | { kind: "week_close" };
 export type NotifyFollowersJob = { kind: "party_created"; partyId: string; hostId: string };
 export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserId: string; toUserIds: string[] };
 /** The host's question set couldn't be built; they can retry or edit the brief. */
@@ -337,14 +322,6 @@ export const publicUserSchema = z.object({
 });
 export const meResponseSchema = publicUserSchema.extend({ wallet: walletSchema });
 
-/** A person as a face, a list row or a mention shows them. */
-export const personSchema = z.object({
-  id: z.string().uuid(),
-  handle: z.string(),
-  displayName: z.string(),
-  avatarEmoji: z.string(),
-  isVerified: z.boolean(),
-});
 
 /** How the viewer stands with someone: follows them (with party alerts on or off), is followed back. All false signed out. */
 export const viewerFollowSchema = z.object({ following: z.boolean(), notify: z.boolean(), followsYou: z.boolean() });
@@ -691,7 +668,6 @@ export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type QuestionDisclosure = z.infer<typeof questionDisclosureSchema>;
 export type JoinPartyResponse = z.infer<typeof joinPartyResponseSchema>;
 export type UserProfile = z.infer<typeof userProfileSchema>;
-export type Person = z.infer<typeof personSchema>;
 export type ViewerFollow = z.infer<typeof viewerFollowSchema>;
 export type FollowState = z.infer<typeof followStateSchema>;
 export type FollowListEntry = z.infer<typeof followListEntrySchema>;

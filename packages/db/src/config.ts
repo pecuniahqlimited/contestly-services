@@ -1,8 +1,8 @@
 import { eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
-  DEFAULT_PARTY_CONFIG, DEFAULT_PAYOUT_CONFIG, DEFAULT_QUESTIONS_CONFIG,
-  partyConfigSchema, payoutConfigSchema, questionsConfigSchema,
+  DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
+  climbSettingsSchema, partyConfigSchema, questionsConfigSchema,
 } from "@contestly/shared";
 import { db } from "./client.js";
 import { appConfig } from "./schema.js";
@@ -26,10 +26,10 @@ function configEntry<T extends object>(key: string, schema: z.ZodType<T>, fallba
   };
 }
 
-/** Payout Challenge config (entry, decision timer, stages). */
-const payout = configEntry("payout", payoutConfigSchema, DEFAULT_PAYOUT_CONFIG);
-export const getPayoutConfig = payout.get;
-export const setPayoutConfig = payout.set;
+/** The Climb's settings that aren't the ladder (weekly prizes, pauses, Today's challenge defaults). The ladder is versioned in climb_ladders. */
+const climb = configEntry("climb", climbSettingsSchema, DEFAULT_CLIMB_SETTINGS);
+export const getClimbSettings = climb.get;
+export const setClimbSettings = climb.set;
 
 /** Party round + settlement config (rake, host cut, default split, beat timings). */
 const party = configEntry("party", partyConfigSchema, DEFAULT_PARTY_CONFIG);

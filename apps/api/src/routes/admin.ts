@@ -1,16 +1,7 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { getPartyConfig, setPartyConfig } from "@contestly/db";
 import { adminPartyLimitsSchema } from "@contestly/shared";
-import { requireUser } from "../auth.js";
-
-/**
- * The admin console's settings. Until admin auth exists these only answer with AUTH_MODE=dev (any dev user);
- * with real sign-in they refuse everyone, so they can never ship open.
- */
-function requireAdmin(req: FastifyRequest) {
-  if ((process.env.AUTH_MODE ?? "dev") !== "dev") throw Object.assign(new Error("admin_only"), { statusCode: 403 });
-  return requireUser(req);
-}
+import { requireAdmin } from "../auth.js";
 
 export async function adminRoutes(app: FastifyInstance) {
   /** The party limits as stored, quick picks outside their range included (hosts don't see those). */

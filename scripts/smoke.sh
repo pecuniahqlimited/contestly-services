@@ -16,4 +16,8 @@ echo "replay:   $(curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/$P
 echo "no funds: $(curl -s -H 'x-dev-user: brokeuser' -X POST localhost:4000/parties/$PID/join)"
 echo "bad id:   $(curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/nope/join)"
 echo "detail:   $(curl "${H[@]}" localhost:4000/parties/$PID | j "d['status'], d['playerCount'], d['potKobo']")"
+echo "climb:    $(curl "${H[@]}" localhost:4000/climb | j "d['ladder']['version'], len(d['ladder']['stages']), d['week']['week']")"
+RUN=$(curl "${H[@]}" -X POST localhost:4000/climb/runs | j "d['run']['id'], d['round']['type']")
+echo "run:      $RUN"
+echo "board:    $(curl "${H[@]}" "localhost:4000/climb/leaderboard?board=friends" | j "d['board'], len(d['rows'])")"
 echo "In ~60s the worker will flip this party to 'live'. Watch the worker log, then: curl -H 'x-dev-user: tunde' localhost:4000/parties/$PID"

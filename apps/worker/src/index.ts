@@ -1,9 +1,10 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count, lte } from "drizzle-orm";
 import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, seenInSet, type Party, type Tx } from "@contestly/db";
-import { makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
-import { QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { climbQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
+import { CLIMB_TIME_ZONE, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ClimbJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
+import { closeWeeks, snapshotBoard } from "./climb.js";
 
 const connection = makeRedis();
 const pub = makeRedis();
@@ -214,7 +215,18 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
 }, { connection });
 await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "sweep", data: { kind: "sweep" } });
 
-for (const w of [notifyWorker, partyWorker]) {
+const climbJobs = climbQueue();
+const climbWorker = new Worker<ClimbJob>(QUEUES.climb, async (job) => {
+  if (job.data.kind === "day_start") return snapshotBoard(pub);
+  if (job.data.kind === "week_close") return closeWeeks();
+}, { connection });
+/** Each Lagos day at 00:00, and each Monday at 00:15: a run can't outlast its ladder's clock, so by then last week is final (ADR 0005). */
+const CLIMB_DAY_START = "0 0 * * *";
+const CLIMB_WEEK_CLOSE = "15 0 * * 1";
+await climbJobs.upsertJobScheduler("day_start", { pattern: CLIMB_DAY_START, tz: CLIMB_TIME_ZONE }, { name: "day_start", data: { kind: "day_start" } });
+await climbJobs.upsertJobScheduler("week_close", { pattern: CLIMB_WEEK_CLOSE, tz: CLIMB_TIME_ZONE }, { name: "week_close", data: { kind: "week_close" } });
+
+for (const w of [notifyWorker, partyWorker, climbWorker]) {
   w.on("failed", (job, err) => console.error(`[${w.name}] job ${job?.id} failed:`, err.message));
 }
 console.log("worker running: queues", Object.values(QUEUES).join(", "));

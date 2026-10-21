@@ -164,8 +164,9 @@ npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
 npm test                # unit tests (packages/game, apps/questions)
 scripts/smoke.sh        # end-to-end check against the running stack
-npm run sim             # both sims against the running stack: sim:sealed (generated set, 3 players) then
-                        # sim:curate (PDF read → curate review → play with two flag-voids → settle)
+npm run sim             # the sims against the running stack: sim:sealed (generated set, 3 players),
+                        # sim:curate (PDF read → curate review → play with two flag-voids → settle), sim:stakes,
+                        # sim:climb (runs, Today's challenge, boards, week close → approved prizes)
 ```
 
 Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handles are auto-created.
@@ -229,11 +230,13 @@ Done:
 - ~~1. Game engine + Colyseus party room~~: `packages/game` (three-beat round, five graders, speed scoring, prev_rank), PartyRoom, settlement (rake once, split, host cut, non-cash fulfilment), crash watchdog. Custom stakes: party limits in config (admin-editable at `/admin/party-limits`, dev-only until admin auth), checkStakes, split ids, host cash prize held and paid by place, goods for verified brands with one fulfilment per place. Host entity: ADR 0001 (option A).
 - ~~2. Question engine v1~~: `apps/questions` with bank + retrieval (pgvector), generation with verify/dedupe/safety/gate, sealed and curate host modes, PDF/DOCX sources, flag → void → replace, retirement, no repeats for seated players. Providers are mocks behind `Generator`/`Verifier`/`Embedder`; choosing the first real provider is open question 2. ADRs 0002, 0003.
 
+- ~~3. The Climb (services)~~: game-type registry (pattern, scramble, word hunt, quick maths, memory) and ladder engine in `packages/game`; versioned ladder in `climb_ladders`; runs and Today's challenge over HTTP with server timing and catch-up (ADR 0005); day/week scores in Postgres, Everyone board in Valkey sorted sets with a start-of-day snapshot, Friends read from it; worker `day_start` and `week_close`; admin-approved weekly awards paid through the ledger (`climb_award:<id>`), held for accounts that can't be paid yet (`canBePaidCash()`, row 5 changes its body). `npm run sim:climb`.
+
 Next, in order:
 1. **App: play a party** (contestly-app slice B): lobby, live game, result. Plus `npm run dev:bots` here (dev only).
 2. **App: create a party** (slice C): the six-scene builder and the Forge.
 3. **Me and my people** (small, here first): "parties I'm in", follow/unfollow, other people's profiles. Then the app: Home's "your next party" card, Chats › Parties, follow from a party, tappable profiles.
-4. **Step 3, The Climb**: game-type registry and ladder engine in `packages/game`; ladder config versions edited in the admin console; server-graded runs; daily/weekly scores; Today's challenge; Everyone and Friends boards (Valkey sorted sets over Postgres); week close and admin-approved weekly prizes; streaks. Then the app's Climb home, run and leaderboard screens and the admin pages (canvases in `contestly-app`).
+4. **App: The Climb** (contestly-app): Climb home, a run, the leaderboard, and the admin pages (Climb stages, Today's challenge, Weekly winners) from the canvases, against the endpoints below. Home's Party/Climb switch.
 5. **Step 10, Firebase Auth and onboarding**: auth end to end; the onboarding party against the API, including shared onboarding rounds via matchmaking. Moved up so friends can install a test build and sign in; fill rate is the thing to test.
 6. **Steps 5b + 6, chat and social**: party chat and DMs on one composer; voice notes to object storage with capped length; transcription + moderation queue in the worker. Feed and friends leaderboard queries; profile stats from real results.
 7. **Step 5, recommendation service v1** (`apps/recsys`): rules + weighted scores, logged decisions with reasons; Home ordering, Parties ranking, "filling up now", pairing, not-interested. After real users, so it has behaviour to learn from.

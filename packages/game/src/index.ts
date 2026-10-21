@@ -4,3 +4,4 @@ export * from "./standings.js";
 export * from "./round.js";
 export * from "./flags.js";
 export * from "./settlement.js";
+export * from "./climb/index.js";
