@@ -108,10 +108,11 @@ async function roundPublic(tx: Tx, ladder: ClimbLadder, round: ClimbRoundRow): P
 /** The run as the player may see it now: the open round's view, or when the next one opens. */
 async function state(c: Ctx, run: ClimbRunRow, nowMs: number): Promise<ClimbRunState> {
   const view = await runView(c.tx, c.ladder, run);
-  if (run.status !== "active") return { run: view, round: null, nextOpensAt: null };
+  const serverNow = new Date(nowMs).toISOString();
+  if (run.status !== "active") return { run: view, round: null, nextOpensAt: null, serverNow };
   const cur = await latestRound(c.tx, run.id);
-  if (cur.opensAt.getTime() > nowMs) return { run: view, round: null, nextOpensAt: cur.opensAt.toISOString() };
-  return { run: view, round: await roundPublic(c.tx, c.ladder, cur), nextOpensAt: null };
+  if (cur.opensAt.getTime() > nowMs) return { run: view, round: null, nextOpensAt: cur.opensAt.toISOString(), serverNow };
+  return { run: view, round: await roundPublic(c.tx, c.ladder, cur), nextOpensAt: null, serverNow };
 }
 
 async function inTx<T>(ladderOf: (tx: Tx) => Promise<ClimbLadder>, work: (c: Ctx) => Promise<T>): Promise<T> {
@@ -188,6 +189,7 @@ export async function answerRound(user: User, runId: string, roundId: string, an
       stageOutcome: moved.step.outcome satisfies StageOutcome,
       run: await runView(c.tx, c.ladder, moved.run),
       nextOpensAt: moved.nextOpensAtMs === null ? null : new Date(moved.nextOpensAtMs).toISOString(),
+      serverNow: new Date(receivedAt).toISOString(),
     };
   });
 }

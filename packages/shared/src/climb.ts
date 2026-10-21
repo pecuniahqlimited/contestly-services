@@ -234,11 +234,15 @@ export const climbRunSchema = z.object({
   endedAt: z.string().datetime().nullable(),
 });
 
+/** The server's clock when it built the response, so the app can time `opensAt`/`closesAt`/`nextOpensAt` against it rather than the phone's clock. */
+const serverNow = z.string().datetime();
+
 /** POST /climb/runs → 201, GET /climb/runs/:id. `round` is the open round; between rounds it's null and `nextOpensAt` says when to fetch again. */
 export const climbRunStateSchema = z.object({
   run: climbRunSchema,
   round: climbRoundSchema.nullable(),
   nextOpensAt: z.string().datetime().nullable(),
+  serverNow,
 });
 
 /** POST /climb/runs/:id/answer */
@@ -253,6 +257,7 @@ export const climbAnswerResponseSchema = z.object({
   run: climbRunSchema,
   /** When to GET the run for the next round; null once the run is over. */
   nextOpensAt: z.string().datetime().nullable(),
+  serverNow,
 });
 
 // ---------------------------------------------------------------- Today's challenge
@@ -308,16 +313,18 @@ export const challengePlayStateSchema = z.object({
   challenge: todayChallengeSchema,
   question: challengeQuestionViewSchema.nullable(),
   nextOpensAt: z.string().datetime().nullable(),
+  serverNow,
 });
 
-/** POST /climb/challenge/answer */
-export const challengeAnswerBodySchema = z.object({ idx: z.number().int().min(0), index: z.number().int().min(0) });
+/** POST /climb/challenge/answer. `index` is in this player's option order; null is "no answer" and is graded wrong. An index past the options is refused. */
+export const challengeAnswerBodySchema = z.object({ idx: z.number().int().min(0), index: z.number().int().min(0).nullable() });
 export const challengeAnswerResponseSchema = z.object({
   correct: z.boolean(),
   /** In this player's option order. */
   correctIndex: z.number().int(),
   challenge: todayChallengeSchema,
   nextOpensAt: z.string().datetime().nullable(),
+  serverNow,
 });
 
 // ---------------------------------------------------------------- home and boards

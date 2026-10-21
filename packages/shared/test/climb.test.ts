@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CLIMB_LADDER, DEFAULT_CLIMB_SETTINGS, addDays, climbLadderSchema, climbPrizesSchema, climbSettingsSchema, NO_CLIMB_PRIZES, weeklyPrizeTotalKobo, dayStartsAt, lagosDay, upsertChallengeSchema, weekDays, weekEndsAt, weekOf } from "../src/index.js";
+import { DEFAULT_CLIMB_LADDER, DEFAULT_CLIMB_SETTINGS, addDays, challengeAnswerBodySchema, climbLadderSchema, climbPrizesSchema, climbSettingsSchema, NO_CLIMB_PRIZES, weeklyPrizeTotalKobo, dayStartsAt, lagosDay, upsertChallengeSchema, weekDays, weekEndsAt, weekOf } from "../src/index.js";
 
 describe("the Lagos calendar", () => {
   it("a Lagos day starts at 23:00 UTC the evening before", () => {
@@ -60,5 +60,17 @@ describe("Today's challenge questions", () => {
     expect(upsertChallengeSchema.safeParse(ok).success).toBe(true);
     expect(upsertChallengeSchema.safeParse({ ...ok, questions: [{ ...ok.questions[0], correctIndex: 2 }] }).success).toBe(false);
     expect(upsertChallengeSchema.safeParse({ ...ok, questions: [{ ...ok.questions[0], options: ["Wizkid", "wizkid"] }] }).success).toBe(false);
+  });
+});
+
+describe("Today's challenge answers", () => {
+  it("takes an option index or null for no answer", () => {
+    expect(challengeAnswerBodySchema.parse({ idx: 0, index: 2 }).index).toBe(2);
+    expect(challengeAnswerBodySchema.parse({ idx: 0, index: null }).index).toBeNull();
+  });
+  it("refuses a missing, negative or fractional index", () => {
+    expect(challengeAnswerBodySchema.safeParse({ idx: 0 }).success).toBe(false);
+    expect(challengeAnswerBodySchema.safeParse({ idx: 0, index: -1 }).success).toBe(false);
+    expect(challengeAnswerBodySchema.safeParse({ idx: 0, index: 1.5 }).success).toBe(false);
   });
 });

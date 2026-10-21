@@ -72,14 +72,16 @@ async function catchUp(c: Ctx, attempt: ClimbAttemptRow, nowMs: number): Promise
 
 async function playState(c: Ctx, attempt: ClimbAttemptRow, nowMs: number): Promise<ChallengePlayState> {
   const card = challengeCard(c.ch, attempt);
-  if (attempt.finishedAt) return { challenge: card, question: null, nextOpensAt: null };
+  const serverNow = new Date(nowMs).toISOString();
+  if (attempt.finishedAt) return { challenge: card, question: null, nextOpensAt: null, serverNow };
   const cur = (await answersOf(c.tx, attempt.id)).at(-1)!;
-  if (cur.opensAt.getTime() > nowMs) return { challenge: card, question: null, nextOpensAt: cur.opensAt.toISOString() };
+  if (cur.opensAt.getTime() > nowMs) return { challenge: card, question: null, nextOpensAt: cur.opensAt.toISOString(), serverNow };
   const q = c.ch.questions[cur.idx];
   return {
     challenge: card,
     question: { idx: cur.idx, total: c.ch.questions.length, prompt: q.prompt, options: attempt.optionOrder[cur.idx].map((i) => q.options[i]), opensAt: cur.opensAt.toISOString(), closesAt: cur.closesAt.toISOString() },
     nextOpensAt: null,
+    serverNow,
   };
 }
 
@@ -121,13 +123,13 @@ export async function challengeState(user: User): Promise<ChallengePlayState> {
   return inTx(user, async (c) => {
     const now = Date.now();
     const found = await lockAttempt(c, user.id);
-    if (!found) return { challenge: challengeCard(c.ch, null), question: null, nextOpensAt: null };
+    if (!found) return { challenge: challengeCard(c.ch, null), question: null, nextOpensAt: null, serverNow: new Date(now).toISOString() };
     return playState(c, await catchUp(c, found, now), now);
   });
 }
 
-/** Grade one question (first answer only; late is wrong). `index` is in this player's option order. */
-export async function answerChallenge(user: User, idx: number, index: number): Promise<ChallengeAnswerResponse> {
+/** Grade one question (first answer only; late or no answer is wrong). `index` is in this player's option order, null for no answer. */
+export async function answerChallenge(user: User, idx: number, index: number | null): Promise<ChallengeAnswerResponse> {
   return inTx(user, async (c) => {
     const receivedAt = Date.now();
     const found = await lockAttempt(c, user.id);
@@ -139,8 +141,9 @@ export async function answerChallenge(user: User, idx: number, index: number): P
     if (cur.opensAt.getTime() > receivedAt) throw fail("question_not_open", 409);
     const order = attempt.optionOrder[idx];
     const q = c.ch.questions[idx];
-    const original = order[index] ?? -1;
-    const correct = onTime(receivedAt, cur.closesAt.getTime(), c.settings.latencyAllowanceMs) && original === q.correctIndex;
+    if (index !== null && index >= order.length) throw fail("answer_out_of_range", 400);
+    const original = index === null ? null : order[index];
+    const correct = original !== null && onTime(receivedAt, cur.closesAt.getTime(), c.settings.latencyAllowanceMs) && original === q.correctIndex;
     await c.tx.update(climbChallengeAnswers).set({ answer: original, answeredAt: new Date(receivedAt), correct }).where(and(eq(climbChallengeAnswers.attemptId, attempt.id), eq(climbChallengeAnswers.idx, idx)));
     const moved = await advance(c, attempt, idx, receivedAt);
     return {
@@ -148,6 +151,7 @@ export async function answerChallenge(user: User, idx: number, index: number): P
       correctIndex: order.indexOf(q.correctIndex),
       challenge: challengeCard(c.ch, moved.attempt),
       nextOpensAt: moved.nextOpensAtMs === null ? null : new Date(moved.nextOpensAtMs).toISOString(),
+      serverNow: new Date(receivedAt).toISOString(),
     };
   });
 }

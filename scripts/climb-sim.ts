@@ -12,8 +12,11 @@ import { api, call, failureCount, ok, sleep, waitFor } from "./sim-lib.js";
 
 const tag = Date.now().toString(36);
 const ADMIN = `climb.admin.${tag}`;
-const ADA = `climb.ada.${tag}`, KEMI = `climb.kemi.${tag}`, SEGUN = `climb.segun.${tag}`;
+const ADA = `climb.ada.${tag}`, KEMI = `climb.kemi.${tag}`, SEGUN = `climb.segun.${tag}`, ZEE = `climb.zee.${tag}`;
 const userId = async (handle: string) => (await db.select({ id: users.id }).from(users).where(eq(users.handle, handle)))[0].id;
+
+/** Every run and challenge response carries the server's clock. */
+const stamped = (res: any) => typeof res.serverNow === "string" && Math.abs(Date.parse(res.serverNow) - Date.now()) < 5_000;
 
 /** Wait until the server opens the next round, then fetch it. */
 async function nextRound(handle: string, state: any) {
@@ -94,6 +97,7 @@ try {
   const first = s.round;
   const a1 = await api(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: first.id, answer: await rightAnswer(first.id) });
   ok(a1.correct && a1.stageOutcome === "continue" && a1.run.stageRight === 1, "a right round in a 2-of-3 stage keeps it going");
+  ok(stamped(s) && stamped(a1), "run and answer responses carry serverNow");
   const again = await call(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: first.id, answer: await rightAnswer(first.id) });
   ok(again.status === 409 && again.body.error === "round_closed", "a round is answered once");
   const notMine = await call(ADA, "GET", `/climb/runs/${s.run.id}`);
@@ -102,7 +106,7 @@ try {
   const a2 = await api(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: s.round.id, answer: await rightAnswer(s.round.id) });
   ok(a2.stageOutcome === "cleared" && a2.run.stage === 2 && a2.run.points === testLadder.stages[0].points, "two right clears a 2-of-3 stage without playing the third");
   const early = await call(SEGUN, "GET", `/climb/runs/${s.run.id}`);
-  ok(early.body.round === null && !!early.body.nextOpensAt, "between rounds there's only the time the next one opens");
+  ok(early.body.round === null && !!early.body.nextOpensAt && stamped(early.body), "between rounds there's only the time the next one opens, and the server's clock");
   const restart = await api(SEGUN, "POST", "/climb/runs");
   const oldRun = await api(SEGUN, "GET", `/climb/runs/${s.run.id}`);
   ok(oldRun.run.status === "abandoned" && oldRun.run.points === testLadder.stages[0].points, "starting again abandons the run going, keeping what it banked");
@@ -145,6 +149,23 @@ try {
     cs = { challenge: res.challenge, question: null, nextOpensAt: res.nextOpensAt };
   }
   ok(cs.challenge.attempt.points === maxChallenge, `all right scores the maximum (+${maxChallenge})`);
+  // A player who lets every question go: an index past the options is refused, null is "no answer", graded wrong.
+  let zs = await api(ZEE, "POST", "/climb/challenge/start");
+  ok(stamped(zs), "challenge responses carry serverNow");
+  const outOfRange = await call(ZEE, "POST", "/climb/challenge/answer", { idx: 0, index: zs.question.options.length });
+  ok(outOfRange.status === 400 && outOfRange.body.error === "answer_out_of_range", "an index past the options is refused");
+  const negative = await call(ZEE, "POST", "/climb/challenge/answer", { idx: 0, index: -1 });
+  ok(negative.status === 400, "a negative index is refused");
+  while (zs.challenge.attempt.state !== "finished") {
+    while (!zs.question) {
+      await sleep(Math.max(0, Date.parse(zs.nextOpensAt) - Date.now()) + 50);
+      zs = await api(ZEE, "GET", "/climb/challenge");
+    }
+    const res = await api(ZEE, "POST", "/climb/challenge/answer", { idx: zs.question.idx, index: null });
+    ok(res.correct === false && Number.isInteger(res.correctIndex) && stamped(res), `question ${zs.question.idx + 1}: no answer is graded wrong, with the right one revealed`);
+    zs = { challenge: res.challenge, question: null, nextOpensAt: res.nextOpensAt };
+  }
+  ok(zs.challenge.attempt.correct === 0 && zs.challenge.attempt.points === 0, "no answers score nothing");
   const second = await api(ADA, "POST", "/climb/challenge/start");
   ok(second.challenge.attempt.state === "finished" && second.question === null, "one go per player: starting again just shows the result");
   const tooMany = await call(ADA, "POST", "/climb/challenge/answer", { idx: 0, index: 0 });
