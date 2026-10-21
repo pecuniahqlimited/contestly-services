@@ -115,14 +115,22 @@ export function ladderSummary(ladder: ClimbLadder) {
 }
 
 /**
- * Climb settings that aren't the ladder (app_config "climb"). Timings apply to runs as they're played;
- * weekly prizes are read at week close.
+ * Weekly prizes on the Everyone board: how many places win, and the cash for each, best first. Versioned
+ * like the ladder: each admin save is a new version, and a week closes with the version current when it began.
  */
+export const MAX_WEEKLY_WINNERS = 100;
+export const climbPrizesSchema = z.object({
+  winners: z.number().int().min(0).max(MAX_WEEKLY_WINNERS),
+  /** Kobo per place, 1st first; exactly one per winner. */
+  prizeKobo: z.array(z.number().int().positive()).max(MAX_WEEKLY_WINNERS),
+}).refine((p) => p.prizeKobo.length === p.winners, { message: "one prize per weekly winner", path: ["prizeKobo"] });
+export type ClimbPrizes = z.infer<typeof climbPrizesSchema>;
+/** Before an admin has set any: nobody wins. */
+export const NO_CLIMB_PRIZES: ClimbPrizes = { winners: 0, prizeKobo: [] };
+export const weeklyPrizeTotalKobo = (p: ClimbPrizes) => p.prizeKobo.reduce((n, k) => n + k, 0);
+
+/** Climb settings that aren't the ladder or the prizes (app_config "climb"). They apply to runs as they're played. */
 export const climbSettingsSchema = z.object({
-  /** The top this many on the Everyone board at week close become pending awards. */
-  weeklyWinners: z.number().int().min(0).max(100),
-  /** Cash per place, best first; one per weekly winner. */
-  weeklyPrizeKobo: z.array(z.number().int().positive()),
   /** Pause between a round's verdict and the next round opening. */
   revealSeconds: z.number().int().min(0).max(10),
   /** Pause after a stage is cleared, before the next stage's first round. */
@@ -134,13 +142,10 @@ export const climbSettingsSchema = z.object({
   challengeMaxPoints: z.number().int().min(1).max(1000),
   /** Rows on the Everyone board. */
   boardLimit: z.number().int().min(5).max(200),
-}).refine((s) => s.weeklyPrizeKobo.length === s.weeklyWinners, { message: "one prize per weekly winner", path: ["weeklyPrizeKobo"] });
+});
 export type ClimbSettings = z.infer<typeof climbSettingsSchema>;
 
-const NAIRA = 100;
 export const DEFAULT_CLIMB_SETTINGS: ClimbSettings = {
-  weeklyWinners: 10,
-  weeklyPrizeKobo: [5000, 3000, 2000, 1000, 1000, 1000, 1000, 1000, 1000, 1000].map((n) => n * NAIRA),
   revealSeconds: 2,
   stageBreakSeconds: 4,
   latencyAllowanceMs: 1500,
@@ -385,6 +390,19 @@ export const adminLadderPreviewSchema = z.object({
 
 /** GET and PUT /admin/climb/settings */
 export const adminClimbSettingsSchema = z.object({ settings: climbSettingsSchema });
+
+/** PUT /admin/climb/prizes: saves a new version, used from the next week that begins. */
+export const adminPrizesBodySchema = z.object({ prizes: climbPrizesSchema });
+/**
+ * GET and PUT /admin/climb/prizes. `current`: the newest version (null before any save), which the next week
+ * to begin will use. `thisWeek`: what the week being played closes with.
+ */
+const prizeVersionSchema = z.object({ version: z.number().int(), prizes: climbPrizesSchema, totalKobo: z.number().int(), createdAt: z.string().datetime() });
+export const adminPrizesResponseSchema = z.object({
+  current: prizeVersionSchema.nullable(),
+  thisWeek: z.object({ week: z.string(), version: z.number().int().nullable(), prizes: climbPrizesSchema, totalKobo: z.number().int() }),
+});
+export type AdminPrizesResponse = z.infer<typeof adminPrizesResponseSchema>;
 
 /** A weekly prize: pending until an admin decides; approved means paid, or waiting for the winner to sign in. */
 export const CLIMB_AWARD_STATUSES = ["pending", "approved", "paid", "rejected"] as const;

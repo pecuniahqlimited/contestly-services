@@ -265,8 +265,8 @@ export const PARTY_EVENTS_CHANNEL = "party:events";
 /** BullMQ queue names and job payloads. */
 export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb" } as const;
 /**
- * The Climb's scheduled jobs, both repeatable on the Lagos clock. `day_start`: snapshot this week's
- * Everyone board for ▲/▼ since yesterday. `week_close`: rank every finished week that hasn't been
+ * The Climb's scheduled jobs, both repeatable on the Lagos clock. `day_start`: pin this week's prize
+ * version and snapshot its Everyone board for ▲/▼ since yesterday. `week_close`: rank every finished week that hasn't been
  * closed and write its pending weekly awards.
  */
 export type ClimbJob = { kind: "day_start" } | { kind: "week_close" };

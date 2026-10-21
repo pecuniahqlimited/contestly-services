@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CLIMB_LADDER, DEFAULT_CLIMB_SETTINGS, addDays, climbLadderSchema, climbSettingsSchema, dayStartsAt, lagosDay, upsertChallengeSchema, weekDays, weekEndsAt, weekOf } from "../src/index.js";
+import { DEFAULT_CLIMB_LADDER, DEFAULT_CLIMB_SETTINGS, addDays, climbLadderSchema, climbPrizesSchema, climbSettingsSchema, NO_CLIMB_PRIZES, weeklyPrizeTotalKobo, dayStartsAt, lagosDay, upsertChallengeSchema, weekDays, weekEndsAt, weekOf } from "../src/index.js";
 
 describe("the Lagos calendar", () => {
   it("a Lagos day starts at 23:00 UTC the evening before", () => {
@@ -37,9 +37,20 @@ describe("ladder config", () => {
     expect(r.success).toBe(false);
     expect(r.error?.issues[0].message).toBe("stage 1 has no game type switched on");
   });
-  it("settings need one prize per weekly winner", () => {
-    expect(climbSettingsSchema.safeParse(DEFAULT_CLIMB_SETTINGS).success).toBe(true);
-    expect(climbSettingsSchema.safeParse({ ...DEFAULT_CLIMB_SETTINGS, weeklyWinners: 3 }).success).toBe(false);
+  it("the default settings are valid", () => expect(climbSettingsSchema.safeParse(DEFAULT_CLIMB_SETTINGS).success).toBe(true));
+});
+
+describe("weekly prizes", () => {
+  it("need exactly one positive amount per winner", () => {
+    expect(climbPrizesSchema.safeParse({ winners: 2, prizeKobo: [500_000, 300_000] }).success).toBe(true);
+    expect(climbPrizesSchema.safeParse({ winners: 3, prizeKobo: [500_000, 300_000] }).success).toBe(false);
+    expect(climbPrizesSchema.safeParse({ winners: 1, prizeKobo: [0] }).success).toBe(false);
+    expect(climbPrizesSchema.safeParse({ winners: 1, prizeKobo: [1.5] }).success).toBe(false);
+    expect(climbPrizesSchema.safeParse(NO_CLIMB_PRIZES).success).toBe(true);
+  });
+  it("the weekly total is the sum of the places", () => {
+    expect(weeklyPrizeTotalKobo({ winners: 3, prizeKobo: [500_000, 300_000, 200_000] })).toBe(1_000_000);
+    expect(weeklyPrizeTotalKobo(NO_CLIMB_PRIZES)).toBe(0);
   });
 });
 

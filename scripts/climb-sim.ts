@@ -5,7 +5,7 @@
  * TEST-ONLY: the "perfect player" reads round answers from Postgres, which no client can.
  */
 import { and, eq } from "drizzle-orm";
-import { climbChallengeAttempts, climbRounds, climbWeeks, db, ledgerAccounts, ledgerEntries, sql, users } from "@contestly/db";
+import { climbChallengeAttempts, climbChallenges, climbRounds, climbWeekPrizes, climbWeeks, db, ledgerAccounts, ledgerEntries, sql, users } from "@contestly/db";
 import { climbQueue, closeQueues } from "@contestly/queue";
 import { lagosDay, type ClimbGameType } from "@contestly/shared";
 import { api, call, failureCount, ok, sleep, waitFor } from "./sim-lib.js";
@@ -70,8 +70,11 @@ const saved = await api(ADMIN, "PUT", "/admin/climb/ladder", { ladder: testLadde
 ok(saved.version > before.version, "saving the ladder makes a new version");
 const settingsBefore = (await api(ADMIN, "GET", "/admin/climb/settings")).settings;
 await api(ADMIN, "PUT", "/admin/climb/settings", { settings: { ...settingsBefore, revealSeconds: 0, stageBreakSeconds: 1 } });
-const badSettings = await call(ADMIN, "PUT", "/admin/climb/settings", { settings: { ...settingsBefore, weeklyWinners: 2 } });
-ok(badSettings.status === 400, "weekly winners without a prize each are refused");
+const badSettings = await call(ADMIN, "PUT", "/admin/climb/settings", { settings: { ...settingsBefore, revealSeconds: -1 } });
+ok(badSettings.status === 400, "settings out of range are refused");
+const prizesBefore = await api(ADMIN, "GET", "/admin/climb/prizes");
+/** Set when the sim writes today's challenge itself, so it can take it away again. */
+let createdChallengeDay: string | null = null;
 
 try {
   console.log("\n==== a full clear ====");
@@ -116,6 +119,7 @@ try {
   const existing = await call(ADMIN, "GET", `/admin/climb/challenges?from=${today}`);
   const todays = (existing.body as any[]).find((c) => c.day === today);
   if (!todays) {
+    createdChallengeDay = today;
     await api(ADMIN, "PUT", `/admin/climb/challenges/${today}`, { title: "Sim quiz", questions: [
       { prompt: "2 + 2?", options: ["3", "4", "5"], correctIndex: 1 },
       { prompt: "Capital of Nigeria?", options: ["Lagos", "Abuja", "Kano", "Ibadan"], correctIndex: 1 },
@@ -175,6 +179,15 @@ try {
     { userId: ada, week, points: 300, reachedAt: new Date(Date.UTC(2001, 0, 2)) },
     { userId: kemi, week, points: 300, reachedAt: new Date(Date.UTC(2001, 0, 1)) },
   ]);
+  // Prizes are versioned: the week closes with the version it was pinned to, not one saved afterwards.
+  const badPrizes = await call(ADMIN, "PUT", "/admin/climb/prizes", { prizes: { winners: 2, prizeKobo: [700_000, 400_000, 100_000] } });
+  ok(badPrizes.status === 400, "prizes need exactly one amount per winner");
+  const started = await api(ADMIN, "PUT", "/admin/climb/prizes", { prizes: { winners: 2, prizeKobo: [700_000, 400_000] } });
+  ok(started.current.totalKobo === 1_100_000 && started.current.prizes.winners === 2, "saving prizes makes a version with its weekly total");
+  ok(started.thisWeek.version !== started.current.version || prizesBefore.current === null, "the week being played keeps the version it began with");
+  await db.insert(climbWeekPrizes).values({ week, prizeVersion: started.current.version }); // as the worker pins it when the week begins
+  const later = await api(ADMIN, "PUT", "/admin/climb/prizes", { prizes: { winners: 1, prizeKobo: [100_000] } });
+  ok(later.current.version > started.current.version, "a later save is a newer version");
   const jobs = climbQueue();
   await jobs.add("week_close", { kind: "week_close" });
   const awards = await waitFor(async () => {
@@ -185,7 +198,7 @@ try {
   if (awards) {
     ok(awards.every((a) => a.status === "pending"), "awards wait for an admin");
     ok(awards[0].person.handle === KEMI && awards[1].person.handle === ADA, "a tie goes to whoever got there first");
-    ok(awards[0].amountKobo === settingsBefore.weeklyPrizeKobo[0], "1st place gets 1st prize");
+    ok(awards[0].amountKobo === 700_000 && awards[1].amountKobo === 400_000, "the week closed with the prizes it was pinned to, 1st gets 1st prize");
     await jobs.add("week_close", { kind: "week_close" });
     await sleep(1500);
     ok(((await call(ADMIN, "GET", `/admin/climb/awards?week=${week}`)).body as any[]).length === 2, "closing again adds nothing");
@@ -209,7 +222,16 @@ try {
 } finally {
   await api(ADMIN, "PUT", "/admin/climb/ladder", { ladder: before.ladder });
   await api(ADMIN, "PUT", "/admin/climb/settings", { settings: settingsBefore });
-  console.log("\n(ladder and settings restored)");
+  if (prizesBefore.current) await api(ADMIN, "PUT", "/admin/climb/prizes", { prizes: prizesBefore.current.prizes });
+  if (createdChallengeDay) {
+    // Played challenges can't be deleted through the API, so the sim removes its own directly (attempts' answers cascade).
+    const [ch] = await db.select({ id: climbChallenges.id }).from(climbChallenges).where(eq(climbChallenges.day, createdChallengeDay));
+    if (ch) {
+      await db.delete(climbChallengeAttempts).where(eq(climbChallengeAttempts.challengeId, ch.id));
+      await db.delete(climbChallenges).where(eq(climbChallenges.id, ch.id));
+    }
+  }
+  console.log(`\n(ladder, settings and prizes restored${createdChallengeDay ? "; the sim's challenge for today removed" : ""})`);
 }
 
 await sql.end();

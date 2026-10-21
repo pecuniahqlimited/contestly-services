@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { getClimbSettings } from "@contestly/db";
+import { db, getClimbSettings, prizesForWeek } from "@contestly/db";
 import { CLIMB_BOARD_VIEWS, challengeAnswerBodySchema, climbAnswerBodySchema, lagosDay, weekEndsAt, weekOf, type ClimbBoard } from "@contestly/shared";
 import { requireUser, uuidParam } from "../auth.js";
 import { climbHome } from "../climb/home.js";
@@ -31,10 +31,10 @@ export async function climbRoutes(app: FastifyInstance) {
     const me = requireUser(req);
     const { board } = boardQuerySchema.parse(req.query);
     const week = weekOf(lagosDay());
-    const settings = await getClimbSettings();
+    const [settings, { prizes }] = await Promise.all([getClimbSettings(), prizesForWeek(db, week)]);
     const [b, line] = await Promise.all([
       board === "everyone" ? everyoneBoard(week, me.id, settings.boardLimit) : friendsBoard(week, me.id),
-      prizeLine(week, settings.weeklyWinners),
+      prizeLine(week, prizes.winners),
     ]);
     return { board, week, endsAt: weekEndsAt(week).toISOString(), prizeLine: line, ...b };
   });

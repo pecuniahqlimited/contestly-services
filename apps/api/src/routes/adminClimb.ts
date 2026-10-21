@@ -2,13 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, asc, count, desc, eq, gte, inArray } from "drizzle-orm";
 import {
-  approveAward, canBePaidCash, climbAwards, climbChallengeAttempts, climbChallenges, currentLadder, db, getClimbSettings, rejectAward, saveLadder, setClimbSettings, users,
+  approveAward, canBePaidCash, climbAwards, climbChallengeAttempts, climbChallenges, currentLadder, currentPrizes, db, getClimbSettings, prizesForWeek, rejectAward, saveLadder, savePrizes, setClimbSettings, users,
   type ClimbAwardRow, type ClimbChallengeRow,
 } from "@contestly/db";
 import { generateRound, pickRoundType, roundReveal, roundView, stageLevel } from "@contestly/game";
 import {
-  CLIMB_AWARD_STATUSES, CLIMB_GAME_LABELS, CLIMB_GAME_TYPES, adminClimbSettingsSchema, adminLadderBodySchema, addDays, ladderSummary, lagosDay, upsertChallengeSchema,
-  type AdminLadderResponse, type ClimbAward, type ClimbLadder,
+  CLIMB_AWARD_STATUSES, CLIMB_GAME_LABELS, CLIMB_GAME_TYPES, adminClimbSettingsSchema, adminLadderBodySchema, adminPrizesBodySchema, addDays, ladderSummary, lagosDay, upsertChallengeSchema, weekOf, weeklyPrizeTotalKobo,
+  type AdminLadderResponse, type AdminPrizesResponse, type ClimbAward, type ClimbLadder,
 } from "@contestly/shared";
 import { dayParam, requireAdmin, uuidParam } from "../auth.js";
 import { personColumns } from "../people.js";
@@ -19,6 +19,15 @@ const CHALLENGE_LIST_PAST_DAYS = 7;
 
 const gameTypes = CLIMB_GAME_TYPES.map((type) => ({ type, ...CLIMB_GAME_LABELS[type] }));
 const ladderResponse = (version: number, ladder: ClimbLadder): AdminLadderResponse => ({ version, ladder, summary: ladderSummary(ladder), gameTypes });
+
+async function prizesResponse(): Promise<AdminPrizesResponse> {
+  const week = weekOf(lagosDay());
+  const [current, thisWeek] = await Promise.all([currentPrizes(), prizesForWeek(db, week)]);
+  return {
+    current: current && { version: current.version, prizes: current.prizes, totalKobo: weeklyPrizeTotalKobo(current.prizes), createdAt: current.createdAt.toISOString() },
+    thisWeek: { week, ...thisWeek, totalKobo: weeklyPrizeTotalKobo(thisWeek.prizes) },
+  };
+}
 
 const refused = (message: string, statusCode = 409) => Object.assign(new Error(message), { statusCode });
 
@@ -74,7 +83,21 @@ export async function adminClimbRoutes(app: FastifyInstance) {
     return { summary: ladderSummary(ladder), stages };
   });
 
-  /** Weekly winners and prizes, pauses, and Today's challenge defaults. */
+  /** Weekly winners and the cash per place: the newest version, and the one this week closes with. */
+  app.get("/admin/climb/prizes", async (req) => {
+    requireAdmin(req);
+    return prizesResponse();
+  });
+
+  /** Save winners and amounts as a new version. The week being played keeps its version; the next week to begin uses this. */
+  app.put("/admin/climb/prizes", async (req) => {
+    const admin = requireAdmin(req);
+    const { prizes } = adminPrizesBodySchema.parse(req.body);
+    await savePrizes(prizes, admin.id);
+    return prizesResponse();
+  });
+
+  /** Pauses, the network allowance, Today's challenge defaults and the board size. */
   app.get("/admin/climb/settings", async (req) => {
     requireAdmin(req);
     return { settings: await getClimbSettings() };

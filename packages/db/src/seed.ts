@@ -13,12 +13,16 @@ import { closeQueues, partyQueue, questionsQueue } from "@contestly/queue";
 import { db, sql, type Tx } from "./client.js";
 import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
 import * as ledger from "./ledger.js";
+import { currentPrizes, savePrizes } from "./climb.js";
 
 const uid = (n: number) => `00000000-0000-4000-8000-1000000000${String(n).padStart(2, "0")}`;
 
 /** Credit a demo user exactly `amountKobo` of cash, then spend it the way the API would. */
 const topUp = (tx: Tx, userId: string, amountKobo: number, key: string) =>
   ledger.post(tx, { userId, kind: "cash", amountKobo, type: "topup", idempotencyKey: `seed:topup:${key}` });
+
+/** Dev-only weekly Climb prizes, written once if an admin hasn't set any: ₦5,000 / ₦3,000 / ₦2,000, then ₦1,000 for 4th–10th. */
+const DEV_WEEKLY_PRIZES = { winners: 10, prizeKobo: [5000, 3000, 2000, ...Array(7).fill(1000)].map(kobo) };
 
 /** Demo Today's challenge, written like an admin would in the console. */
 const demoChallenge = [
@@ -108,6 +112,7 @@ await db.transaction(async (tx) => {
   scheduled.push(...demoParties);
 
   await tx.insert(appConfig).values({ key: "climb", value: DEFAULT_CLIMB_SETTINGS }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_CLIMB_SETTINGS, updatedAt: new Date() } });
+  if (!(await currentPrizes(tx))) await savePrizes(DEV_WEEKLY_PRIZES, null, tx);
   // Today's challenge for today and tomorrow (Lagos), unless an admin already wrote one for that day.
   const today = lagosDay();
   for (const day of [today, addDays(today, 1)]) {

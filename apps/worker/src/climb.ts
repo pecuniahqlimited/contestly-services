@@ -4,15 +4,19 @@
  */
 import { and, eq, lt, notExists, sql } from "drizzle-orm";
 import type { makeRedis } from "@contestly/queue";
-import { climbAwards, climbWeekResults, climbWeeks, db, getClimbSettings } from "@contestly/db";
+import { climbAwards, climbWeekResults, climbWeeks, db, pinWeekPrizes, prizesForWeek } from "@contestly/db";
 import { weekPlaces, weeklyAwards } from "@contestly/game";
 import { CLIMB_BOARD_TTL_SECONDS, climbBoardKey, climbBoardStartOfDayKey, lagosDay, weekOf } from "@contestly/shared";
 
 const EVERYONE = "everyone";
 
-/** Copy this week's Everyone board as it stands when the day begins; ▲/▼ on the boards compare with it. */
-export async function snapshotBoard(redis: ReturnType<typeof makeRedis>) {
+/**
+ * As each Lagos day begins: fix this week's prize version if it isn't yet (on Monday that's the version
+ * current as the week begins), and copy the Everyone board as it stands; ▲/▼ on the boards compare with it.
+ */
+export async function startDay(redis: ReturnType<typeof makeRedis>) {
   const week = weekOf(lagosDay());
+  await pinWeekPrizes(db, week);
   const from = climbBoardKey(week), to = climbBoardStartOfDayKey(week);
   // A new week has no board yet: no snapshot, so everyone's ▲/▼ is blank until tomorrow.
   if (!(await redis.copy(from, to, "REPLACE"))) await redis.del(to);
@@ -30,15 +34,16 @@ export async function closeWeeks() {
   const open = await db.selectDistinct({ week: climbWeeks.week }).from(climbWeeks)
     .where(and(lt(climbWeeks.week, current), notExists(db.select({ one: sql`1` }).from(climbWeekResults).where(and(eq(climbWeekResults.week, climbWeeks.week), eq(climbWeekResults.scope, EVERYONE))))));
   if (!open.length) return;
-  const settings = await getClimbSettings();
   for (const { week } of open) {
     await db.transaction(async (tx) => {
+      await pinWeekPrizes(tx, week); // a week nothing pinned (scores written outside the API) closes with the current version, recorded
+      const { version, prizes } = await prizesForWeek(tx, week);
       const rows = await tx.select({ userId: climbWeeks.userId, points: climbWeeks.points, reachedAt: climbWeeks.reachedAt }).from(climbWeeks).where(eq(climbWeeks.week, week));
       const places = weekPlaces(rows);
       if (places.length) await tx.insert(climbWeekResults).values(places.map((p) => ({ week, scope: EVERYONE, userId: p.userId, place: p.place, points: p.points }))).onConflictDoNothing();
-      const awards = weeklyAwards(places, settings.weeklyPrizeKobo);
+      const awards = weeklyAwards(places, prizes.prizeKobo);
       if (awards.length) await tx.insert(climbAwards).values(awards.map((a) => ({ week, scope: EVERYONE, ...a }))).onConflictDoNothing();
-      console.log(`[climb] week ${week} closed: ${places.length} placed, ${awards.length} pending award(s) for an admin`);
+      console.log(`[climb] week ${week} closed: ${places.length} placed, ${awards.length} pending award(s) for an admin (prizes v${version ?? "none"})`);
     });
   }
 }

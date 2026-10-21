@@ -1,6 +1,6 @@
 /** Everything the Climb home shows, from the record and the boards. */
 import { and, eq, sql } from "drizzle-orm";
-import { climbDays, climbRuns, currentLadder, db, getClimbSettings, type User } from "@contestly/db";
+import { climbDays, climbRuns, currentLadder, db, prizesForWeek, type User } from "@contestly/db";
 import { currentStreak, lagosDay, weekDays, weekEndsAt, weekOf, type ClimbHome } from "@contestly/shared";
 import { everyoneRank, friendsBoard, prizeLine } from "./boards.js";
 import { todayChallenge } from "./challenge.js";
@@ -9,9 +9,9 @@ import { activeRunId } from "./runs.js";
 export async function climbHome(user: User): Promise<ClimbHome> {
   const today = lagosDay();
   const week = weekOf(today);
-  const [{ version, ladder }, settings, days, [records], challenge, activeId] = await Promise.all([
+  const [{ version, ladder }, { prizes }, days, [records], challenge, activeId] = await Promise.all([
     currentLadder(),
-    getClimbSettings(),
+    prizesForWeek(db, week),
     db.select().from(climbDays).where(and(eq(climbDays.userId, user.id), eq(climbDays.week, week))),
     db.select({
       bestRunPoints: sql<number>`coalesce(max(${climbRuns.points}), 0)::int`,
@@ -20,7 +20,7 @@ export async function climbHome(user: User): Promise<ClimbHome> {
     todayChallenge(user),
     activeRunId(user),
   ]);
-  const [rank, line, friends] = await Promise.all([everyoneRank(week, user.id), prizeLine(week, settings.weeklyWinners), friendsBoard(week, user.id)]);
+  const [rank, line, friends] = await Promise.all([everyoneRank(week, user.id), prizeLine(week, prizes.winners), friendsBoard(week, user.id)]);
   const dayOf = new Map(days.map((d) => [d.day, d]));
   const todayRow = dayOf.get(today);
   const leader = friends.rows[0];

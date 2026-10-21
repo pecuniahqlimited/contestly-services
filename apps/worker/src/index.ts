@@ -4,7 +4,7 @@ import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users,
 import { climbQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { CLIMB_TIME_ZONE, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ClimbJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
-import { closeWeeks, snapshotBoard } from "./climb.js";
+import { closeWeeks, startDay } from "./climb.js";
 
 const connection = makeRedis();
 const pub = makeRedis();
@@ -217,7 +217,7 @@ await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "
 
 const climbJobs = climbQueue();
 const climbWorker = new Worker<ClimbJob>(QUEUES.climb, async (job) => {
-  if (job.data.kind === "day_start") return snapshotBoard(pub);
+  if (job.data.kind === "day_start") return startDay(pub);
   if (job.data.kind === "week_close") return closeWeeks();
 }, { connection });
 /** Each Lagos day at 00:00, and each Monday at 00:15: a run can't outlast its ladder's clock, so by then last week is final (ADR 0005). */

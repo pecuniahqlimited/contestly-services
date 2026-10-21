@@ -4,9 +4,9 @@
  * @contestly/game; this module only persists their results.
  */
 import { and, desc, eq, sql as dsql } from "drizzle-orm";
-import { DEFAULT_CLIMB_LADDER, climbLadderSchema, nextStreak, weekOf, type ClimbDay, type ClimbLadder } from "@contestly/shared";
+import { DEFAULT_CLIMB_LADDER, NO_CLIMB_PRIZES, climbLadderSchema, climbPrizesSchema, nextStreak, weekOf, type ClimbDay, type ClimbLadder, type ClimbPrizes } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { climbAwards, climbDays, climbLadders, climbWeeks, users, type ClimbRunRow, type User } from "./schema.js";
+import { climbAwards, climbDays, climbLadders, climbPrizeConfigs, climbWeekPrizes, climbWeeks, users, type ClimbRunRow, type User } from "./schema.js";
 import * as ledger from "./ledger.js";
 
 type Conn = Tx | typeof db;
@@ -37,6 +37,40 @@ export async function saveLadder(ladder: ClimbLadder, byUserId: string): Promise
   return { version: row.version, ladder: row.config };
 }
 
+// ---------------------------------------------------------------- weekly prizes config
+
+export interface PrizeVersion { version: number; prizes: ClimbPrizes; createdAt: Date }
+
+const toPrizeVersion = (row: typeof climbPrizeConfigs.$inferSelect): PrizeVersion =>
+  ({ version: row.version, prizes: climbPrizesSchema.parse({ winners: row.winners, prizeKobo: row.prizeKobo }), createdAt: row.createdAt });
+
+/** The newest prize version, or null if an admin has never set one (then nobody wins). */
+export async function currentPrizes(conn: Conn = db): Promise<PrizeVersion | null> {
+  const [row] = await conn.select().from(climbPrizeConfigs).orderBy(desc(climbPrizeConfigs.version)).limit(1);
+  return row ? toPrizeVersion(row) : null;
+}
+
+/** An admin save: a new version, used from the next week that begins. The week being played keeps its own. */
+export async function savePrizes(prizes: ClimbPrizes, byUserId: string | null, conn: Conn = db): Promise<PrizeVersion> {
+  const p = climbPrizesSchema.parse(prizes);
+  const [row] = await conn.insert(climbPrizeConfigs).values({ winners: p.winners, prizeKobo: p.prizeKobo, createdByUserId: byUserId }).returning();
+  return toPrizeVersion(row);
+}
+
+/** Fix the week's prizes to the version current now, unless it's already fixed. Nothing to pin before any version exists. */
+export async function pinWeekPrizes(conn: Conn, week: ClimbDay) {
+  await conn.execute(dsql`insert into ${climbWeekPrizes} (week, prize_version)
+    select ${week}, max(version) from ${climbPrizeConfigs} having max(version) is not null
+    on conflict (week) do nothing`);
+}
+
+/** The prizes a week closes with: its pinned version, else (not pinned yet) the current one. */
+export async function prizesForWeek(conn: Conn, week: ClimbDay): Promise<{ version: number | null; prizes: ClimbPrizes }> {
+  const [pinned] = await conn.select().from(climbWeekPrizes).innerJoin(climbPrizeConfigs, eq(climbPrizeConfigs.version, climbWeekPrizes.prizeVersion)).where(eq(climbWeekPrizes.week, week));
+  const v = pinned ? toPrizeVersion(pinned.climb_prize_configs) : await currentPrizes(conn);
+  return v ? { version: v.version, prizes: v.prizes } : { version: null, prizes: NO_CLIMB_PRIZES };
+}
+
 // ---------------------------------------------------------------- days, weeks, streaks
 
 /** The day row, created if it's the first thing today, and locked for this transaction. */
@@ -48,6 +82,7 @@ async function lockDay(tx: Tx, userId: string, day: ClimbDay) {
 
 /** Re-add the week from its days. Returns the week's points, for the board. */
 async function refreshWeek(tx: Tx, userId: string, week: ClimbDay, best?: { stages: number; clearedAll: boolean }): Promise<number> {
+  await pinWeekPrizes(tx, week); // normally the worker pinned it at the week's first midnight; this covers a missed one
   const [{ points }] = await tx.select({ points: dsql<number>`coalesce(sum(${climbDays.bestRunPoints} + ${climbDays.challengePoints}), 0)::int` })
     .from(climbDays).where(and(eq(climbDays.userId, userId), eq(climbDays.week, week)));
   await tx.insert(climbWeeks).values({ userId, week, points, bestRunStages: best?.stages ?? 0, clearedAll: best?.clearedAll ?? false })

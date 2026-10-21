@@ -351,6 +351,25 @@ export const climbLadders = pgTable("climb_ladders", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/** Weekly prizes, one immutable row per admin save (winners, and kobo per place best first). */
+export const climbPrizeConfigs = pgTable("climb_prize_configs", {
+  version: serial("version").primaryKey(),
+  winners: integer("winners").notNull(),
+  prizeKobo: integer("prize_kobo").array().notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * The prize version a week closes with: the one current when the week began. Pinned by the worker as each
+ * Lagos day begins, and by the first score of the week if the worker missed it.
+ */
+export const climbWeekPrizes = pgTable("climb_week_prizes", {
+  week: text("week").primaryKey(),
+  prizeVersion: integer("prize_version").notNull().references(() => climbPrizeConfigs.version),
+  pinnedAt: timestamp("pinned_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** One climb up the ladder. At most one active run per player; starting another ends it (abandoned, its points kept). */
 export const climbRuns = pgTable("climb_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
