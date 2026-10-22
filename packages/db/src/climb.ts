@@ -8,6 +8,7 @@ import { DEFAULT_CLIMB_LADDER, NO_CLIMB_PRIZES, climbLadderSchema, climbPrizesSc
 import { db, type Tx } from "./client.js";
 import { climbAwards, climbDays, climbLadders, climbPrizeConfigs, climbWeekPrizes, climbWeeks, users, type ClimbRunRow, type User } from "./schema.js";
 import * as ledger from "./ledger.js";
+import { canBePaidCash } from "./payable.js";
 
 type Conn = Tx | typeof db;
 
@@ -127,17 +128,11 @@ export async function recordChallengePoints(tx: Tx, userId: string, day: ClimbDa
 
 // ---------------------------------------------------------------- weekly prizes
 
-/**
- * Whether cash can be paid to this account. Payouts only go to signed-in accounts: today that means a
- * phone number verified at sign-in. Row 5 (Firebase Auth) changes only this body.
- */
-export const canBePaidCash = (u: Pick<User, "phone" | "isSystem">) => !u.isSystem && !!u.phone;
-
 const refused = (message: string) => Object.assign(new Error(message), { statusCode: 409 });
 
 /**
  * An admin approves a weekly prize. It's paid to the winner's cash now if their account can be paid,
- * otherwise it stays approved until it can (approving again then pays it). Idempotent: the ledger key
+ * otherwise it stays approved until it can (approving again, or payHeldAwards when they sign up, then pays it). Idempotent: the ledger key
  * is the award's, so it's never paid twice.
  */
 export async function approveAward(tx: Tx, awardId: string, adminId: string) {
@@ -163,4 +158,12 @@ export async function rejectAward(tx: Tx, awardId: string, adminId: string) {
   if (award.status === "paid") throw refused("award_paid");
   const [rejected] = await tx.update(climbAwards).set({ status: "rejected", decidedByUserId: adminId, decidedAt: new Date() }).where(eq(climbAwards.id, awardId)).returning();
   return rejected;
+}
+
+/** Pay every approved-but-unpaid award of a user who can now be paid (they just signed up). Idempotent. */
+export async function payHeldAwards(tx: Tx, userId: string) {
+  const held = await tx.select({ id: climbAwards.id, decidedByUserId: climbAwards.decidedByUserId }).from(climbAwards)
+    .where(and(eq(climbAwards.userId, userId), eq(climbAwards.status, "approved")));
+  for (const a of held) await approveAward(tx, a.id, a.decidedByUserId!);
+  return held.length;
 }

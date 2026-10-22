@@ -1,16 +1,17 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
-import { resolveUser, Unauthorized } from "@contestly/auth";
+import { resolveUser, Unauthorized, type Session } from "@contestly/auth";
+import { SIGN_UP_REQUIRED } from "@contestly/shared";
 import type { User } from "@contestly/db";
 
 declare module "fastify" {
-  interface FastifyRequest { auth?: Awaited<ReturnType<typeof resolveUser>>; }
+  interface FastifyRequest { auth?: Session; }
 }
 
 export const authPlugin = fp(async (app) => {
   app.decorateRequest("auth", undefined);
   app.addHook("preHandler", async (req) => {
-    // Public routes opt out by not calling requireUser(); we still try to resolve so /parties can personalise.
+    // Public routes opt out by not calling require*(); we still try to resolve so /parties can personalise.
     try {
       req.auth = await resolveUser({ authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined });
     } catch (e) {
@@ -19,20 +20,29 @@ export const authPlugin = fp(async (app) => {
   });
 });
 
-/** Use inside handlers that need a signed-in, onboarded user. */
-export function requireUser(req: FastifyRequest): User {
+const signUpRequired = () => Object.assign(new Error(SIGN_UP_REQUIRED), { statusCode: 403 });
+
+/** Anyone with a session, guests included: onboarding, sign-in, free parties, Climb runs. */
+export function requireSession(req: FastifyRequest): User {
   if (!req.auth) throw new Unauthorized();
-  if (!req.auth.user) throw new Unauthorized("complete onboarding first (POST /me)");
   return req.auth.user;
 }
 
+/** A signed-up account. Guests are refused with sign_up_required (money, boards, profiles, hosting). */
+export function requireUser(req: FastifyRequest): User {
+  const user = requireSession(req);
+  if (user.isGuest) throw signUpRequired();
+  return user;
+}
+
 /**
- * The admin console. Until admin auth exists this only lets anyone through with AUTH_MODE=dev (any dev user);
- * with real sign-in it refuses everyone, so admin routes can never ship open.
+ * The admin console: an account with the admin role (users.is_admin; ADMIN_EMAILS grants it). With
+ * AUTH_MODE=dev, any x-dev-user also passes, so the sims and local console work without sign-in.
  */
 export function requireAdmin(req: FastifyRequest): User {
-  if ((process.env.AUTH_MODE ?? "dev") !== "dev") throw Object.assign(new Error("admin_only"), { statusCode: 403 });
-  return requireUser(req);
+  const user = requireUser(req);
+  if (user.isAdmin || req.auth!.via === "dev") return user;
+  throw Object.assign(new Error("admin_only"), { statusCode: 403 });
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;

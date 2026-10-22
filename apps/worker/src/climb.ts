@@ -4,7 +4,7 @@
  */
 import { and, eq, lt, notExists, sql } from "drizzle-orm";
 import type { makeRedis } from "@contestly/queue";
-import { climbAwards, climbWeekResults, climbWeeks, db, pinWeekPrizes, prizesForWeek } from "@contestly/db";
+import { climbAwards, climbWeekResults, climbWeeks, db, pinWeekPrizes, prizesForWeek, users } from "@contestly/db";
 import { weekPlaces, weeklyAwards } from "@contestly/game";
 import { CLIMB_BOARD_TTL_SECONDS, climbBoardKey, climbBoardStartOfDayKey, lagosDay, weekOf } from "@contestly/shared";
 
@@ -38,7 +38,9 @@ export async function closeWeeks() {
     await db.transaction(async (tx) => {
       await pinWeekPrizes(tx, week); // a week nothing pinned (scores written outside the API) closes with the current version, recorded
       const { version, prizes } = await prizesForWeek(tx, week);
-      const rows = await tx.select({ userId: climbWeeks.userId, points: climbWeeks.points, reachedAt: climbWeeks.reachedAt }).from(climbWeeks).where(eq(climbWeeks.week, week));
+      // Guests climb but don't place: boards and awards need an account.
+      const rows = await tx.select({ userId: climbWeeks.userId, points: climbWeeks.points, reachedAt: climbWeeks.reachedAt }).from(climbWeeks)
+        .innerJoin(users, and(eq(users.id, climbWeeks.userId), eq(users.isGuest, false))).where(eq(climbWeeks.week, week));
       const places = weekPlaces(rows);
       if (places.length) await tx.insert(climbWeekResults).values(places.map((p) => ({ week, scope: EVERYONE, userId: p.userId, place: p.place, points: p.points }))).onConflictDoNothing();
       const awards = weeklyAwards(places, prizes.prizeKobo);

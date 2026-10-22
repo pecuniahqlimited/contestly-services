@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type PartyLimits } from "@contestly/shared";
 
@@ -21,10 +21,29 @@ export const difficultySource = pgEnum("difficulty_source", ["model_estimate", "
 export const bankQuestionStatus = pgEnum("bank_question_status", ["active", "pending_review", "retired"]);
 export const generationOutcome = pgEnum("generation_outcome", ["accepted", "rejected_invalid", "rejected_verify", "rejected_dedupe", "rejected_safety"]);
 
+/**
+ * A person (or, until row 8, a brand) — or a guest. Every session is a Firebase user from the first
+ * screen; an anonymous one is a guest row (is_guest) that can play but not hold coins, be on boards or
+ * win. Signing up turns the same row into an account, so nothing is copied or merged (ADR 0006).
+ * How a session reaches this row is user_identities.
+ */
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
-  firebaseUid: text("firebase_uid").unique(),
+  isGuest: boolean("is_guest").notNull().default(false),
+  isAdmin: boolean("is_admin").notNull().default(false),
+  /** Lowercased; the account key. Set only once verified (email code, Google or Apple). */
+  email: text("email").unique(),
+  emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+  /** E.164, verified by SMS. Optional; needed before the first withdrawal. Never shown. */
   phone: text("phone"),
+  phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
+  /** HMAC(PHONE_HASH_SECRET, sha256(phone)): what contact matching compares. One account per number. */
+  phoneHmac: text("phone_hmac").unique(),
+  /** Onboarding picks, asked once and editable from Me. Lanes are `interests`. */
+  who: text("who"),
+  why: text("why"),
+  /** A staked invite this person opened before signing up: onboarding ends in its lobby. */
+  invitePartyId: uuid("invite_party_id").references((): AnyPgColumn => parties.id, { onDelete: "set null" }),
   handle: text("handle").notNull().unique(),
   displayName: text("display_name").notNull(),
   avatarEmoji: text("avatar_emoji").notNull().default("😎"),
@@ -38,6 +57,67 @@ export const users = pgTable("users", {
   lastPlayedOn: text("last_played_on"), // YYYY-MM-DD, used for streaks
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * How a session or a sign-in reaches an account: (provider, external id). "firebase" is the session
+ * uid (a guest's anonymous uid, kept when it signs up); "google" and "apple" are the provider's
+ * subject, from our own OAuth flow. "supabase" joins in the migration (row 11b).
+ */
+export const userIdentities = pgTable("user_identities", {
+  provider: text("provider").notNull(),
+  externalId: text("external_id").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.provider, t.externalId] }), index("user_identities_user_idx").on(t.userId)]);
+
+/**
+ * The onboarding round's result, one per account. Coins stay here while the player is a guest and are
+ * posted as bonus at sign-up (claimed_at), at most once per normalised email and once per device.
+ */
+export const onboardingRounds = pgTable("onboarding_rounds", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  mode: text("mode").notNull(), // solo | shared
+  players: integer("players").notNull(),
+  points: integer("points").notNull(),
+  correct: integer("correct").notNull(),
+  questions: integer("questions").notNull(),
+  rank: integer("rank").notNull(),
+  coinsKobo: integer("coins_kobo").notNull(),
+  /** SHA-256 of the app's device id (best-effort; the email key is the real guard). */
+  deviceHash: text("device_hash"),
+  /** The bank questions it played, so a first party doesn't repeat them. */
+  bankQuestionIds: uuid("bank_question_ids").array().notNull().default(sql`'{}'::uuid[]`),
+  playedAt: timestamp("played_at", { withTimezone: true }).notNull().defaultNow(),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  /** granted | already_claimed | device_claimed */
+  claimOutcome: text("claim_outcome"),
+});
+
+/** Devices that have had an onboarding bonus, and for whom. */
+export const onboardingDevices = pgTable("onboarding_devices", {
+  deviceHash: text("device_hash").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Which email provider sends first: one immutable row per admin save; the newest is current. The other is the fallback. */
+export const emailConfigs = pgTable("email_configs", {
+  version: serial("version").primaryKey(),
+  primary: text("primary").notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Every email send: which providers were tried and which one delivered (null: none did). */
+export const emailSends = pgTable("email_sends", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  template: text("template").notNull(),
+  to: text("to").notNull(),
+  deliveredBy: text("delivered_by"),
+  /** [{ provider, ok, error? }] in the order tried. */
+  attempts: jsonb("attempts").$type<{ provider: string; ok: boolean; error?: string }[]>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("email_sends_created_idx").on(t.createdAt)]);
 
 export const follows = pgTable("follows", {
   followerId: uuid("follower_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -507,6 +587,7 @@ export const climbAwards = pgTable("climb_awards", {
 
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
+export type OnboardingRound = typeof onboardingRounds.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;
 export type ChatMessage = typeof chatMessages.$inferSelect;

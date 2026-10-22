@@ -5,15 +5,17 @@
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { climbWeeks, db, follows, users } from "@contestly/db";
-import { makeRedis } from "@contestly/queue";
-import { CLIMB_BOARD_TTL_SECONDS, climbBoardKey, climbBoardStartOfDayKey, type ClimbBoardRow, type ClimbDay, type Person } from "@contestly/shared";
+import { valkey } from "../redis.js";
+import { CLIMB_BOARD_TTL_SECONDS, lagosDay, weekOf, climbBoardKey, climbBoardStartOfDayKey, type ClimbBoardRow, type ClimbDay, type Person } from "@contestly/shared";
 import { competitionRanks } from "@contestly/game";
 import { personColumns } from "../people.js";
 
-let redis: ReturnType<typeof makeRedis> | undefined;
-const r = () => (redis ??= makeRedis());
+const r = valkey;
 
+/** Put a player's week points on the board. Guests play but aren't on boards until they sign up (then putOnBoard). */
 export async function setWeekPoints(week: ClimbDay, userId: string, points: number) {
+  const [u] = await db.select({ isGuest: users.isGuest }).from(users).where(eq(users.id, userId));
+  if (!u || u.isGuest) return;
   const key = climbBoardKey(week);
   await ensureBoard(week);
   await r().multi().zadd(key, points, userId).expire(key, CLIMB_BOARD_TTL_SECONDS).exec();
@@ -23,9 +25,17 @@ export async function setWeekPoints(week: ClimbDay, userId: string, points: numb
 async function ensureBoard(week: ClimbDay) {
   const key = climbBoardKey(week);
   if (await r().exists(key)) return;
-  const rows = await db.select({ userId: climbWeeks.userId, points: climbWeeks.points }).from(climbWeeks).where(eq(climbWeeks.week, week));
+  const rows = await db.select({ userId: climbWeeks.userId, points: climbWeeks.points }).from(climbWeeks)
+    .innerJoin(users, and(eq(users.id, climbWeeks.userId), eq(users.isGuest, false))).where(eq(climbWeeks.week, week));
   if (!rows.length) return;
   await r().multi().zadd(key, ...rows.flatMap((x) => [x.points, x.userId])).expire(key, CLIMB_BOARD_TTL_SECONDS).exec();
+}
+
+/** A guest just signed up: what they climbed this week as a guest goes on the board now. */
+export async function putOnBoard(userId: string) {
+  const week = weekOf(lagosDay());
+  const [row] = await db.select({ points: climbWeeks.points }).from(climbWeeks).where(and(eq(climbWeeks.userId, userId), eq(climbWeeks.week, week)));
+  if (row) await setWeekPoints(week, userId, row.points);
 }
 
 /** Competition rank on a sorted set (1 + how many scored more), or null if the user isn't on it. */

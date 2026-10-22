@@ -23,7 +23,9 @@
     "@fastify/multipart": "^9.0.1",
     "unpdf": "^0.12.1",
     "mammoth": "^1.8.0",
-    "@contestly/game": "*"
+    "@contestly/game": "*",
+    "@contestly/email": "*",
+    "jose": "^5.9.6"
   },
   "devDependencies": {
     "vitest": "^2.1.8"

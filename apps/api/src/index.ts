@@ -5,7 +5,8 @@ import multipart from "@fastify/multipart";
 import { MAX_UPLOAD_BYTES } from "@contestly/shared";
 import { ZodError } from "zod";
 import { InsufficientFunds } from "@contestly/db";
-import { Unauthorized } from "@contestly/auth";
+import { Unauthorized, assertAuthConfig } from "@contestly/auth";
+import { grantConfiguredAdmins } from "@contestly/db";
 import { authPlugin } from "./auth.js";
 import { meRoutes } from "./routes/me.js";
 import { usersRoutes } from "./routes/users.js";
@@ -15,8 +16,14 @@ import { questionsRoutes } from "./routes/questions.js";
 import { adminRoutes } from "./routes/admin.js";
 import { climbRoutes } from "./routes/climb.js";
 import { adminClimbRoutes } from "./routes/adminClimb.js";
+import { authRoutes } from "./routes/auth.js";
+import { onboardingRoutes } from "./routes/onboarding.js";
 
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
+// Refuses AUTH_MODE=dev in production, and production without its sign-in secrets.
+assertAuthConfig();
+
+// Behind Caddy/Cloudflare set TRUST_PROXY=1 so req.ip (rate limits) is the client, not the proxy.
+const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" }, trustProxy: process.env.TRUST_PROXY === "1" });
 
 await app.register(cors, { origin: (process.env.WEB_ORIGIN ?? "http://localhost:5173").split(","), credentials: true });
 await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
@@ -29,6 +36,9 @@ app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body,
   if (!body || !(body as string).trim()) return done(null, {});
   try { done(null, JSON.parse(body as string)); } catch (e) { done(e as Error); }
 });
+
+// Sign in with Apple posts its callback as a form.
+app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_req, body, done) => done(null, Object.fromEntries(new URLSearchParams(body as string))));
 
 // Registered before the route plugins so every encapsulated context inherits it.
 app.setErrorHandler((err: any, _req, reply) => {
@@ -49,6 +59,11 @@ await app.register(questionsRoutes);
 await app.register(adminRoutes);
 await app.register(climbRoutes);
 await app.register(adminClimbRoutes);
+await app.register(authRoutes);
+await app.register(onboardingRoutes);
+
+const admins = await grantConfiguredAdmins();
+if (admins) app.log.info(`granted the admin role to ${admins} account(s) from ADMIN_EMAILS`);
 
 const port = Number(process.env.API_PORT ?? 4000);
 await app.listen({ port, host: "0.0.0.0" });

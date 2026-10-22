@@ -7,11 +7,11 @@
  * exactly what it costs, so a demo party's pot was really paid in.
  */
 import { randomUUID } from "node:crypto";
-import { and, inArray, sql as dsql } from "drizzle-orm";
-import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, lagosDay, addDays, DEFAULT_QUESTIONS_CONFIG, type SplitId } from "@contestly/shared";
+import { and, eq, inArray, sql as dsql } from "drizzle-orm";
+import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, lagosDay, addDays, DEFAULT_QUESTIONS_CONFIG, EMBEDDING_DIM, type SplitId } from "@contestly/shared";
 import { closeQueues, partyQueue, questionsQueue } from "@contestly/queue";
 import { db, sql, type Tx } from "./client.js";
-import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
+import { users, bankQuestions, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
 import * as ledger from "./ledger.js";
 import { currentPrizes, savePrizes } from "./climb.js";
 
@@ -43,12 +43,28 @@ const people = [
   { id: uid(7), handle: "jollofrepublic", displayName: "Jollof Republic", avatarEmoji: "🍛", bio: "Free-entry lunch parties every weekday.", interests: ["Food"], isBrand: true, isVerified: true },
 ];
 
+/**
+ * Starter questions for the onboarding round (easy pick-one, from the bank), so a fresh database can
+ * onboard before any party has generated questions. Production needs its own vetted set in the bank.
+ */
+const onboardingStarters = [
+  { categoryTag: "Geography", question: "Which city is Nigeria's federal capital?", options: ["Lagos", "Abuja", "Kano", "Ibadan"], correctIndex: 1 },
+  { categoryTag: "Geography", question: "How many states does Nigeria have?", options: ["30", "34", "36", "37"], correctIndex: 2 },
+  { categoryTag: "Geography", question: "Which ocean borders Lagos?", options: ["Indian", "Atlantic", "Pacific", "Arctic"], correctIndex: 1 },
+  { categoryTag: "General knowledge", question: "What colour is the middle stripe of Nigeria's flag?", options: ["Green", "White", "Red", "Yellow"], correctIndex: 1 },
+  { categoryTag: "Football", question: "What is the Nigerian men's national football team called?", options: ["Super Eagles", "Black Stars", "Indomitable Lions", "Pharaohs"], correctIndex: 0 },
+  { categoryTag: "Food", question: "Jollof rice is cooked mainly in a sauce of…", options: ["Tomato and pepper", "Groundnut", "Palm wine", "Coconut milk"], correctIndex: 0 },
+];
+/** A placeholder unit vector per starter: these never take part in dedupe against generated questions. */
+const starterEmbedding = (i: number) => Array.from({ length: EMBEDDING_DIM }, (_, k) => (k === i ? 1 : 0));
+
 const scheduled: { id: string; startsAt: Date }[] = [];
 await db.transaction(async (tx) => {
   // Upsert on handle: a dev handle auto-created before seeding keeps its row (and id) but gets the demo profile back.
-  const rows = await tx.insert(users).values(people).onConflictDoUpdate({
+  // Demo accounts are signed up: a verified (dev) email, like an x-dev-user.
+  const rows = await tx.insert(users).values(people.map((p) => ({ ...p, email: `${p.handle}@dev.contestly.invalid`, emailVerifiedAt: new Date() }))).onConflictDoUpdate({
     target: users.handle,
-    set: { displayName: dsql`excluded.display_name`, avatarEmoji: dsql`excluded.avatar_emoji`, bio: dsql`excluded.bio`, interests: dsql`excluded.interests`, isBrand: dsql`excluded.is_brand`, isVerified: dsql`excluded.is_verified`, streakDays: 0, lastPlayedOn: null },
+    set: { displayName: dsql`excluded.display_name`, avatarEmoji: dsql`excluded.avatar_emoji`, bio: dsql`excluded.bio`, interests: dsql`excluded.interests`, isBrand: dsql`excluded.is_brand`, isVerified: dsql`excluded.is_verified`, email: dsql`excluded.email`, emailVerifiedAt: dsql`excluded.email_verified_at`, isGuest: false, streakDays: 0, lastPlayedOn: null },
   }).returning();
   const by = Object.fromEntries(rows.map((u) => [u.handle, u.id]));
   const demoUserIds = rows.map((u) => u.id);
@@ -119,6 +135,10 @@ await db.transaction(async (tx) => {
     await tx.insert(climbChallenges).values({ day, title: "Naija music, 2000s edition", questions: demoChallenge, seconds: DEFAULT_CLIMB_SETTINGS.challengeSeconds, maxPoints: DEFAULT_CLIMB_SETTINGS.challengeMaxPoints }).onConflictDoNothing();
   }
   await tx.insert(appConfig).values({ key: "party", value: DEFAULT_PARTY_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_PARTY_CONFIG, updatedAt: new Date() } });
+  const starters = await tx.select({ id: bankQuestions.id }).from(bankQuestions).where(eq(bankQuestions.origin, "seed"));
+  if (!starters.length) {
+    await tx.insert(bankQuestions).values(onboardingStarters.map(({ categoryTag, ...payload }, i) => ({ format: "pick_one" as const, payload, categoryTag, embedding: starterEmbedding(i), difficulty: 0.15, origin: "seed" })));
+  }
   await tx.insert(appConfig).values({ key: "questions", value: DEFAULT_QUESTIONS_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_QUESTIONS_CONFIG, updatedAt: new Date() } });
 });
 

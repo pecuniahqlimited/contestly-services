@@ -37,7 +37,8 @@ The packages hold everything two or more services need, so no rule lives in two 
 | `packages/game` | Pure game logic, no I/O: party round state machine, question timer, correctness + speed scoring, tie-breaks, the Climb game-type registry (generator, grader, payload schema per type) and ladder engine (rounds to clear, stage points), Lagos-day and week arithmetic, difficulty tier selection. Tested to the millisecond. | `realtime` (live play), `worker` (settlement, week close), `api` (Climb rounds and grading) |
 | `packages/db` | Drizzle schema, postgres-js client, append-only ledger helpers (post entry with idempotency key, balance views), seed | `api`, `worker`, `realtime`, `questions` |
 | `packages/shared` | zod schemas for every request and event, realtime event names, queue names, kobo/naira money helpers, enum constants (party status, prize fulfilment states, verification states). Published for the app repo. | All services and both clients |
-| `packages/auth` | `resolveUser()`: dev header or Firebase ID token → users row; brand profile switching (acting-as context); team role checks | `api`, `realtime` |
+| `packages/auth` | `resolveUser()`: Firebase ID token (or the dev header) → users row, a guest for a new anonymous uid; custom tokens; brand profile switching and team role checks (row 8) | `api`, `realtime` |
+| `packages/email` | `EmailSender` (ZeptoMail, Brevo, Mailpit for dev), send with fallback, mail templates | `api`, later `worker` |
 | `packages/queue` | BullMQ queue definitions, ioredis connections, job payload types | `api` (enqueue), `worker` (process), `questions` (long jobs) |
 
 ## Data stores and external providers
@@ -49,7 +50,7 @@ Two stores and six providers, each behind an interface so the provider can chang
 | PostgreSQL (DO managed) | System of record: users, brands, teams, parties, entries, results, question bank, ledger, messages, notifications, moderation cases | Real transactions and row locks for the ledger; party join locks the party row. Leaderboards and feeds are plain queries at launch scale |
 | Valkey (DO managed) | Hot state: Colyseus room state and presence, pub/sub worker → realtime, BullMQ queues, rate limits, leaderboard sorted sets, recsys signal caches | Nothing here is the source of truth; losing it drops live rooms, not money |
 | DigitalOcean Spaces | Avatars, brand logos, prize photos, voice notes | Presigned uploads from the client; voice notes capped in length. Party source files never land here (ADR 0004) |
-| Firebase Auth | Email code (sent by the API, signed in with a custom token), Apple and Google sign-in; phone OTP only to add an optional number | Only auth; no Firebase database. `AUTH_MODE=dev` for local work |
+| Firebase Auth | Session issuer only: anonymous sessions, and custom tokens the API mints after an email code or its own Google/Apple OAuth; phone SMS only to verify an optional number (never linked) | No Firebase database, no claims. Auth emulator locally; `AUTH_MODE=dev` adds the dev header and is refused in production |
 | Email | Sign-in codes and transactional mail. ZeptoMail primary, Brevo backup, behind `EmailSender`; the active provider is admin-switchable and a failed send falls back to the other | Owned by the API (codes) and the worker (other mail). Keys in secrets |
 | Paystack | Top-ups via hosted checkout + webhook; cash payouts via transfers | Behind a `PayoutRail` interface. Other rails: vouchers or airtime (Android), and a manual-fulfilment rail for non-cash prizes with its own status machine |
 | FCM + APNs | Push delivery | Device tokens stored by `api`, sends from `worker` with retry and backoff |
@@ -93,11 +94,12 @@ Each flow names which service acts at each step, so ownership is unambiguous whe
 
 `questions` turns a host's sentence or PDF into a playable set: brief → spec (count, formats, difficulty tier, language; no category picker) → retrieve from the bank and sources → generate per format template → verify (fail closed on anything unverifiable) → dedupe against the bank and the host's past parties → review gate → bank. In sealed mode the automated gate is the approval and the run happens when the party is created, with a start-time re-check that swaps only questions a seated player has already seen; in curate mode the host reviews and is barred from playing. Retrieval never serves a question anyone seated has seen. Every question keeps its generation record (brief, spec, sources, scores, gate result or approver) for admin audit; edited questions are marked host-authored. Every set is generated with a few extra verified reserve questions so a void never needs a live call to the engine, and retires questions from play stats and flags.
 
-### Onboarding round
+### Onboarding round and sign-in (ADR 0006)
 
-1. New user picks "just me" or "a brand". A brand gets an underlying user, a verification checklist, and a team.
-2. Profile data is collected as a timed Party round: `realtime` matchmakes concurrent new users into a shared onboarding room with a live leaderboard, or runs a solo room with a reward-tier path.
-3. Picks are written through `api` and become the first signals `recsys` uses to infer archetype and order Home. Home is never blank.
+1. The app signs in to Firebase anonymously on the first screen; the first `api` call creates a guest row. Picks (who's playing, lanes, why) go through `api` (`PATCH /me/onboarding`) and are the first signals `recsys` uses; "why" is the archetype Home opens with. Brand onboarding itself is row 8.
+2. The quick-fire round is an `OnboardingRoom` in `realtime`: matchmaking puts people onboarding at the same moment in one room, which waits a few seconds and starts; alone, it plays solo. Three easy bank questions, timed and scored by `packages/game`. Coins (by points solo, by rank shared) are saved on the round, not the ledger.
+3. Keep your coins: an email code (`api` sends it through `EmailSender`: the admin's primary provider, then the other) or Google/Apple over the system browser, returning by deep link with a one-time code. Both end in `api` deciding the account (the guest's own row signs up, or an existing account is signed into) and minting a Firebase custom token. Signing up posts the coins once per normalised email and device and pays held Climb awards.
+4. Your people: the phone number is verified by Firebase SMS (not linked) and contacts are matched by HMAC of hashed numbers. Name and face, then Home, or the lobby of the staked invite the person opened.
 
 ### Nudges and notifications
 

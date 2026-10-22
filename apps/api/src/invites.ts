@@ -17,7 +17,7 @@ const httpError = (statusCode: number, message: string) => Object.assign(new Err
 
 /** Of `ids`, the people `userId` follows, is followed by, or has finished a party with. */
 async function connectedTo(q: Tx | typeof db, userId: string, ids: string[]): Promise<Set<string>> {
-  const rows = await q.select({ id: users.id }).from(users).where(and(inArray(users.id, ids), or(
+  const rows = await q.select({ id: users.id }).from(users).where(and(inArray(users.id, ids), eq(users.isGuest, false), or(
     sql`exists (select 1 from ${follows} f where (f.follower_id = ${userId} and f.followee_id = ${users.id}) or (f.follower_id = ${users.id} and f.followee_id = ${userId}))`,
     sql`exists (select 1 from ${partyPlayers} a join ${partyPlayers} b on b.party_id = a.party_id join ${parties} p on p.id = a.party_id
                 where a.user_id = ${userId} and b.user_id = ${users.id} and p.status = 'finished')`,

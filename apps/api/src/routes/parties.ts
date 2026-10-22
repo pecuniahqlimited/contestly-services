@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, desc, asc, count } from "drizzle-orm";
 import { db, users, parties, partyPlayers, partyPrizes, chatMessages, follows, ledger, getPartyConfig, isHostTeam, prospectiveHost, canOfferNonCashPrize } from "@contestly/db";
-import { checkStakes, createPartySchema, inferCategory, inviteToPartySchema, isGoods, questionDisclosure, SPLITS, startsAtFor, visibleLimits } from "@contestly/shared";
+import { SIGN_UP_REQUIRED, isStaked, checkStakes, createPartySchema, inferCategory, inviteToPartySchema, isGoods, questionDisclosure, SPLITS, startsAtFor, visibleLimits } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
-import { requireUser, uuidParam } from "../auth.js";
+import { requireSession, requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
 import { enqueueSealedSet } from "../questionSet.js";
 import { partySummaries } from "../partySummaries.js";
@@ -107,12 +107,14 @@ export async function partiesRoutes(app: FastifyInstance) {
 
   /** Join: charges bonus coins first, then cash, inside one transaction with a row lock on the party. */
   app.post("/parties/:id/join", async (req, reply) => {
-    const me = requireUser(req);
+    const me = requireSession(req);
     const id = uuidParam(req);
     const result = await db.transaction(async (tx) => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
       if (!p) return { status: 404, body: { error: "not_found" } };
       if (p.status !== "open") return { status: 409, body: { error: "party_not_open" } };
+      // Guests play free parties only: no entry, no cash to win (and they can't win goods either; settlement skips them).
+      if (me.isGuest && isStaked(p)) return { status: 403, body: { error: SIGN_UP_REQUIRED } };
       if (await barredFromPlaying(p, me.id)) return { status: 403, body: { error: "seen_the_questions_cannot_play" } };
       const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, id));
       if (Number(n) >= p.maxPlayers) return { status: 409, body: { error: "party_full" } };

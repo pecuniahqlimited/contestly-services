@@ -1,10 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { and, count, desc, eq, max, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { db, follows, parties, partyPlayers, users, ledger } from "@contestly/db";
-import { upsertMeSchema } from "@contestly/shared";
-import { Unauthorized } from "@contestly/auth";
-import { requireUser } from "../auth.js";
+import { canWithdraw, db, follows, parties, partyPlayers, users, ledger } from "@contestly/db";
+import { addPhoneSchema, contactsMatchSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
+import { requireSession, requireUser } from "../auth.js";
+import { httpError } from "../httpError.js";
+import { addPhone, matchContacts } from "../phone.js";
 import { myParties } from "../myParties.js";
 import { personColumns } from "../people.js";
 import { publicUser } from "./users.js";
@@ -12,23 +13,45 @@ import { publicUser } from "./users.js";
 /** People you've played with, at most this many. */
 const PLAYED_WITH_LIMIT = 20;
 
+const isUniqueViolation = (e: unknown) => (e as { code?: string })?.code === "23505";
+
 export async function meRoutes(app: FastifyInstance) {
+  /** The session's own account. Guests get it too (isGuest), with an empty wallet: coins arrive at sign-up. */
   app.get("/me", async (req) => {
-    const u = requireUser(req);
-    return { ...publicUser(u), wallet: await ledger.balances(u.id) };
+    const u = requireSession(req);
+    return {
+      ...publicUser(u), isGuest: u.isGuest, isAdmin: u.isAdmin, email: u.email, phoneAdded: !!u.phoneVerifiedAt,
+      canWithdraw: canWithdraw(u), wallet: await ledger.balances(u.id),
+    };
   });
 
-  /** Onboarding: create or update the signed-in user's profile. Grants the welcome bonus exactly once. */
+  /** Name and face (and Me edits): display name, @handle, avatar, bio, interests. Signed-up accounts only. */
   app.post("/me", async (req) => {
-    if (!req.auth) throw new Unauthorized();
+    const me = requireUser(req);
     const body = upsertMeSchema.parse(req.body);
-    const existing = req.auth.user;
-    const [u] = existing
-      ? await db.update(users).set(body).where(eq(users.id, existing.id)).returning()
-      : await db.insert(users).values({ ...body, firebaseUid: req.auth.firebaseUid, phone: req.auth.phone }).returning();
-    await db.transaction((tx) => ledger.grantWelcome(tx, u.id));
-    return { ...publicUser(u), wallet: await ledger.balances(u.id) };
+    try {
+      const [u] = await db.update(users).set(body).where(eq(users.id, me.id)).returning();
+      return { ...publicUser(u), wallet: await ledger.balances(u.id) };
+    } catch (e) {
+      if (isUniqueViolation(e)) throw httpError(409, "handle_taken");
+      throw e;
+    }
   });
+
+  /** A guest's name for the free party they were invited to. */
+  app.post("/me/guest", async (req) => {
+    const me = requireSession(req);
+    if (!me.isGuest) throw httpError(409, "not_a_guest");
+    const { displayName } = guestNameSchema.parse(req.body);
+    const [u] = await db.update(users).set({ displayName }).where(eq(users.id, me.id)).returning();
+    return { ...publicUser(u), isGuest: true };
+  });
+
+  /** Add (or replace) the optional number, verified by SMS. One account per number. */
+  app.post("/me/phone", async (req) => addPhone(requireUser(req), addPhoneSchema.parse(req.body).idToken));
+
+  /** Which contacts are here: hashed numbers in, people who added a number out. Nothing sent is stored. */
+  app.post("/me/contacts/match", async (req) => matchContacts(requireUser(req), contactsMatchSchema.parse(req.body).hashes));
 
   /** Parties I host, play or am invited to, grouped invited / live / upcoming / recent, each with its last chat line. */
   app.get("/me/parties", async (req) => myParties(requireUser(req)));
@@ -43,7 +66,7 @@ export async function meRoutes(app: FastifyInstance) {
       .innerJoin(parties, and(eq(parties.id, mine.partyId), eq(parties.status, "finished")))
       .innerJoin(partyPlayers, and(eq(partyPlayers.partyId, mine.partyId), ne(partyPlayers.userId, me.id)))
       .innerJoin(users, eq(users.id, partyPlayers.userId))
-      .where(and(eq(mine.userId, me.id), eq(users.isSystem, false),
+      .where(and(eq(mine.userId, me.id), eq(users.isSystem, false), eq(users.isGuest, false),
         sql`not exists (select 1 from ${follows} f where f.follower_id = ${me.id} and f.followee_id = ${users.id})`))
       .groupBy(users.id)
       .orderBy(desc(count()), desc(max(ended)))

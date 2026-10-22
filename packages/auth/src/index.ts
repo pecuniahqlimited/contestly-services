@@ -1,36 +1,52 @@
 import { eq } from "drizzle-orm";
-import { db, ledger, users, type User } from "@contestly/db";
+import { db, guestForFirebaseUid, ledger, userByIdentity, users, type User } from "@contestly/db";
+import { authMode } from "./mode.js";
+import { isAnonymousToken, verifyIdToken } from "./firebase.js";
+
+export * from "./mode.js";
+export { createCustomToken, deleteFirebaseUser, verifyIdToken } from "./firebase.js";
 
 export class Unauthorized extends Error { constructor(msg = "unauthorized") { super(msg); } }
 
-const MODE = process.env.AUTH_MODE ?? "dev";
+export interface Session {
+  user: User;
+  /** "dev": the x-dev-user header (AUTH_MODE=dev only); "token": a verified Firebase ID token. */
+  via: "dev" | "token";
+}
+
+/** Dev-header users are signed up, with a verified dev email, so payouts and admin work in the sims. */
+const DEV_EMAIL_DOMAIN = "dev.contestly.invalid";
+
+async function devUser(raw: string): Promise<User> {
+  const handle = raw.trim().toLowerCase();
+  const [u] = await db.select().from(users).where(eq(users.handle, handle));
+  if (u) return u;
+  const created = await db.transaction(async (tx) => {
+    const [u] = await tx.insert(users).values({ handle, displayName: handle, email: `${handle}@${DEV_EMAIL_DOMAIN}`, emailVerifiedAt: new Date() }).onConflictDoNothing().returning();
+    if (u) await ledger.grantWelcome(tx, u.id);
+    return u;
+  });
+  // Two first requests at once: the other one created it.
+  return created ?? (await db.select().from(users).where(eq(users.handle, handle)))[0];
+}
 
 /**
- * Turns request credentials into a User row (or null for a brand-new Firebase account that hasn't completed onboarding).
- * - dev mode: `x-dev-user: <handle>` header. Creates the user on first sight, with the welcome coins
- *   onboarding would grant, so you can test without Firebase.
- * - firebase mode: `Authorization: Bearer <idToken>`; verified with firebase-admin; matched on firebase_uid.
+ * Turns request credentials into the session's users row.
+ * - `Authorization: Bearer <Firebase ID token>`: the uid's account; a first anonymous session gets a
+ *   guest row. A custom-token uid we don't know is refused (we only mint tokens for accounts).
+ * - `x-dev-user: <handle>`: only with AUTH_MODE=dev, ignored entirely otherwise. Creates the user on
+ *   first sight with the dev welcome coins.
  */
-export async function resolveUser(h: { authorization?: string; devUser?: string }): Promise<{ user: User | null; firebaseUid?: string; phone?: string }> {
-  if (MODE === "dev") {
-    const handle = h.devUser?.trim().toLowerCase();
-    if (!handle) throw new Unauthorized("set x-dev-user: <handle> (AUTH_MODE=dev)");
-    const [u] = await db.select().from(users).where(eq(users.handle, handle));
-    if (u) return { user: u };
-    const created = await db.transaction(async (tx) => {
-      const [u] = await tx.insert(users).values({ handle, displayName: handle, firebaseUid: `dev:${handle}` }).onConflictDoNothing().returning();
-      if (u) await ledger.grantWelcome(tx, u.id);
-      return u;
-    });
-    // Two first requests at once: the other one created it.
-    return { user: created ?? (await db.select().from(users).where(eq(users.handle, handle)))[0] };
+export async function resolveUser(h: { authorization?: string; devUser?: string }): Promise<Session> {
+  const token = h.authorization?.replace(/^Bearer\s+/i, "").trim();
+  if (!token) {
+    if (authMode() === "dev" && h.devUser?.trim()) return { user: await devUser(h.devUser), via: "dev" };
+    throw new Unauthorized();
   }
-  const token = h.authorization?.replace(/^Bearer\s+/i, "");
-  if (!token) throw new Unauthorized();
-  const { getApps, initializeApp, applicationDefault } = await import("firebase-admin/app");
-  const { getAuth } = await import("firebase-admin/auth");
-  if (!getApps().length) initializeApp({ credential: applicationDefault(), projectId: process.env.FIREBASE_PROJECT_ID });
-  const decoded = await getAuth().verifyIdToken(token).catch(() => { throw new Unauthorized("invalid token"); });
-  const [u] = await db.select().from(users).where(eq(users.firebaseUid, decoded.uid));
-  return { user: u ?? null, firebaseUid: decoded.uid, phone: decoded.phone_number };
+  const decoded = await verifyIdToken(token);
+  if (!decoded) throw new Unauthorized("invalid_token");
+  const known = await userByIdentity("firebase", decoded.uid);
+  if (known) return { user: known, via: "token" };
+  if (!isAnonymousToken(decoded)) throw new Unauthorized("unknown_account");
+  return { user: await guestForFirebaseUid(decoded.uid), via: "token" };
 }

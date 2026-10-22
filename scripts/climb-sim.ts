@@ -223,9 +223,11 @@ try {
     await jobs.add("week_close", { kind: "week_close" });
     await sleep(1500);
     ok(((await call(ADMIN, "GET", `/admin/climb/awards?week=${week}`)).body as any[]).length === 2, "closing again adds nothing");
+    // Dev-header users are signed up; take Kemi's verified email away so she stands for a winner who can't be paid yet.
+    await db.update(users).set({ emailVerifiedAt: null }).where(eq(users.id, kemi));
     const held = await api(ADMIN, "POST", `/admin/climb/awards/${awards[0].id}/approve`);
     ok(held.status === "approved" && held.canBePaid === false && held.paidAt === null, "approved for a winner without a signed-in account: waits, unpaid");
-    await db.update(users).set({ phone: `+234800${tag.slice(-7)}` }).where(eq(users.id, kemi)); // stands in for signing in (row 5)
+    await db.update(users).set({ emailVerifiedAt: new Date() }).where(eq(users.id, kemi)); // payable again (the onboarding sim covers real sign-up paying held awards)
     const paid = await api(ADMIN, "POST", `/admin/climb/awards/${awards[0].id}/approve`);
     ok(paid.status === "paid" && !!paid.paidAt, "approving again once they can be paid pays it");
     await api(ADMIN, "POST", `/admin/climb/awards/${awards[0].id}/approve`);

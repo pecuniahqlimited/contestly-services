@@ -48,6 +48,27 @@ services:
       timeout: 3s
       retries: 20
 
+  # Dev inbox: every email the API sends locally (EMAIL_TRANSPORT=mailpit) lands here. UI and API on :8025.
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["8025:8025"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8025/livez"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Firebase Auth emulator (project demo-contestly): anonymous sessions, custom tokens and the phone
+  # check, with no real project. Point the API at it with FIREBASE_AUTH_EMULATOR_HOST=localhost:9099.
+  firebase-auth:
+    build: ./docker/firebase
+    ports: ["9099:9099"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9099/"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
   api:
     profiles: ["services"]
     build: { context: ., args: { APP: api } }

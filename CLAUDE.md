@@ -1,6 +1,6 @@
 # Contestly
 
-Social trivia app for the Nigerian market. This is a **ground-up rebuild** that replaces an earlier Contestly app. Treat it as a brand-new product: do not look for, assume, or reproduce anything from the previous codebase, schema, or UI. The only inputs are this repo, the docs under `docs/` and the prototype in `contestly-app` (see Reference docs). Keep the design clean and lean; when in doubt, remove rather than add.
+Social trivia app for the Nigerian market. This is a **ground-up rebuild** that replaces an earlier Contestly app. Treat it as a brand-new product: do not look for, assume, or reproduce anything from the previous codebase, schema, or UI. The one exception is the migration step in the roadmap: when the new app goes live it replaces the current one, so that step reads the current app's data (Supabase auth users and their balances) to carry people over, and nothing else. The only inputs are this repo, the docs under `docs/` and the prototype in `contestly-app` (see Reference docs). Keep the design clean and lean; when in doubt, remove rather than add.
 
 ## What we're building (agreed direction, Oct 2026)
 
@@ -22,7 +22,7 @@ Two game modes and a social layer. Everything else serves these.
 ### Home and recommendations
 
 - **Never a blank Home.** If a user follows nobody and nothing is open, Home still gives them a move: start a party, play Today's challenge, start a Climb run, people and brands to follow.
-- A **recommendation service** decides what Home and the Parties tab lead with, using onboarding picks (interests, "why are you here", flex), follows, and behaviour. It also surfaces parties that are filling up right now ("PlayStation-style: people are in this one, join"), and pairs people who'd enjoy a party together. Users can mark any suggestion "not interested" and it should learn from that.
+- A **recommendation service** decides what Home and the Parties tab lead with, using onboarding picks (who's playing, lanes, "why are you here"), follows, and behaviour. It also surfaces parties that are filling up right now ("PlayStation-style: people are in this one, join"), and pairs people who'd enjoy a party together. Users can mark any suggestion "not interested" and it should learn from that.
 - The archetype from onboarding (competitor / host / grinder / fan) only changes what's first; everyone still sees both modes.
 - **Lead with play, not money.** Decided: no screen leads with amounts paid out, pots, or "win cash". The first screen is the brand and one plain line about what the app is (live quiz parties with friends; solo challenges), then Jump in. Home leads with the game and the people in it. Prizes appear where they're relevant (a party's pot, a stage's prize) and nowhere as a headline. Copy says "play", "beat", "climb", "bragging rights"; it never says "win real money" or "cash out" as a pitch. This is a product decision and a store-review one: the app must read as a skill game, not a gambling app.
 
@@ -84,7 +84,7 @@ Rules: opt-in at the first moment there's something concrete to notify about, ne
 
 ### Recommendation engine (its own service)
 
-Decides what each surface leads with: Home hero and mode order, the Parties tab ranking, "filling up now", people and brands to follow, who to pair into a party, and which push to send. Inputs: onboarding picks (lanes, why, flex), follows and mutuals, play history (categories, times of day, win/loss, rivals), party outcomes, explicit "not interested", and liveness (seats filling, friends in a room). Rules:
+Decides what each surface leads with: Home hero and mode order, the Parties tab ranking, "filling up now", people and brands to follow, who to pair into a party, and which push to send. Inputs: onboarding picks (who, lanes, why), follows and mutuals, play history (categories, times of day, win/loss, rivals), party outcomes, explicit "not interested", and liveness (seats filling, friends in a room). Rules:
 
 - **v1 is rules and scores, not ML.** Weighted features in plain code with the weights in config, logged per decision so we can see why something showed. Move to a learned ranker only once there's enough data and the rule version is the baseline to beat.
 - **Always returns something.** Cold start falls back to lane → popular → start-your-own. An empty response is a bug.
@@ -128,6 +128,7 @@ Read these before starting a roadmap step. If they disagree with this file, this
 - `docs/engineering/contestly-services-architecture.md`: which service owns each step of each flow (party lifecycle, The Climb, wallet, question generation, onboarding, nudges).
 - `../contestly-app/docs/design/contestly-prototype.jsx`: the clickable UI reference (lives only in the app repo).
 - `../contestly-app/docs/design/canvases.md`: the later design canvases (Stakes; The Climb and crews) with links and `.dc.html` sources. Where a canvas covers a screen or admin page, it supersedes the prototype.
+- `docs/engineering/current-app.md`: how the current app is shipped (Capacitor shell loading play.contestlyapp.com, Supabase sign-in, plugins, deep links). Only for delivery and the migration step.
 - `docs/adr/`: decisions that could have gone either way (one page each).
 
 ## Layout
@@ -143,7 +144,8 @@ apps/recsys         recommendation service    :4002   read-model ranking for Hom
 apps/questions      question engine (BullMQ consumer, no port)   brief → spec → retrieve → generate → verify → dedupe → review
 packages/shared     zod schemas, event names (RT), queue names, money helpers (kobo/naira); published so the UI repo can depend on it
 packages/db         Drizzle schema, postgres-js client, append-only ledger, seed
-packages/auth       resolveUser(): dev header or Firebase ID token → users row
+packages/auth       resolveUser(): Firebase ID token (or the dev header) → users row, a guest for a new anonymous uid; assertAuthConfig()
+packages/email      EmailSender interface: ZeptoMail, Brevo, Mailpit (dev); send with fallback; mail templates
 packages/queue      BullMQ queues + ioredis connections
 packages/game       pure game logic: party round, Climb game types + ladder, scoring, tie-breaks, flag → void. No I/O.
 packages/storage    ObjectStore interface + S3 implementation (DO Spaces in prod, SeaweedFS locally): presigned uploads, reads. For media only; never party source files
@@ -158,20 +160,23 @@ One Dockerfile per service repo build (`APP` build arg picks the process); each 
 ```bash
 cp .env.example .env && npm install     # install also builds the shared packages
 npm run infra:up        # docker compose: postgres (pgvector image) + valkey + storage (SeaweedFS, S3 API on :8333)
+                        # + mailpit (dev inbox, :8025) + firebase-auth (Auth emulator, :9099)
 npm run db:migrate      # apply packages/db/drizzle migrations (a fresh database starts from 0000_baseline)
 npm run db:generate -- --name <what_changed>   # after editing packages/db/src/schema.ts: writes the next migration; review the SQL, commit it with the schema change
 npm run db:baseline     # once, only on a database db:push built before migrations (Oct 2026): marks 0000 applied, then db:migrate
 npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 brands) and 3 parties
 npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
-npm test                # unit tests (packages/game, apps/questions)
+npm test                # unit tests (shared, game, email, apps/questions, apps/api)
 scripts/smoke.sh        # end-to-end check against the running stack
 npm run sim             # the sims against the running stack: sim:sealed (generated set, 3 players),
                         # sim:curate (PDF read → curate review → play with two flag-voids → settle), sim:stakes,
-                        # sim:climb (runs, Today's challenge, boards, week close → approved prizes)
+                        # sim:climb (runs, Today's challenge, boards, week close → approved prizes),
+                        # sim:onboarding (anonymous → round → email code via Mailpit → coins kept; aliases, devices,
+                        # provider fallback, guests, held awards, Google/Apple one-time-code exchange, phone + contacts)
 ```
 
-Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev). Unknown handles are auto-created.
+Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev only; refused in production, ignored in firebase mode). Unknown handles are auto-created as signed-up accounts with a verified dev email. Real sessions: a Firebase ID token as `Authorization: Bearer` (the emulator locally). Mail lands in Mailpit; Google/Apple use a stand-in page in dev.
 
 ## Non-negotiable rules
 
@@ -217,7 +222,7 @@ Apply SOLID and clean-code principles the way they are meant: to keep change che
 
 ## Stack
 
-Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state sync, reconnection tokens, matchmaking for shared onboarding rounds), BullMQ on Valkey (jobs, delayed and repeatable), PostgreSQL via Drizzle, Valkey (hot state, presence, pub/sub, leaderboard sorted sets), Firebase Auth (email code via custom token, Apple, Google; phone OTP only to add an optional number; the existing Contestly Firebase project, also used by the current app, for production, and a separate project for dev and staging), email through an `EmailSender` interface with ZeptoMail as primary and Brevo as backup (the active provider is switchable from the admin console; a failed send falls back to the other; API keys live in secrets, never in admin), Paystack behind a `PayoutRail` interface, DigitalOcean Spaces. UI stack (Expo, Vite) is documented in `contestly-app`.
+Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state sync, reconnection tokens, matchmaking for shared onboarding rounds), BullMQ on Valkey (jobs, delayed and repeatable), PostgreSQL via Drizzle, Valkey (hot state, presence, pub/sub, leaderboard sorted sets), Firebase Auth as the session issuer only (anonymous sessions from the first screen, and custom tokens we mint after an email code or our own Google/Apple OAuth over the system browser; phone SMS only to verify an optional number, never linked; the existing Contestly Firebase project, today used only for FCM, in production, a separate project for dev and staging, and the Auth emulator locally; ADR 0006), email through an `EmailSender` interface with ZeptoMail as primary and Brevo as backup (the active provider is switchable from the admin console; a failed send falls back to the other; API keys live in secrets, never in admin), Paystack behind a `PayoutRail` interface, DigitalOcean Spaces. UI stack (Expo, Vite) is documented in `contestly-app`.
 
 ## Deployment target (not yet; don't deploy without being asked)
 
@@ -232,14 +237,15 @@ Done:
 - ~~1. Game engine + Colyseus party room~~: `packages/game` (three-beat round, five graders, speed scoring, prev_rank), PartyRoom, settlement (rake once, split, host cut, non-cash fulfilment), crash watchdog. Custom stakes: party limits in config (admin-editable at `/admin/party-limits`, dev-only until admin auth), checkStakes, split ids, host cash prize held and paid by place, goods for verified brands with one fulfilment per place. Host entity: ADR 0001 (option A).
 - ~~2. Question engine v1~~: `apps/questions` with bank + retrieval (pgvector), generation with verify/dedupe/safety/gate, sealed and curate host modes, PDF/DOCX sources, flag → void → replace, retirement, no repeats for seated players. Providers are mocks behind `Generator`/`Verifier`/`Embedder`; choosing the first real provider is open question 2. ADRs 0002, 0003.
 
-- ~~3. The Climb (services)~~: game-type registry (pattern, scramble, word hunt, quick maths, memory) and ladder engine in `packages/game`; versioned ladder in `climb_ladders`; runs and Today's challenge over HTTP with server timing and catch-up (ADR 0005); day/week scores in Postgres, Everyone board in Valkey sorted sets with a start-of-day snapshot, Friends read from it; worker `day_start` and `week_close`; weekly prizes as versioned admin config (`climb_prize_configs`, each week pinned to the version current when it began); admin-approved weekly awards paid through the ledger (`climb_award:<id>`), held for accounts that can't be paid yet (`canBePaidCash()`, row 5 changes its body). `npm run sim:climb`.
+- ~~3. The Climb (services)~~: game-type registry (pattern, scramble, word hunt, quick maths, memory) and ladder engine in `packages/game`; versioned ladder in `climb_ladders`; runs and Today's challenge over HTTP with server timing and catch-up (ADR 0005); day/week scores in Postgres, Everyone board in Valkey sorted sets with a start-of-day snapshot, Friends read from it; worker `day_start` and `week_close`; weekly prizes as versioned admin config (`climb_prize_configs`, each week pinned to the version current when it began); admin-approved weekly awards paid through the ledger (`climb_award:<id>`), held for accounts that can't be paid yet (`canBePaidCash()`). `npm run sim:climb`.
+- ~~5. Firebase Auth and onboarding (services)~~: anonymous-first sessions with guests, `user_identities` (provider, external id), email code (Valkey, HMAC) and Google/Apple over the system browser with a one-time-code exchange, all ending in a Firebase custom token (ADR 0006); ZeptoMail/Brevo/Mailpit behind `EmailSender` with fallback and an admin primary (`GET/PUT /admin/email`, versioned); onboarding picks and the invite to resume; the onboarding round as a matchmade Colyseus room (shared or solo), coins held on the round and claimed at sign-up once per normalised email and device; phone verified (not linked) and contact matching by HMAC; `canBePaidCash()`/`canWithdraw()`; held Climb awards paid at sign-up; admin role (`ADMIN_EMAILS`). `npm run sim:onboarding`.
 
 Next, in order:
 1. **App: play a party** (contestly-app slice B): lobby, live game, result. Plus `npm run dev:bots` here (dev only).
 2. **App: create a party** (slice C): the six-scene builder and the Forge.
 3. **Me and my people** (small, here first): "parties I'm in", follow/unfollow, other people's profiles. Then the app: Home's "your next party" card, Chats › Parties, follow from a party, tappable profiles.
 4. **App: The Climb** (contestly-app): Climb home, a run, the leaderboard, and the admin pages (Climb stages, Today's challenge, Weekly winners) from the canvases, against the endpoints below. Home's Party/Climb switch.
-5. **Step 10, Firebase Auth and onboarding**: auth end to end; the onboarding party against the API, including shared onboarding rounds via matchmaking. Moved up so friends can install a test build and sign in; fill rate is the thing to test.
+5. **App: onboarding and sign-in** (contestly-app; services done, above): the onboarding party, Keep your coins (email code, Google/Apple via the system browser), Your people, Name and face, guest joins and the staked-invite resume, the admin Email page. Moved up so friends can install a test build and sign in; fill rate is the thing to test.
 5a. **Admin essentials** (before friends install a test build): behind the admin role from row 5. Users (look up, wallet and history, ban), parties (live and scheduled, cancel with refunds through the worker), and the question queue (flagged and retired questions to review, and each question's generation record: brief, spec, sources, scores, who approved). Web console pages in `contestly-app`, endpoints here first.
 6. **Steps 5b + 6, chat and social**: party chat and DMs on one composer; voice notes to object storage with capped length; transcription + moderation queue in the worker. Feed and friends leaderboard queries; profile stats from real results.
 7. **Step 5, recommendation service v1** (`apps/recsys`): rules + weighted scores, logged decisions with reasons; Home ordering, Parties ranking, "filling up now", pairing, not-interested. After real users, so it has behaviour to learn from.
@@ -247,4 +253,5 @@ Next, in order:
 9. **Step 7, nudges**: device tokens + FCM/APNs in the worker; the nudge table above with triggers, caps, quiet hours, per-category toggles, and send/open/dismiss logging; in-app banner for the same events.
 10. **Step 8, Paystack**: top-ups via webhook, payouts via pluggable rail, nightly reconciliation. Removes the dev top-up.
 11. **Step 9, trust and safety**: block/mute/report, profanity filter, moderation queue, ban + wallet freeze.
+11b. **Migration from the current app** (before go-live): the new app replaces the current one in both stores. Import the current app's Supabase auth users (emails, Google/Apple identities) as accounts, carry balances over as opening ledger entries (idempotent, one key per old account, reconciled against the old totals), and keep people signed in: an endpoint exchanges a valid Supabase session for a new sign-in, so nobody has to log in again. Supabase auth is fully retired: it is used only to validate that one exchange (the app then clears the old session), stays up for a fixed migration window, then is switched off. Passwords are not carried over; after the window, people sign in with the email code or Google/Apple and land on their imported account by verified email or provider id. An ADR first, from a read of the current app's schema.
 12. **Step 11, deploy**: Caddy, CI, staging, then production. Includes a public endpoint for presigned storage URLs (containers can't hand out storage:8333). Before launch, make bank retrieval use the pgvector HNSW index (today it's an exact full scan, fine for a small bank). Set `PUBLIC_WEB_URL` to the real domain and serve `/p/<id>` (open the app, or the store), so shared invite links work outside the app.

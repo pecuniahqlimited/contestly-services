@@ -5,6 +5,10 @@ import { DEFAULT_PARTY_LIMITS, goodsPlaceSchema, MAX_WINNERS, partyLimitsSchema,
 export * from "./stakes.js";
 export * from "./person.js";
 export * from "./climb.js";
+export * from "./categories.js";
+export * from "./accounts.js";
+import { CATEGORIES, type Category } from "./categories.js";
+import { GUEST_HANDLE_PREFIX } from "./accounts.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
 const KOBO_PER_NAIRA = 100;
@@ -98,7 +102,7 @@ export type FlagReason = (typeof FLAG_REASONS)[number];
 /** Flags name their question, so a flag that arrives late never lands on the next one. */
 export const flagSchema = z.object({ questionId: z.string().uuid(), reason: z.enum(FLAG_REASONS) });
 
-/** Bonus coins every new user starts with (never withdrawable). */
+/** Bonus coins a dev-header user (AUTH_MODE=dev) starts with. Real accounts get the onboarding round's coins instead. */
 export const WELCOME_BONUS_KOBO = kobo(500);
 
 /**
@@ -120,8 +124,6 @@ export const editDraftSchema = z.object({
   explanation: z.string().max(500).optional(),
 });
 
-export const CATEGORIES = ["Afrobeats", "Football", "Nollywood", "General knowledge", "History", "Science", "Tech", "Fashion", "Food", "Geography", "Brain teasers", "Reality TV", "Maths", "Hip hop"] as const;
-export type Category = (typeof CATEGORIES)[number];
 
 /** Question formats — one source of truth for the engine, the game rules and the app. */
 export const QUESTION_FORMATS = ["pick_one", "pick_all", "order", "match", "picture"] as const;
@@ -162,14 +164,16 @@ export function inferCategory(brief: string): Category {
   return top > 0 && leaders.length === 1 ? leaders[0].cat : "General knowledge";
 }
 
-export const handleSchema = z.string().min(3).max(20).regex(/^[a-z0-9_.]+$/, "lowercase letters, numbers, _ and . only");
+export const handleSchema = z.string().min(3).max(20).regex(/^[a-z0-9_.]+$/, "lowercase letters, numbers, _ and . only")
+  .refine((h) => !h.startsWith(GUEST_HANDLE_PREFIX), "that handle is reserved");
 
 export const upsertMeSchema = z.object({
   displayName: z.string().min(1).max(40),
   handle: handleSchema,
-  avatarEmoji: z.string().min(1).max(8).default("😎"),
+  // Left out = unchanged (the lanes picked in onboarding survive the Name and face screen).
+  avatarEmoji: z.string().min(1).max(8).optional(),
   bio: z.string().max(160).optional(),
-  interests: z.array(z.enum(CATEGORIES)).max(10).default([]),
+  interests: z.array(z.enum(CATEGORIES)).max(10).optional(),
 });
 
 /** A new party starts this long after it's created unless the host picks a time. */

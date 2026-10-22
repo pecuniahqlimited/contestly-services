@@ -12,7 +12,8 @@ apps/
 packages/
   shared/     zod schemas, event names, money helpers (kobo)
   db/         Drizzle schema, client, append-only ledger, seed
-  auth/       dev-header or Firebase token → user
+  auth/       Firebase ID token (or the dev header) → user; a guest for a new anonymous session
+  email/      EmailSender: ZeptoMail, Brevo, Mailpit (dev), with fallback
   queue/      BullMQ queues + Redis connections
 ```
 
@@ -25,7 +26,7 @@ The UI (Expo mobile app, Vite web app, design tokens, API client and the prototy
 ```bash
 cp .env.example .env
 npm install            # also builds the shared packages (prepare script)
-npm run infra:up        # postgres + valkey in docker
+npm run infra:up        # postgres, valkey, storage, mailpit (:8025) and the Firebase Auth emulator (:9099) in docker
 npm run db:migrate      # create tables (drizzle migrations)
 npm run db:seed         # demo users + parties
 npm run dev             # api, realtime, worker with hot reload
@@ -69,8 +70,10 @@ With `startsInMinutes: 1`, watch the worker log: after a minute the party goes `
 
 ## Auth modes
 
-`AUTH_MODE=dev` (default): send `x-dev-user: <handle>`; unknown handles are created on first request.
-`AUTH_MODE=firebase`: send `Authorization: Bearer <Firebase ID token>`; set `FIREBASE_PROJECT_ID` and `GOOGLE_APPLICATION_CREDENTIALS`. A verified token with no user row gets 401 until `POST /me` completes onboarding.
+Sessions are Firebase ID tokens (`Authorization: Bearer …`): anonymous from the first screen (a guest), then a custom token the API mints after an email code or Google/Apple (ADR 0006). Locally the API talks to the Auth emulator (`FIREBASE_AUTH_EMULATOR_HOST`), and codes land in Mailpit.
+
+`AUTH_MODE=dev` (default) also accepts `x-dev-user: <handle>`; unknown handles are created as signed-up accounts. It refuses to start with `NODE_ENV=production`.
+`AUTH_MODE=firebase`: tokens only; set `FIREBASE_PROJECT_ID`, `FIREBASE_SERVICE_ACCOUNT_JSON`, `EMAIL_CODE_SECRET` and `PHONE_HASH_SECRET`.
 
 ## Not built yet (next)
 

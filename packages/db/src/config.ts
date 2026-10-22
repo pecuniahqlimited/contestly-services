@@ -1,8 +1,8 @@
 import { eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
-  DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
-  climbSettingsSchema, partyConfigSchema, questionsConfigSchema,
+  DEFAULT_CLIMB_SETTINGS, DEFAULT_ONBOARDING_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
+  climbSettingsSchema, onboardingConfigSchema, partyConfigSchema, questionsConfigSchema,
 } from "@contestly/shared";
 import { db } from "./client.js";
 import { appConfig } from "./schema.js";
@@ -40,3 +40,8 @@ export const setPartyConfig = party.set;
 const questions = configEntry("questions", questionsConfigSchema, DEFAULT_QUESTIONS_CONFIG);
 export const getQuestionsConfig = questions.get;
 export const setQuestionsConfig = questions.set;
+
+/** The onboarding round: matchmaking wait, timings, scoring and the coins it pays. */
+const onboarding = configEntry("onboarding", onboardingConfigSchema, DEFAULT_ONBOARDING_CONFIG);
+export const getOnboardingConfig = onboarding.get;
+export const setOnboardingConfig = onboarding.set;

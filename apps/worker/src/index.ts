@@ -109,9 +109,11 @@ async function settle(partyId: string) {
   const settled = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p || p.status !== "live") return false; // already settled or cancelled
-    const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, partyId)).orderBy(asc(partyPlayers.rank));
-    const ranked = players.filter((x) => x.rank !== null).map((x) => x.userId);
-    if (!ranked.length) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
+    const players = await tx.select({ userId: partyPlayers.userId, rank: partyPlayers.rank, isGuest: users.isGuest }).from(partyPlayers)
+      .innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, partyId)).orderBy(asc(partyPlayers.rank));
+    if (!players.some((x) => x.rank !== null)) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
+    // Prizes go by place among signed-up players: a guest keeps their rank on the board but can't win (only free parties have guests).
+    const ranked = players.filter((x) => x.rank !== null && !x.isGuest).map((x) => x.userId);
 
     if (isGoods(p.prizeKind)) {
       const prizes = await tx.select().from(partyPrizes).where(eq(partyPrizes.partyId, p.id));
@@ -122,6 +124,8 @@ async function settle(partyId: string) {
         await tx.insert(prizeFulfilments).values({ partyId: p.id, place: a.place, winnerUserId: a.userId, hostUserId: p.createdByUserId, prizeText: g.text, prizeValueKobo: g.valueKobo }).onConflictDoNothing();
       }
       console.log(`[party] ${p.title}: ${awards.length} goods prize(s) awarded (one fulfilment record per place)`);
+    } else if (!ranked.length) {
+      console.log(`[party] ${p.title}: only guests played, nothing to pay`);
     } else {
       const s = computeSettlement({ funding: p.funding, entryKobo: p.entryKobo, playerCount: players.length, hostPoolKobo: p.hostPoolKobo, split: p.split, ranked }, cfg);
       if (s.rakeKobo > 0) await ledger.post(tx, { userId: await ledger.treasuryUserId(tx), kind: "cash", amountKobo: s.rakeKobo, type: "party_rake", refType: "party", refId: p.id, idempotencyKey: `party_rake:${p.id}` });
