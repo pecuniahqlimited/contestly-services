@@ -35,11 +35,12 @@ Onboarding is a 90-second game that ends on Home. Three entry states decide what
 | 1.5 | As a new player, I want two quick timed picks about me (lanes, multi-select; why I'm here) so the app knows my interests and archetype without a form | No pick is asked twice. Lanes seed interests; "why" seeds the archetype (competitor / host / grinder / fan). Editable later from Me | Profile, recommendation |
 | 1.6 | As a new player, I want to be told plainly that the next round earns coins and what they're for before I play it | Bridge screen names the target (first party / first pot) and the reward tiers | Onboarding copy |
 | 1.7 | As a new player, I want to play three quick-fire questions where right and fast earns coins so my first coins feel earned | Server-timed. Points to coins by tier (e.g. 800+ pts to 500 coins). If others are onboarding at the same time we share a round and see a leaderboard; alone I still play and get the solo tier. Never claim someone is online who isn't | Game engine, matchmaking, ledger |
-| 1.8 | As a new player, I want to keep my coins and profile with a phone number and a code so sign-up is 10 seconds | Phone OTP. Coins credited on code success, idempotently | Auth, ledger |
-| 1.9 | As a new player, I want to see which contacts are already here and follow them in one tap, with brands in my lanes pre-followed | Contact match by phone hash; brand pre-follow is reversible on the same screen | Contacts, follows |
+| 1.8 | As a new player, I want to keep my coins and profile in 10 seconds without leaving the app | Google, Apple (iOS) or email + a 6-digit code typed in the app; no links, no passwords. Coins credited on success, idempotently, once per normalised email and device | Auth, ledger |
+| 1.9 | As a new player, I want to see which contacts are already here and follow them in one tap, with brands in my lanes pre-followed | Contacts only on request; matched by phone hash against people who added a number. Optional "add your number so friends can find you" on the same screen. Honest empty state when nobody matches. Brand pre-follow is reversible on the same screen | Contacts, follows |
 | 1.10 | As a new player, I want to set a name and @handle and go straight to Home | Handle is unique and is the @mention token. No "first move" screen; Home already recommends | Profile |
 | 1.11 | As a new brand, I want to finish verification after naming my brand so I can host with real prizes | Checklist: registration number, logo, site or social, business email; payout account only for cash prizes. Can host with coins before verified; cash and product prizes unlock on approval | Brand verification, review queue |
-| 1.12 | As a returning person, I want "I have an account" to take me straight to sign-in | Phone + code | Auth |
+| 1.12 | As a returning person, I want "I have an account" to take me straight to sign-in | The same Google / Apple / email-code screen | Auth |
+| 1.13 | As a player with winnings, I want to withdraw them safely | A verified phone number is required before the first cash withdrawal, one per account | Auth, wallet |
 
 ## 2. Home and discovery
 

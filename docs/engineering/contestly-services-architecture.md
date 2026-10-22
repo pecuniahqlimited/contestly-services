@@ -49,7 +49,8 @@ Two stores and six providers, each behind an interface so the provider can chang
 | PostgreSQL (DO managed) | System of record: users, brands, teams, parties, entries, results, question bank, ledger, messages, notifications, moderation cases | Real transactions and row locks for the ledger; party join locks the party row. Leaderboards and feeds are plain queries at launch scale |
 | Valkey (DO managed) | Hot state: Colyseus room state and presence, pub/sub worker → realtime, BullMQ queues, rate limits, leaderboard sorted sets, recsys signal caches | Nothing here is the source of truth; losing it drops live rooms, not money |
 | DigitalOcean Spaces | Avatars, brand logos, prize photos, voice notes | Presigned uploads from the client; voice notes capped in length. Party source files never land here (ADR 0004) |
-| Firebase Auth | Phone OTP for Nigerian numbers, Apple and Google sign-in | Only auth; no Firebase database. `AUTH_MODE=dev` for local work |
+| Firebase Auth | Email code (sent by the API, signed in with a custom token), Apple and Google sign-in; phone OTP only to add an optional number | Only auth; no Firebase database. `AUTH_MODE=dev` for local work |
+| Email | Sign-in codes and transactional mail. ZeptoMail primary, Brevo backup, behind `EmailSender`; the active provider is admin-switchable and a failed send falls back to the other | Owned by the API (codes) and the worker (other mail). Keys in secrets |
 | Paystack | Top-ups via hosted checkout + webhook; cash payouts via transfers | Behind a `PayoutRail` interface. Other rails: vouchers or airtime (Android), and a manual-fulfilment rail for non-cash prizes with its own status machine |
 | FCM + APNs | Push delivery | Device tokens stored by `api`, sends from `worker` with retry and backoff |
 | LLM + transcription provider | Question generation and verification; voice-note transcription for moderation | Called only from `questions` and `worker` jobs, never from a request path |

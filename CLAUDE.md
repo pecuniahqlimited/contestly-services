@@ -30,9 +30,11 @@ Two game modes and a social layer. Everything else serves these.
 
 A 90-second party, not a form, and it ends on Home. Three entry states:
 
-- **Direct** (no invite): Welcome → who's playing → two timed picks about you (lanes, multi-select; why you're here) → a bridge screen that says plainly what the next round earns and what it's for ("bag coins for your first party / pot") → three quick-fire questions, right and fast earns coins → result → keep your coins (phone + code) → your people → name and face → **Home**. No "first move" screen; Home already recommends.
+- **Direct** (no invite): Welcome → who's playing → two timed picks about you (lanes, multi-select; why you're here) → a bridge screen that says plainly what the next round earns and what it's for ("bag coins for your first party / pot") → three quick-fire questions, right and fast earns coins → result → keep your coins (Google, Apple on iOS, or email + a 6-digit code typed in the app) → your people → name and face → **Home**. No "first move" screen; Home already recommends.
 - **Invite to a free party** (no entry fee, no cash prize): the invite card leads. **Join as a guest** with just a name: play and chat, score not saved, not eligible for prizes, a persistent "sign up" nudge in the lobby and on the result. Or sign up first.
 - **Invite to a staked party** (entry fee, or money to be won): sign-up is required, the Welcome says why in one line, and the flow ends in that party's lobby instead of Home.
+
+**Sign-in is email-first and nobody leaves the app.** Google, Apple (iOS; required by Apple whenever Google is offered) or an emailed 6-digit code; never a magic link. No passwords. A phone number is **optional**: asked on Your people and in Me ("let friends find you"), verified by SMS code, matched against contacts as a hash, never shown. It is **required before the first cash withdrawal**, one number per account, so payouts reach one real person. Onboarding coins are granted once per normalised email (lowercase; Gmail dots and +tags removed) and once per device.
 
 Brands get brand-specific picks and the verification checklist after name and logo; prize type is chosen per party, not at onboarding. If several people are onboarding at the same time they share the quick-fire round and see a leaderboard; alone, they still play and get the solo reward. Never claim someone is online unless they are. No pick is asked twice; anything collected in onboarding is editable from Me.
 
@@ -215,7 +217,7 @@ Apply SOLID and clean-code principles the way they are meant: to keep change che
 
 ## Stack
 
-Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state sync, reconnection tokens, matchmaking for shared onboarding rounds), BullMQ on Valkey (jobs, delayed and repeatable), PostgreSQL via Drizzle, Valkey (hot state, presence, pub/sub, leaderboard sorted sets), Firebase Auth (phone OTP, Apple, Google), Paystack behind a `PayoutRail` interface, DigitalOcean Spaces. UI stack (Expo, Vite) is documented in `contestly-app`.
+Fastify (HTTP), Colyseus on WebSockets for game rooms and chat (rooms, state sync, reconnection tokens, matchmaking for shared onboarding rounds), BullMQ on Valkey (jobs, delayed and repeatable), PostgreSQL via Drizzle, Valkey (hot state, presence, pub/sub, leaderboard sorted sets), Firebase Auth (email code via custom token, Apple, Google; phone OTP only to add an optional number; the existing Contestly Firebase project, also used by the current app, for production, and a separate project for dev and staging), email through an `EmailSender` interface with ZeptoMail as primary and Brevo as backup (the active provider is switchable from the admin console; a failed send falls back to the other; API keys live in secrets, never in admin), Paystack behind a `PayoutRail` interface, DigitalOcean Spaces. UI stack (Expo, Vite) is documented in `contestly-app`.
 
 ## Deployment target (not yet; don't deploy without being asked)
 
@@ -238,6 +240,7 @@ Next, in order:
 3. **Me and my people** (small, here first): "parties I'm in", follow/unfollow, other people's profiles. Then the app: Home's "your next party" card, Chats › Parties, follow from a party, tappable profiles.
 4. **App: The Climb** (contestly-app): Climb home, a run, the leaderboard, and the admin pages (Climb stages, Today's challenge, Weekly winners) from the canvases, against the endpoints below. Home's Party/Climb switch.
 5. **Step 10, Firebase Auth and onboarding**: auth end to end; the onboarding party against the API, including shared onboarding rounds via matchmaking. Moved up so friends can install a test build and sign in; fill rate is the thing to test.
+5a. **Admin essentials** (before friends install a test build): behind the admin role from row 5. Users (look up, wallet and history, ban), parties (live and scheduled, cancel with refunds through the worker), and the question queue (flagged and retired questions to review, and each question's generation record: brief, spec, sources, scores, who approved). Web console pages in `contestly-app`, endpoints here first.
 6. **Steps 5b + 6, chat and social**: party chat and DMs on one composer; voice notes to object storage with capped length; transcription + moderation queue in the worker. Feed and friends leaderboard queries; profile stats from real results.
 7. **Step 5, recommendation service v1** (`apps/recsys`): rules + weighted scores, logged decisions with reasons; Home ordering, Parties ranking, "filling up now", pairing, not-interested. After real users, so it has behaviour to learn from.
 8. **Step 4, brands and teams**: brand profiles, team roles, profile switching, verification checklist and review; brand console on web. Replace the curate sim's direct draft-view insert with the real team API.
