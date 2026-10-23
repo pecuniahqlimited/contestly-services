@@ -325,6 +325,18 @@ export const publicUserSchema = z.object({
   streakDays: z.number().int(),
 });
 export const meResponseSchema = publicUserSchema.extend({ wallet: walletSchema });
+/** GET /me: the session's own account, guests included (their wallet is empty: coins arrive at sign-up). */
+export const sessionMeResponseSchema = meResponseSchema.extend({
+  isGuest: z.boolean(),
+  isAdmin: z.boolean(),
+  email: z.string().nullable(),
+  /** A verified number is on the account (it's never shown). */
+  phoneAdded: z.boolean(),
+  canWithdraw: z.boolean(),
+});
+export type SessionMe = z.infer<typeof sessionMeResponseSchema>;
+/** POST /me/guest: the guest's name for a free party. */
+export const guestResponseSchema = publicUserSchema.extend({ isGuest: z.literal(true) });
 
 
 /** How the viewer stands with someone: follows them (with party alerts on or off), is followed back. All false signed out. */
@@ -338,6 +350,9 @@ export const followAlertSchema = z.object({ notify: z.boolean() });
 /** GET /users/:handle/followers and /following: people the viewer follows come first. */
 export const followListEntrySchema = personSchema.extend({ viewer: viewerFollowSchema });
 export const followListResponseSchema = z.array(followListEntrySchema);
+
+/** POST /me/contacts/match: people among the viewer's contacts who added a number. */
+export const contactsMatchResponseSchema = z.object({ matches: z.array(followListEntrySchema) });
 
 /** GET /me/played-with: people from finished parties I played, whom I don't follow yet. Most parties together first. */
 export const playedWithEntrySchema = personSchema.extend({ partiesTogether: z.number().int(), lastPlayedAt: z.string().datetime() });

@@ -55,13 +55,18 @@ export type SignInAccount = (typeof SIGN_IN_ACCOUNTS)[number];
 export const ONBOARDING_BONUS_OUTCOMES = ["granted", "already_claimed", "device_claimed", "none"] as const;
 export type OnboardingBonusOutcome = (typeof ONBOARDING_BONUS_OUTCOMES)[number];
 
-export interface SignInResult {
+/** POST /auth/email/verify and /auth/exchange. */
+export const signInResultSchema = z.object({
   /** Sign in to Firebase with this (signInWithCustomToken). */
-  customToken: string;
-  account: SignInAccount;
-  onboardingBonus: OnboardingBonusOutcome;
-  bonusKobo: number;
-}
+  customToken: z.string().min(1),
+  account: z.enum(SIGN_IN_ACCOUNTS),
+  onboardingBonus: z.enum(ONBOARDING_BONUS_OUTCOMES),
+  bonusKobo: z.number().int().min(0),
+});
+export type SignInResult = z.infer<typeof signInResultSchema>;
+
+/** POST /auth/email/start. */
+export const emailStartResponseSchema = z.object({ sent: z.literal(true), expiresInSeconds: z.number().int(), resendAfterSeconds: z.number().int() });
 
 // ---------------------------------------------------------------- Google and Apple (system browser + one-time code)
 
@@ -86,6 +91,8 @@ export const oauthStartSchema = z.object({
   challenge: base64url,
 });
 export const authExchangeSchema = z.object({ code: base64url, verifier: base64url });
+/** POST /auth/oauth/start: where to open the system browser. */
+export const oauthStartResponseSchema = z.object({ url: z.string().url() });
 
 // ---------------------------------------------------------------- onboarding picks
 
@@ -177,16 +184,42 @@ export function soloCoins(points: number, tiers: OnboardingConfig["soloTiers"]):
 /** Shared-round coins for a rank (1-based). */
 export const sharedCoins = (rank: number, byRank: number[]) => byRank[Math.min(rank, byRank.length) - 1];
 
-export interface OnboardingResult {
-  mode: "solo" | "shared";
-  points: number;
-  correct: number;
-  questions: number;
-  rank: number;
-  players: number;
+export const onboardingResultSchema = z.object({
+  mode: z.enum(["solo", "shared"]),
+  points: z.number().int(),
+  correct: z.number().int(),
+  questions: z.number().int(),
+  rank: z.number().int(),
+  players: z.number().int(),
   /** Kept on the round until sign-up; then posted as bonus coins (once per email and device). */
-  coinsKobo: number;
-}
+  coinsKobo: z.number().int(),
+});
+export type OnboardingResult = z.infer<typeof onboardingResultSchema>;
+
+/** ONBOARDING_MSG.lobby: the real people in the room (no bots), and when the round starts. */
+export const onboardingLobbySchema = z.object({
+  players: z.number().int(),
+  roster: z.array(z.object({ id: z.string().uuid(), displayName: z.string(), avatarEmoji: z.string() })),
+  startsAt: z.string().datetime(),
+});
+export type OnboardingLobby = z.infer<typeof onboardingLobbySchema>;
+
+/** GET /onboarding (and PATCH /me/onboarding, PUT /onboarding/invite): what onboarding has, and where it goes next. */
+export const onboardingStateSchema = z.object({
+  signedUp: z.boolean(),
+  /** Null until asked: no pick is asked twice. */
+  picks: z.object({ who: z.enum(WHO).nullable(), lanes: z.array(z.string()), why: z.enum(WHYS).nullable() }),
+  /** What Home leads with (grinder: The Climb). Null for brands and before the "why" pick. */
+  archetype: z.enum(ARCHETYPES).nullable(),
+  round: onboardingResultSchema.extend({ claimed: z.boolean(), claimOutcome: z.enum(ONBOARDING_BONUS_OUTCOMES).nullable() }).nullable(),
+  profileDone: z.boolean(),
+  /** The staked invite opened before sign-up, so onboarding ends in its lobby. */
+  invite: z.object({
+    partyId: z.string().uuid(), status: z.string(), staked: z.boolean(), entryKobo: z.number().int(), joined: z.boolean(), canAfford: z.boolean(),
+  }).nullable(),
+  next: z.enum(["home", "lobby"]),
+});
+export type OnboardingState = z.infer<typeof onboardingStateSchema>;
 
 // ---------------------------------------------------------------- staked parties and guests
 
@@ -226,6 +259,7 @@ export const contactsMatchSchema = z.object({ hashes: z.array(phoneHashSchema).m
 
 /** The ID token from verifying the number with Firebase phone auth on a secondary app instance (not linked). */
 export const addPhoneSchema = z.object({ idToken: z.string().min(20).max(4096) });
+export const addPhoneResponseSchema = z.object({ phoneAdded: z.literal(true) });
 
 // ---------------------------------------------------------------- email providers (admin)
 
@@ -234,3 +268,18 @@ export type EmailProviderName = (typeof EMAIL_PROVIDERS)[number];
 export const adminEmailSchema = z.object({ primary: z.enum(EMAIL_PROVIDERS) });
 /** The other provider: what a failed send falls back to. */
 export const backupOf = (primary: EmailProviderName): EmailProviderName => (primary === "zeptomail" ? "brevo" : "zeptomail");
+
+/** GET/PUT /admin/email: which provider sends first, which are configured (keys never leave env), the last sends. */
+export const adminEmailViewSchema = z.object({
+  primary: z.enum(EMAIL_PROVIDERS),
+  backup: z.enum(EMAIL_PROVIDERS),
+  /** Null until the first save: the env default (EMAIL_PRIMARY) is in force. */
+  version: z.number().int().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+  providers: z.array(z.object({ name: z.enum(EMAIL_PROVIDERS), configured: z.boolean() })),
+  recent: z.array(z.object({ id: z.string(), template: z.string(), to: z.string(), deliveredBy: z.string().nullable(),
+    /** Each provider tried, in order: the fallback shows as a failed first attempt. */
+    attempts: z.array(z.object({ provider: z.string(), ok: z.boolean(), error: z.string().optional() })),
+    at: z.string().datetime() })),
+});
+export type AdminEmailView = z.infer<typeof adminEmailViewSchema>;

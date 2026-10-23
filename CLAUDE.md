@@ -151,7 +151,7 @@ packages/game       pure game logic: party round, Climb game types + ladder, sco
 packages/storage    ObjectStore interface + S3 implementation (DO Spaces in prod, SeaweedFS locally): presigned uploads, reads. For media only; never party source files
 ```
 
-`contestly-app` (sibling repo, `../contestly-app`): the Expo mobile app, the Vite web app (admin, brand console, share pages), design tokens, and `@contestly/api-client`, a typed client hand-written on top of the zod schemas in `@contestly/shared` for now (codegen later). It links `@contestly/shared` from this repo with `file:` until the package is published (see README). Changing a schema in `packages/shared` changes the app's contract: rebuild shared and typecheck the app repo too.
+`contestly-app` (sibling repo, `../contestly-app`): the Expo mobile app (shipped as a web build via react-native-web, served at play.contestlyapp.com inside the existing Capacitor shell; see `docs/engineering/current-app.md`), the Vite web app (admin, brand console, share pages), design tokens, and `@contestly/api-client`, a typed client hand-written on top of the zod schemas in `@contestly/shared` for now (codegen later). It links `@contestly/shared` from this repo with `file:` until the package is published (see README). Changing a schema in `packages/shared` changes the app's contract: rebuild shared and typecheck the app repo too.
 
 One Dockerfile per service repo build (`APP` build arg picks the process); each service is its own container and can be scaled or rewritten independently (Elixir was mentioned for real-time); until then everything is TypeScript. Services share Postgres and Valkey but never each other's tables directly except through `packages/db`.
 
