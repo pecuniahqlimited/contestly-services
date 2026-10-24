@@ -1,0 +1,55 @@
+# Production on one droplet: the four services behind Caddy (HTTPS + WSS). Postgres and Valkey are
+# DO Managed clusters, reached through DATABASE_URL / REDIS_URL in .env (see .env.production.example).
+#
+#   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate   # once, and after each schema change
+#   docker compose -f docker-compose.prod.yml up -d --build
+name: contestly
+
+x-service: &service
+  env_file: .env
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *service
+    build: { context: ., args: { APP: api } }
+    image: contestly-api
+
+  realtime:
+    <<: *service
+    build: { context: ., args: { APP: realtime } }
+    image: contestly-realtime
+
+  worker:
+    <<: *service
+    build: { context: ., args: { APP: worker } }
+    image: contestly-worker
+
+  questions:
+    <<: *service
+    build: { context: ., args: { APP: questions } }
+    image: contestly-questions
+
+  # The only container with public ports. Gets TLS certificates for API_HOST and RT_HOST on first request.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      API_HOST: ${API_HOST:?set API_HOST in .env}
+      RT_HOST: ${RT_HOST:?set RT_HOST in .env}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on: [api, realtime]
+
+  # One-off: applies packages/db/drizzle migrations to DATABASE_URL.
+  migrate:
+    profiles: ["tools"]
+    image: node:22-alpine
+    working_dir: /repo
+    volumes: [".:/repo"]
+    command: sh -c "npm ci && npm run db:migrate"
+
+volumes:
+  caddydata:
