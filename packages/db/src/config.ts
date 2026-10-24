@@ -1,11 +1,11 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
   DEFAULT_CLIMB_SETTINGS, DEFAULT_ONBOARDING_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
-  climbSettingsSchema, onboardingConfigSchema, partyConfigSchema, questionsConfigSchema,
+  climbSettingsSchema, onboardingConfigSchema, partyConfigSchema, questionsConfigSchema, type OnboardingConfig,
 } from "@contestly/shared";
 import { db } from "./client.js";
-import { appConfig } from "./schema.js";
+import { appConfig, onboardingConfigs } from "./schema.js";
 
 /**
  * One admin-editable JSON document per key, validated by its shared schema. Stored values are
@@ -41,7 +41,18 @@ const questions = configEntry("questions", questionsConfigSchema, DEFAULT_QUESTI
 export const getQuestionsConfig = questions.get;
 export const setQuestionsConfig = questions.set;
 
-/** The onboarding round: matchmaking wait, timings, scoring and the coins it pays. */
-const onboarding = configEntry("onboarding", onboardingConfigSchema, DEFAULT_ONBOARDING_CONFIG);
-export const getOnboardingConfig = onboarding.get;
-export const setOnboardingConfig = onboarding.set;
+/**
+ * The onboarding round (matchmaking wait, timings, scoring, the coins it pays) is versioned: one row per
+ * admin save, the newest current, the default until anyone saves. Stored values are layered over the
+ * defaults like the other config.
+ */
+export async function currentOnboardingConfig(): Promise<{ version: number | null; config: OnboardingConfig; createdAt: Date | null }> {
+  const [row] = await db.select().from(onboardingConfigs).orderBy(desc(onboardingConfigs.version)).limit(1);
+  if (!row) return { version: null, config: DEFAULT_ONBOARDING_CONFIG, createdAt: null };
+  return { version: row.version, config: onboardingConfigSchema.parse({ ...DEFAULT_ONBOARDING_CONFIG, ...row.config }), createdAt: row.createdAt };
+}
+export const getOnboardingConfig = async () => (await currentOnboardingConfig()).config;
+export async function saveOnboardingConfig(config: OnboardingConfig, byUserId: string | null) {
+  const [row] = await db.insert(onboardingConfigs).values({ config: onboardingConfigSchema.parse(config), createdByUserId: byUserId }).returning();
+  return { version: row.version, config: row.config, createdAt: row.createdAt };
+}

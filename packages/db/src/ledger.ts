@@ -86,6 +86,19 @@ export async function balances(userId: string) {
   return { cashKobo: rows.find((r) => r.kind === "cash")?.balanceKobo ?? 0, bonusKobo: rows.find((r) => r.kind === "bonus")?.balanceKobo ?? 0 };
 }
 
+/** One page of a user's ledger, newest first. `before` is the previous page's nextBefore ("<iso>|<id>"). */
+export async function historyPage(userId: string, opts: { before?: string; limit: number }) {
+  const [at, id] = opts.before?.split("|") ?? [];
+  const older = at && id ? dsql`(${ledgerEntries.createdAt}, ${ledgerEntries.id}) < (${new Date(at)}, ${id}::uuid)` : undefined;
+  const rows = await db.select({ id: ledgerEntries.id, kind: ledgerAccounts.kind, amountKobo: ledgerEntries.amountKobo, type: ledgerEntries.type, refType: ledgerEntries.refType, refId: ledgerEntries.refId, createdAt: ledgerEntries.createdAt })
+    .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerEntries.accountId, ledgerAccounts.id))
+    .where(older ? and(eq(ledgerAccounts.userId, userId), older) : eq(ledgerAccounts.userId, userId))
+    .orderBy(dsql`${ledgerEntries.createdAt} desc, ${ledgerEntries.id} desc`).limit(opts.limit + 1);
+  const page = rows.slice(0, opts.limit);
+  const last = page[page.length - 1];
+  return { entries: page, nextBefore: rows.length > opts.limit && last ? `${last.createdAt.toISOString()}|${last.id}` : null };
+}
+
 export async function history(userId: string, limit = 50) {
   return db.select({ id: ledgerEntries.id, kind: ledgerAccounts.kind, amountKobo: ledgerEntries.amountKobo, type: ledgerEntries.type, refType: ledgerEntries.refType, refId: ledgerEntries.refId, createdAt: ledgerEntries.createdAt })
     .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerEntries.accountId, ledgerAccounts.id))

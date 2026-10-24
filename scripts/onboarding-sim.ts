@@ -12,7 +12,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Client } from "colyseus.js";
 import { eq, desc } from "drizzle-orm";
-import { bankQuestions, climbAwards, db, emailSends, getOnboardingConfig, setOnboardingConfig, sql, users } from "@contestly/db";
+import { bankQuestions, climbAwards, db, emailSends, getOnboardingConfig, saveOnboardingConfig, sql, users } from "@contestly/db";
 import { makeRedis } from "@contestly/queue";
 import { MSG, ONBOARDING_MSG, onboardingRewardsResponseSchema, ONBOARDING_ROOM, SIGN_UP_REQUIRED, kobo, phoneHash, type OnboardingResult } from "@contestly/shared";
 import { API, RT, api, correctAnswer, failureCount, leaks, ok, sleep, wrongAnswer } from "./sim-lib.js";
@@ -149,7 +149,7 @@ if (process.env.AUTH_MODE !== "dev" || process.env.NODE_ENV === "production") {
 for (const key of await redis.keys("limit:*")) await redis.del(key);
 // Short beats so the sim doesn't wait out the real clock; restored at the end.
 const savedConfig = await getOnboardingConfig();
-await setOnboardingConfig({ ...savedConfig, waitSeconds: 3, questionSeconds: 5, revealSeconds: 1, standingsSeconds: 1 });
+await saveOnboardingConfig({ ...savedConfig, waitSeconds: 3, questionSeconds: 5, revealSeconds: 1, standingsSeconds: 1 }, null);
 
 try {
   console.log("\n==== anonymous first: picks, then a shared round and a solo one ====");
@@ -298,7 +298,7 @@ try {
   ok((await http(ginaMember, "POST", "/me/contacts/match", { hashes: [await phoneHash(randomPhone())] })).body.error === "contacts_limit", "two syncs a day");
   ok((await http(guest, "POST", "/me/contacts/match", { hashes: [await phoneHash(adaPhone)] })).body.error === SIGN_UP_REQUIRED, "guests can't look up contacts");
 } finally {
-  await setOnboardingConfig(savedConfig);
+  await saveOnboardingConfig(savedConfig, null);
   await redis.quit();
   await sql.end();
 }

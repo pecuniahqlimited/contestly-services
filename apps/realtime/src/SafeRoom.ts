@@ -7,15 +7,43 @@
  */
 import colyseus from "colyseus";
 import type { Client, Delayed } from "colyseus";
-import { MSG } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL, ACCOUNT_BANNED, MSG, type AdminEvent } from "@contestly/shared";
 const { Room } = colyseus;
 
 /** What a client is told when its message failed on the server. Never the error itself. */
 export const SERVER_ERROR = "server_error";
+/** WebSocket close code for a client removed because its account was banned. */
+export const BANNED_CLOSE_CODE = 4403;
 
 export abstract class SafeRoom extends Room {
   /** Names the room in logs, e.g. "party 3f…". */
   protected abstract get label(): string;
+
+  /** The user id a client plays as (rooms keep it on client.auth). */
+  protected userIdOf(client: Client): string | undefined {
+    return (client.auth as { id?: string } | undefined)?.id;
+  }
+
+  /**
+   * Admin events every room obeys: a banned user is removed at once (they can't rejoin; onAuth refuses).
+   * Call from onCreate. RedisPresence hands callbacks parsed JSON, LocalPresence the raw string.
+   */
+  protected listenForAdminEvents() {
+    this.presence.subscribe(ADMIN_EVENTS_CHANNEL, (raw: unknown) => this.run("admin event", () => {
+      const ev = (typeof raw === "string" ? JSON.parse(raw) : raw) as AdminEvent;
+      if (ev.kind !== "user_banned") return;
+      for (const client of [...this.clients]) {
+        if (this.userIdOf(client) !== ev.userId) continue;
+        // Before the leave: onLeave must not hold the seat open (a reconnection token skips onAuth).
+        this.removed.add(ev.userId);
+        client.send(MSG.error, { error: ACCOUNT_BANNED });
+        client.leave(BANNED_CLOSE_CODE);
+      }
+    }));
+  }
+
+  /** Users removed from this room (banned): never let back in by reconnection. */
+  protected readonly removed = new Set<string>();
 
   /** A message handler, sync or async. */
   protected handle<T = unknown>(type: string, fn: (client: Client, data: T) => unknown) {

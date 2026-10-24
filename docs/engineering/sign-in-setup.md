@@ -36,7 +36,8 @@ The design is ADR 0006; the env variables are in `.env.example`. Secrets go in t
 ## API environment
 - [ ] `EMAIL_CODE_SECRET`, `PHONE_HASH_SECRET`: 32+ random bytes each. **`PHONE_HASH_SECRET` never changes** (contact matching depends on it).
 - [ ] `ADMIN_EMAILS` (your address), `API_PUBLIC_URL`, `AUTH_RETURN_URLS=contestly://auth,https://play.contestlyapp.com/auth`, `TRUST_PROXY=1`, `AUTH_MODE=firebase`, `NODE_ENV=production`.
-- [ ] `WEB_ORIGIN` lists the web app's origins.
+- [ ] `WEB_ORIGIN` lists the web app's origins, the admin console's included.
+- [ ] The admin console signs in like the app: add its `/auth` page to `AUTH_RETURN_URLS`, and its domain to the Firebase Authorized domains. Admins come from `ADMIN_EMAILS`.
 
 ## Deep links
 - [ ] Android app links already include `/auth`. iOS: add `/auth` to the `apple-app-site-association` the web app serves (no store release needed).

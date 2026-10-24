@@ -234,11 +234,11 @@ try {
     const credits = await db.select({ amount: ledgerEntries.amountKobo }).from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
       .where(and(eq(ledgerAccounts.userId, kemi), eq(ledgerEntries.type, "climb_prize")));
     ok(credits.length === 1 && credits[0].amount === awards[0].amountKobo, "paid once to cash through the ledger, however often it's approved");
-    const rejected = await api(ADMIN, "POST", `/admin/climb/awards/${awards[1].id}/reject`);
+    const rejected = await api(ADMIN, "POST", `/admin/climb/awards/${awards[1].id}/reject`, { reason: "sim: second place disqualified" });
     ok(rejected.status === "rejected", "an admin can turn a prize down");
     const after = await call(ADMIN, "POST", `/admin/climb/awards/${awards[1].id}/approve`);
     ok(after.status === 409, "a rejected prize can't then be approved");
-    const paidReject = await call(ADMIN, "POST", `/admin/climb/awards/${awards[0].id}/reject`);
+    const paidReject = await call(ADMIN, "POST", `/admin/climb/awards/${awards[0].id}/reject`, { reason: "sim: try to reject a paid prize" });
     ok(paidReject.status === 409, "a paid prize can't be rejected");
   }
   await closeQueues(jobs);

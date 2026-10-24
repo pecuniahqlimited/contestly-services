@@ -57,6 +57,13 @@
       "when": 1792703259086,
       "tag": "0007_identities_replace_firebase_uid",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792873771894,
+      "tag": "0008_admin_essentials",
+      "breakpoints": true
     }
   ]
 }

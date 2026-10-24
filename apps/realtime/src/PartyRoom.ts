@@ -11,7 +11,7 @@ import type { Client } from "colyseus";
 import { SafeRoom } from "./SafeRoom.js";
 import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, chatMessages, getPartyConfig, getQuestionsConfig, resolveMentions, type Party } from "@contestly/db";
-import { resolveUser } from "@contestly/auth";
+import { assertNotBanned, resolveUser } from "@contestly/auth";
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, flagSchema, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
@@ -126,6 +126,8 @@ export class PartyRoom extends SafeRoom {
       this.broadcast(MSG.chatMessage, { ...saved, handle: me.handle, displayName: me.displayName, avatarEmoji: me.avatarEmoji });
     });
 
+    this.listenForAdminEvents();
+
     // Worker → realtime: party lifecycle events over Valkey, never HTTP.
     // RedisPresence JSON-parses published messages before invoking callbacks (LocalPresence doesn't),
     // so accept both shapes and never throw here: a throw would break delivery to every other room.
@@ -156,7 +158,7 @@ export class PartyRoom extends SafeRoom {
   /** Dev header or Firebase token, same as the API. Only seated players (and the creator) may enter the room. */
   async onAuth(_client: Client, options: { token?: string; devUser?: string }) {
     const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser });
-    if (!user) throw new Error("unauthorized");
+    assertNotBanned(user);
     const seated = await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, this.partyId), eq(partyPlayers.userId, user.id)));
     if (!seated.length && user.id !== this.party.createdByUserId) throw new Error("join_the_party_first");
     return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, plays: seated.length > 0 } satisfies Member;
@@ -174,7 +176,7 @@ export class PartyRoom extends SafeRoom {
     await this.guarded("leave", async () => {
       this.members.delete(client.sessionId);
       this.broadcastPresence();
-      if (consented || this.phase === "finished" || this.phase === "cancelled") return;
+      if (consented || this.removed.has((client.auth as Member).id) || this.phase === "finished" || this.phase === "cancelled") return;
       // Past the grace the player stays in the match and scores 0 until they rejoin.
       if (!(await this.reconnected(client, this.cfg.reconnectGraceSeconds))) return;
       this.members.set(client.sessionId, client.auth as Member);

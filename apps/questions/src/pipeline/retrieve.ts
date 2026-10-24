@@ -46,11 +46,12 @@ export async function reusableAmong(spec: GenerationSpec, ids: string[], exclude
  * The bank's most similar question to an embedding, any status: a draft that rewords a retired
  * question is still a duplicate.
  */
-export async function nearestInBank(embedding: number[]): Promise<Neighbour | null> {
+export async function nearestInBank(embedding: number[], excludeIds: string[] = []): Promise<Neighbour | null> {
   const similarity = sql<number>`1 - (${cosineDistance(bankQuestions.embedding, embedding)})`;
   const [row] = await db
     .select({ id: bankQuestions.id, similarity })
     .from(bankQuestions)
+    .where(excludeIds.length ? notInArray(bankQuestions.id, excludeIds) : undefined)
     .orderBy(desc(similarity))
     .limit(1);
   return row ? { id: row.id, similarity: Number(row.similarity) } : null;

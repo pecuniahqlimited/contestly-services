@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import type { Client } from "colyseus";
 import { SafeRoom } from "./SafeRoom.js";
 import { getOnboardingConfig, onboardingQuestions, playedOnboarding, recordOnboardingRound } from "@contestly/db";
-import { resolveUser } from "@contestly/auth";
+import { assertNotBanned, resolveUser } from "@contestly/auth";
 import { MSG, ONBOARDING_MSG, sharedCoins, soloCoins, type OnboardingConfig, type OnboardingResult } from "@contestly/shared";
 import { Match, type MatchQuestion, type QuestionFormat, type StandingRow } from "@contestly/game";
 
@@ -52,6 +52,7 @@ export class OnboardingRoom extends SafeRoom {
     this.maxClients = this.cfg.maxPlayers;
     this.startsAt = Date.now() + this.cfg.waitSeconds * 1000;
     this.pending = this.after(this.cfg.waitSeconds * 1000, "round: start", () => this.start());
+    this.listenForAdminEvents();
     this.handle(MSG.answer, (client, data) => {
       const me = client.auth as Player | undefined;
       if (!this.match || !me) return;
@@ -63,6 +64,7 @@ export class OnboardingRoom extends SafeRoom {
   /** Any session (guests are the usual case), once per account. */
   async onAuth(_client: Client, options: { token?: string; devUser?: string; deviceId?: string }) {
     const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser });
+    assertNotBanned(user);
     if ((await playedOnboarding([user.id])).has(user.id)) throw new Error("already_played");
     const deviceId = typeof options?.deviceId === "string" ? options.deviceId.slice(0, MAX_DEVICE_ID_CHARS) : "";
     return {
@@ -88,7 +90,7 @@ export class OnboardingRoom extends SafeRoom {
         return;
       }
       // Gone past the grace: they stay in the match and score 0 for what they miss.
-      if (!consented && this.phase !== "finished") await this.reconnected(client, RECONNECT_SECONDS);
+      if (!consented && !this.removed.has(me.id) && this.phase !== "finished") await this.reconnected(client, RECONNECT_SECONDS);
     });
   }
 

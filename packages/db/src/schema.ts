@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type PartyLimits } from "@contestly/shared";
+import { CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type OnboardingConfig, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -42,6 +42,9 @@ export const users = pgTable("users", {
   /** Onboarding picks, asked once and editable from Me. Lanes are `interests`. */
   who: text("who"),
   why: text("why"),
+  /** Banned by an admin: can't sign in, join, host or play (assertNotBanned). Unban clears both. */
+  bannedAt: timestamp("banned_at", { withTimezone: true }),
+  banReason: text("ban_reason"),
   /** A staked invite this person opened before signing up: onboarding ends in its lobby. */
   invitePartyId: uuid("invite_party_id").references((): AnyPgColumn => parties.id, { onDelete: "set null" }),
   handle: text("handle").notNull().unique(),
@@ -97,6 +100,30 @@ export const onboardingRounds = pgTable("onboarding_rounds", {
 export const onboardingDevices = pgTable("onboarding_devices", {
   deviceHash: text("device_hash").primaryKey(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Append-only: every admin action, who did it, to what, the state before and after, and why. Destructive
+ * actions carry a reason. Never updated or deleted (like the ledger).
+ */
+export const adminActions = pgTable("admin_actions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  adminUserId: uuid("admin_user_id").notNull().references(() => users.id),
+  action: text("action").notNull(),
+  targetType: text("target_type").notNull(),
+  targetId: text("target_id").notNull(),
+  reason: text("reason"),
+  before: jsonb("before"),
+  after: jsonb("after"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("admin_actions_target_idx").on(t.targetType, t.targetId, t.createdAt), index("admin_actions_created_idx").on(t.createdAt)]);
+
+/** The onboarding round's config, one immutable row per admin save; the newest is current. */
+export const onboardingConfigs = pgTable("onboarding_configs", {
+  version: serial("version").primaryKey(),
+  config: jsonb("config").$type<OnboardingConfig>().notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -352,6 +379,26 @@ export const questionGenerations = pgTable("question_generations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("question_generations_party_idx").on(t.partyId)]);
 
+/**
+ * An admin's edit of a bank question, re-checked like a new draft (verify, safety, dedupe) by the
+ * questions service before it replaces the bank row. Pending until judged; the bank is untouched on a
+ * rejection. The edit itself and every check result stay here.
+ */
+export const questionReviews = pgTable("question_reviews", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  bankQuestionId: uuid("bank_question_id").notNull().references(() => bankQuestions.id, { onDelete: "cascade" }),
+  adminUserId: uuid("admin_user_id").notNull().references(() => users.id),
+  reason: text("reason").notNull(),
+  /** { payload, explanation, claim } as the admin wrote it. */
+  edit: jsonb("edit").notNull(),
+  status: text("status").notNull().default("pending"), // pending | accepted | rejected_invalid | rejected_verify | rejected_dedupe | rejected_safety
+  verify: jsonb("verify"),
+  safety: jsonb("safety"),
+  dedupe: jsonb("dedupe"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  judgedAt: timestamp("judged_at", { withTimezone: true }),
+}, (t) => [index("question_reviews_bank_idx").on(t.bankQuestionId, t.createdAt)]);
+
 export const chatMessages = pgTable("chat_messages", {
   id: uuid("id").primaryKey().defaultRandom(),
   partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
@@ -588,6 +635,8 @@ export const climbAwards = pgTable("climb_awards", {
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type OnboardingRound = typeof onboardingRounds.$inferSelect;
+export type AdminActionRow = typeof adminActions.$inferSelect;
+export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;
 export type ChatMessage = typeof chatMessages.$inferSelect;

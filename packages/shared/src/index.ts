@@ -7,6 +7,7 @@ export * from "./person.js";
 export * from "./climb.js";
 export * from "./categories.js";
 export * from "./accounts.js";
+export * from "./admin.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { GUEST_HANDLE_PREFIX } from "./accounts.js";
 
@@ -286,6 +287,8 @@ export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFa
  */
 export type PartyJob =
   | { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string }
+  /** An admin cancelled the party: refund and cancel through the same path as every other cancel. */
+  | { kind: "admin_cancel"; partyId: string; reason: string }
   /** Every minute: starts or cancels any open party past its startsAt whose start job was lost. */
   | { kind: "sweep" };
 /** Daily clean-up in the worker: `purge_email_sends` deletes the email send log past its retention. */
@@ -307,6 +310,8 @@ export type QuestionsJob =
   | { kind: "file_read"; fileId: string }
   /** A question was voided by flags in a room: take it out of retrieval pending review. */
   | { kind: "question_voided"; partyQuestionId: string; flags: number }
+  /** An admin edited a bank question: re-check it (verify, safety, dedupe) and apply it only if it passes. */
+  | { kind: "review_edit"; reviewId: string }
   /** Repeatable: retire flagged and underperforming bank questions. */
   | { kind: "retire_sweep" }
   /** Repeatable: delete the source chunks of parties that finished more than sourceRetentionDays ago. */

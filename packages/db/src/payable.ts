@@ -10,3 +10,6 @@ export const canBePaidCash = (u: Pick<User, "isSystem" | "isGuest" | "emailVerif
 /** Withdrawing cash (row 10) also needs a verified phone number, one per account, so payouts reach one real person. */
 export const canWithdraw = (u: Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "phoneVerifiedAt">) =>
   canBePaidCash(u) && !!u.phoneVerifiedAt;
+
+/** Banned by an admin (assertNotBanned refuses them at every door). */
+export const isBanned = (u: Pick<User, "bannedAt">) => !!u.bannedAt;
