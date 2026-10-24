@@ -110,13 +110,15 @@ export type StakesError = (typeof STAKES_ERRORS)[number];
 const within = (v: number, min: number, max: number) => v >= min && v <= max;
 
 /**
- * Every rule a new party's stakes must meet, against the current limits. `canOfferGoods` comes from
+ * Every rule a new party's stakes must meet, against the current limits. A pooled party with entry 0 is free:
+ * nothing to win but bragging rights, open to anyone, guests included. `canOfferGoods` comes from
  * canOfferNonCashPrize() on the server. Returns the errors in STAKES_ERRORS order; none means the stakes hold.
  */
 export function checkStakes(s: StakesInput, limits: PartyLimits, canOfferGoods: boolean): StakesError[] {
   const errors = new Set<StakesError>();
   const goods = s.funding === "host" && isGoods(s.prizeKind);
-  if (s.funding === "pooled" && !within(s.entryKobo, limits.entryMinKobo, limits.entryMaxKobo)) errors.add("entry_out_of_range");
+  // Entry 0 is a free party, played for bragging rights; the limits only bound an entry that's charged.
+  if (s.funding === "pooled" && s.entryKobo > 0 && !within(s.entryKobo, limits.entryMinKobo, limits.entryMaxKobo)) errors.add("entry_out_of_range");
   if (goods && !canOfferGoods) errors.add("prize_needs_verified_brand");
   if (s.funding === "host" && !goods && !within(s.hostPoolKobo, limits.hostPrizeMinKobo, limits.hostPrizeMaxKobo)) errors.add("host_prize_out_of_range");
   if (goods && (s.places.length !== winnersOf(s.split) || s.places.some((p) => p.text.trim().length < MIN_PRIZE_TEXT))) errors.add("prizes_incomplete");

@@ -7,10 +7,8 @@
  * Server authority: answers are stamped with the server clock on arrival; correct answers and
  * distributions are broadcast only after a question closes; clients only submit.
  */
-// colyseus ships CJS with star re-exports Node's ESM lexer can't see; destructure the default.
-import colyseus from "colyseus";
 import type { Client } from "colyseus";
-const { Room } = colyseus;
+import { SafeRoom } from "./SafeRoom.js";
 import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, chatMessages, getPartyConfig, getQuestionsConfig, resolveMentions, type Party } from "@contestly/db";
 import { resolveUser } from "@contestly/auth";
@@ -37,7 +35,7 @@ type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "fin
 const settleQueue = partyQueue();
 const questionJobs = questionsQueue();
 
-export class PartyRoom extends Room {
+export class PartyRoom extends SafeRoom {
   private partyId!: string;
   private party!: Party;
   private cfg!: PartyConfig;
@@ -55,6 +53,21 @@ export class PartyRoom extends Room {
   private starting = false;
   private startAgain = false;
 
+  protected get label() {
+    return `party ${this.partyId ?? "?"}`;
+  }
+
+  /**
+   * A step of the round failed (a database write, a timer): the round can't be trusted to go on. Stop the
+   * heartbeat so the worker's watchdog cancels and refunds the party, exactly as if this process had died.
+   */
+  protected onRoomError(where: string) {
+    if (!where.startsWith("round")) return;
+    this.pending?.clear();
+    this.heartbeat?.clear();
+    this.run("heartbeat: stop", () => this.presence.del(partyRoomKey(this.partyId)));
+  }
+
   async onCreate(options: { partyId?: string }) {
     const partyId = options?.partyId;
     if (!partyId || typeof partyId !== "string") throw new Error("partyId required");
@@ -67,14 +80,14 @@ export class PartyRoom extends Room {
     this.maxClients = party.maxPlayers + 1; // + the curate host, who watches without a seat
 
     // Every change of selection arrives here; the last one before the clock ends is graded. No lock-in.
-    this.onMessage(MSG.answer, (client, data) => {
+    this.handle(MSG.answer, (client, data) => {
       if (!this.match || !client.auth) return;
       const res = this.match.submitAnswer((client.auth as Member).id, data, Date.now());
       if (!res.accepted) client.send(MSG.error, { error: res.reason });
     });
 
     // Host only: cut a reveal or standings short, never below the floor.
-    this.onMessage(MSG.skip, (client) => {
+    this.handle(MSG.skip, (client) => {
       if (!this.match || (client.auth as Member)?.id !== this.party.createdByUserId) return;
       const now = Date.now();
       if (this.phase === "reveal" && this.match.canSkipReveal(now)) this.advance(() => this.showStandings());
@@ -83,7 +96,7 @@ export class PartyRoom extends Room {
 
     // Any player can flag the question on screen (or just revealed). Past the threshold it's voided for
     // everyone, with no host involvement.
-    this.onMessage(MSG.flag, async (client, raw) => {
+    this.handle(MSG.flag, async (client, raw) => {
       const me = client.auth as Member | undefined;
       if (!this.match || !me) return;
       const parsed = flagSchema.safeParse(raw);
@@ -102,7 +115,7 @@ export class PartyRoom extends Room {
     });
 
     // Chat is open in the lobby, during standings, and after the game — never while a question or reveal is up.
-    this.onMessage(MSG.chat, async (client, raw) => {
+    this.handle(MSG.chat, async (client, raw) => {
       const me = client.auth as Member | undefined;
       if (!me) return;
       if (!["lobby", "generating", "standings", "finished"].includes(this.phase)) return client.send(MSG.error, { error: "chat_closed" });
@@ -127,17 +140,17 @@ export class PartyRoom extends Room {
       // The set is built at creation, so "live" usually finds it ready and the round starts at once. If a
       // late joiner had seen a question, the set is being swapped and "questions_ready" starts it.
       if (ev.status === "live" || ev.status.startsWith("questions_")) {
-        void this.onSetOrLifecycleChange(ev.status).catch((err) => console.error(`[room ${this.partyId}] ${ev.status}:`, err));
+        this.run(`round: ${ev.status}`, () => this.onSetOrLifecycleChange(ev.status));
       }
       if (ev.status === "cancelled") {
         this.setPhase("cancelled");
         this.broadcast(MSG.phase, { phase: "cancelled" });
-        void this.disconnect();
+        this.run("cancelled: disconnect", () => this.disconnect());
       }
     });
 
     // Room created after the party already went live (e.g. everyone reconnecting): pick the round up.
-    if (party.status === "live") void this.startMatch();
+    if (party.status === "live") this.run("round: start", () => this.startMatch());
   }
 
   /** Dev header or Firebase token, same as the API. Only seated players (and the creator) may enter the room. */
@@ -158,17 +171,16 @@ export class PartyRoom extends Room {
   }
 
   async onLeave(client: Client, consented: boolean) {
-    this.members.delete(client.sessionId);
-    this.broadcastPresence();
-    if (consented || this.phase === "finished" || this.phase === "cancelled") return;
-    try {
-      await this.allowReconnection(client, this.cfg.reconnectGraceSeconds);
+    await this.guarded("leave", async () => {
+      this.members.delete(client.sessionId);
+      this.broadcastPresence();
+      if (consented || this.phase === "finished" || this.phase === "cancelled") return;
+      // Past the grace the player stays in the match and scores 0 until they rejoin.
+      if (!(await this.reconnected(client, this.cfg.reconnectGraceSeconds))) return;
       this.members.set(client.sessionId, client.auth as Member);
       this.broadcastPresence();
       this.sendSnapshot(client);
-    } catch {
-      /* grace expired; the player stays in the match and scores 0 until they rejoin */
-    }
+    });
   }
 
   onDispose() {
@@ -224,7 +236,7 @@ export class PartyRoom extends Room {
       this.starting = false;
       if (this.startAgain) {
         this.startAgain = false;
-        if (!this.match) void this.startMatch();
+        if (!this.match) this.run("round: start", () => this.startMatch());
       }
     }
   }
@@ -232,8 +244,9 @@ export class PartyRoom extends Room {
   /** If this process dies mid-round, the key expires and the worker's watchdog refunds the party. */
   private startHeartbeat() {
     if (this.heartbeat) return;
-    this.heartbeat = this.clock.setInterval(() => void this.presence.setex(partyRoomKey(this.partyId), "1", 30), 10_000);
-    void this.presence.setex(partyRoomKey(this.partyId), "1", 30);
+    const beat = () => this.presence.setex(partyRoomKey(this.partyId), "1", 30);
+    this.heartbeat = this.every(10_000, "heartbeat", beat);
+    this.run("heartbeat", beat);
   }
 
   /** The play order sealed (or approved) for this party; empty while generation is still running. */
@@ -316,7 +329,7 @@ export class PartyRoom extends Room {
 
   private afterStandings() {
     if (this.match!.hasMoreQuestions) this.nextQuestion();
-    else void this.finishMatch();
+    else this.run("round: finish", () => this.finishMatch());
   }
 
   private async finishMatch() {
@@ -350,9 +363,10 @@ export class PartyRoom extends Room {
 
   // ---- plumbing ---------------------------------------------------------------------
 
-  private schedule(ms: number, fn: () => void) {
+  /** The round's next beat. Anything it throws or rejects ends the round safely (onRoomError). */
+  private schedule(ms: number, fn: () => unknown) {
     this.pending?.clear();
-    this.pending = this.clock.setTimeout(fn, ms);
+    this.pending = this.after(ms, "round: next beat", fn);
   }
 
   /** Host skip: cancel the pending timer and advance now. */

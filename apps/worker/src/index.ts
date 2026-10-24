@@ -1,8 +1,8 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count, lte } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, seenInSet, type Party, type Tx } from "@contestly/db";
-import { climbQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
-import { CLIMB_TIME_ZONE, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ClimbJob, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, type Party, type Tx } from "@contestly/db";
+import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
+import { CLIMB_TIME_ZONE, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 import { closeWeeks, startDay } from "./climb.js";
 
@@ -230,7 +230,19 @@ const CLIMB_WEEK_CLOSE = "15 0 * * 1";
 await climbJobs.upsertJobScheduler("day_start", { pattern: CLIMB_DAY_START, tz: CLIMB_TIME_ZONE }, { name: "day_start", data: { kind: "day_start" } });
 await climbJobs.upsertJobScheduler("week_close", { pattern: CLIMB_WEEK_CLOSE, tz: CLIMB_TIME_ZONE }, { name: "week_close", data: { kind: "week_close" } });
 
-for (const w of [notifyWorker, partyWorker, climbWorker]) {
+const DAY_MS = 24 * 60 * 60 * 1000;
+const housekeepingJobs = housekeepingQueue();
+const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, async (job) => {
+  if (job.data.kind === "purge_email_sends") {
+    const n = await purgeEmailSends(new Date(Date.now() - EMAIL_SEND_RETENTION_DAYS * DAY_MS));
+    if (n) console.log(`[housekeeping] deleted ${n} email send record(s) older than ${EMAIL_SEND_RETENTION_DAYS} days`);
+  }
+}, { connection });
+/** Every day at 03:00 Lagos, when nobody's playing. */
+const PURGE_EMAIL_SENDS = "0 3 * * *";
+await housekeepingJobs.upsertJobScheduler("purge_email_sends", { pattern: PURGE_EMAIL_SENDS, tz: CLIMB_TIME_ZONE }, { name: "purge_email_sends", data: { kind: "purge_email_sends" } });
+
+for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker]) {
   w.on("failed", (job, err) => console.error(`[${w.name}] job ${job?.id} failed:`, err.message));
 }
 console.log("worker running: queues", Object.values(QUEUES).join(", "));

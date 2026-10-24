@@ -14,7 +14,7 @@ import { Client } from "colyseus.js";
 import { eq, desc } from "drizzle-orm";
 import { bankQuestions, climbAwards, db, emailSends, getOnboardingConfig, setOnboardingConfig, sql, users } from "@contestly/db";
 import { makeRedis } from "@contestly/queue";
-import { MSG, ONBOARDING_MSG, ONBOARDING_ROOM, SIGN_UP_REQUIRED, kobo, phoneHash, type OnboardingResult } from "@contestly/shared";
+import { MSG, ONBOARDING_MSG, onboardingRewardsResponseSchema, ONBOARDING_ROOM, SIGN_UP_REQUIRED, kobo, phoneHash, type OnboardingResult } from "@contestly/shared";
 import { API, RT, api, correctAnswer, failureCount, leaks, ok, sleep, wrongAnswer } from "./sim-lib.js";
 
 const EMULATOR = process.env.FIREBASE_AUTH_EMULATOR_HOST;
@@ -141,6 +141,11 @@ const randomPhone = () => `+23480${String(Math.floor(Math.random() * 1e8)).padSt
 // =================================================================
 
 // Every run comes from localhost: start from fresh rate-limit windows (sign-in codes are capped per IP per hour).
+// Only ever against a dev stack: this wipes every rate-limit counter in the Valkey it's pointed at.
+if (process.env.AUTH_MODE !== "dev" || process.env.NODE_ENV === "production") {
+  console.error("sim:onboarding resets rate limits, so it runs only with AUTH_MODE=dev and NODE_ENV not production.");
+  process.exit(1);
+}
 for (const key of await redis.keys("limit:*")) await redis.del(key);
 // Short beats so the sim doesn't wait out the real clock; restored at the end.
 const savedConfig = await getOnboardingConfig();
@@ -148,6 +153,8 @@ await setOnboardingConfig({ ...savedConfig, waitSeconds: 3, questionSeconds: 5, 
 
 try {
   console.log("\n==== anonymous first: picks, then a shared round and a solo one ====");
+  const rewards = await (await fetch(`${API}/onboarding/rewards`)).json();
+  ok(onboardingRewardsResponseSchema.safeParse(rewards).success && rewards.soloTiers[0].coinsKobo === kobo(500), "the round's rewards are public, for the Bag coins screen");
   const [ada, bayo, chi, dami] = await Promise.all([anonymous(), anonymous(), anonymous(), anonymous()]);
   const adaDevice = `device-ada-${tag}`;
   const before = await me(ada);
@@ -215,12 +222,11 @@ try {
   console.log("\n==== guests: free parties yes, staked parties and money no ====");
   const base = { brief: "Nigerian geography, easy", startsAt: new Date(Date.now() + 30 * 60_000).toISOString(), questionCount: 3, secondsPerQuestion: 5 };
   const staked = await api("tunde", "POST", "/parties", { ...base, title: `Onboarding sim staked ${tag}`, funding: "pooled", entryKobo: kobo(100), maxPlayers: 6, split: "winner" });
-  // Free to enter, nothing in cash: a verified brand's goods party (guests may play; they can't win).
-  const free = await api("jollofrepublic", "POST", "/parties", { ...base, title: `Onboarding sim free ${tag}`, funding: "host", entryKobo: 0, maxPlayers: 6, split: "winner", prizeKind: "product", places: [{ text: "Lunch for two" }] });
+  const free = await api("tunde", "POST", "/parties", { ...base, title: `Onboarding sim free ${tag}`, funding: "pooled", entryKobo: 0, maxPlayers: 6, split: "winner" });
   const guest = await anonymous();
   const stakedJoin = await http(guest, "POST", `/parties/${staked.id}/join`);
   ok(stakedJoin.status === 403 && stakedJoin.body.error === SIGN_UP_REQUIRED, `a guest is refused on a staked party (${stakedJoin.status} ${stakedJoin.body.error})`);
-  ok((await http(guest, "POST", `/parties/${free.id}/join`)).status === 201, "a guest joins a free party");
+  ok((await http(guest, "POST", `/parties/${free.id}/join`)).status === 201, "a guest joins a free party (entry 0, bragging rights)");
   ok((await http(guest, "POST", "/me/guest", { displayName: "Funmi" })).body.displayName === "Funmi", "a guest plays under a name");
   const hosting = await http(guest, "POST", "/parties", { ...base, title: "guest host", funding: "pooled", entryKobo: kobo(100), maxPlayers: 4, split: "winner" });
   ok(hosting.status === 403 && hosting.body.error === SIGN_UP_REQUIRED, "a guest can't host");

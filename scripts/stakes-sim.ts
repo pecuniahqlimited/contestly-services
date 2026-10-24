@@ -13,6 +13,7 @@ const BRIEF = "Nigerian music history: Fela, highlife and the artists who built 
 const base = { brief: BRIEF, startsAt: inMinutes(30), questionCount: 3, secondsPerQuestion: 5 };
 const pooled = { ...base, title: "Stakes sim pooled", funding: "pooled", entryKobo: kobo(750), maxPlayers: 8, split: "70_30" };
 const hostCash = { ...base, title: "Stakes sim host cash", funding: "host", entryKobo: 0, maxPlayers: 6, split: "70_30", prizeKind: "cash", hostPoolKobo: kobo(10_000) };
+const free = { ...base, title: "Stakes sim free", funding: "pooled", entryKobo: 0, maxPlayers: 6, split: "winner" };
 const goods = {
   ...base, title: "Stakes sim goods", funding: "host", entryKobo: 0, maxPlayers: 10, split: "60_30_10", prizeKind: "product",
   places: [{ text: "A PlayStation 5", valueKobo: kobo(900_000) }, { text: "Wireless headphones" }, { text: "A branded hoodie", valueKobo: kobo(25_000) }],
@@ -65,6 +66,15 @@ const p = await api("tunde", "POST", "/parties", pooled);
 ok(p.entryKobo === kobo(750) && p.splitId === "70_30", "a ₦750 entry and 70/30 are accepted");
 // 1 seat × ₦750 = ₦750, less 10% = ₦675 → 70/30
 ok(p.places.map((x: any) => x.amountKobo).join() === [kobo(472.5), kobo(202.5)].join(), `places are the pot right now after the rake (${p.places.map((x: any) => x.amountKobo)})`);
+
+console.log("\n==== free: entry 0, no prize, bragging rights ====");
+const totalOf = async (h: string) => { const w = (await api(h, "GET", "/me")).wallet; return w.cashKobo + w.bonusKobo as number; };
+const [tundeBefore, adaBefore] = [await totalOf("tunde"), await totalOf("ada.o")];
+const f = await api("tunde", "POST", "/parties", free);
+ok(f.entryKobo === 0 && f.places.every((x: any) => x.amountKobo === 0), "anyone can create a party with entry 0 and nothing to win (below the entry minimum is fine at 0)");
+await api("ada.o", "POST", `/parties/${f.id}/join`);
+ok(!!(await settleWith(f.id, ["ada.o", "tunde"])), "the free party settled");
+ok((await partyNetKobo(await userId("ada.o"), f.id)) === 0 && (await totalOf("ada.o")) === adaBefore && (await totalOf("tunde")) === tundeBefore, "no money moved for anyone: no entry, no rake, no prize");
 
 console.log("\n==== host cash prize: held, paid by place, released on cancel ====");
 const before = await cashOf("tunde");

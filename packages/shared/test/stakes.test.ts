@@ -21,6 +21,10 @@ describe("checkStakes", () => {
     expect(checkStakes({ ...pooled, maxPlayers: limits.seatsMax + 1 }, limits, false)).toEqual(["seats_out_of_range"]);
   });
 
+  it("lets a pooled party be free (entry 0, bragging rights), whatever the entry minimum", () => {
+    expect(checkStakes({ ...pooled, entryKobo: 0 }, { ...limits, entryMinKobo: kobo(500) }, false)).toEqual([]);
+  });
+
   it("needs one more seat than a split has winners", () => {
     expect(checkStakes({ ...pooled, split: "60_30_10", maxPlayers: 3 }, limits, false)).toEqual(["split_needs_seats"]);
     expect(checkStakes({ ...pooled, split: "60_30_10", maxPlayers: 4 }, limits, false)).toEqual([]);
