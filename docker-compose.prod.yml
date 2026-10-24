@@ -8,6 +8,8 @@ name: contestly
 x-service: &service
   env_file: .env
   restart: unless-stopped
+  # Four services plus Caddy fit a 2 GB droplet.
+  mem_limit: 384m
 
 services:
   api:
