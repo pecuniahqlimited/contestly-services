@@ -17,7 +17,11 @@ export const kobo = (naira: number) => Math.round(naira * 100);
 export const naira = (k: number) => "₦" + (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
 
 /** Bonus coins are counted in kobo like cash (1 coin = 100 kobo) but shown without the ₦. */
-export const coins = (k: number) => (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
+const KOBO_PER_COIN = 100;
+/** Coins as a number, for inputs and arithmetic (the console's onboarding editor, Bag coins): 50_000 kobo → 500. */
+export const coinsFromKobo = (k: number): number => k / KOBO_PER_COIN;
+/** Coins as text for display: 50_000 kobo → "500". */
+export const coins = (k: number) => coinsFromKobo(k).toLocaleString("en-NG", { maximumFractionDigits: 2 });
 
 /**
  * Party round + settlement config. Admin-editable (stored under key "party" in app_config);

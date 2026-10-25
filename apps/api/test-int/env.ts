@@ -1,4 +1,7 @@
-// The repo's .env, as the services read it (DATABASE_URL, REDIS_URL, AUTH_MODE…). Quiet logs.
-import { fileURLToPath } from "node:url";
-process.loadEnvFile(fileURLToPath(new URL("../../../.env", import.meta.url)));
+// Every test process: point the packages at the test database and Valkey db before anything imports them.
+import { loadTestEnv } from "./testEnv.js";
+
+const env = loadTestEnv();
+process.env.DATABASE_URL = env.testDatabaseUrl;
+process.env.REDIS_URL = env.testRedisUrl;
 process.env.LOG_LEVEL = "silent";

@@ -69,6 +69,10 @@ await db.transaction(async (tx) => {
   const by = Object.fromEntries(rows.map((u) => [u.handle, u.id]));
   const demoUserIds = rows.map((u) => u.id);
 
+  // Dev admins: DEV_ADMIN_HANDLES (comma-separated, default tunde) pass requireAdmin with a real sign-in too.
+  const devAdmins = (process.env.DEV_ADMIN_HANDLES ?? "tunde").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  if (devAdmins.length) await tx.update(users).set({ isAdmin: true }).where(inArray(users.handle, devAdmins));
+
   await tx.delete(follows).where(and(inArray(follows.followerId, demoUserIds), inArray(follows.followeeId, demoUserIds)));
   await tx.insert(follows).values([
     { followerId: by["ada.o"], followeeId: by["tunde"] },
