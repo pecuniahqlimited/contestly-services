@@ -72,6 +72,8 @@ const totalOf = async (h: string) => { const w = (await api(h, "GET", "/me")).wa
 const [tundeBefore, adaBefore] = [await totalOf("tunde"), await totalOf("ada.o")];
 const f = await api("tunde", "POST", "/parties", free);
 ok(f.entryKobo === 0 && f.places.every((x: any) => x.amountKobo === 0), "anyone can create a party with entry 0 and nothing to win (below the entry minimum is fine at 0)");
+const freeTop3TwoSeats = await call("tunde", "POST", "/parties", { ...free, split: "60_30_10", maxPlayers: 2 });
+ok(freeTop3TwoSeats.status === 201, `a free party's split is ignored: Top 3 with 2 seats is accepted (${freeTop3TwoSeats.status} ${JSON.stringify(freeTop3TwoSeats.body.error ?? "")})`);
 await api("ada.o", "POST", `/parties/${f.id}/join`);
 ok(!!(await settleWith(f.id, ["ada.o", "tunde"])), "the free party settled");
 ok((await partyNetKobo(await userId("ada.o"), f.id)) === 0 && (await totalOf("ada.o")) === adaBefore && (await totalOf("tunde")) === tundeBefore, "no money moved for anyone: no entry, no rake, no prize");
