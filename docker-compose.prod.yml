@@ -45,6 +45,20 @@ services:
       - caddydata:/data
     depends_on: [api, realtime]
 
+  # Test servers only (NODE_ENV=development, EMAIL_TRANSPORT=mailpit): sign-in codes land in an inbox at
+  # https://<API_HOST>/mail/ behind MAILPIT_UI_AUTH. Start it with --profile mock.
+  mailpit:
+    profiles: ["mock"]
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      MP_WEBROOT: mail
+      MP_UI_AUTH: ${MAILPIT_UI_AUTH}
+      # The API posts mail without credentials; the send endpoint is reachable only inside the compose network.
+      MP_SEND_API_AUTH_ACCEPT_ANY: "true"
+      MP_MAX_MESSAGES: 500
+
   # One-off: applies packages/db/drizzle migrations to DATABASE_URL.
   migrate:
     profiles: ["tools"]
