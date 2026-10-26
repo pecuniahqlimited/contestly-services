@@ -43,7 +43,13 @@ class BoomRoom extends SafeRoom {
   }
 }
 
-const next = <T>(room: ClientRoom, type: string) => new Promise<T>((resolve) => room.onMessage(type, (m: T) => resolve(m)));
+/** The next message of this type; the listener goes once it has fired, so it can't catch a later test's message. */
+const next = <T>(room: ClientRoom, type: string) => new Promise<T>((resolve) => {
+  const off = room.onMessage(type, (m: T) => {
+    off();
+    resolve(m);
+  });
+});
 
 let server: InstanceType<typeof Server>;
 let a: ClientRoom, b: ClientRoom;
@@ -68,8 +74,10 @@ afterAll(async () => {
 describe("SafeRoom", () => {
   it("reports a sync throw in a handler to the sender, and the room carries on", async () => {
     const err = next<{ error: string }>(a, MSG.error);
+    const reported = next<string>(a, "roomError");
     a.send("sync");
     expect((await err).error).toBe(SERVER_ERROR);
+    expect(await reported).toBe("message sync");
     const echo = next(a, "echo");
     a.send("echo", { n: 1 });
     expect(await echo).toEqual({ n: 1 });
@@ -77,8 +85,10 @@ describe("SafeRoom", () => {
 
   it("reports a rejected async handler", async () => {
     const err = next<{ error: string }>(a, MSG.error);
+    const reported = next<string>(a, "roomError"); // sent after MSG.error: wait for it, or the timer test below catches it
     a.send("async");
     expect((await err).error).toBe(SERVER_ERROR);
+    expect(await reported).toBe("message async");
   });
 
   it("reports throws and rejections in timers through onRoomError", async () => {
