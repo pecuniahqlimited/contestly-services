@@ -40,6 +40,14 @@ export interface DraftRequest {
   avoid: string[];
   /** File-scoped specs only: the chunks to generate from and verify against. */
   sources?: SourceChunk[];
+  /** Bank questions not to count as duplicates (the question being re-judged after an edit). */
+  excludeBankIds?: string[];
+}
+
+/** One question, judged exactly like a fresh draft: shape, verify, safety, then dedupe and the gate. An admin's edit goes through this. */
+export async function judgeOne(draft: DraftQuestion, req: Omit<DraftRequest, "want" | "avoid">): Promise<JudgedDraft> {
+  const full: DraftRequest = { ...req, want: 1, avoid: [] };
+  return dedupeAndGate(await check(draft, full), full, []);
 }
 
 /**
@@ -97,7 +105,7 @@ async function dedupeAndGate({ draft, payloadValid, verify, safety }: Checked, r
   // Nearest of: the whole bank (any status — retired stays dead) and the batch accepted so far.
   // File-sourced drafts skip the bank: the file is the source, so the same file uploaded again must
   // yield its questions again (and file-derived bank rows are never served to open-knowledge parties).
-  const inBank = req.sources ? null : await nearestInBank(embedding);
+  const inBank = req.sources ? null : await nearestInBank(embedding, req.excludeBankIds);
   const inBatch = nearest(embedding, accepted.map((a) => ({ id: a.bankId, embedding: a.embedding })));
   const near = [inBank, inBatch].reduce<Neighbour | null>((a, b) => (!a ? b : !b ? a : b.similarity > a.similarity ? b : a), null);
 

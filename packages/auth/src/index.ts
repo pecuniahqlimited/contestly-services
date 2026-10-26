@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db, guestForFirebaseUid, ledger, userByIdentity, users, type User } from "@contestly/db";
+import { db, guestForFirebaseUid, isBanned, ledger, userByIdentity, users, type User } from "@contestly/db";
+import { ACCOUNT_BANNED } from "@contestly/shared";
 import { authMode } from "./mode.js";
 import { isAnonymousToken, verifyIdToken } from "./firebase.js";
 
@@ -7,6 +8,11 @@ export * from "./mode.js";
 export { createCustomToken, deleteFirebaseUser, verifyIdToken } from "./firebase.js";
 
 export class Unauthorized extends Error { constructor(msg = "unauthorized") { super(msg); } }
+
+/** A banned account can't sign in, join, host or play: every door calls this (API sessions, sign-in, rooms). */
+export function assertNotBanned(user: Pick<User, "bannedAt">): void {
+  if (isBanned(user)) throw Object.assign(new Error(ACCOUNT_BANNED), { statusCode: 403 });
+}
 
 export interface Session {
   user: User;

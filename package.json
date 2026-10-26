@@ -11,8 +11,8 @@
   ],
   "scripts": {
     "prepare": "npm run build -w @contestly/shared -w @contestly/game -w @contestly/queue -w @contestly/db -w @contestly/email -w @contestly/auth -w @contestly/storage",
-    "test": "npm test -w @contestly/shared -w @contestly/game -w @contestly/email -w @contestly/questions -w @contestly/api",
-    "sim": "npm run sim:sealed && npm run sim:curate && npm run sim:stakes && npm run sim:climb && npm run sim:onboarding",
+    "test": "npm test -w @contestly/shared -w @contestly/game -w @contestly/email -w @contestly/questions -w @contestly/api -w @contestly/realtime",
+    "sim": "npm run sim:sealed && npm run sim:curate && npm run sim:stakes && npm run sim:climb && npm run sim:onboarding && npm run sim:admin",
     "sim:sealed": "tsx --env-file=.env scripts/party-sim.ts",
     "sim:curate": "tsx --env-file=.env scripts/party-sim-curate.ts",
     "sim:stakes": "tsx --env-file=.env scripts/stakes-sim.ts",
@@ -27,7 +27,9 @@
     "dev": "concurrently -n api,rt,worker,questions -c blue,magenta,yellow,cyan \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\" \"npm run dev -w @contestly/questions\"",
     "build": "npm run prepare && npm run build -w apps --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "sim:onboarding": "tsx --env-file=.env scripts/onboarding-sim.ts"
+    "sim:onboarding": "tsx --env-file=.env scripts/onboarding-sim.ts",
+    "test:int": "npm run test:int -w @contestly/api",
+    "sim:admin": "tsx --env-file=.env scripts/admin-sim.ts"
   },
   "devDependencies": {
     "colyseus.js": "^0.15.0",

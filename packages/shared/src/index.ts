@@ -7,6 +7,7 @@ export * from "./person.js";
 export * from "./climb.js";
 export * from "./categories.js";
 export * from "./accounts.js";
+export * from "./admin.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { GUEST_HANDLE_PREFIX } from "./accounts.js";
 
@@ -16,7 +17,11 @@ export const kobo = (naira: number) => Math.round(naira * 100);
 export const naira = (k: number) => "₦" + (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
 
 /** Bonus coins are counted in kobo like cash (1 coin = 100 kobo) but shown without the ₦. */
-export const coins = (k: number) => (k / 100).toLocaleString("en-NG", { maximumFractionDigits: 2 });
+const KOBO_PER_COIN = 100;
+/** Coins as a number, for inputs and arithmetic (the console's onboarding editor, Bag coins): 50_000 kobo → 500. */
+export const coinsFromKobo = (k: number): number => k / KOBO_PER_COIN;
+/** Coins as text for display: 50_000 kobo → "500". */
+export const coins = (k: number) => coinsFromKobo(k).toLocaleString("en-NG", { maximumFractionDigits: 2 });
 
 /**
  * Party round + settlement config. Admin-editable (stored under key "party" in app_config);
@@ -267,7 +272,7 @@ export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */
-export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb" } as const;
+export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb", housekeeping: "housekeeping" } as const;
 /**
  * The Climb's scheduled jobs, both repeatable on the Lagos clock. `day_start`: pin this week's prize
  * version and snapshot its Everyone board for ▲/▼ since yesterday. `week_close`: rank every finished week that hasn't been
@@ -286,8 +291,12 @@ export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFa
  */
 export type PartyJob =
   | { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string }
+  /** An admin cancelled the party: refund and cancel through the same path as every other cancel. */
+  | { kind: "admin_cancel"; partyId: string; reason: string }
   /** Every minute: starts or cancels any open party past its startsAt whose start job was lost. */
   | { kind: "sweep" };
+/** Daily clean-up in the worker: `purge_email_sends` deletes the email send log past its retention. */
+export type HousekeepingJob = { kind: "purge_email_sends" };
 /**
  * Questions-service jobs (ADR 0002). `generate_set` builds and seals the set when the party is
  * created (curate: when the host asks for drafts) and publishes the set's state on
@@ -305,6 +314,8 @@ export type QuestionsJob =
   | { kind: "file_read"; fileId: string }
   /** A question was voided by flags in a room: take it out of retrieval pending review. */
   | { kind: "question_voided"; partyQuestionId: string; flags: number }
+  /** An admin edited a bank question: re-check it (verify, safety, dedupe) and apply it only if it passes. */
+  | { kind: "review_edit"; reviewId: string }
   /** Repeatable: retire flagged and underperforming bank questions. */
   | { kind: "retire_sweep" }
   /** Repeatable: delete the source chunks of parties that finished more than sourceRetentionDays ago. */

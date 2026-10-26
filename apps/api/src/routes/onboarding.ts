@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
-import { db, ledger, onboardingRounds, parties, partyPlayers, users, type User } from "@contestly/db";
-import { GUEST_HANDLE_PREFIX, archetypeOf, isStaked, onboardingInviteSchema, onboardingPicksSchema, whyFits, type Who, type Why } from "@contestly/shared";
+import { db, getOnboardingConfig, ledger, onboardingRounds, parties, partyPlayers, users, type User } from "@contestly/db";
+import { GUEST_HANDLE_PREFIX, archetypeOf, isStaked, onboardingInviteSchema, onboardingPicksSchema, onboardingRewardsResponseSchema, type OnboardingRewardsResponse, whyFits, type Who, type Why } from "@contestly/shared";
 import { requireSession } from "../auth.js";
 import { httpError } from "../httpError.js";
 
@@ -35,6 +35,12 @@ async function onboardingState(u: User) {
 }
 
 export async function onboardingRoutes(app: FastifyInstance) {
+  /** What the onboarding round pays (public: the Bag coins screen shows it before anyone has a session). */
+  app.get("/onboarding/rewards", async (): Promise<OnboardingRewardsResponse> => {
+    const c = await getOnboardingConfig();
+    return onboardingRewardsResponseSchema.parse({ questionCount: c.questionCount, questionSeconds: c.questionSeconds, soloTiers: c.soloTiers, sharedByRankKobo: c.sharedByRankKobo });
+  });
+
   app.get("/onboarding", async (req) => onboardingState(requireSession(req)));
 
   /** Save onboarding picks (who, lanes, why). Guests too: they're asked before sign-up. The same call edits them from Me. */

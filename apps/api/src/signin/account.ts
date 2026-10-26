@@ -6,8 +6,9 @@
  *  4. otherwise (a signed-up session signing into a new email) → sign_out_first.
  * An existing account never takes the guest's coins or anything else; the guest row is left as it is.
  */
-import { attachIdentity, becomeMember, db, firebaseUidFor, memberByEmail, userByIdentity, type User } from "@contestly/db";
-import { createCustomToken } from "@contestly/auth";
+import { attachIdentity, becomeMember, db, firebaseUidFor, memberByEmail, userByIdentity, users, type User } from "@contestly/db";
+import { assertNotBanned, createCustomToken } from "@contestly/auth";
+import { eq } from "drizzle-orm";
 import type { OAuthProvider, OnboardingBonusOutcome, SignInAccount, SignInResult } from "@contestly/shared";
 import { putOnBoard } from "../climb/boards.js";
 import { httpError } from "../httpError.js";
@@ -50,6 +51,8 @@ export async function signIn(session: User, v: VerifiedSignIn): Promise<SignInOu
 
 /** The session token for the account a sign-in landed on: the guest's own uid, or the existing account's. */
 export async function withSessionToken(o: SignInOutcome): Promise<SignInResult> {
+  const [account] = await db.select({ bannedAt: users.bannedAt }).from(users).where(eq(users.id, o.userId));
+  assertNotBanned(account); // a banned account can't be signed into, by any route
   const uid = await db.transaction((tx) => firebaseUidFor(o.userId, tx));
   return { customToken: await createCustomToken(uid), account: o.account, onboardingBonus: o.onboardingBonus, bonusKobo: o.bonusKobo };
 }

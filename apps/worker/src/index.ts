@@ -1,8 +1,8 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count, lte } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, seenInSet, type Party, type Tx } from "@contestly/db";
-import { climbQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
-import { CLIMB_TIME_ZONE, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ClimbJob, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, type Party, type Tx } from "@contestly/db";
+import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
+import { CLIMB_TIME_ZONE, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 import { closeWeeks, startDay } from "./climb.js";
 
@@ -34,15 +34,19 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   }
 }, { connection });
 
-/** Refund everything a party took in: every entry leg by leg, and release exactly what was held for the host's cash prize. Idempotent. */
+/** Refund and cancel (packages/db, the one cancel path), then tell the room. */
 async function refundParty(tx: Tx, p: Party, message: string) {
-  const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, p.id));
-  for (const pl of players) await ledger.refund(tx, { chargeKey: `party_entry:${p.id}:${pl.userId}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
-  await ledger.release(tx, { holdKey: `party_fund:${p.id}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
-  await tx.update(parties).set({ status: "cancelled", endedAt: new Date() }).where(eq(parties.id, p.id));
-  await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: message });
+  const refunded = await refundAndCancel(tx, p, message);
   await emit({ partyId: p.id, status: "cancelled" });
-  return players.length;
+  return refunded;
+}
+
+/** An admin cancelled a scheduled or live party. Idempotent: a party already over is left alone. */
+async function adminCancel(partyId: string) {
+  const out = await db.transaction((tx) => adminCancelParty(tx, partyId));
+  if (!out.cancelled) return;
+  await emit({ partyId, status: "cancelled" });
+  console.log(`[party] ${partyId}: cancelled by an admin, ${out.refunded} refunded`);
 }
 
 /**
@@ -109,11 +113,12 @@ async function settle(partyId: string) {
   const settled = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p || p.status !== "live") return false; // already settled or cancelled
-    const players = await tx.select({ userId: partyPlayers.userId, rank: partyPlayers.rank, isGuest: users.isGuest }).from(partyPlayers)
+    const players = await tx.select({ userId: partyPlayers.userId, rank: partyPlayers.rank, isGuest: users.isGuest, bannedAt: users.bannedAt }).from(partyPlayers)
       .innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, partyId)).orderBy(asc(partyPlayers.rank));
     if (!players.some((x) => x.rank !== null)) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
-    // Prizes go by place among signed-up players: a guest keeps their rank on the board but can't win (only free parties have guests).
-    const ranked = players.filter((x) => x.rank !== null && !x.isGuest).map((x) => x.userId);
+    // Prizes go by place among signed-up players in good standing: a guest (only free parties have them) or a
+    // player banned mid-party keeps their rank on the board but can't win.
+    const ranked = players.filter((x) => x.rank !== null && !x.isGuest && !x.bannedAt).map((x) => x.userId);
 
     if (isGoods(p.prizeKind)) {
       const prizes = await tx.select().from(partyPrizes).where(eq(partyPrizes.partyId, p.id));
@@ -216,6 +221,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   if (d.kind === "settle") return settle(d.partyId);
   if (d.kind === "watchdog") return watchdog(d.partyId);
   if (d.kind === "cancel_generation_failed") return cancelGenerationFailed(d.partyId);
+  if (d.kind === "admin_cancel") return adminCancel(d.partyId);
 }, { connection });
 await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "sweep", data: { kind: "sweep" } });
 
@@ -230,7 +236,19 @@ const CLIMB_WEEK_CLOSE = "15 0 * * 1";
 await climbJobs.upsertJobScheduler("day_start", { pattern: CLIMB_DAY_START, tz: CLIMB_TIME_ZONE }, { name: "day_start", data: { kind: "day_start" } });
 await climbJobs.upsertJobScheduler("week_close", { pattern: CLIMB_WEEK_CLOSE, tz: CLIMB_TIME_ZONE }, { name: "week_close", data: { kind: "week_close" } });
 
-for (const w of [notifyWorker, partyWorker, climbWorker]) {
+const DAY_MS = 24 * 60 * 60 * 1000;
+const housekeepingJobs = housekeepingQueue();
+const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, async (job) => {
+  if (job.data.kind === "purge_email_sends") {
+    const n = await purgeEmailSends(new Date(Date.now() - EMAIL_SEND_RETENTION_DAYS * DAY_MS));
+    if (n) console.log(`[housekeeping] deleted ${n} email send record(s) older than ${EMAIL_SEND_RETENTION_DAYS} days`);
+  }
+}, { connection });
+/** Every day at 03:00 Lagos, when nobody's playing. */
+const PURGE_EMAIL_SENDS = "0 3 * * *";
+await housekeepingJobs.upsertJobScheduler("purge_email_sends", { pattern: PURGE_EMAIL_SENDS, tz: CLIMB_TIME_ZONE }, { name: "purge_email_sends", data: { kind: "purge_email_sends" } });
+
+for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker]) {
   w.on("failed", (job, err) => console.error(`[${w.name}] job ${job?.id} failed:`, err.message));
 }
 console.log("worker running: queues", Object.values(QUEUES).join(", "));

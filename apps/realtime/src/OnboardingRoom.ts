@@ -7,11 +7,10 @@
  * Coins are saved on the round, not the ledger: a guest gets them when they sign up.
  */
 import { createHash } from "node:crypto";
-import colyseus from "colyseus";
 import type { Client } from "colyseus";
-const { Room } = colyseus;
+import { SafeRoom } from "./SafeRoom.js";
 import { getOnboardingConfig, onboardingQuestions, playedOnboarding, recordOnboardingRound } from "@contestly/db";
-import { resolveUser } from "@contestly/auth";
+import { assertNotBanned, resolveUser } from "@contestly/auth";
 import { MSG, ONBOARDING_MSG, sharedCoins, soloCoins, type OnboardingConfig, type OnboardingResult } from "@contestly/shared";
 import { Match, type MatchQuestion, type QuestionFormat, type StandingRow } from "@contestly/game";
 
@@ -29,7 +28,7 @@ type Phase = "waiting" | "playing" | "finished";
 const RECONNECT_SECONDS = 20;
 const MAX_DEVICE_ID_CHARS = 200;
 
-export class OnboardingRoom extends Room {
+export class OnboardingRoom extends SafeRoom {
   private cfg!: OnboardingConfig;
   private phase: Phase = "waiting";
   private startsAt = 0;
@@ -39,12 +38,22 @@ export class OnboardingRoom extends Room {
   private questionIds: string[] = [];
   private pending?: { clear(): void };
 
+  protected get label() {
+    return `onboarding ${this.roomId}`;
+  }
+
+  /** A round that can't go on ends this room only: the players are told, and the process serves every other room. */
+  protected onRoomError(where: string) {
+    if (where.startsWith("round") && this.phase !== "finished") this.abandon("round_failed");
+  }
+
   async onCreate() {
     this.cfg = await getOnboardingConfig();
     this.maxClients = this.cfg.maxPlayers;
     this.startsAt = Date.now() + this.cfg.waitSeconds * 1000;
-    this.pending = this.clock.setTimeout(() => this.startSafely(), this.cfg.waitSeconds * 1000);
-    this.onMessage(MSG.answer, (client, data) => {
+    this.pending = this.after(this.cfg.waitSeconds * 1000, "round: start", () => this.start());
+    this.listenForAdminEvents();
+    this.handle(MSG.answer, (client, data) => {
       const me = client.auth as Player | undefined;
       if (!this.match || !me) return;
       const res = this.match.submitAnswer(me.id, data, Date.now());
@@ -55,6 +64,7 @@ export class OnboardingRoom extends Room {
   /** Any session (guests are the usual case), once per account. */
   async onAuth(_client: Client, options: { token?: string; devUser?: string; deviceId?: string }) {
     const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser });
+    assertNotBanned(user);
     if ((await playedOnboarding([user.id])).has(user.id)) throw new Error("already_played");
     const deviceId = typeof options?.deviceId === "string" ? options.deviceId.slice(0, MAX_DEVICE_ID_CHARS) : "";
     return {
@@ -72,18 +82,16 @@ export class OnboardingRoom extends Room {
   }
 
   async onLeave(client: Client, consented: boolean) {
-    const me = client.auth as Player;
-    if (this.phase === "waiting") {
-      if (![...this.clients].some((c) => (c.auth as Player)?.id === me.id)) this.players.delete(me.id);
-      this.broadcastLobby();
-      return;
-    }
-    if (consented || this.phase === "finished") return;
-    try {
-      await this.allowReconnection(client, RECONNECT_SECONDS);
-    } catch {
-      /* gone: they stay in the match and score 0 for what they miss */
-    }
+    await this.guarded("leave", async () => {
+      const me = client.auth as Player;
+      if (this.phase === "waiting") {
+        if (![...this.clients].some((c) => (c.auth as Player)?.id === me.id)) this.players.delete(me.id);
+        this.broadcastLobby();
+        return;
+      }
+      // Gone past the grace: they stay in the match and score 0 for what they miss.
+      if (!consented && !this.removed.has(me.id) && this.phase !== "finished") await this.reconnected(client, RECONNECT_SECONDS);
+    });
   }
 
   onDispose() {
@@ -101,20 +109,15 @@ export class OnboardingRoom extends Room {
 
   private startNow() {
     this.pending?.clear();
-    this.startSafely();
-  }
-
-  /** A round that can't start ends this room only: the players are told, and the process keeps serving every other room. */
-  private startSafely() {
-    this.start().catch((err) => this.abandon("round_failed", err));
+    this.run("round: start", () => this.start());
   }
 
   private abandon(error: string, cause?: unknown) {
-    console.error(`[onboarding ${this.roomId}] ${error}`, cause ?? "");
+    if (cause) console.error(`[${this.label}] ${error}:`, cause);
     this.phase = "finished";
     this.pending?.clear();
     this.broadcast(MSG.error, { error });
-    void this.disconnect();
+    this.run("disconnect", () => this.disconnect());
   }
 
   private async start() {
@@ -148,7 +151,7 @@ export class OnboardingRoom extends Room {
   private showStandings() {
     const standings = this.match!.showStandings(Date.now());
     this.broadcast(MSG.standings, { ...standings, chatOpen: false, lastQuestion: !this.match!.hasMoreQuestions });
-    this.schedule(this.cfg.standingsSeconds * 1000, () => (this.match!.hasMoreQuestions ? this.nextQuestion() : this.finish().catch((err) => this.abandon("round_failed", err))));
+    this.schedule(this.cfg.standingsSeconds * 1000, () => (this.match!.hasMoreQuestions ? this.nextQuestion() : this.finish()));
   }
 
   private async finish() {
@@ -177,8 +180,8 @@ export class OnboardingRoom extends Room {
     };
   }
 
-  private schedule(ms: number, fn: () => void) {
+  private schedule(ms: number, fn: () => unknown) {
     this.pending?.clear();
-    this.pending = this.clock.setTimeout(fn, ms);
+    this.pending = this.after(ms, "round: next beat", fn);
   }
 }

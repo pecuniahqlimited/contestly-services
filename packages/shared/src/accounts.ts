@@ -177,6 +177,18 @@ export const DEFAULT_ONBOARDING_CONFIG: OnboardingConfig = {
   sharedByRankKobo: [kobo(500), kobo(400), kobo(300), kobo(200)],
 };
 
+/**
+ * GET /onboarding/rewards (public): what the onboarding round pays, for the Bag coins screen. Admins edit
+ * the config (row 5a); this is the read-only view of it.
+ */
+export const onboardingRewardsResponseSchema = z.object({
+  questionCount: z.number().int(),
+  questionSeconds: z.number().int(),
+  soloTiers: onboardingConfigSchema.shape.soloTiers,
+  sharedByRankKobo: onboardingConfigSchema.shape.sharedByRankKobo,
+});
+export type OnboardingRewardsResponse = z.infer<typeof onboardingRewardsResponseSchema>;
+
 /** Solo coins for a score: the best tier it reaches (the last tier catches everything). */
 export function soloCoins(points: number, tiers: OnboardingConfig["soloTiers"]): number {
   return (tiers.find((t) => points >= t.minPoints) ?? tiers[tiers.length - 1]).coinsKobo;
@@ -264,6 +276,8 @@ export const addPhoneResponseSchema = z.object({ phoneAdded: z.literal(true) });
 // ---------------------------------------------------------------- email providers (admin)
 
 export const EMAIL_PROVIDERS = ["zeptomail", "brevo"] as const;
+/** The email send log (addresses included) is kept this long, then the worker deletes it. */
+export const EMAIL_SEND_RETENTION_DAYS = 30;
 export type EmailProviderName = (typeof EMAIL_PROVIDERS)[number];
 export const adminEmailSchema = z.object({ primary: z.enum(EMAIL_PROVIDERS) });
 /** The other provider: what a failed send falls back to. */

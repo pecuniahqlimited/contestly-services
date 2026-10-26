@@ -3,7 +3,9 @@
 Read only for roadmap row 11b (migration) and for delivery. Nothing here is a design reference. Reviewed 22 Oct 2026 from the Lovable project "Contestly" (published).
 
 ## Shell
-- Capacitor 8, iOS and Android. `appId` com.contestlyapp.contestly (Apple team 9J8XA5L83J).
+- Capacitor 8, iOS and Android. iOS bundle id com.contestlyapp.contestly (Apple team 9J8XA5L83J); Android applicationId **com.contestly** (the Play package). The shell update must keep both.
+- Source of truth for the shell is the Lovable project (latest), not an older local copy.
+- The Android release signing config has its keystore passwords in `android/app/build.gradle`; move them to env or a local properties file before the next release.
 - Remote URL shell: `server.url = https://play.contestlyapp.com`. The installed app is a WebView on that origin; whatever is served there is the app. Changing `server.url` needs a store release; changing what the domain serves does not.
 - Native plugins in the shell: app, browser, clipboard, device, haptics, network, share, status-bar, and `@capacitor-firebase/messaging` (FCM push; this is what the Firebase project is used for today).
 - Not in the shell: contacts, microphone permission (no NSMicrophoneUsageDescription), native Google or Apple sign-in. Anything needing these requires one shell update through the stores.

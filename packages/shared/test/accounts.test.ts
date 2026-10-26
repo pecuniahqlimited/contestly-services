@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_ONBOARDING_CONFIG, archetypeOf, handleSchema, isStaked, normaliseEmail, normalisePhone, phoneHash, sharedCoins, soloCoins, whyFits,
+  coins, coinsFromKobo, DEFAULT_ONBOARDING_CONFIG, archetypeOf, handleSchema, isStaked, normaliseEmail, normalisePhone, phoneHash, sharedCoins, soloCoins, whyFits,
 } from "../src/index.js";
 
 describe("normaliseEmail (the onboarding-bonus key)", () => {
@@ -39,6 +39,14 @@ describe("onboarding coins", () => {
   it("pays everyone in a shared round, past the list at the last amount", () => {
     const byRank = DEFAULT_ONBOARDING_CONFIG.sharedByRankKobo;
     expect([1, 2, 3, 4, 7].map((r) => sharedCoins(r, byRank))).toEqual([50_000, 40_000, 30_000, 20_000, 20_000]);
+  });
+});
+
+describe("coins", () => {
+  it("coinsFromKobo is the number, coins() the text", () => {
+    expect(coinsFromKobo(50_000)).toBe(500);
+    expect(coinsFromKobo(50)).toBe(0.5);
+    expect(coins(123_400)).toBe("1,234");
   });
 });
 

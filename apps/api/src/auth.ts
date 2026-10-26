@@ -1,6 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
-import { resolveUser, Unauthorized, type Session } from "@contestly/auth";
+import { assertNotBanned, resolveUser, Unauthorized, type Session } from "@contestly/auth";
 import { SIGN_UP_REQUIRED } from "@contestly/shared";
 import type { User } from "@contestly/db";
 
@@ -8,12 +8,19 @@ declare module "fastify" {
   interface FastifyRequest { auth?: Session; }
 }
 
-export const authPlugin = fp(async (app) => {
+/** How a request becomes a session. Throws Unauthorized when it carries none that's valid. */
+export type SessionResolver = (req: FastifyRequest) => Promise<Session>;
+
+const fromCredentials: SessionResolver = (req) =>
+  resolveUser({ authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined });
+
+export const authPlugin = fp<{ resolve?: SessionResolver }>(async (app, opts) => {
+  const resolve = opts.resolve ?? fromCredentials;
   app.decorateRequest("auth", undefined);
   app.addHook("preHandler", async (req) => {
     // Public routes opt out by not calling require*(); we still try to resolve so /parties can personalise.
     try {
-      req.auth = await resolveUser({ authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined });
+      req.auth = await resolve(req);
     } catch (e) {
       if (!(e instanceof Unauthorized)) throw e;
     }
@@ -25,6 +32,7 @@ const signUpRequired = () => Object.assign(new Error(SIGN_UP_REQUIRED), { status
 /** Anyone with a session, guests included: onboarding, sign-in, free parties, Climb runs. */
 export function requireSession(req: FastifyRequest): User {
   if (!req.auth) throw new Unauthorized();
+  assertNotBanned(req.auth.user);
   return req.auth.user;
 }
 

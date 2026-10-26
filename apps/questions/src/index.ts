@@ -18,6 +18,7 @@ import { FilesNotReady } from "./pipeline/sources.js";
 import { recordPlay } from "./pipeline/recordPlay.js";
 import { regenerateOne } from "./pipeline/regenerateOne.js";
 import { questionVoided, retireSweep } from "./pipeline/retire.js";
+import { reviewEdit } from "./pipeline/reviewEdit.js";
 import { embedFile } from "./files/embedFile.js";
 import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
@@ -47,6 +48,7 @@ const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
       // A fresh job id: an earlier build of this party that failed keeps its id in the queue's history.
       return sealWhenFilesRead(d.fileId, (partyId) => questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}-${Date.now()}` }));
     case "question_voided": return questionVoided(d);
+    case "review_edit": return reviewEdit(d, { providers });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
   }

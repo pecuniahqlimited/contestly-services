@@ -1,5 +1,5 @@
 /** Email provider choice (admin, versioned) and the send log. Keys and sender addresses never live here: they're env/secrets. */
-import { desc } from "drizzle-orm";
+import { desc, lt } from "drizzle-orm";
 import { EMAIL_PROVIDERS, type EmailProviderName } from "@contestly/shared";
 import { db } from "./client.js";
 import { emailConfigs, emailSends } from "./schema.js";
@@ -24,6 +24,12 @@ export async function saveEmailConfig(primary: EmailProviderName, byUserId: stri
 
 export async function logEmailSend(entry: typeof emailSends.$inferInsert) {
   await db.insert(emailSends).values(entry);
+}
+
+/** Delete send-log rows older than `cutoff`. Returns how many went. */
+export async function purgeEmailSends(cutoff: Date): Promise<number> {
+  const gone = await db.delete(emailSends).where(lt(emailSends.createdAt, cutoff)).returning({ id: emailSends.id });
+  return gone.length;
 }
 
 export const recentEmailSends = (limit = 20) => db.select().from(emailSends).orderBy(desc(emailSends.createdAt)).limit(limit);

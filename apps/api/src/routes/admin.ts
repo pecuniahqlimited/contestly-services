@@ -1,8 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { currentEmailConfig, getPartyConfig, recentEmailSends, saveEmailConfig, setPartyConfig } from "@contestly/db";
-import { EMAIL_PROVIDERS, adminEmailSchema, backupOf } from "@contestly/shared";
-import { adminPartyLimitsSchema } from "@contestly/shared";
+import { currentEmailConfig, currentOnboardingConfig, db, getPartyConfig, recentEmailSends, recordAdminAction, saveEmailConfig, saveOnboardingConfig, setPartyConfig } from "@contestly/db";
+import {
+  EMAIL_PROVIDERS, adminActionsQuerySchema, adminActionsResponseSchema, adminEmailSchema, adminOnboardingBodySchema, adminPartyLimitsSchema, adminSessionSchema,
+  backupOf, onboardingConfigVersionSchema,
+} from "@contestly/shared";
 import { requireAdmin } from "../auth.js";
+import { actionsView } from "../adminViews.js";
+import { toPerson } from "../people.js";
 import { senders } from "../email.js";
 
 /** The email page: which provider sends first, which are configured (keys are env, never shown or set here), and the last sends. */
@@ -15,7 +19,40 @@ async function emailView() {
   };
 }
 
+async function onboardingView() {
+  const v = await currentOnboardingConfig();
+  return onboardingConfigVersionSchema.parse({ version: v.version, config: v.config, createdAt: v.createdAt?.toISOString() ?? null });
+}
+
 export async function adminRoutes(app: FastifyInstance) {
+  /** The console's gate: 200 for an admin, 403 for anyone else (it signs in with the same email code / Google flow as the app). */
+  app.get("/admin/session", async (req) => {
+    const admin = requireAdmin(req);
+    return adminSessionSchema.parse({ admin: { ...toPerson(admin), email: admin.email } });
+  });
+
+  /** The admin log, newest first; ?targetType=&targetId= for one user, party, question or config. */
+  app.get("/admin/actions", async (req) => {
+    requireAdmin(req);
+    return adminActionsResponseSchema.parse({ actions: await actionsView(adminActionsQuerySchema.parse(req.query)) });
+  });
+
+  /** The onboarding round's config (wait, timings, reward tiers, shared payouts), current version. */
+  app.get("/admin/onboarding", async (req) => {
+    requireAdmin(req);
+    return onboardingView();
+  });
+
+  /** Save a new version; rooms created from now on use it, and GET /onboarding/rewards shows it. */
+  app.put("/admin/onboarding", async (req) => {
+    const admin = requireAdmin(req);
+    const { config, reason } = adminOnboardingBodySchema.parse(req.body);
+    const before = await currentOnboardingConfig();
+    const saved = await saveOnboardingConfig(config, admin.id);
+    await recordAdminAction(db, { adminUserId: admin.id, action: "config.onboarding", targetType: "config", targetId: "onboarding", reason, before: { version: before.version, config: before.config }, after: { version: saved.version, config: saved.config } });
+    return onboardingView();
+  });
+
   /** The party limits as stored, quick picks outside their range included (hosts don't see those). */
   app.get("/admin/party-limits", async (req) => {
     requireAdmin(req);
@@ -24,9 +61,11 @@ export async function adminRoutes(app: FastifyInstance) {
 
   /** New parties use these from now on; parties already created keep the limits they were made with. */
   app.put("/admin/party-limits", async (req) => {
-    requireAdmin(req);
+    const admin = requireAdmin(req);
     const { limits } = adminPartyLimitsSchema.parse(req.body);
-    const saved = await setPartyConfig({ ...(await getPartyConfig()), limits });
+    const current = await getPartyConfig();
+    const saved = await setPartyConfig({ ...current, limits });
+    await recordAdminAction(db, { adminUserId: admin.id, action: "config.party_limits", targetType: "config", targetId: "party_limits", before: current.limits, after: saved.limits });
     return { limits: saved.limits };
   });
 
@@ -39,7 +78,9 @@ export async function adminRoutes(app: FastifyInstance) {
   app.put("/admin/email", async (req) => {
     const admin = requireAdmin(req);
     const { primary } = adminEmailSchema.parse(req.body);
+    const before = await currentEmailConfig();
     await saveEmailConfig(primary, admin.id);
+    await recordAdminAction(db, { adminUserId: admin.id, action: "config.email", targetType: "config", targetId: "email", before: { primary: before.primary }, after: { primary } });
     return emailView();
   });
 }

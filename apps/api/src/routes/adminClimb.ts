@@ -2,12 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, asc, count, desc, eq, gte, inArray } from "drizzle-orm";
 import {
-  approveAward, canBePaidCash, climbAwards, climbChallengeAttempts, climbChallenges, currentLadder, currentPrizes, db, getClimbSettings, prizesForWeek, rejectAward, saveLadder, savePrizes, setClimbSettings, users,
+  approveAward, canBePaidCash, recordAdminAction, climbAwards, climbChallengeAttempts, climbChallenges, currentLadder, currentPrizes, db, getClimbSettings, prizesForWeek, rejectAward, saveLadder, savePrizes, setClimbSettings, users,
   type ClimbAwardRow, type ClimbChallengeRow,
 } from "@contestly/db";
 import { generateRound, pickRoundType, roundReveal, roundView, stageLevel } from "@contestly/game";
 import {
-  CLIMB_AWARD_STATUSES, CLIMB_GAME_LABELS, CLIMB_GAME_TYPES, adminClimbSettingsSchema, adminLadderBodySchema, adminPrizesBodySchema, addDays, ladderSummary, lagosDay, upsertChallengeSchema, weekOf, weeklyPrizeTotalKobo,
+  CLIMB_AWARD_STATUSES, CLIMB_GAME_LABELS, CLIMB_GAME_TYPES, adminClimbSettingsSchema, adminReasonBodySchema, adminLadderBodySchema, adminPrizesBodySchema, addDays, ladderSummary, lagosDay, upsertChallengeSchema, weekOf, weeklyPrizeTotalKobo,
   type AdminLadderResponse, type AdminPrizesResponse, type ClimbAward, type ClimbLadder,
 } from "@contestly/shared";
 import { dayParam, requireAdmin, uuidParam } from "../auth.js";
@@ -66,7 +66,9 @@ export async function adminClimbRoutes(app: FastifyInstance) {
   app.put("/admin/climb/ladder", async (req) => {
     const admin = requireAdmin(req);
     const { ladder } = adminLadderBodySchema.parse(req.body);
+    const before = await currentLadder();
     const saved = await saveLadder(ladder, admin.id);
+    await recordAdminAction(db, { adminUserId: admin.id, action: "config.climb_ladder", targetType: "config", targetId: "climb_ladder", before: { version: before.version }, after: { version: saved.version, ladder: saved.ladder } });
     return ladderResponse(saved.version, saved.ladder);
   });
 
@@ -93,7 +95,9 @@ export async function adminClimbRoutes(app: FastifyInstance) {
   app.put("/admin/climb/prizes", async (req) => {
     const admin = requireAdmin(req);
     const { prizes } = adminPrizesBodySchema.parse(req.body);
-    await savePrizes(prizes, admin.id);
+    const before = await currentPrizes();
+    const saved = await savePrizes(prizes, admin.id);
+    await recordAdminAction(db, { adminUserId: admin.id, action: "config.climb_prizes", targetType: "config", targetId: "climb_prizes", before: before && { version: before.version, prizes: before.prizes }, after: { version: saved.version, prizes: saved.prizes } });
     return prizesResponse();
   });
 
@@ -104,9 +108,12 @@ export async function adminClimbRoutes(app: FastifyInstance) {
   });
 
   app.put("/admin/climb/settings", async (req) => {
-    requireAdmin(req);
+    const admin = requireAdmin(req);
     const { settings } = adminClimbSettingsSchema.parse(req.body);
-    return { settings: await setClimbSettings(settings) };
+    const before = await getClimbSettings();
+    const saved = await setClimbSettings(settings);
+    await recordAdminAction(db, { adminUserId: admin.id, action: "config.climb_settings", targetType: "config", targetId: "climb_settings", before, after: saved });
+    return { settings: saved };
   });
 
   /** Today's challenges from `from` (default a week ago) onwards, answers included. */
@@ -131,19 +138,22 @@ export async function adminClimbRoutes(app: FastifyInstance) {
       const [row] = existing
         ? await tx.update(climbChallenges).set({ ...body, updatedAt: new Date() }).where(eq(climbChallenges.id, existing.id)).returning()
         : await tx.insert(climbChallenges).values({ ...body, day, seconds: settings.challengeSeconds, maxPoints: settings.challengeMaxPoints, createdByUserId: admin.id }).returning();
+      await recordAdminAction(tx, { adminUserId: admin.id, action: "climb.challenge_save", targetType: "config", targetId: `climb_challenge:${day}`, before: existing ? { title: existing.title, questions: existing.questions } : null, after: { title: row.title, questions: row.questions } });
       return adminChallenge(row, 0);
     });
   });
 
   /** Take a day's challenge off. Refused once anyone has played it. */
   app.delete("/admin/climb/challenges/:day", async (req, reply) => {
-    requireAdmin(req);
+    const admin = requireAdmin(req);
+    const { reason } = adminReasonBodySchema.parse(req.body);
     const day = dayParam(req);
     await db.transaction(async (tx) => {
       const [existing] = await tx.select().from(climbChallenges).where(eq(climbChallenges.day, day)).for("update");
       if (!existing) throw refused("not_found", 404);
       if ((await attemptsBy([existing.id])).get(existing.id)) throw refused("challenge_played");
       await tx.delete(climbChallenges).where(eq(climbChallenges.id, existing.id));
+      await recordAdminAction(tx, { adminUserId: admin.id, action: "climb.challenge_delete", targetType: "config", targetId: `climb_challenge:${day}`, reason, before: { title: existing.title, questions: existing.questions }, after: null });
     });
     return reply.code(204).send();
   });
@@ -161,13 +171,26 @@ export async function adminClimbRoutes(app: FastifyInstance) {
   /** Approve: paid now if the winner's account can be paid, otherwise approved and waiting. Approving again retries the payment. */
   app.post("/admin/climb/awards/:id/approve", async (req) => {
     const admin = requireAdmin(req);
-    const award = await db.transaction((tx) => approveAward(tx, uuidParam(req), admin.id));
+    const id = uuidParam(req);
+    const award = await db.transaction(async (tx) => {
+      const [before] = await tx.select({ status: climbAwards.status }).from(climbAwards).where(eq(climbAwards.id, id));
+      const after = await approveAward(tx, id, admin.id);
+      if (before && before.status !== after.status) await recordAdminAction(tx, { adminUserId: admin.id, action: "climb.award_approve", targetType: "user", targetId: after.userId, before: { awardId: id, status: before.status }, after: { awardId: id, status: after.status } });
+      return after;
+    });
     return (await awardsView([award]))[0];
   });
 
   app.post("/admin/climb/awards/:id/reject", async (req) => {
     const admin = requireAdmin(req);
-    const award = await db.transaction((tx) => rejectAward(tx, uuidParam(req), admin.id));
+    const { reason } = adminReasonBodySchema.parse(req.body);
+    const id = uuidParam(req);
+    const award = await db.transaction(async (tx) => {
+      const [before] = await tx.select({ status: climbAwards.status }).from(climbAwards).where(eq(climbAwards.id, id));
+      const after = await rejectAward(tx, id, admin.id);
+      if (before && before.status !== after.status) await recordAdminAction(tx, { adminUserId: admin.id, action: "climb.award_reject", targetType: "user", targetId: after.userId, reason, before: { awardId: id, status: before.status }, after: { awardId: id, status: after.status } });
+      return after;
+    });
     return (await awardsView([award]))[0];
   });
 }

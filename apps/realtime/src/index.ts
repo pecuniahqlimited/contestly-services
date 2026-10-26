@@ -24,6 +24,10 @@ const http = createServer((_req, res) => {
   res.end(JSON.stringify({ ok: true, service: "realtime" }));
 });
 
+// Backstop: rooms guard their own work (SafeRoom), so this should never fire. If it does, log it loudly and
+// keep serving every other room rather than dying on Node's default.
+process.on("unhandledRejection", (err) => console.error("[realtime] unhandled rejection (a room let one escape SafeRoom):", err));
+
 const gameServer = new Server({
   // Cloudflare drops idle WebSockets at ~100s; Colyseus pings every few seconds by default, well under that.
   transport: new WebSocketTransport({ server: http }),
