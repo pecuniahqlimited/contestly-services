@@ -11,7 +11,7 @@ import {
   parties, partyPlayers, socialScores, users, type Crew, type Tx, type User,
 } from "@contestly/db";
 import { socialBoardRanks } from "@contestly/game";
-import { addDays, lagosDay, nextCreator, weekOf, type ChatMessage, type CreateCrewInput, type CrewRecords, type CrewRole, type Person } from "@contestly/shared";
+import { addDays, lagosDay, nextCreator, weekOf, type ChatMessage, type CreateCrewInput, type CrewDetail, type CrewMember, type CrewRecords, type CrewRole, type Person } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { connectedTo } from "./invites.js";
 import { personColumns } from "./people.js";
@@ -98,13 +98,14 @@ export async function answerCrewInvite(me: User, crewId: string, accept: boolean
   });
 }
 
-/** Creator only: make someone an admin, or a member again. */
-export async function setCrewRole(me: User, crewId: string, userId: string, role: "admin" | "member") {
+/** Creator only: make someone an admin, or a member again. Returns them as the crew shows them. */
+export async function setCrewRole(me: User, crewId: string, userId: string, role: "admin" | "member"): Promise<CrewMember> {
   const { role: mine } = await membership(db, crewId, me.id);
   if (mine !== "creator") throw httpError(403, "creator_only");
   const [row] = await db.update(crewMembers).set({ role }).where(and(eq(crewMembers.crewId, crewId), eq(crewMembers.userId, userId), ne(crewMembers.role, "creator"))).returning();
   if (!row) throw notFound();
-  return { role: row.role };
+  const [[person], champion] = await Promise.all([db.select(personColumns).from(users).where(eq(users.id, userId)), championOf(crewId)]);
+  return { person, role: row.role, joinedAt: row.joinedAt.toISOString(), crowned: userId === champion };
 }
 
 /** Out of the crew and its chat. */
@@ -134,20 +135,22 @@ export async function leaveCrew(me: User, crewId: string) {
     await lockCrew(tx, crewId);
     const { role } = await membership(tx, crewId, me.id);
     await dropMember(tx, crewId, me.id);
-    const remaining = await tx.select({ userId: crewMembers.userId, role: crewMembers.role, joinedAt: crewMembers.joinedAt, name: users.displayName })
+    const remaining = await tx.select({ userId: crewMembers.userId, role: crewMembers.role, joinedAt: crewMembers.joinedAt, person: personColumns })
       .from(crewMembers).innerJoin(users, eq(users.id, crewMembers.userId)).where(eq(crewMembers.crewId, crewId));
     if (!remaining.length) {
       await tx.update(crews).set({ archivedAt: new Date() }).where(eq(crews.id, crewId));
       await tx.update(crewInvites).set({ status: "dismissed", respondedAt: new Date() }).where(and(eq(crewInvites.crewId, crewId), eq(crewInvites.status, "pending")));
-      return { archived: true, lines: [] as ChatMessage[] };
+      return { archived: true, newCreator: null, lines: [] as ChatMessage[] };
     }
     let text = `${me.displayName} left the crew.`;
+    let newCreator: Person | null = null;
     if (role === "creator") {
       const next = nextCreator(remaining)!;
       await tx.update(crewMembers).set({ role: "creator" }).where(and(eq(crewMembers.crewId, crewId), eq(crewMembers.userId, next.userId)));
-      text += ` ${next.name} runs it now.`;
+      newCreator = next.person;
+      text += ` ${next.person.displayName} runs it now.`;
     }
-    return { archived: false, lines: [await crewLine(tx, crewId, text)] };
+    return { archived: false, newCreator, lines: [await crewLine(tx, crewId, text)] };
   });
 }
 
@@ -187,7 +190,7 @@ export async function crewRecords(crewId: string): Promise<CrewRecords> {
   };
 }
 
-export async function crewDetail(me: User, crewId: string) {
+export async function crewDetail(me: User, crewId: string): Promise<CrewDetail> {
   const { crew, role } = await membership(db, crewId, me.id);
   const [members, pending, champion, records, threadId, { crewMaxMembers }] = await Promise.all([
     db.select({ person: personColumns, role: crewMembers.role, joinedAt: crewMembers.joinedAt }).from(crewMembers).innerJoin(users, eq(users.id, crewMembers.userId))

@@ -166,6 +166,27 @@ export const crewDetailSchema = crewSchema.extend({
   pendingInvites: z.array(personSchema),
   maxMembers: z.number().int(),
 });
+export type CrewDetail = z.infer<typeof crewDetailSchema>;
+export type CrewMember = z.infer<typeof crewMemberSchema>;
+
+/** POST /crews → 201 and POST /crews/:id/invites → 201: the crew as you now see it, and how many new invites went out (already in or already asked are skipped). */
+export const crewInvitedResponseSchema = crewDetailSchema.extend({ invited: z.number().int() });
+/** POST /crews/:id/invite/accept | decline. Accepting returns the crew you just joined. */
+export const crewInviteAnswerResponseSchema = z.discriminatedUnion("joined", [
+  z.object({ joined: z.literal(true), crew: crewDetailSchema }),
+  z.object({ joined: z.literal(false) }),
+]);
+/** PATCH /crews/:id/members/:userId: the member with their new role. */
+export const crewRoleResponseSchema = crewMemberSchema;
+/** DELETE /crews/:id/members/:userId: the crew without them. */
+export const crewRemoveResponseSchema = z.object({ removed: z.literal(true), crew: crewDetailSchema });
+/** POST /crews/:id/leave. `newCreator`: who runs it now when the creator left; null otherwise, and when the last one out archived it. */
+export const crewLeaveResponseSchema = z.object({ left: z.literal(true), archived: z.boolean(), newCreator: personSchema.nullable() });
+export type CrewInvitedResponse = z.infer<typeof crewInvitedResponseSchema>;
+export type CrewInviteAnswerResponse = z.infer<typeof crewInviteAnswerResponseSchema>;
+export type CrewRemoveResponse = z.infer<typeof crewRemoveResponseSchema>;
+export type CrewLeaveResponse = z.infer<typeof crewLeaveResponseSchema>;
+
 /** GET /me/crew-invites: crews you've been asked to join. */
 export const crewInviteItemSchema = z.object({ crew: crewSchema, invitedBy: personSchema, createdAt: z.string().datetime() });
 export const crewInvitesSchema = z.array(crewInviteItemSchema);

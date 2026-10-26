@@ -155,7 +155,7 @@ ok((await call(C, "POST", `/crews/${crew.id}/invites`, { userIds: [id(A)] })).bo
 await api(A, "PATCH", `/crews/${crew.id}/members/${id(C)}`, { role: "admin" });
 const afterLeave = await api(A, "POST", `/crews/${crew.id}/leave`);
 const handedOver = await api(B, "GET", `/crews/${crew.id}`);
-ok(!afterLeave.archived && handedOver.members.find((m: any) => m.person.id === id(C))?.role === "creator", "when the creator leaves, the admin takes over");
+ok(!afterLeave.archived && afterLeave.newCreator?.id === id(C) && handedOver.members.find((m: any) => m.person.id === id(C))?.role === "creator", "when the creator leaves, the admin takes over");
 
 // ---- 5. week close --------------------------------------------------------------------------
 

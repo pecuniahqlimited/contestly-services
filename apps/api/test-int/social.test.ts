@@ -8,7 +8,9 @@ import { and, eq } from "drizzle-orm";
 import {
   db, dmPermissionBetween, feedEvents, follows, parties, partyDays, partyInvites, partyPlayers, recordPartyFinish, setSocialConfig, sql, type Party, type User,
 } from "@contestly/db";
-import { DEFAULT_SOCIAL_CONFIG, lagosDay } from "@contestly/shared";
+import {
+  crewInviteAnswerResponseSchema, crewInvitedResponseSchema, crewLeaveResponseSchema, crewRemoveResponseSchema, crewRoleResponseSchema, DEFAULT_SOCIAL_CONFIG, lagosDay,
+} from "@contestly/shared";
 import { as, makeUser, testApp } from "./harness.js";
 
 let app: Awaited<ReturnType<typeof testApp>>["app"];
@@ -56,7 +58,7 @@ describe("crews", () => {
   it("starts with its creator, and invites wait for an answer", async () => {
     const res = await app.inject({ method: "POST", url: "/crews", headers: as(ada), payload: { name: "Office quiz squad", inviteUserIds: [kemi.id, tunde.id] } });
     expect(res.statusCode).toBe(201);
-    crewId = res.json().id;
+    crewId = crewInvitedResponseSchema.parse(res.json()).id;
     expect(res.json()).toMatchObject({ myRole: "creator", memberCount: 1, invited: 2 });
     expect(res.json().pendingInvites).toHaveLength(2);
     expect((await app.inject({ url: "/me/crew-invites", headers: as(kemi) })).json()[0].crew.id).toBe(crewId);
@@ -69,7 +71,10 @@ describe("crews", () => {
   });
 
   it("takes in whoever accepts", async () => {
-    for (const u of [kemi, tunde]) expect((await app.inject({ method: "POST", url: `/crews/${crewId}/invite/accept`, headers: as(u) })).json()).toEqual({ joined: true });
+    for (const u of [kemi, tunde]) {
+      const answer = crewInviteAnswerResponseSchema.parse((await app.inject({ method: "POST", url: `/crews/${crewId}/invite/accept`, headers: as(u) })).json());
+      expect(answer).toMatchObject({ joined: true, crew: { id: crewId, myRole: "member" } });
+    }
     const detail = (await app.inject({ url: `/crews/${crewId}`, headers: as(kemi) })).json();
     expect(detail.memberCount).toBe(3);
     expect(detail.pendingInvites).toEqual([]); // members don't see invites
@@ -83,9 +88,13 @@ describe("crews", () => {
   it("lets only the creator and admins invite, and only the creator promote", async () => {
     expect((await app.inject({ method: "POST", url: `/crews/${crewId}/invites`, headers: as(kemi), payload: { userIds: [tunde.id] } })).json().error).toBe("crew_admins_only");
     expect((await app.inject({ method: "PATCH", url: `/crews/${crewId}/members/${tunde.id}`, headers: as(kemi), payload: { role: "admin" } })).json().error).toBe("creator_only");
-    expect((await app.inject({ method: "PATCH", url: `/crews/${crewId}/members/${kemi.id}`, headers: as(ada), payload: { role: "admin" } })).json()).toEqual({ role: "admin" });
+    const promoted = crewRoleResponseSchema.parse((await app.inject({ method: "PATCH", url: `/crews/${crewId}/members/${kemi.id}`, headers: as(ada), payload: { role: "admin" } })).json());
+    expect(promoted).toMatchObject({ person: { id: kemi.id }, role: "admin", crowned: false });
     await follow(kemi, zee);
-    expect((await app.inject({ method: "POST", url: `/crews/${crewId}/invites`, headers: as(kemi), payload: { userIds: [zee.id] } })).statusCode).toBe(201);
+    const sent = await app.inject({ method: "POST", url: `/crews/${crewId}/invites`, headers: as(kemi), payload: { userIds: [zee.id] } });
+    expect(sent.statusCode).toBe(201);
+    expect(crewInvitedResponseSchema.parse(sent.json())).toMatchObject({ invited: 1, myRole: "admin" });
+    expect(sent.json().pendingInvites.map((p: { id: string }) => p.id)).toContain(zee.id);
   });
 
   it("holds to its cap, pending invites included", async () => {
@@ -96,18 +105,20 @@ describe("crews", () => {
   });
 
   it("lets the creator remove someone", async () => {
-    expect((await app.inject({ method: "DELETE", url: `/crews/${crewId}/members/${tunde.id}`, headers: as(ada) })).statusCode).toBe(200);
+    const removed = crewRemoveResponseSchema.parse((await app.inject({ method: "DELETE", url: `/crews/${crewId}/members/${tunde.id}`, headers: as(ada) })).json());
+    expect(removed.crew.members.some((m) => m.person.id === tunde.id)).toBe(false);
     expect((await app.inject({ url: `/crews/${crewId}`, headers: as(tunde) })).statusCode).toBe(404);
   });
 
   it("hands over to the longest-standing admin when the creator leaves, and archives when the last one goes", async () => {
     await app.inject({ method: "POST", url: `/crews/${crewId}/invite/accept`, headers: as(zee) });
-    expect((await app.inject({ method: "POST", url: `/crews/${crewId}/leave`, headers: as(ada) })).json()).toEqual({ left: true, archived: false });
+    const left = crewLeaveResponseSchema.parse((await app.inject({ method: "POST", url: `/crews/${crewId}/leave`, headers: as(ada) })).json());
+    expect(left).toMatchObject({ left: true, archived: false, newCreator: { id: kemi.id } });
     const detail = (await app.inject({ url: `/crews/${crewId}`, headers: as(zee) })).json();
     expect(detail.members.find((m: { person: { id: string } }) => m.person.id === kemi.id).role).toBe("creator");
     await app.inject({ method: "POST", url: `/crews/${crewId}/leave`, headers: as(kemi) });
     expect(detail.members.length).toBe(2);
-    expect((await app.inject({ method: "POST", url: `/crews/${crewId}/leave`, headers: as(zee) })).json()).toEqual({ left: true, archived: true });
+    expect((await app.inject({ method: "POST", url: `/crews/${crewId}/leave`, headers: as(zee) })).json()).toEqual({ left: true, archived: true, newCreator: null });
   });
 });
 

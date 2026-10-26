@@ -46,14 +46,17 @@ export async function crewsRoutes(app: FastifyInstance) {
   /** The creator and admins ask people they're connected to. */
   app.post("/crews/:id/invites", async (req, reply) => {
     const me = requireUser(req);
-    return reply.code(201).send(await inviteToCrew(me, uuidParam(req), crewInviteSchema.parse(req.body).userIds));
+    const crewId = uuidParam(req);
+    const { invited } = await inviteToCrew(me, crewId, crewInviteSchema.parse(req.body).userIds);
+    return reply.code(201).send({ ...(await crewDetail(me, crewId)), invited });
   });
 
   for (const [answer, accept] of [["accept", true], ["decline", false]] as const) {
     app.post(`/crews/:id/invite/${answer}`, async (req) => {
-      const { joined, lines } = await answerCrewInvite(requireUser(req), uuidParam(req), accept);
+      const me = requireUser(req);
+      const { joined, lines } = await answerCrewInvite(me, uuidParam(req), accept);
       await publishAll(lines);
-      return { joined };
+      return joined ? { joined, crew: await crewDetail(me, uuidParam(req)) } : { joined };
     });
   }
 
@@ -62,16 +65,17 @@ export async function crewsRoutes(app: FastifyInstance) {
 
   /** Creator only: remove someone. */
   app.delete("/crews/:id/members/:userId", async (req) => {
-    const { lines } = await removeFromCrew(requireUser(req), uuidParam(req), uuidParam(req, "userId"));
+    const me = requireUser(req);
+    const { lines } = await removeFromCrew(me, uuidParam(req), uuidParam(req, "userId"));
     await publishAll(lines);
-    return { removed: true };
+    return { removed: true, crew: await crewDetail(me, uuidParam(req)) };
   });
 
   /** Leave. The creator's leaving hands the crew over; the last one out archives it. */
   app.post("/crews/:id/leave", async (req) => {
-    const { archived, lines } = await leaveCrew(requireUser(req), uuidParam(req));
+    const { archived, newCreator, lines } = await leaveCrew(requireUser(req), uuidParam(req));
     await publishAll(lines);
-    return { left: true, archived };
+    return { left: true, archived, newCreator };
   });
 
   /** Crews I've been asked to join. */
