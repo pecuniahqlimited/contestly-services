@@ -4,9 +4,9 @@
  * Nothing like this exists in the product.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { db, ledgerAccounts, ledgerEntries } from "@contestly/db";
+import { climbRounds, db, ledgerAccounts, ledgerEntries } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
-import { SOURCE_FILE_FIELD } from "@contestly/shared";
+import { SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
 
 export const API = process.env.API_URL ?? "http://localhost:4000";
 export const RT = process.env.RT_URL ?? "ws://localhost:4001";
@@ -113,3 +113,30 @@ export function leaks(view: unknown): string[] {
   walk(view);
   return found;
 }
+
+// ---- The Climb (test-only: the "perfect player" reads round answers from Postgres) ----
+
+/** Wait until the server opens the next round, then fetch it. */
+export async function nextClimbRound(handle: string, state: any) {
+  while (!state.round && state.run.status === "active") {
+    await sleep(Math.max(0, Date.parse(state.nextOpensAt) - Date.now()) + 50);
+    state = await api(handle, "GET", `/climb/runs/${state.run.id}`);
+  }
+  return state;
+}
+
+/** The answer a perfect player gives, from the stored round (test-only). */
+export async function rightClimbAnswer(roundId: string) {
+  const [r] = await db.select().from(climbRounds).where(eq(climbRounds.id, roundId));
+  const p = r.payload as any;
+  const byType: Record<ClimbGameType, () => unknown> = {
+    pattern: () => ({ index: p.correctIndex }),
+    scramble: () => ({ word: p.word }),
+    word_hunt: () => ({ words: p.placed }),
+    quick_maths: () => ({ value: p.value }),
+    memory: () => ({ sequence: p.sequence }),
+  };
+  return byType[r.gameType as ClimbGameType]();
+}
+export const wrongClimbAnswer = { index: -1, word: "zzzz", words: [], value: -999999, sequence: [] };
+

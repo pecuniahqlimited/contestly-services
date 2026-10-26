@@ -9,6 +9,8 @@ import { db, type Tx } from "./client.js";
 import { climbAwards, climbDays, climbLadders, climbPrizeConfigs, climbWeekPrizes, climbWeeks, users, type ClimbRunRow, type User } from "./schema.js";
 import * as ledger from "./ledger.js";
 import { canBePaidCash } from "./payable.js";
+import { getSocialConfig } from "./config.js";
+import { addFeedEvent } from "./social.js";
 
 type Conn = Tx | typeof db;
 
@@ -105,7 +107,9 @@ export async function recordRunStarted(tx: Tx, user: Pick<User, "id" | "streakDa
   await lockDay(tx, user.id, day);
   await tx.update(climbDays).set({ runs: dsql`${climbDays.runs} + 1` }).where(and(eq(climbDays.userId, user.id), eq(climbDays.day, day)));
   const [{ streakDays, lastPlayedOn }] = await tx.select({ streakDays: users.streakDays, lastPlayedOn: users.lastPlayedOn }).from(users).where(eq(users.id, user.id)).for("update");
-  await tx.update(users).set({ streakDays: nextStreak(lastPlayedOn, streakDays, day), lastPlayedOn: day }).where(eq(users.id, user.id));
+  const streak = nextStreak(lastPlayedOn, streakDays, day);
+  await tx.update(users).set({ streakDays: streak, lastPlayedOn: day, bestStreakDays: dsql`greatest(${users.bestStreakDays}, ${streak})` }).where(eq(users.id, user.id));
+  if (streak > streakDays && (await getSocialConfig()).streakMilestones.includes(streak)) await addFeedEvent(tx, user.id, "streak", { days: streak });
   return refreshWeek(tx, user.id, weekOf(day));
 }
 

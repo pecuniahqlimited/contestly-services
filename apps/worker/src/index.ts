@@ -1,11 +1,11 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count, lte } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, prizeFulfilments, systemLine, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, type Party, type Tx } from "@contestly/db";
+import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, type Party, type Tx } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
-import { CLIMB_TIME_ZONE, chatThreadChannel, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
-import { closeWeeks, startDay } from "./climb.js";
+import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
 import { selectTranscriber } from "./transcribe/index.js";
 
@@ -15,7 +15,9 @@ const partyJobs = partyQueue();
 const questionJobs = questionsQueue();
 const emit = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 /** A system line the worker wrote reaches the party's room once its transaction has committed. */
-const publishLine = (line: ChatMessage) => pub.publish(chatThreadChannel(line.threadId), JSON.stringify(line));
+async function publishLine(line: ChatMessage) {
+  for (const d of await lineDeliveries(line)) await pub.publish(d.channel, JSON.stringify(d.payload));
+}
 
 const GENERATION_FAILED_MESSAGE = "We couldn't build the questions for this party. Everyone has been refunded.";
 
@@ -154,6 +156,8 @@ async function settle(partyId: string) {
     }
 
     await tx.update(parties).set({ status: "finished", endedAt: new Date() }).where(eq(parties.id, partyId));
+    // The feed hears every finish; a bragging-rights party also earns party points (ADR 0008).
+    await recordPartyFinish(tx, p, players);
     line = await systemLine(tx, partyId, "That's a wrap! Results are in.");
     await emit({ partyId, status: "finished" });
     return true;
@@ -239,7 +243,10 @@ await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "
 const climbJobs = climbQueue();
 const climbWorker = new Worker<ClimbJob>(QUEUES.climb, async (job) => {
   if (job.data.kind === "day_start") return startDay(pub);
-  if (job.data.kind === "week_close") return closeWeeks();
+  if (job.data.kind === "week_close") {
+    await closeWeeks();
+    return closeCrewWeeks();
+  }
 }, { connection });
 /** Each Lagos day at 00:00, and each Monday at 00:15: a run can't outlast its ladder's clock, so by then last week is final (ADR 0005). */
 const CLIMB_DAY_START = "0 0 * * *";

@@ -207,5 +207,5 @@ Every nudge is a worker-emitted event delivered as push when the app is closed a
 - [ ] Shared onboarding rounds: matchmaking window and minimum group size before falling back to solo.
 - [x] Voice notes: decided (ADR 0007): 60 s cap and 1.5 MB (config), kept 90 days then deleted from storage (the line stays as expired), transcribed by the worker into the moderation queue. Transcription provider still to choose.
 - [ ] Payout rail per platform and the Play Store policy boundary for cash withdrawal on Android.
-- [ ] Leaderboard scope beyond friends and everyone (crews in row 6, interest communities later): the scope key is generic.
+- [x] Leaderboard scope beyond friends and everyone: crews done (row 6b, ADR 0008: Climb points plus party points from bragging-rights parties, weekly champion); interest communities later on the same scope key.
 - [ ] Presence: what counts as "in the room" for live nudges and early-start decisions.

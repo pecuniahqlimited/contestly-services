@@ -6,15 +6,16 @@
  */
 import { and, asc, desc, eq } from "drizzle-orm";
 import {
-  climbRounds, climbRuns, currentLadder, db, getClimbSettings, ladderAt, recordRunPoints, recordRunStarted, users,
+  climbRounds, climbRuns, currentLadder, db, getClimbSettings, ladderAt, recordRunEnded, recordRunPoints, recordRunStarted, users,
   type ClimbRoundRow, type ClimbRunRow, type Tx, type User,
 } from "@contestly/db";
 import {
   afterRound, closesAt, expired, generateRound, gradeRound, nextOpensAt, onTime, pickRoundType, roundReveal, roundView, stageLevel,
   type RunStep, type StageOutcome,
 } from "@contestly/game";
-import { lagosDay, weekOf, type ClimbAnswerResponse, type ClimbGameType, type ClimbLadder, type ClimbRound, type ClimbRun, type ClimbRunState, type ClimbSettings } from "@contestly/shared";
+import { lagosDay, weekOf, type ChatMessage, type ClimbAnswerResponse, type ClimbGameType, type ClimbLadder, type ClimbRound, type ClimbRun, type ClimbRunState, type ClimbSettings } from "@contestly/shared";
 import { setWeekPoints } from "./boards.js";
+import { publishLine } from "../chats.js";
 import { freshRng } from "./rng.js";
 
 const fail = (message: string, statusCode: number) => Object.assign(new Error(message), { statusCode });
@@ -22,7 +23,8 @@ const fail = (message: string, statusCode: number) => Object.assign(new Error(me
 /** What a transaction changed on the boards, applied to Valkey after it commits. */
 type BoardWrite = { week: string; userId: string; points: number };
 
-interface Ctx { tx: Tx; ladder: ClimbLadder; settings: ClimbSettings; boards: BoardWrite[] }
+/** `lines`: crew "new record" lines written in the transaction, published after it commits. */
+interface Ctx { tx: Tx; ladder: ClimbLadder; settings: ClimbSettings; boards: BoardWrite[]; lines: ChatMessage[] }
 
 const position = (run: ClimbRunRow) => ({ stageIdx: run.stageIdx, stagesCleared: run.stagesCleared, points: run.points });
 
@@ -61,7 +63,11 @@ async function advance(c: Ctx, run: ClimbRunRow, round: ClimbRoundRow, decidedAt
   const status = !step.ended ? "active" : step.outcome === "missed" ? "missed" : "cleared";
   const [next] = await c.tx.update(climbRuns).set({ ...step.position, status, stageMs, endedAt: step.ended ? new Date(decidedAtMs) : null }).where(eq(climbRuns.id, run.id)).returning();
   if (step.outcome === "cleared") c.boards.push({ week: weekOf(next.day), userId: next.userId, points: await recordRunPoints(c.tx, next, c.ladder.stages.length) });
-  if (step.ended) return { run: next, step, nextOpensAtMs: null };
+  if (step.ended) {
+    // A new personal best goes in the feed; beating every crewmate's climb is a crew record.
+    c.lines.push(...await recordRunEnded(c.tx, next, c.ladder.stages.length));
+    return { run: next, step, nextOpensAtMs: null };
+  }
   const at = nextOpensAt(decidedAtMs, step.outcome, c.settings);
   await openRound(c, next, round.seq + 1, next.stageIdx, at);
   return { run: next, step, nextOpensAtMs: at };
@@ -118,9 +124,11 @@ async function state(c: Ctx, run: ClimbRunRow, nowMs: number): Promise<ClimbRunS
 async function inTx<T>(ladderOf: (tx: Tx) => Promise<ClimbLadder>, work: (c: Ctx) => Promise<T>): Promise<T> {
   const settings = await getClimbSettings();
   const boards: BoardWrite[] = [];
-  const result = await db.transaction(async (tx) => work({ tx, ladder: await ladderOf(tx), settings, boards }));
+  const lines: ChatMessage[] = [];
+  const result = await db.transaction(async (tx) => work({ tx, ladder: await ladderOf(tx), settings, boards, lines }));
   // After commit, so the board never shows points the record doesn't have.
   for (const b of boards) await setWeekPoints(b.week, b.userId, b.points);
+  for (const line of lines) await publishLine(line);
   return result;
 }
 
@@ -142,8 +150,12 @@ export async function startRun(user: User): Promise<ClimbRunState> {
     await c.tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for("update"); // one start at a time per player
     const [old] = await c.tx.select().from(climbRuns).where(and(eq(climbRuns.userId, user.id), eq(climbRuns.status, "active"))).for("update");
     if (old) {
-      const played = await catchUp({ ...c, ladder: await ladderAt(old.ladderVersion, c.tx) }, old, now);
-      if (played.status === "active") await c.tx.update(climbRuns).set({ status: "abandoned", endedAt: new Date(now) }).where(eq(climbRuns.id, old.id));
+      const oldLadder = await ladderAt(old.ladderVersion, c.tx);
+      const played = await catchUp({ ...c, ladder: oldLadder }, old, now);
+      if (played.status === "active") {
+        await c.tx.update(climbRuns).set({ status: "abandoned", endedAt: new Date(now) }).where(eq(climbRuns.id, old.id));
+        c.lines.push(...await recordRunEnded(c.tx, played, oldLadder.stages.length)); // its banked points still count as a run
+      }
     }
     const day = lagosDay(new Date(now));
     const [run] = await c.tx.insert(climbRuns).values({ userId: user.id, ladderVersion, day }).returning();

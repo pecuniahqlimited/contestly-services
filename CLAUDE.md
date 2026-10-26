@@ -169,7 +169,7 @@ npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 bran
 npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
 npm test                # unit tests (shared, game, email, realtime, apps/questions, apps/api); no infra needed
-npm run test:int        # integration tests against local Postgres + Valkey (apps/api/test-int: admin permissions, bans, cancel, question queue, chat rules)
+npm run test:int        # integration tests against local Postgres + Valkey (apps/api/test-int: admin permissions, bans, cancel, question queue, chat rules, crews and party points)
 scripts/smoke.sh        # end-to-end check against the running stack
 npm run sim             # the sims against the running stack: sim:sealed (generated set, 3 players),
                         # sim:curate (PDF read → curate review → play with two flag-voids → settle), sim:stakes,
@@ -178,7 +178,9 @@ npm run sim             # the sims against the running stack: sim:sealed (genera
                         # provider fallback, guests, held awards, Google/Apple one-time-code exchange, phone + contacts),
                         # sim:admin (void by flags, ban the leader mid-party, question restore + edit re-verify, cancel a live party),
                         # sim:chat (message requests, client-id dedupe, voice note → storage → playback → transcript,
-                        # unread/read, paging, party chat gating in and out of the room, the rate limit)
+                        # unread/read, paging, party chat gating in and out of the room, the rate limit),
+                        # sim:social (party points + feed + profiles, friends board, rematch, challenge, a crew:
+                        # invites, chat, board, crew party, a Climb crew record, hand-over, week close → crown)
 ```
 
 Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev only; refused in production, ignored in firebase mode). Unknown handles are auto-created as signed-up accounts with a verified dev email. Real sessions: a Firebase ID token as `Authorization: Bearer` (the emulator locally). Mail lands in Mailpit; Google/Apple use a stand-in page in dev.
@@ -251,6 +253,8 @@ Done:
 
 - ~~6a. Chat (services)~~: one thread model for party, DM and crew chat (ADR 0007); every room write carries a client message id (a repeat returns the first line); `InboxRoom` per user for DMs, crews and Chats › Parties, live inbox updates over Valkey; the DM rule with message requests; profanity masked; per-user send rate limit; voice notes via presigned upload, signed playback, worker transcription (`Transcriber`, mock) into `moderation_items`, retention clean-up; unread counts, paged history. Chat config in app_config "chat". `npm run sim:chat`.
 
+- ~~6b. Social (services)~~: profiles with real stats (Climb bests, streaks, mutuals, head-to-head, `canMessage`, playing now) and activity; feed (`feed_events`, no money); friends board and crew boards from Climb points plus party points (bragging-rights parties only, `party_days`, ADR 0008); one-tap Challenge (`POST /users/:id/challenge`); Rematch (`POST /parties/:id/rematch`, one per party); crews (create, invite, accept, roles, remove, leave with hand-over, archive, crew chat, crew parties, records, week close → crown via `climb_week_results` scope `crew`). Party creation is one path (`apps/api/src/partyCreate.ts`). `npm run sim:social`.
+
 Next, in order:
 1. **App: play a party** (contestly-app slice B): lobby, live game, result. Plus `npm run dev:bots` here (dev only).
 2. **App: create a party** (slice C): the six-scene builder and the Forge.
@@ -258,7 +262,7 @@ Next, in order:
 4. **App: The Climb** (contestly-app): Climb home, a run, the leaderboard, and the admin pages (Climb stages, Today's challenge, Weekly winners) from the canvases, against the endpoints below. Home's Party/Climb switch.
 5. **App: onboarding and sign-in** (contestly-app; services done, above): the onboarding party, Keep your coins (email code, Google/Apple via the system browser), Your people, Name and face, guest joins and the staked-invite resume, the admin Email page. Moved up so friends can install a test build and sign in; fill rate is the thing to test.
 5a. **App: admin console** (contestly-app; services done, above): the console pages for users, parties, the question queue, onboarding config, email, and the admin log, against `/admin/*`. Signs in with the same email code / Google flow; only admins get past `GET /admin/session`.
-6. **Step 6b, social** (chat is done, above): profiles with real stats, head-to-head and one-tap Challenge; friends leaderboard (Climb + party points); feed of what your people did; crews as decided above (create, invite, accept, roles, leave, board, records, crown at week close via `climb_week_results` scope `crew`, crew parties); rematch. Any other room message that writes also carries a client message id.
+6. **App: chat and social** (contestly-app; services done, below): the composer (text, @mentions, emoji, voice notes), Chats › Messages / Requests / Crews / Parties, threads, profiles, the friends board, the feed, crews, Challenge and Rematch.
 7. **Step 5, recommendation service v1** (`apps/recsys`): rules + weighted scores, logged decisions with reasons; Home ordering, Parties ranking, "filling up now", pairing, not-interested. After real users, so it has behaviour to learn from.
 8. **Step 4, brands and teams**: brand profiles, team roles, profile switching, verification checklist and review; brand console on web. Replace the curate sim's direct draft-view insert with the real team API.
 9. **Step 7, nudges**: device tokens + FCM/APNs in the worker; the nudge table above with triggers, caps, quiet hours, per-category toggles, and send/open/dismiss logging; in-app banner for the same events.

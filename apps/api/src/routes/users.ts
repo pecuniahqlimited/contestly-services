@@ -1,12 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, asc, count, desc, eq, min, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { db, users, follows, parties, partyPlayers, partiesHostedBy } from "@contestly/db";
-import { currentStreak, followAlertSchema, lagosDay, MAX_PROFILE_RECENT_PARTIES } from "@contestly/shared";
+import { climbRuns, climbWeeks, db, dmPermissionBetween, users, follows, parties, partyPlayers, partiesHostedBy } from "@contestly/db";
+import { currentStreak, feedQuerySchema, followAlertSchema, lagosDay, MAX_PROFILE_RECENT_PARTIES, type Person } from "@contestly/shared";
 import { requireUser, uuidParam } from "../auth.js";
 import { publicParty } from "../partyView.js";
 import { personColumns, viewerRelations } from "../people.js";
 import { headToHead } from "../social.js";
+import { feedPage } from "../feed.js";
 
 export const publicUser = (u: typeof users.$inferSelect) => ({ id: u.id, handle: u.handle, displayName: u.displayName, avatarEmoji: u.avatarEmoji, bio: u.bio, interests: u.interests, isBrand: u.isBrand, isVerified: u.isVerified, streakDays: currentStreak(u.lastPlayedOn, u.streakDays, lagosDay()) });
 
@@ -41,6 +42,36 @@ async function recentParties(userId: string, viewerId: string | undefined) {
   return rows.map((r) => ({ ...r, playerCount: Number(r.playerCount) }));
 }
 
+/** Mutual faces shown on a profile. */
+const MUTUAL_FACES = 3;
+
+/** Their best Climb ever: most points, most stages, and whether any run cleared the whole ladder. */
+async function climbBest(userId: string) {
+  const [[runs], [weeks]] = await Promise.all([
+    db.select({ points: sql<number>`coalesce(max(${climbRuns.points}), 0)`, stages: sql<number>`coalesce(max(${climbRuns.stagesCleared}), 0)` }).from(climbRuns).where(eq(climbRuns.userId, userId)),
+    db.select({ clearedAll: sql<boolean>`coalesce(bool_or(${climbWeeks.clearedAll}), false)` }).from(climbWeeks).where(eq(climbWeeks.userId, userId)),
+  ]);
+  return { bestRunPoints: Number(runs.points), bestStagesCleared: Number(runs.stages), clearedAll: !!weeks.clearedAll };
+}
+
+/** People the viewer follows who follow this person. */
+async function mutuals(viewerId: string | undefined, userId: string) {
+  if (!viewerId || viewerId === userId) return { count: 0, faces: [] as Person[] };
+  const theirs = alias(follows, "theirs");
+  const rows = await db.select(personColumns).from(follows)
+    .innerJoin(theirs, and(eq(theirs.followerId, follows.followeeId), eq(theirs.followeeId, userId)))
+    .innerJoin(users, eq(users.id, follows.followeeId))
+    .where(eq(follows.followerId, viewerId)).orderBy(desc(theirs.createdAt));
+  return { count: rows.length, faces: rows.slice(0, MUTUAL_FACES) };
+}
+
+/** A live party they're playing that the viewer could open (public, or one the viewer is in). */
+async function playingNow(userId: string, viewerId: string | undefined) {
+  const [row] = await db.select({ id: parties.id, title: parties.title }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId))
+    .where(and(eq(partyPlayers.userId, userId), eq(parties.status, "live"), visibleTo(viewerId))).limit(1);
+  return row ?? null;
+}
+
 /** Each follow list: whose ids it lists, and whose list it is. */
 const FOLLOW_LISTS = {
   followers: { listed: follows.followerId, owner: follows.followeeId },
@@ -59,7 +90,7 @@ export async function usersRoutes(app: FastifyInstance) {
     const u = await userByHandle(req, reply);
     if (!u) return reply;
     const me = req.auth?.user;
-    const [[fl], [fg], [stats], relations, recent, h2h, hosted] = await Promise.all([
+    const [[fl], [fg], [stats], relations, recent, h2h, hosted, climb, mutual, live, canMessage] = await Promise.all([
       db.select({ n: count() }).from(follows).where(eq(follows.followeeId, u.id)),
       db.select({ n: count() }).from(follows).where(eq(follows.followerId, u.id)),
       db.select({ parties: count(), wins: sql<number>`count(*) filter (where ${partyPlayers.rank} = 1)`, bestRank: min(partyPlayers.rank) })
@@ -68,6 +99,10 @@ export async function usersRoutes(app: FastifyInstance) {
       recentParties(u.id, me?.id),
       me && me.id !== u.id ? headToHeadWith(me.id, u.id) : null,
       partiesHostedBy(u.id),
+      climbBest(u.id),
+      mutuals(me?.id, u.id),
+      playingNow(u.id, me?.id),
+      me && me.id !== u.id ? dmPermissionBetween(db, me, u) : null,
     ]);
     const hosting = hosted.filter((p) => (p.status === "open" || p.status === "live") && (p.visibility === "public" || me?.id === u.id))
       .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime()).map(publicParty);
@@ -75,6 +110,7 @@ export async function usersRoutes(app: FastifyInstance) {
       ...publicUser(u), followers: fl.n, following: fg.n,
       stats: { parties: Number(stats.parties), wins: Number(stats.wins), bestRank: stats.bestRank === null ? null : Number(stats.bestRank) },
       viewer: relations.get(u.id)!, headToHead: h2h, recent, hosting,
+      climb, streak: { current: currentStreak(u.lastPlayedOn, u.streakDays, lagosDay()), best: u.bestStreakDays }, mutuals: mutual, canMessage, playingNow: live,
     };
   });
 
@@ -90,6 +126,14 @@ export async function usersRoutes(app: FastifyInstance) {
       return [...entries.filter((e) => e.viewer.following), ...entries.filter((e) => !e.viewer.following)];
     });
   }
+
+  /** What they did lately (their profile's Activity tab): the same events the feed shows. */
+  app.get("/users/:handle/activity", async (req, reply) => {
+    const u = await userByHandle(req, reply);
+    if (!u) return reply;
+    const viewerId = requireUser(req).id;
+    return feedPage([u.id], viewerId, feedQuerySchema.parse(req.query ?? {}));
+  });
 
   app.post("/users/:id/follow", async (req, reply) => {
     const me = requireUser(req);

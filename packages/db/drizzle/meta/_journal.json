@@ -78,6 +78,13 @@
       "when": 1793012182822,
       "tag": "0010_chat_messages_in_threads",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793013775532,
+      "tag": "0011_social_crews",
+      "breakpoints": true
     }
   ]
 }

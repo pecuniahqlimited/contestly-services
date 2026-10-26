@@ -4,13 +4,15 @@
  * publishing the API's own system lines to the room.
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { chatMembers, chatMessages, chatThreads, db, users, voiceNotes } from "@contestly/db";
-import { MY_RECENT_DAYS, UNREAD_CAP, chatThreadChannel, type ChatMessage, type ChatPreview, type ChatUnread, type DmThread } from "@contestly/shared";
+import { chatMembers, chatMessages, chatThreads, db, lineDeliveries, users, voiceNotes } from "@contestly/db";
+import { MY_RECENT_DAYS, UNREAD_CAP, type ChatMessage, type ChatPreview, type ChatUnread, type DmThread } from "@contestly/shared";
 import { personColumns } from "./people.js";
 import { valkey } from "./redis.js";
 
-/** A system line the API wrote (after its transaction committed) reaches the party's room and open screens. */
-export const publishLine = (message: ChatMessage) => valkey().publish(chatThreadChannel(message.threadId), JSON.stringify(message));
+/** A line the API wrote (after its transaction committed) reaches rooms, open screens and, for DMs and crews, inboxes. */
+export async function publishLine(message: ChatMessage) {
+  for (const d of await lineDeliveries(message)) await valkey().publish(d.channel, JSON.stringify(d.payload));
+}
 
 const capped = (n: unknown) => Math.min(Number(n), UNREAD_CAP);
 
@@ -72,12 +74,13 @@ export async function unreadTotals(userId: string): Promise<ChatUnread> {
   return { messages: capped(total.messages), requests: capped(total.requests), crews: capped(total.crews), parties: capped(total.parties) };
 }
 
-/** For Chats › Parties: each party's thread, its last line and the viewer's unread count (0 where they aren't a member). */
-export async function partyThreads(partyIds: string[], userId: string) {
-  if (!partyIds.length) return new Map<string, { threadId: string; lastLine: ChatPreview | null; unread: number }>();
-  const rows = await db.select({ partyId: chatThreads.partyId, threadId: chatThreads.id, unread: sql<number | null>`case when ${chatMembers.userId} is null then 0 else ${unreadOf(userId)} end` })
+/** For Chats › Parties and Chats › Crews: each party's or crew's thread, its last line and the viewer's unread count (0 where they aren't a member). */
+export async function threadsFor(kind: "party" | "crew", ownerIds: string[], userId: string) {
+  if (!ownerIds.length) return new Map<string, { threadId: string; lastLine: ChatPreview | null; unread: number }>();
+  const owner = kind === "party" ? chatThreads.partyId : chatThreads.crewId;
+  const rows = await db.select({ ownerId: owner, threadId: chatThreads.id, unread: sql<number | null>`case when ${chatMembers.userId} is null then 0 else ${unreadOf(userId)} end` })
     .from(chatThreads).leftJoin(chatMembers, and(eq(chatMembers.threadId, chatThreads.id), eq(chatMembers.userId, userId)))
-    .where(inArray(chatThreads.partyId, partyIds));
+    .where(inArray(owner, ownerIds));
   const last = await previews(rows.map((r) => r.threadId));
-  return new Map(rows.map((r) => [r.partyId!, { threadId: r.threadId, lastLine: last.get(r.threadId) ?? null, unread: capped(r.unread ?? 0) }]));
+  return new Map(rows.map((r) => [r.ownerId!, { threadId: r.threadId, lastLine: last.get(r.threadId) ?? null, unread: capped(r.unread ?? 0) }]));
 }

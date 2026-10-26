@@ -5,11 +5,10 @@
  * own rules first (the party's phase; whether a party can be written to from outside its room).
  */
 import type { Client } from "colyseus";
-import { chatMembers, db, getChatConfig, postMessage, type ChatSender, type ChatThread } from "@contestly/db";
+import { getChatConfig, lineDeliveries, postMessage, type ChatSender, type ChatThread } from "@contestly/db";
 import { chatQueue, makeRedis, notifyQueue } from "@contestly/queue";
 import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
-import { MSG, chatThreadChannel, chatUserChannel, type ChatMessage, type ChatSend, type InboxUpdate } from "@contestly/shared";
-import { eq } from "drizzle-orm";
+import { MSG, type ChatMessage, type ChatSend } from "@contestly/shared";
 import { chatRateCheck, valkeyCounter, type WindowCounter } from "./chatRate.js";
 
 /** What a room publishes on: its Colyseus presence (Valkey). */
@@ -45,24 +44,16 @@ export async function sendLine(presence: Publisher, client: Client, thread: Chat
   client.send(MSG.chatAck, { clientMsgId: body.clientMsgId, duplicate: posted.duplicate, message: posted.message });
   if (posted.duplicate) return;
 
-  await publishLine(presence, thread, posted.message);
+  await publishLine(presence, posted.message);
   if (posted.mentionedUserIds.length) {
     await notify.add("chat_mention", { kind: "chat_mention", threadId: thread.id, messageId: posted.message.id, fromUserId: sender.id, toUserIds: posted.mentionedUserIds });
   }
   if (posted.message.voice) await chatJobs.add("transcribe_voice", { kind: "transcribe_voice", voiceNoteId: posted.message.voice.id }, { jobId: `transcribe-${posted.message.voice.id}` });
 }
 
-/**
- * Every line goes to its thread's channel (rooms and open screens relay it). DM and crew lines also go to
- * each member's inbox channel, so the Chats list and badge move live; party threads, with hundreds in a
- * room, are refreshed over HTTP instead.
- */
-export async function publishLine(presence: Publisher, thread: ChatThread, message: ChatMessage) {
-  presence.publish(chatThreadChannel(thread.id), message);
-  if (thread.kind === "party") return;
-  const members = await db.select({ userId: chatMembers.userId }).from(chatMembers).where(eq(chatMembers.threadId, thread.id));
-  const update: InboxUpdate = { threadId: thread.id, kind: thread.kind, message };
-  for (const m of members) presence.publish(chatUserChannel(m.userId), update);
+/** After commit: the line to its thread's channel, and to members' inboxes for DMs and crews (lineDeliveries). */
+export async function publishLine(presence: Publisher, message: ChatMessage) {
+  for (const d of await lineDeliveries(message)) presence.publish(d.channel, d.payload);
 }
 
 /** Valkey pub/sub hands RedisPresence callbacks parsed JSON and LocalPresence the raw string. */

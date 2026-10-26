@@ -5,10 +5,10 @@
  * TEST-ONLY: the "perfect player" reads round answers from Postgres, which no client can.
  */
 import { and, eq } from "drizzle-orm";
-import { climbChallengeAttempts, climbChallenges, climbRounds, climbWeekPrizes, climbWeeks, db, ledgerAccounts, ledgerEntries, sql, users } from "@contestly/db";
+import { climbChallengeAttempts, climbChallenges, climbWeekPrizes, climbWeeks, db, ledgerAccounts, ledgerEntries, sql, users } from "@contestly/db";
 import { climbQueue, closeQueues } from "@contestly/queue";
-import { lagosDay, type ClimbGameType } from "@contestly/shared";
-import { api, call, failureCount, ok, sleep, waitFor } from "./sim-lib.js";
+import { lagosDay } from "@contestly/shared";
+import { api, call, failureCount, nextClimbRound, ok, rightClimbAnswer, sleep, waitFor, wrongClimbAnswer } from "./sim-lib.js";
 
 const tag = Date.now().toString(36);
 const ADMIN = `climb.admin.${tag}`;
@@ -18,42 +18,18 @@ const userId = async (handle: string) => (await db.select({ id: users.id }).from
 /** Every run and challenge response carries the server's clock. */
 const stamped = (res: any) => typeof res.serverNow === "string" && Math.abs(Date.parse(res.serverNow) - Date.now()) < 5_000;
 
-/** Wait until the server opens the next round, then fetch it. */
-async function nextRound(handle: string, state: any) {
-  while (!state.round && state.run.status === "active") {
-    await sleep(Math.max(0, Date.parse(state.nextOpensAt) - Date.now()) + 50);
-    state = await api(handle, "GET", `/climb/runs/${state.run.id}`);
-  }
-  return state;
-}
-
-/** The answer a perfect player gives, from the stored round (test-only). */
-async function rightAnswer(roundId: string) {
-  const [r] = await db.select().from(climbRounds).where(eq(climbRounds.id, roundId));
-  const p = r.payload as any;
-  const byType: Record<ClimbGameType, () => unknown> = {
-    pattern: () => ({ index: p.correctIndex }),
-    scramble: () => ({ word: p.word }),
-    word_hunt: () => ({ words: p.placed }),
-    quick_maths: () => ({ value: p.value }),
-    memory: () => ({ sequence: p.sequence }),
-  };
-  return byType[r.gameType as ClimbGameType]();
-}
-const wrongAnswer = { index: -1, word: "zzzz", words: [], value: -999999, sequence: [] };
-
 /** Play a run: `plan(stage, roundInStage)` says whether to answer right. Returns the final run. */
 async function play(handle: string, plan: (stage: number, round: number) => boolean) {
   let state = await api(handle, "POST", "/climb/runs");
   let last: any;
   for (;;) {
-    state = await nextRound(handle, state);
+    state = await nextClimbRound(handle, state);
     if (state.run.status !== "active") return { run: state.run, last };
     const { round } = state;
     const view = JSON.stringify(round.view);
     if (round.type === "pattern") ok(!view.includes("correctIndex"), "an open pattern round carries no answer");
     if (round.type === "quick_maths") ok(Object.keys(round.view).join() === "expression", "an open maths round carries only the sum");
-    const answer = plan(round.stage, round.round) ? await rightAnswer(round.id) : wrongAnswer;
+    const answer = plan(round.stage, round.round) ? await rightClimbAnswer(round.id) : wrongClimbAnswer;
     last = await api(handle, "POST", `/climb/runs/${state.run.id}/answer`, { roundId: round.id, answer });
     if (last.nextOpensAt === null) return { run: last.run, last };
     state = { run: last.run, round: null, nextOpensAt: last.nextOpensAt };
@@ -95,15 +71,15 @@ try {
   console.log("\n==== refusals, early decisions and abandoning ====");
   let s = await api(SEGUN, "POST", "/climb/runs");
   const first = s.round;
-  const a1 = await api(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: first.id, answer: await rightAnswer(first.id) });
+  const a1 = await api(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: first.id, answer: await rightClimbAnswer(first.id) });
   ok(a1.correct && a1.stageOutcome === "continue" && a1.run.stageRight === 1, "a right round in a 2-of-3 stage keeps it going");
   ok(stamped(s) && stamped(a1), "run and answer responses carry serverNow");
-  const again = await call(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: first.id, answer: await rightAnswer(first.id) });
+  const again = await call(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: first.id, answer: await rightClimbAnswer(first.id) });
   ok(again.status === 409 && again.body.error === "round_closed", "a round is answered once");
   const notMine = await call(ADA, "GET", `/climb/runs/${s.run.id}`);
   ok(notMine.status === 404, "nobody else can see a player's run");
-  s = await nextRound(SEGUN, { run: a1.run, round: null, nextOpensAt: a1.nextOpensAt });
-  const a2 = await api(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: s.round.id, answer: await rightAnswer(s.round.id) });
+  s = await nextClimbRound(SEGUN, { run: a1.run, round: null, nextOpensAt: a1.nextOpensAt });
+  const a2 = await api(SEGUN, "POST", `/climb/runs/${s.run.id}/answer`, { roundId: s.round.id, answer: await rightClimbAnswer(s.round.id) });
   ok(a2.stageOutcome === "cleared" && a2.run.stage === 2 && a2.run.points === testLadder.stages[0].points, "two right clears a 2-of-3 stage without playing the third");
   const early = await call(SEGUN, "GET", `/climb/runs/${s.run.id}`);
   ok(early.body.round === null && !!early.body.nextOpensAt && stamped(early.body), "between rounds there's only the time the next one opens, and the server's clock");
@@ -115,7 +91,7 @@ try {
   await sleep(Date.parse(restart.round.closesAt) - Date.now() + settingsBefore.latencyAllowanceMs + 300);
   const lapsed = await api(SEGUN, "GET", `/climb/runs/${restart.run.id}`);
   ok(lapsed.run.status === "active" && lapsed.run.stagePlayed === 1 && lapsed.run.stageRight === 0, "a round left unanswered past its clock is a miss, and the run plays on");
-  const tooLate = await call(SEGUN, "POST", `/climb/runs/${restart.run.id}/answer`, { roundId: restart.round.id, answer: await rightAnswer(restart.round.id) });
+  const tooLate = await call(SEGUN, "POST", `/climb/runs/${restart.run.id}/answer`, { roundId: restart.round.id, answer: await rightClimbAnswer(restart.round.id) });
   ok(tooLate.status === 409 && tooLate.body.error === "round_closed", "an answer to a round that timed out is refused");
 
   console.log("\n==== Today's challenge ====");

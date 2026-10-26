@@ -2,13 +2,16 @@
  * The Climb's scheduled work. Runs and scores are written by the API as they're played (ADR 0005);
  * the worker only marks the Lagos clock: a board snapshot as each day begins, and week close.
  */
-import { and, eq, lt, notExists, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, notExists, sql } from "drizzle-orm";
 import type { makeRedis } from "@contestly/queue";
-import { climbAwards, climbWeekResults, climbWeeks, db, pinWeekPrizes, prizesForWeek, users } from "@contestly/db";
-import { weekPlaces, weeklyAwards } from "@contestly/game";
-import { CLIMB_BOARD_TTL_SECONDS, climbBoardKey, climbBoardStartOfDayKey, lagosDay, weekOf } from "@contestly/shared";
+import { climbAwards, climbWeekResults, climbWeeks, crewMembers, crews, db, pinWeekPrizes, prizesForWeek, socialScores, users } from "@contestly/db";
+import { crewWeekPlaces, weekPlaces, weeklyAwards } from "@contestly/game";
+import { CLIMB_BOARD_TTL_SECONDS, addDays, climbBoardKey, climbBoardStartOfDayKey, lagosDay, weekEndsAt, weekOf } from "@contestly/shared";
 
 const EVERYONE = "everyone";
+const CREW = "crew";
+/** A week missed while the worker was down is still closed for crews if it ended within this many weeks. */
+const CREW_CLOSE_LOOKBACK_WEEKS = 4;
 
 /**
  * As each Lagos day begins: fix this week's prize version if it isn't yet (on Monday that's the version
@@ -47,5 +50,28 @@ export async function closeWeeks() {
       if (awards.length) await tx.insert(climbAwards).values(awards.map((a) => ({ week, scope: EVERYONE, ...a }))).onConflictDoNothing();
       console.log(`[climb] week ${week} closed: ${places.length} placed, ${awards.length} pending award(s) for an admin (prizes v${version ?? "none"})`);
     });
+  }
+}
+
+/**
+ * Close each crew's finished weeks (ADR 0008): its members at close, ranked by Climb points plus party points
+ * (crewWeekPlaces), written to climb_week_results with scope "crew". First place is next week's champion
+ * (the crown). Weeks before the crew existed are skipped; a crew's week is written once, whole.
+ */
+export async function closeCrewWeeks() {
+  const current = weekOf(lagosDay());
+  for (let back = CREW_CLOSE_LOOKBACK_WEEKS; back >= 1; back--) {
+    const week = addDays(current, -7 * back);
+    const open = await db.select({ id: crews.id }).from(crews).where(and(isNull(crews.archivedAt), lt(crews.createdAt, weekEndsAt(week)),
+      notExists(db.select({ one: sql`1` }).from(climbWeekResults).where(and(eq(climbWeekResults.week, week), eq(climbWeekResults.scope, CREW), sql`${climbWeekResults.scopeId} = ${crews.id}::text`)))));
+    for (const crew of open) {
+      const members = await db.select({ userId: crewMembers.userId, joinedAt: crewMembers.joinedAt }).from(crewMembers).where(eq(crewMembers.crewId, crew.id));
+      const scores = await socialScores(members.map((m) => m.userId), "week", addDays(week, 6));
+      const joined = new Map(members.map((m) => [m.userId, m.joinedAt]));
+      const places = crewWeekPlaces(scores.map((s) => ({ userId: s.userId, climb: s.climb, parties: s.parties, joinedAt: joined.get(s.userId)! })));
+      if (!places.length) continue;
+      await db.insert(climbWeekResults).values(places.map((p) => ({ week, scope: CREW, scopeId: crew.id, userId: p.userId, place: p.place, points: p.points }))).onConflictDoNothing();
+    }
+    if (open.length) console.log(`[crews] week ${week} closed for ${open.length} crew(s)`);
   }
 }

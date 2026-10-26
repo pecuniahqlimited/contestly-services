@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type OnboardingConfig, type PartyLimits } from "@contestly/shared";
+import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type OnboardingConfig, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -57,6 +57,8 @@ export const users = pgTable("users", {
   /** Internal accounts (the rake treasury). Never shown in discovery, never plays. */
   isSystem: boolean("is_system").notNull().default(false),
   streakDays: integer("streak_days").notNull().default(0),
+  /** The longest streak they've ever had (profiles, crew records). */
+  bestStreakDays: integer("best_streak_days").notNull().default(0),
   lastPlayedOn: text("last_played_on"), // YYYY-MM-DD, used for streaks
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -199,6 +201,10 @@ export const parties = pgTable("parties", {
   visibility: visibilityKind("visibility").notNull().default("public"),
   coverColor: text("cover_color").notNull().default("#7B5CFF"),
   coverEmoji: text("cover_emoji").notNull().default("🎉"),
+  /** A crew party: started from a crew, its members invited; its wins are the crew's "most crew-party wins". */
+  crewId: uuid("crew_id").references((): AnyPgColumn => crews.id, { onDelete: "set null" }),
+  /** The party this one is a rematch of. One rematch per party: everyone who taps Rematch lands in it. */
+  rematchOf: uuid("rematch_of").unique().references((): AnyPgColumn => parties.id, { onDelete: "set null" }),
   status: partyStatus("status").notNull().default("open"),
   startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
   /** When the party went live; the worker's watchdog cancels if no set lands within the generation timeout. */
@@ -413,7 +419,7 @@ export const chatThreads = pgTable("chat_threads", {
   kind: chatThreadKind("kind").notNull(),
   partyId: uuid("party_id").unique().references(() => parties.id, { onDelete: "cascade" }),
   dmKey: text("dm_key").unique(),
-  crewId: uuid("crew_id").unique(),
+  crewId: uuid("crew_id").unique().references((): AnyPgColumn => crews.id, { onDelete: "cascade" }),
   lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -678,8 +684,9 @@ export const climbChallengeAnswers = pgTable("climb_challenge_answers", {
 }, (t) => [primaryKey({ columns: [t.attemptId, t.idx] })]);
 
 /**
- * A closed week's final standings per board scope ("everyone" now; crews in row 6 add their own scope
- * and scope id). Written once by the worker at week close.
+ * A closed week's final standings per board scope, written once by the worker at week close. "everyone":
+ * the Climb's prize board (Climb points). "crew" (scope id = crew id): a crew's board, whose points are Climb
+ * points plus party points (ADR 0008); first place wears the crown the week after.
  */
 export const climbWeekResults = pgTable("climb_week_results", {
   week: text("week").notNull(),
@@ -711,6 +718,69 @@ export const climbAwards = pgTable("climb_awards", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex("climb_awards_place").on(t.week, t.scope, t.scopeId, t.place), index("climb_awards_status_idx").on(t.status)]);
 
+export const crewRole = pgEnum("crew_role", CREW_ROLES);
+export const feedKind = pgEnum("feed_kind", FEED_KINDS);
+
+/** A private, invite-only group (row 6b). Archived when its last member leaves. */
+export const crews = pgTable("crews", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  name: text("name").notNull(),
+  emoji: text("emoji").notNull(),
+  color: text("color").notNull(),
+  createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+});
+
+/** A crew's members. Exactly one creator; admins invite; the creator promotes, demotes and removes. */
+export const crewMembers = pgTable("crew_members", {
+  crewId: uuid("crew_id").notNull().references(() => crews.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  role: crewRole("role").notNull().default("member"),
+  joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.crewId, t.userId] }),
+  index("crew_members_user_idx").on(t.userId),
+  uniqueIndex("crew_members_one_creator").on(t.crewId).where(sql`role = 'creator'`),
+]);
+
+/** Someone asked to join a crew by its creator or an admin. They accept (a member) or dismiss it. Asking again re-opens it. */
+export const crewInvites = pgTable("crew_invites", {
+  crewId: uuid("crew_id").notNull().references(() => crews.id, { onDelete: "cascade" }),
+  inviteeId: uuid("invitee_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  inviterId: uuid("inviter_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  status: inviteStatus("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+}, (t) => [primaryKey({ columns: [t.crewId, t.inviteeId] }), index("crew_invites_invitee_idx").on(t.inviteeId, t.status)]);
+
+/**
+ * A player's party points for one Lagos day (ADR 0008): written at settlement, bragging-rights parties only,
+ * capped per day. The friends and crew boards add these to Climb points.
+ */
+export const partyDays = pgTable("party_days", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  day: text("day").notNull(),
+  week: text("week").notNull(),
+  points: integer("points").notNull().default(0),
+  /** Parties that earned points that day (the cap counts these). */
+  parties: integer("parties").notNull().default(0),
+  wins: integer("wins").notNull().default(0),
+}, (t) => [primaryKey({ columns: [t.userId, t.day] }), index("party_days_week_idx").on(t.week)]);
+
+/** What someone did, for their people's feed: written where it happens, never made up. No money in `data`. */
+export const feedEvents = pgTable("feed_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: feedKind("kind").notNull(),
+  data: jsonb("data").notNull(),
+  /** A private party's finish is shown only to people who were in it. */
+  partyId: uuid("party_id").references(() => parties.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("feed_events_user_created_idx").on(t.userId, t.createdAt), uniqueIndex("feed_events_party_once").on(t.userId, t.partyId).where(sql`kind = 'party_finished'`)]);
+
+export type Crew = typeof crews.$inferSelect;
+export type CrewMember = typeof crewMembers.$inferSelect;
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type OnboardingRound = typeof onboardingRounds.$inferSelect;

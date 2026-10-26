@@ -21,6 +21,8 @@ import { adminUsersRoutes } from "./routes/adminUsers.js";
 import { adminPartiesRoutes } from "./routes/adminParties.js";
 import { adminQuestionsRoutes } from "./routes/adminQuestions.js";
 import { chatsRoutes } from "./routes/chats.js";
+import { crewsRoutes } from "./routes/crews.js";
+import { socialRoutes } from "./routes/social.js";
 
 export interface AppOptions {
   /** Tests inject how a request becomes a session; the server uses resolveUser (Firebase token or dev header). */
@@ -75,5 +77,7 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(adminPartiesRoutes);
   await app.register(adminQuestionsRoutes);
   await app.register(chatsRoutes);
+  await app.register(crewsRoutes);
+  await app.register(socialRoutes);
   return app;
 }

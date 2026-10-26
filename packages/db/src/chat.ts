@@ -4,9 +4,9 @@
  * write, message requests, masking, mentions, the client message id) live once.
  */
 import { and, count, desc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
-import { dmKey, dmPermission, maskProfanity, type ChatConfig, type ChatMessage, type DmPermission } from "@contestly/shared";
+import { chatThreadChannel, chatUserChannel, dmKey, dmPermission, maskProfanity, type ChatConfig, type ChatMessage, type DmPermission, type InboxUpdate } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { chatMembers, chatMessages, chatThreads, follows, parties, partyPlayers, users, voiceNotes, type ChatThread, type User, type VoiceNote } from "./schema.js";
+import { chatMembers, chatMessages, chatThreads, crewMembers, crews, follows, parties, partyPlayers, users, voiceNotes, type ChatThread, type User, type VoiceNote } from "./schema.js";
 import { hostTeamOf } from "./host.js";
 import { resolveMentions } from "./mentions.js";
 
@@ -61,18 +61,19 @@ const exists = (q: Conn, query: ReturnType<typeof sql>) => q.execute(sql`select 
 /** Loads the facts dmPermission() decides on. */
 export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient: Pick<User, "id" | "isGuest" | "isSystem">): Promise<DmPermission> {
   if (sender.id === recipient.id) return "refused";
-  const [recipientFollowsSender, playedTogether, joinedSendersParty] = await Promise.all([
+  const [recipientFollowsSender, playedTogether, shareCrew, joinedSendersParty] = await Promise.all([
     exists(q, sql`select 1 from ${follows} where follower_id = ${recipient.id} and followee_id = ${sender.id}`),
     exists(q, sql`select 1 from ${partyPlayers} a join ${partyPlayers} b on b.party_id = a.party_id join ${parties} p on p.id = a.party_id
                   where a.user_id = ${sender.id} and b.user_id = ${recipient.id} and p.status = 'finished'`),
+    exists(q, sql`select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id
+                  where a.user_id = ${sender.id} and b.user_id = ${recipient.id} and c.archived_at is null`),
     sender.isBrand
       ? q.select({ id: partyPlayers.partyId }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId))
         .where(and(eq(partyPlayers.userId, recipient.id), hostTeamOf(sender.id))).limit(1).then((r) => r.length > 0)
       : false,
   ]);
   return dmPermission({
-    sender, recipient, recipientFollowsSender, playedTogether, joinedSendersParty,
-    shareCrew: false, // crews arrive in row 6b
+    sender, recipient, recipientFollowsSender, playedTogether, shareCrew, joinedSendersParty,
   });
 }
 
@@ -161,8 +162,25 @@ export async function messagesPage(threadId: string, opts: { before?: string; li
 
 /** A system line in a party's chat ("Ada joined"). Inside the caller's transaction; publish it after commit. */
 export async function systemLine(q: Conn, partyId: string, text: string): Promise<ChatMessage> {
-  const threadId = await partyThreadId(q, partyId);
+  return systemLineIn(q, await partyThreadId(q, partyId), text);
+}
+
+/** A system line in any thread (a crew's "new record"). */
+export async function systemLineIn(q: Conn, threadId: string, text: string): Promise<ChatMessage> {
   return insertLine(q, { threadId, kind: "system", text });
+}
+
+/**
+ * Where a committed line is published (Valkey): its thread's channel, and for DM and crew threads each
+ * member's inbox channel too. Party threads don't fan out per member (ADR 0007). Every writer publishes these.
+ */
+export async function lineDeliveries(message: ChatMessage): Promise<{ channel: string; payload: ChatMessage | InboxUpdate }[]> {
+  const out: { channel: string; payload: ChatMessage | InboxUpdate }[] = [{ channel: chatThreadChannel(message.threadId), payload: message }];
+  const thread = await threadById(message.threadId);
+  if (!thread || thread.kind === "party") return out;
+  const members = await db.select({ userId: chatMembers.userId }).from(chatMembers).where(eq(chatMembers.threadId, thread.id));
+  for (const m of members) out.push({ channel: chatUserChannel(m.userId), payload: { threadId: thread.id, kind: thread.kind, message } });
+  return out;
 }
 
 /** A party card (a challenge, a crew party) posted into a thread by someone, or by the system. */

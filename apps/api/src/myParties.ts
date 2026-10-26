@@ -2,7 +2,7 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { db, hostTeamOf, isHostTeam, parties, partyInvites, partyPlayers, users, type Party, type User } from "@contestly/db";
 import { MY_RECENT_DAYS, type MyPartyRole, type Person } from "@contestly/shared";
-import { partyThreads } from "./chats.js";
+import { threadsFor } from "./chats.js";
 import { partyLinks } from "./invites.js";
 import { partySummaries } from "./partySummaries.js";
 import { personColumns } from "./people.js";
@@ -35,7 +35,7 @@ export async function myParties(me: User, now = new Date()) {
   const ids = shown.map((m) => m.p.id);
   const [summaries, threads, ranks] = await Promise.all([
     partySummaries(shown.map((m) => m.p), me.id),
-    partyThreads(ids, me.id),
+    threadsFor("party", ids, me.id),
     ids.length ? db.select({ partyId: partyPlayers.partyId, rank: partyPlayers.rank }).from(partyPlayers).where(and(eq(partyPlayers.userId, me.id), inArray(partyPlayers.partyId, ids))) : [],
   ]);
   const summaryOf = new Map(summaries.map((s) => [s.id, s]));

@@ -20,6 +20,7 @@
     "baseline": "tsx --env-file=../../.env scripts/baseline.ts"
   },
   "dependencies": {
+    "@contestly/game": "*",
     "@contestly/queue": "*",
     "@contestly/shared": "*",
     "dotenv": "^16.4.5",

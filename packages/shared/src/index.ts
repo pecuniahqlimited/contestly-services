@@ -9,6 +9,8 @@ export * from "./categories.js";
 export * from "./accounts.js";
 export * from "./admin.js";
 export * from "./chat.js";
+export * from "./social.js";
+import { profileSocialSchema } from "./social.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { GUEST_HANDLE_PREFIX } from "./accounts.js";
@@ -233,6 +235,8 @@ export const createPartySchema = z.object({
   /** When the first question drops. Omitted → DEFAULT_START_MINUTES from now. */
   startsAt: z.string().datetime({ offset: true }).optional(),
   inviteUserIds: z.array(z.string().uuid()).max(20).default([]),
+  /** A crew party: you must be a member; every other member is invited and the party is posted in the crew's chat. */
+  crewId: z.string().uuid().optional(),
 }).refine((p) => p.funding === "pooled" ? p.prizeKind === "cash" && p.hostPoolKobo === 0 : p.entryKobo === 0, { message: "pooled parties pay cash from the entries; host-funded parties are free to enter" })
   .refine((p) => p.prizeKind === "cash" ? p.places.length === 0 : p.hostPoolKobo === 0, { message: "a cash prize has no goods places, and goods carry no cash prize" })
   .refine((p) => p.startsAt === undefined || startWindowHolds(new Date(p.startsAt)), { message: `a party starts between ${MIN_START_LEAD_MINUTES} minute and ${MAX_START_LEAD_DAYS} days from now`, path: ["startsAt"] });
@@ -589,7 +593,7 @@ export const recentPartySchema = partyRowSchema.pick({ id: true, title: true, ca
 /** Finished parties on a profile. Only public ones, and private ones the viewer was also in. */
 export const MAX_PROFILE_RECENT_PARTIES = 5;
 
-export const userProfileSchema = publicUserSchema.extend({
+export const userProfileSchema = publicUserSchema.merge(profileSocialSchema).extend({
   followers: z.number().int(),
   following: z.number().int(),
   stats: userStatsSchema,
