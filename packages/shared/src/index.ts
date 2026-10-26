@@ -8,6 +8,8 @@ export * from "./climb.js";
 export * from "./categories.js";
 export * from "./accounts.js";
 export * from "./admin.js";
+export * from "./chat.js";
+import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { GUEST_HANDLE_PREFIX } from "./accounts.js";
 
@@ -235,12 +237,6 @@ export const createPartySchema = z.object({
   .refine((p) => p.prizeKind === "cash" ? p.places.length === 0 : p.hostPoolKobo === 0, { message: "a cash prize has no goods places, and goods carry no cash prize" })
   .refine((p) => p.startsAt === undefined || startWindowHolds(new Date(p.startsAt)), { message: `a party starts between ${MIN_START_LEAD_MINUTES} minute and ${MAX_START_LEAD_DAYS} days from now`, path: ["startsAt"] });
 
-/** Chat is room-scoped in Colyseus; the party comes from the room, not the message. */
-export const chatSendSchema = z.object({
-  text: z.string().min(1).max(280).optional(),
-  sticker: z.string().min(1).max(8).optional(),
-}).refine((m) => !!m.text !== !!m.sticker, "send either text or a sticker");
-
 /** Colyseus room + message names — one source of truth for client and realtime service. */
 export const PARTY_ROOM = "party";
 export const MSG = {
@@ -248,15 +244,24 @@ export const MSG = {
   /** Send on every change of selection; the last one received before the clock ends is the answer. */
   answer: "answer",
   skip: "skip",
+  /** A chat line (chatSendSchema in a party room, inboxSendSchema in the inbox room). Carries a client message id. */
   chat: "chat",
   flag: "flag",
+  /** Inbox room: stream a thread's lines while it's open on screen (watchThreadSchema). */
+  watch: "watch",
+  unwatch: "unwatch",
   // server → client
   phase: "phase",
   question: "question",
   reveal: "reveal",
   standings: "standings",
   finalStandings: "final",
+  /** A line in a thread the client is in or watching (chatMessageSchema). */
   chatMessage: "chat:message",
+  /** To the sender only: their line was kept, or had been already (chatAckSchema). */
+  chatAck: "chat:ack",
+  /** Inbox room: a line landed in one of the user's DM or crew threads (inboxUpdateSchema). */
+  inbox: "inbox",
   presence: "presence",
   /** A question was voided by player flags: { questionId, idx, replacementAdded, total }. */
   questionVoided: "question:voided",
@@ -272,7 +277,7 @@ export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */
-export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb", housekeeping: "housekeeping" } as const;
+export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb", housekeeping: "housekeeping", chat: "chat" } as const;
 /**
  * The Climb's scheduled jobs, both repeatable on the Lagos clock. `day_start`: pin this week's prize
  * version and snapshot its Everyone board for ▲/▼ since yesterday. `week_close`: rank every finished week that hasn't been
@@ -283,7 +288,11 @@ export type NotifyFollowersJob = { kind: "party_created"; partyId: string; hostI
 export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserId: string; toUserIds: string[] };
 /** The host's question set couldn't be built; they can retry or edit the brief. */
 export type NotifyQuestionsFailedJob = { kind: "questions_failed"; partyId: string; hostId: string; reason: string };
-export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob;
+/** People were @-mentioned in a chat line (only real members of the thread; never the author). Delivery is row 9's nudge. */
+export type NotifyMentionJob = { kind: "chat_mention"; threadId: string; messageId: string; fromUserId: string; toUserIds: string[] };
+export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob | NotifyMentionJob;
+/** Chat jobs in the worker: transcribe a voice note into the moderation queue. */
+export type ChatJob = { kind: "transcribe_voice"; voiceNoteId: string };
 /**
  * `cancel_generation_failed`: a party that is already live has no playable set (its start-time
  * re-check couldn't be completed); the worker refunds (money only moves in the worker). Before
@@ -295,8 +304,11 @@ export type PartyJob =
   | { kind: "admin_cancel"; partyId: string; reason: string }
   /** Every minute: starts or cancels any open party past its startsAt whose start job was lost. */
   | { kind: "sweep" };
-/** Daily clean-up in the worker: `purge_email_sends` deletes the email send log past its retention. */
-export type HousekeepingJob = { kind: "purge_email_sends" };
+/**
+ * Daily clean-up in the worker: `purge_email_sends` deletes the email send log past its retention;
+ * `purge_voice_notes` deletes uploads nobody sent and voice notes past their retention from storage.
+ */
+export type HousekeepingJob = { kind: "purge_email_sends" } | { kind: "purge_voice_notes" };
 /**
  * Questions-service jobs (ADR 0002). `generate_set` builds and seals the set when the party is
  * created (curate: when the host asks for drafts) and publishes the set's state on
@@ -537,19 +549,6 @@ export const splitMentions = (text: string) => text.split(MENTION_TOKEN);
 /** The handles a chat line mentions, lowercased and once each. The server keeps only those that are real users. */
 export const mentionedHandles = (text: string) => [...new Set(splitMentions(text).filter((_, i) => i % 2).map((t) => t.slice(1).toLowerCase()))];
 
-/** A persisted party chat line. System lines have no author. `mentions`: the real users it @-mentions, resolved when sent. */
-export const chatMessageSchema = z.object({
-  id: z.string().uuid(),
-  partyId: z.string().uuid(),
-  userId: z.string().uuid().nullable(),
-  text: z.string().nullable(),
-  sticker: z.string().nullable(),
-  system: z.boolean(),
-  mentions: z.array(z.string()),
-  createdAt: z.string().datetime(),
-  handle: z.string().nullable(),
-  avatarEmoji: z.string().nullable(),
-});
 
 /** The app's URL scheme (app.json "scheme"): contestly://party/<id> opens party detail. */
 export const APP_LINK_SCHEME = "contestly";
@@ -566,6 +565,8 @@ export const partyDetailSchema = partySummarySchema.extend({
   questions: questionDisclosureSchema,
   players: z.array(partyPlayerSchema),
   joined: z.boolean(),
+  /** The party's chat thread: its latest lines here, older ones from GET /chats/:threadId/messages. */
+  threadId: z.string().uuid(),
   chat: z.array(chatMessageSchema),
 });
 
@@ -601,18 +602,14 @@ export const userProfileSchema = publicUserSchema.extend({
 
 /** Each party in GET /me/parties: why it's mine, its last chat line, who invited me, and where I placed. */
 export const MY_PARTY_ROLES = ["hosting", "playing", "invited"] as const;
-export const lastChatLineSchema = z.object({
-  /** Null for system lines ("Ada joined"). */
-  author: personSchema.pick({ handle: true, displayName: true }).nullable(),
-  text: z.string().nullable(),
-  sticker: z.string().nullable(),
-  createdAt: z.string().datetime(),
-});
 export const myPartySchema = partySummarySchema.extend({
   role: z.enum(MY_PARTY_ROLES),
   /** To invite people from Home without opening the party. */
   invite: partyLinksSchema,
-  lastLine: lastChatLineSchema.nullable(),
+  /** The party's chat thread (Chats › Parties), its last line, and what the viewer hasn't read. */
+  threadId: z.string().uuid().nullable(),
+  lastLine: chatPreviewSchema.nullable(),
+  unread: z.number().int(),
   invitedBy: personSchema.nullable(),
   myRank: z.number().int().nullable(),
 });
@@ -694,7 +691,6 @@ export type PublicHost = z.infer<typeof publicHostSchema>;
 export type PartySummary = z.infer<typeof partySummarySchema>;
 export type PartyDetail = z.infer<typeof partyDetailSchema>;
 export type PartyPlayer = z.infer<typeof partyPlayerSchema>;
-export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type QuestionDisclosure = z.infer<typeof questionDisclosureSchema>;
 export type JoinPartyResponse = z.infer<typeof joinPartyResponseSchema>;
 export type UserProfile = z.infer<typeof userProfileSchema>;
@@ -707,7 +703,6 @@ export type PartyLinks = z.infer<typeof partyLinksSchema>;
 export type HeadToHead = z.infer<typeof headToHeadSchema>;
 export type RecentParty = z.infer<typeof recentPartySchema>;
 export type MyPartyRole = (typeof MY_PARTY_ROLES)[number];
-export type LastChatLine = z.infer<typeof lastChatLineSchema>;
 export type MyParty = z.infer<typeof myPartySchema>;
 export type MyPartiesResponse = z.infer<typeof myPartiesResponseSchema>;
 export type InviteToPartyInput = z.infer<typeof inviteToPartySchema>;
@@ -867,15 +862,17 @@ export const roomPhaseSchema = z.object({
 export const roomMemberSchema = z.object({ id: z.string().uuid(), handle: z.string(), displayName: z.string(), avatarEmoji: z.string(), plays: z.boolean() });
 export const roomPresenceSchema = z.object({ partyId: z.string().uuid(), online: z.array(roomMemberSchema) });
 /** The room's msgpack encoding turns the row's timestamp into a Date; normalise it to the ISO string HTTP sends. */
-export const roomChatMessageSchema = chatMessageSchema.extend({
-  createdAt: z.preprocess((v) => (v instanceof Date ? v.toISOString() : v), z.string().datetime()),
-  displayName: z.string().nullable().optional(),
-});
 export const roomVoidedSchema = z.object({ questionId: z.string().uuid(), idx: z.number().int(), replacementAdded: z.boolean(), total: z.number().int() });
 /** MSG.questionsStatus: the set's state changed. Same shape as the disclosure on party detail. */
 export const roomQuestionsStatusSchema = questionDisclosureSchema;
-/** not_open, too_late, chat_closed, flag_closed, validation, … */
-export const roomErrorSchema = z.object({ error: z.string() });
+/** not_open, too_late, chat_closed, flag_closed, validation, rate_limited, cannot_message, request_pending, … */
+export const roomErrorSchema = z.object({
+  error: z.string(),
+  /** A refused chat line: which one, so the composer can mark it. */
+  clientMsgId: z.string().uuid().optional(),
+  /** rate_limited: seconds until sending works again. */
+  retryAfter: z.number().int().optional(),
+});
 
 export type QuestionView<F extends QuestionFormat = QuestionFormat> = z.infer<(typeof questionViewSchemas)[F]>;
 export type RoomQuestion = z.infer<typeof roomQuestionSchema>;
@@ -888,7 +885,6 @@ export type RoomFinal = z.infer<typeof roomFinalSchema>;
 export type RoomPhaseMessage = z.infer<typeof roomPhaseSchema>;
 export type RoomMember = z.infer<typeof roomMemberSchema>;
 export type RoomPresence = z.infer<typeof roomPresenceSchema>;
-export type RoomChatMessage = z.infer<typeof roomChatMessageSchema>;
 export type RoomVoided = z.infer<typeof roomVoidedSchema>;
 export type RoomQuestionsStatus = z.infer<typeof roomQuestionsStatusSchema>;
 export type RetryQuestionsInput = z.infer<typeof retryQuestionsSchema>;

@@ -15,6 +15,7 @@
  * Refuses unless AUTH_MODE=dev.
  */
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { Client, type Room } from "colyseus.js";
 import { and, desc, eq } from "drizzle-orm";
 import { db, parties, partyQuestions, users } from "@contestly/db";
@@ -159,7 +160,7 @@ for (const b of bots) {
   room.onMessage(MSG.standings, async () => {
     if (Math.random() >= STICKER_CHANCE) return;
     await sleep(between({ min: 500, max: 2500 }));
-    room.send(MSG.chat, { sticker: STICKERS[Math.floor(Math.random() * STICKERS.length)] });
+    room.send(MSG.chat, { clientMsgId: randomUUID(), sticker: STICKERS[Math.floor(Math.random() * STICKERS.length)] });
   });
   room.onMessage(MSG.finalStandings, (f: { rows: { userId: string; rank: number; score: number }[] }) => {
     if (b !== bots[0]) return;

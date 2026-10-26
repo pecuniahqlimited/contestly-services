@@ -1,7 +1,8 @@
-/** GET /me/parties: the parties I host, play or am invited to, grouped, each with its last chat line. */
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
-import { db, chatMessages, hostTeamOf, isHostTeam, parties, partyInvites, partyPlayers, users, type Party, type User } from "@contestly/db";
-import { MY_RECENT_DAYS, type LastChatLine, type MyPartyRole, type Person } from "@contestly/shared";
+/** GET /me/parties: the parties I host, play or am invited to, grouped, each with its chat thread, last line and unread count. */
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { db, hostTeamOf, isHostTeam, parties, partyInvites, partyPlayers, users, type Party, type User } from "@contestly/db";
+import { MY_RECENT_DAYS, type MyPartyRole, type Person } from "@contestly/shared";
+import { partyThreads } from "./chats.js";
 import { partyLinks } from "./invites.js";
 import { partySummaries } from "./partySummaries.js";
 import { personColumns } from "./people.js";
@@ -11,17 +12,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 type Mine = { p: Party; role: MyPartyRole; invitedBy: Person | null; status: Party["status"]; startsAt: Date; endedAt: Date | null };
 const mine = (p: Party, role: MyPartyRole, invitedBy: Person | null = null): Mine => ({ p, role, invitedBy, status: p.status, startsAt: p.startsAt, endedAt: p.endedAt });
-
-async function lastLines(partyIds: string[]): Promise<Map<string, LastChatLine>> {
-  if (!partyIds.length) return new Map();
-  const rows = await db.selectDistinctOn([chatMessages.partyId], { partyId: chatMessages.partyId, text: chatMessages.text, sticker: chatMessages.sticker, createdAt: chatMessages.createdAt, handle: users.handle, displayName: users.displayName })
-    .from(chatMessages).leftJoin(users, eq(users.id, chatMessages.userId))
-    .where(inArray(chatMessages.partyId, partyIds)).orderBy(chatMessages.partyId, desc(chatMessages.createdAt));
-  return new Map(rows.map((r) => [r.partyId, {
-    author: r.handle && r.displayName ? { handle: r.handle, displayName: r.displayName } : null,
-    text: r.text, sticker: r.sticker, createdAt: r.createdAt.toISOString(),
-  }]));
-}
 
 export async function myParties(me: User, now = new Date()) {
   const since = new Date(now.getTime() - MY_RECENT_DAYS * DAY_MS);
@@ -43,13 +33,16 @@ export async function myParties(me: User, now = new Date()) {
 
   const shown = Object.values(groups).flat();
   const ids = shown.map((m) => m.p.id);
-  const [summaries, lines, ranks] = await Promise.all([
+  const [summaries, threads, ranks] = await Promise.all([
     partySummaries(shown.map((m) => m.p), me.id),
-    lastLines(ids),
+    partyThreads(ids, me.id),
     ids.length ? db.select({ partyId: partyPlayers.partyId, rank: partyPlayers.rank }).from(partyPlayers).where(and(eq(partyPlayers.userId, me.id), inArray(partyPlayers.partyId, ids))) : [],
   ]);
   const summaryOf = new Map(summaries.map((s) => [s.id, s]));
   const rankOf = new Map(ranks.map((r) => [r.partyId, r.rank]));
-  const view = (m: Mine) => ({ ...summaryOf.get(m.p.id)!, role: m.role, invite: partyLinks(m.p.id), lastLine: lines.get(m.p.id) ?? null, invitedBy: m.invitedBy, myRank: rankOf.get(m.p.id) ?? null });
+  const view = (m: Mine) => {
+    const chat = threads.get(m.p.id);
+    return { ...summaryOf.get(m.p.id)!, role: m.role, invite: partyLinks(m.p.id), threadId: chat?.threadId ?? null, lastLine: chat?.lastLine ?? null, unread: chat?.unread ?? 0, invitedBy: m.invitedBy, myRank: rankOf.get(m.p.id) ?? null };
+  };
   return { invited: groups.invited.map(view), live: groups.live.map(view), upcoming: groups.upcoming.map(view), recent: groups.recent.map(view) };
 }

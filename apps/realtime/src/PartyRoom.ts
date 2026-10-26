@@ -9,18 +9,15 @@
  */
 import type { Client } from "colyseus";
 import { SafeRoom } from "./SafeRoom.js";
+import { parsePublished, sendLine } from "./chat.js";
 import { and, asc, eq, notInArray } from "drizzle-orm";
-import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, chatMessages, getPartyConfig, getQuestionsConfig, resolveMentions, type Party } from "@contestly/db";
+import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, resolveUser } from "@contestly/auth";
 import { partyQueue, questionsQueue } from "@contestly/queue";
-import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, flagSchema, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
-interface Member {
-  id: string;
-  handle: string;
-  displayName: string;
-  avatarEmoji: string;
+interface Member extends ChatSender {
   /** Seated players play; the host of a curate party is in the room but never in the match. */
   plays: boolean;
 }
@@ -38,6 +35,7 @@ const questionJobs = questionsQueue();
 export class PartyRoom extends SafeRoom {
   private partyId!: string;
   private party!: Party;
+  private thread!: ChatThread;
   private cfg!: PartyConfig;
   private qcfg!: QuestionsConfig;
   /** questionId → distinct flaggers. */
@@ -78,6 +76,7 @@ export class PartyRoom extends SafeRoom {
     this.cfg = await getPartyConfig();
     this.qcfg = await getQuestionsConfig();
     this.maxClients = party.maxPlayers + 1; // + the curate host, who watches without a seat
+    this.thread = (await threadById(await partyThreadId(db, partyId)))!;
 
     // Every change of selection arrives here; the last one before the clock ends is graded. No lock-in.
     this.handle(MSG.answer, (client, data) => {
@@ -114,17 +113,19 @@ export class PartyRoom extends SafeRoom {
       if (flaggers.size >= threshold && !this.match.isVoided(q.id)) await this.voidCurrent(q.id, flaggers.size, threshold);
     });
 
-    // Chat is open in the lobby, during standings, and after the game — never while a question or reveal is up.
+    // Chat is open in the lobby, during standings, and after the game — never while a question or its reveal is up.
     this.handle(MSG.chat, async (client, raw) => {
       const me = client.auth as Member | undefined;
       if (!me) return;
-      if (!["lobby", "generating", "standings", "finished"].includes(this.phase)) return client.send(MSG.error, { error: "chat_closed" });
       const parsed = chatSendSchema.safeParse(raw);
       if (!parsed.success) return client.send(MSG.error, { error: "validation", issues: parsed.error.issues });
-      const mentions = await resolveMentions(parsed.data.text);
-      const [saved] = await db.insert(chatMessages).values({ partyId: this.partyId, userId: me.id, text: parsed.data.text, sticker: parsed.data.sticker, mentions }).returning();
-      this.broadcast(MSG.chatMessage, { ...saved, handle: me.handle, displayName: me.displayName, avatarEmoji: me.avatarEmoji });
+      if (!partyChatOpenIn(this.phase)) return client.send(MSG.error, { error: "chat_closed", clientMsgId: parsed.data.clientMsgId });
+      await sendLine(this.presence, client, this.thread, me, parsed.data);
     });
+
+    // Every line of this party's thread, from this room, the inbox room (before and after the party) or the
+    // API's system lines, reaches the room through its channel.
+    this.presence.subscribe(chatThreadChannel(this.thread.id), this.onLine);
 
     this.listenForAdminEvents();
 
@@ -155,13 +156,16 @@ export class PartyRoom extends SafeRoom {
     if (party.status === "live") this.run("round: start", () => this.startMatch());
   }
 
+  private onLine = (raw: unknown) => this.run("chat line", () => this.broadcast(MSG.chatMessage, parsePublished(raw)));
+
   /** Dev header or Firebase token, same as the API. Only seated players (and the creator) may enter the room. */
   async onAuth(_client: Client, options: { token?: string; devUser?: string }) {
     const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser });
     assertNotBanned(user);
     const seated = await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, this.partyId), eq(partyPlayers.userId, user.id)));
     if (!seated.length && user.id !== this.party.createdByUserId) throw new Error("join_the_party_first");
-    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, plays: seated.length > 0 } satisfies Member;
+    await joinThread(db, this.thread.id, user.id);
+    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, isVerified: user.isVerified, isGuest: user.isGuest, isBrand: user.isBrand, isSystem: user.isSystem, plays: seated.length > 0 } satisfies Member;
   }
 
   onJoin(client: Client) {
@@ -187,6 +191,7 @@ export class PartyRoom extends SafeRoom {
 
   onDispose() {
     this.heartbeat?.clear();
+    if (this.thread) this.presence.unsubscribe(chatThreadChannel(this.thread.id), this.onLine);
   }
 
   /**
@@ -398,8 +403,8 @@ export class PartyRoom extends SafeRoom {
 
   /** Real presence only: the people actually connected to this room right now. */
   private broadcastPresence() {
-    const seen = new Map<string, Member>();
-    for (const m of this.members.values()) seen.set(m.id, m);
+    const seen = new Map<string, { id: string; handle: string; displayName: string; avatarEmoji: string; plays: boolean }>();
+    for (const m of this.members.values()) seen.set(m.id, { id: m.id, handle: m.handle, displayName: m.displayName, avatarEmoji: m.avatarEmoji, plays: m.plays });
     this.broadcast(MSG.presence, { partyId: this.partyId, online: [...seen.values()] });
   }
 }

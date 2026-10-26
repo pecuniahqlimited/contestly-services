@@ -6,7 +6,8 @@
  */
 import { eq } from "drizzle-orm";
 import type { Tx } from "./client.js";
-import { chatMessages, parties, partyPlayers, type Party } from "./schema.js";
+import { parties, partyPlayers, type Party } from "./schema.js";
+import { systemLine } from "./chat.js";
 import * as ledger from "./ledger.js";
 
 /** Refund every entry leg by leg, release exactly what was held for the host's cash prize, and mark it cancelled. Returns the players refunded. */
@@ -15,7 +16,7 @@ export async function refundAndCancel(tx: Tx, p: Party, message: string): Promis
   for (const pl of players) await ledger.refund(tx, { chargeKey: `party_entry:${p.id}:${pl.userId}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
   await ledger.release(tx, { holdKey: `party_fund:${p.id}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
   await tx.update(parties).set({ status: "cancelled", endedAt: new Date() }).where(eq(parties.id, p.id));
-  await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: message });
+  await systemLine(tx, p.id, message);
   return players.length;
 }
 

@@ -15,6 +15,7 @@
  *
  * Run with the stack up (npm run infra:up && npm run dev):  npm run sim:sealed
  */
+import { randomUUID } from "node:crypto";
 import { Client, type Room } from "colyseus.js";
 import { and, count, eq, inArray, isNotNull } from "drizzle-orm";
 import { db, parties, partyQuestions, partyAnswers, partyQuestionEvents, ledgerEntries, bankQuestions, questionGenerations } from "@contestly/db";
@@ -178,7 +179,7 @@ async function playParty(round: number, partyId: string, party: { split: number[
         setTimeout(() => room.send(MSG.answer, s.play(q.format as QuestionFormat, q.payload)), s.atMs);
       }
       // chat must be rejected while a question is up (checked once, from ada)
-      if (persona.handle === "ada.o" && view.idx === 1) room.send(MSG.chat, { text: "mid-question chat, should bounce" });
+      if (persona.handle === "ada.o" && view.idx === 1) room.send(MSG.chat, { clientMsgId: randomUUID(), text: "mid-question chat, should bounce" });
     });
 
     room.onMessage(MSG.error, (e: any) => {
@@ -198,7 +199,7 @@ async function playParty(round: number, partyId: string, party: { split: number[
         if (standingsSeen === 1) firstStandingsPrevRanks = s.rows.map((r: any) => r.prevRank);
         else if (s.rows.every((r: any) => r.prevRank !== null)) laterStandingsWithPrevRank++;
         if (standingsSeen > 1 && s.rows.some((r: any) => r.prevRank !== null && r.prevRank !== r.rank)) rankFlipSeen = true;
-        if (standingsSeen === 2) rooms[1].send(MSG.chat, { text: "gg so far!" }); // chat is open on standings
+        if (standingsSeen === 2) rooms[1].send(MSG.chat, { clientMsgId: randomUUID(), text: "gg so far!" }); // chat is open on standings
       });
       room.onMessage(MSG.chatMessage, (m: any) => {
         if (m.text === "gg so far!") chatDuringStandingsSeen = true;
@@ -208,6 +209,7 @@ async function playParty(round: number, partyId: string, party: { split: number[
       for (const t of [MSG.reveal, MSG.standings, MSG.chatMessage, MSG.finalStandings, MSG.phase, MSG.questionsStatus]) room.onMessage(t, () => {});
     }
     room.onMessage(MSG.presence, () => {});
+    room.onMessage(MSG.chatAck, () => {});
   }
 
   // Players are in the lobby BEFORE the party starts, so the worker's party:events "live"

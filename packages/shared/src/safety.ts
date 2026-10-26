@@ -17,8 +17,11 @@ export interface SafetyResult {
   reasons: string[];
 }
 
+/** Also what chat masks (maskProfanity in chat.ts): one list. */
+export const PROFANITY = ["fuck", "shit", "bitch", "asshole", "bastard"];
+
 const DENY: Record<string, string[]> = {
-  profanity: ["fuck", "shit", "bitch", "asshole", "bastard"],
+  profanity: PROFANITY,
   sexual: ["sex", "porn", "nude", "nsfw"],
   hate: ["kill all", "subhuman", "vermin"],
   gambling_promo: ["bet9ja", "sportybet", "betway", "casino", "stake your"],

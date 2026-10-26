@@ -67,7 +67,7 @@ console.log("curate party with an unreviewed set: start must cancel and refundâ€
   for (const h of PLAYERS.slice(0, 2)) await api(h, "POST", `/parties/${p.id}/join`);
   await promoteStart(p.id);
   const done = await waitFor(async () => { const d = await api(HOST, "GET", `/parties/${p.id}`); return d.status === "cancelled" ? d : null; }, { tries: 30 });
-  ok(!!done && done.chat.some((c: any) => c.system && /didn't finish reviewing/.test(c.text)), "unreviewed curate party cancelled at start with the reason");
+  ok(!!done && done.chat.some((c: any) => c.kind === "system" && /didn't finish reviewing/.test(c.text)), "unreviewed curate party cancelled at start with the reason");
   for (const h of PLAYERS.slice(0, 2)) {
     const net = await partyNetKobo(userIds.get(h)!, p.id);
     ok(net === 0, `${h} refunded in full (net ${net} from that party)`);

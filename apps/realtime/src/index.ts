@@ -9,10 +9,11 @@ import { createServer } from "node:http";
 import colyseus, { RedisPresence, RedisDriver } from "colyseus";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 const { Server } = colyseus;
-import { ONBOARDING_ROOM, PARTY_ROOM } from "@contestly/shared";
+import { INBOX_ROOM, ONBOARDING_ROOM, PARTY_ROOM } from "@contestly/shared";
 import { assertAuthConfig } from "@contestly/auth";
 import { PartyRoom } from "./PartyRoom.js";
 import { OnboardingRoom } from "./OnboardingRoom.js";
+import { InboxRoom } from "./InboxRoom.js";
 
 // Refuses AUTH_MODE=dev in production.
 assertAuthConfig();
@@ -38,6 +39,8 @@ const gameServer = new Server({
 gameServer.define(PARTY_ROOM, PartyRoom).filterBy(["partyId"]);
 // No filter: joinOrCreate drops a newcomer into any onboarding room still waiting (not locked, not full).
 gameServer.define(ONBOARDING_ROOM, OnboardingRoom);
+// One per user: joinOrCreate with the user's own id; onAuth refuses anyone else.
+gameServer.define(INBOX_ROOM, InboxRoom).filterBy(["userId"]);
 
 const port = Number(process.env.REALTIME_PORT ?? 4001);
 await gameServer.listen(port);

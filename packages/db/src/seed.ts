@@ -14,6 +14,7 @@ import { db, sql, type Tx } from "./client.js";
 import { users, bankQuestions, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
 import * as ledger from "./ledger.js";
 import { currentPrizes, savePrizes } from "./climb.js";
+import { joinThread, partyThreadId, systemLine } from "./chat.js";
 
 const uid = (n: number) => `00000000-0000-4000-8000-1000000000${String(n).padStart(2, "0")}`;
 
@@ -122,12 +123,20 @@ await db.transaction(async (tx) => {
     await tx.insert(partyPlayers).values({ partyId: p.id, userId: by[handle] });
   }
 
+  // Each party's chat: the host and seats are members; a few lines in the Afrobeats lobby.
+  for (const p of demoParties) {
+    const threadId = await partyThreadId(tx, p.id);
+    await joinThread(tx, threadId, p.createdByUserId);
+    for (const [sp, handle] of seats) if (sp.id === p.id) await joinThread(tx, threadId, by[handle]);
+    await systemLine(tx, p.id, "Party is open. Your followers have been told.");
+  }
+  const afroThread = await partyThreadId(tx, afro.id);
+  const footballThread = await partyThreadId(tx, football.id);
   await tx.insert(chatMessages).values([
-    ...demoParties.map((p) => ({ partyId: p.id, system: true, text: "Party is open. Your followers have been told." })),
-    { partyId: afro.id, userId: by["kemz"], text: "Who's ready? 😤" },
-    { partyId: afro.id, userId: by["zee"], sticker: "🔥" },
-    { partyId: afro.id, userId: by["ada.o"], text: "@kemz you're going down this time", mentions: ["kemz"] },
-    { partyId: football.id, userId: by["tunde"], text: "Pot grows with every seat. Bring your people." },
+    { threadId: afroThread, userId: by["kemz"], text: "Who's ready? 😤" },
+    { threadId: afroThread, userId: by["zee"], kind: "sticker", sticker: "🔥" },
+    { threadId: afroThread, userId: by["ada.o"], text: "@kemz you're going down this time", mentions: ["kemz"] },
+    { threadId: footballThread, userId: by["tunde"], text: "Pot grows with every seat. Bring your people." },
   ]);
   scheduled.push(...demoParties);
 

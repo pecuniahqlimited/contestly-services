@@ -1,16 +1,19 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq, inArray, desc, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, partyPrizes, chatMessages, follows, ledger, getPartyConfig, isHostTeam, prospectiveHost, canOfferNonCashPrize } from "@contestly/db";
-import { SIGN_UP_REQUIRED, isStaked, checkStakes, createPartySchema, inferCategory, inviteToPartySchema, isGoods, questionDisclosure, SPLITS, startsAtFor, visibleLimits } from "@contestly/shared";
+import { and, eq, inArray, asc, count } from "drizzle-orm";
+import { db, users, parties, partyPlayers, partyPrizes, follows, ledger, getPartyConfig, isHostTeam, joinPartyThread, messagesPage, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine } from "@contestly/db";
+import { type ChatMessage, SIGN_UP_REQUIRED, isStaked, checkStakes, createPartySchema, inferCategory, inviteToPartySchema, isGoods, questionDisclosure, SPLITS, startsAtFor, visibleLimits } from "@contestly/shared";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
 import { enqueueSealedSet } from "../questionSet.js";
 import { partySummaries } from "../partySummaries.js";
 import { potKobo } from "../places.js";
+import { publishLine } from "../chats.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 
 const notify = notifyQueue();
+/** Party detail carries the latest lines; older ones page in from GET /chats/:threadId/messages. */
+const PARTY_DETAIL_CHAT_LINES = 50;
 const partyJobs = partyQueue();
 
 export async function partiesRoutes(app: FastifyInstance) {
@@ -59,7 +62,9 @@ export async function partiesRoutes(app: FastifyInstance) {
         await ledger.charge(tx, { userId: me.id, amountKobo: body.funding === "pooled" ? body.entryKobo : 0, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
         await tx.insert(partyPlayers).values({ partyId: p.id, userId: me.id });
       }
-      await tx.insert(chatMessages).values({ partyId: p.id, system: true, text: body.visibility === "public" ? "Party is open. Your followers have been told." : "Private party. Share the link to fill seats." });
+      // The host's team is in the party's chat whether or not they play.
+      await joinPartyThread(tx, p.id, me.id);
+      await systemLine(tx, p.id, body.visibility === "public" ? "Party is open. Your followers have been told." : "Private party. Share the link to fill seats.");
       // Same guards as inviting later; a refused invite refuses the whole party, so nothing is half made.
       return { party: p, invited: await inviteToParty(tx, p, me, body.inviteUserIds) };
     });
@@ -80,8 +85,9 @@ export async function partiesRoutes(app: FastifyInstance) {
     const me = req.auth?.user;
     const [[summary], invitedBy] = await Promise.all([partySummaries([p], me?.id), pendingInviter(p.id, me?.id)]);
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
-    const chat = await db.select({ m: chatMessages, handle: users.handle, avatarEmoji: users.avatarEmoji }).from(chatMessages).leftJoin(users, eq(users.id, chatMessages.userId)).where(eq(chatMessages.partyId, id)).orderBy(desc(chatMessages.createdAt)).limit(50);
-    return { ...summary, brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, players, joined: !!me && players.some((x) => x.id === me.id), chat: chat.reverse().map((c) => ({ ...c.m, handle: c.handle, avatarEmoji: c.avatarEmoji })) };
+    const threadId = await partyThreadId(db, p.id);
+    const { messages } = await messagesPage(threadId, { limit: PARTY_DETAIL_CHAT_LINES });
+    return { ...summary, brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages };
   });
 
   /** Invite people I'm connected to. Players and the host's team, while the party is open (invites.ts has the guards). */
@@ -109,6 +115,7 @@ export async function partiesRoutes(app: FastifyInstance) {
   app.post("/parties/:id/join", async (req, reply) => {
     const me = requireSession(req);
     const id = uuidParam(req);
+    let line: ChatMessage | undefined;
     const result = await db.transaction(async (tx) => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
       if (!p) return { status: 404, body: { error: "not_found" } };
@@ -123,9 +130,11 @@ export async function partiesRoutes(app: FastifyInstance) {
       const paid = await ledger.charge(tx, { userId: me.id, amountKobo: p.entryKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
       await tx.insert(partyPlayers).values({ partyId: id, userId: me.id });
       await acceptInvite(tx, id, me.id);
-      await tx.insert(chatMessages).values({ partyId: id, system: true, text: `${me.displayName} joined` });
+      await joinPartyThread(tx, id, me.id);
+      line = await systemLine(tx, id, `${me.displayName} joined`);
       return { status: 201, body: { joined: true, paid, potKobo: potKobo(p, Number(n) + 1) } };
     });
+    if (line) await publishLine(line);
     req.log.info({ partyId: id, userId: me.id, status: result.status }, "party join");
     return reply.code(result.status).send(result.body);
   });

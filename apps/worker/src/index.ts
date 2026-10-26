@@ -1,16 +1,21 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count, lte } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, chatMessages, prizeFulfilments, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, type Party, type Tx } from "@contestly/db";
+import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, prizeFulfilments, systemLine, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, type Party, type Tx } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
-import { CLIMB_TIME_ZONE, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { objectStoreFromEnv } from "@contestly/storage";
+import { CLIMB_TIME_ZONE, chatThreadChannel, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 import { closeWeeks, startDay } from "./climb.js";
+import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
+import { selectTranscriber } from "./transcribe/index.js";
 
 const connection = makeRedis();
 const pub = makeRedis();
 const partyJobs = partyQueue();
 const questionJobs = questionsQueue();
 const emit = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
+/** A system line the worker wrote reaches the party's room once its transaction has committed. */
+const publishLine = (line: ChatMessage) => pub.publish(chatThreadChannel(line.threadId), JSON.stringify(line));
 
 const GENERATION_FAILED_MESSAGE = "We couldn't build the questions for this party. Everyone has been refunded.";
 
@@ -31,6 +36,8 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
     console.log(`[notify] invites for party ${d.partyId} → ${d.toUserIds.length} users`);
   } else if (d.kind === "questions_failed") {
     console.log(`[notify] host ${d.hostId}: questions for party ${d.partyId} couldn't be made — "${d.reason}" (retry or edit the brief)`);
+  } else if (d.kind === "chat_mention") {
+    console.log(`[notify] @mention in thread ${d.threadId} → ${d.toUserIds.length} user(s) (batched per thread from row 9)`);
   }
 }, { connection });
 
@@ -59,6 +66,7 @@ type StartFollowUp = "none" | "reseal" | "generate";
 /** Start a party at startsAt, or cancel + refund if too few people joined or it has nothing to play. */
 async function startOrCancel(partyId: string) {
   const cfg = await getPartyConfig();
+  let line: ChatMessage | undefined;
   const started = await db.transaction(async (tx): Promise<StartFollowUp | false> => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p || p.status !== "open") return false;
@@ -84,11 +92,12 @@ async function startOrCancel(partyId: string) {
       liveAt: new Date(),
       ...(followUp === "none" ? {} : { questionsStatus: "generating" as const }),
     }).where(eq(parties.id, partyId));
-    await tx.insert(chatMessages).values({ partyId, system: true, text: "The party is starting. Good luck!" });
+    line = await systemLine(tx, partyId, "The party is starting. Good luck!");
     console.log(`[party] ${p.title} is live with ${n} players${followUp === "reseal" ? "; swapping questions a player has already seen" : ""}`);
     return followUp;
   });
   if (started === false) return;
+  if (line) await publishLine(line);
   // After commit, so the room never reads the set's state from before this transaction.
   await emit({ partyId, status: "live" });
   if (started === "reseal") await questionJobs.add("reseal_for_roster", { kind: "reseal_for_roster", partyId }, { jobId: `reseal-${partyId}` });
@@ -110,6 +119,7 @@ async function sealedFollowUp(p: Party): Promise<StartFollowUp> {
  */
 async function settle(partyId: string) {
   const cfg = await getPartyConfig();
+  let line: ChatMessage | undefined;
   const settled = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p || p.status !== "live") return false; // already settled or cancelled
@@ -144,10 +154,11 @@ async function settle(partyId: string) {
     }
 
     await tx.update(parties).set({ status: "finished", endedAt: new Date() }).where(eq(parties.id, partyId));
-    await tx.insert(chatMessages).values({ partyId, system: true, text: "That's a wrap! Results are in." });
+    line = await systemLine(tx, partyId, "That's a wrap! Results are in.");
     await emit({ partyId, status: "finished" });
     return true;
   });
+  if (line) await publishLine(line);
   // Fold this party's answer stats back into the question bank (idempotent via play_stats_recorded_at).
   if (settled) await questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId: `record-play-${partyId}` });
 }
@@ -236,19 +247,32 @@ const CLIMB_WEEK_CLOSE = "15 0 * * 1";
 await climbJobs.upsertJobScheduler("day_start", { pattern: CLIMB_DAY_START, tz: CLIMB_TIME_ZONE }, { name: "day_start", data: { kind: "day_start" } });
 await climbJobs.upsertJobScheduler("week_close", { pattern: CLIMB_WEEK_CLOSE, tz: CLIMB_TIME_ZONE }, { name: "week_close", data: { kind: "week_close" } });
 
+const store = objectStoreFromEnv();
+const transcriber = selectTranscriber();
+const chatWorker = new Worker<ChatJob>(QUEUES.chat, async (job) => {
+  if (job.data.kind === "transcribe_voice") return transcribeVoice(store, transcriber, job.data.voiceNoteId);
+}, { connection });
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const housekeepingJobs = housekeepingQueue();
 const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, async (job) => {
   if (job.data.kind === "purge_email_sends") {
     const n = await purgeEmailSends(new Date(Date.now() - EMAIL_SEND_RETENTION_DAYS * DAY_MS));
     if (n) console.log(`[housekeeping] deleted ${n} email send record(s) older than ${EMAIL_SEND_RETENTION_DAYS} days`);
+  } else if (job.data.kind === "purge_voice_notes") {
+    const out = await purgeVoiceNotes(store);
+    if (out.unsent || out.expired) console.log(`[housekeeping] voice notes: ${out.unsent} unsent upload(s) deleted, ${out.expired} expired`);
   }
 }, { connection });
 /** Every day at 03:00 Lagos, when nobody's playing. */
 const PURGE_EMAIL_SENDS = "0 3 * * *";
 await housekeepingJobs.upsertJobScheduler("purge_email_sends", { pattern: PURGE_EMAIL_SENDS, tz: CLIMB_TIME_ZONE }, { name: "purge_email_sends", data: { kind: "purge_email_sends" } });
 
-for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker]) {
+/** Every day at 03:30 Lagos. */
+const PURGE_VOICE_NOTES = "30 3 * * *";
+await housekeepingJobs.upsertJobScheduler("purge_voice_notes", { pattern: PURGE_VOICE_NOTES, tz: CLIMB_TIME_ZONE }, { name: "purge_voice_notes", data: { kind: "purge_voice_notes" } });
+
+for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker, chatWorker]) {
   w.on("failed", (job, err) => console.error(`[${w.name}] job ${job?.id} failed:`, err.message));
 }
 console.log("worker running: queues", Object.values(QUEUES).join(", "));

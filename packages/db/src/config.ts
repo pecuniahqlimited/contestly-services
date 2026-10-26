@@ -1,8 +1,8 @@
 import { desc, eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
-  DEFAULT_CLIMB_SETTINGS, DEFAULT_ONBOARDING_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
-  climbSettingsSchema, onboardingConfigSchema, partyConfigSchema, questionsConfigSchema, type OnboardingConfig,
+  DEFAULT_CHAT_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_ONBOARDING_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
+  chatConfigSchema, climbSettingsSchema, onboardingConfigSchema, partyConfigSchema, questionsConfigSchema, type OnboardingConfig,
 } from "@contestly/shared";
 import { db } from "./client.js";
 import { appConfig, onboardingConfigs } from "./schema.js";
@@ -40,6 +40,11 @@ export const setPartyConfig = party.set;
 const questions = configEntry("questions", questionsConfigSchema, DEFAULT_QUESTIONS_CONFIG);
 export const getQuestionsConfig = questions.get;
 export const setQuestionsConfig = questions.set;
+
+/** Chat: voice note caps, rate limits, message requests, the post-game window, voice retention. */
+const chat = configEntry("chat", chatConfigSchema, DEFAULT_CHAT_CONFIG);
+export const getChatConfig = chat.get;
+export const setChatConfig = chat.set;
 
 /**
  * The onboarding round (matchmaking wait, timings, scoring, the coins it pays) is versioned: one row per

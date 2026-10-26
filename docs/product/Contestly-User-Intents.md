@@ -132,7 +132,7 @@ A free solo ladder of N stages (config in the database, edited by an admin). Eve
 
 ## 7. Social
 
-Chats is a top-level tab (Home · Parties · + · Chats · Me) holding Messages, Party rooms and Activity.
+Chats is a top-level tab (Home · Parties · + · Chats · Me) holding Messages, Crews, Parties and Activity.
 
 | # | Intent | Acceptance rules | Touches |
 | --- | --- | --- | --- |
@@ -205,7 +205,7 @@ Every nudge is a worker-emitted event delivered as push when the app is closed a
 - [ ] Question generation thresholds: flag share and floor that voids a question; verification sources; first model/provider; bank-first vs generation-first at launch.
 - [ ] Concurrency targets for load testing: parties in flight, players per party, rounds per second.
 - [ ] Shared onboarding rounds: matchmaking window and minimum group size before falling back to solo.
-- [ ] Voice notes: max length, retention, transcription for moderation, storage cost.
+- [x] Voice notes: decided (ADR 0007): 60 s cap and 1.5 MB (config), kept 90 days then deleted from storage (the line stays as expired), transcribed by the worker into the moderation queue. Transcription provider still to choose.
 - [ ] Payout rail per platform and the Play Store policy boundary for cash withdrawal on Android.
 - [ ] Leaderboard scope beyond friends and everyone (crews in row 6, interest communities later): the scope key is generic.
 - [ ] Presence: what counts as "in the room" for live nudges and early-start decisions.

@@ -64,6 +64,20 @@
       "when": 1792873771894,
       "tag": "0008_admin_essentials",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793012169889,
+      "tag": "0009_chat_threads",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793012182822,
+      "tag": "0010_chat_messages_in_threads",
+      "breakpoints": true
     }
   ]
 }

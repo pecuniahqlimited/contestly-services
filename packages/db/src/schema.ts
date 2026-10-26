@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type OnboardingConfig, type PartyLimits } from "@contestly/shared";
+import { CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type OnboardingConfig, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -399,17 +399,96 @@ export const questionReviews = pgTable("question_reviews", {
   judgedAt: timestamp("judged_at", { withTimezone: true }),
 }, (t) => [index("question_reviews_bank_idx").on(t.bankQuestionId, t.createdAt)]);
 
+export const chatThreadKind = pgEnum("chat_thread_kind", CHAT_THREAD_KINDS);
+export const chatMessageKind = pgEnum("chat_message_kind", CHAT_MESSAGE_KINDS);
+export const chatMemberState = pgEnum("chat_member_state", CHAT_MEMBER_STATES);
+export const voiceNoteStatus = pgEnum("voice_note_status", ["pending", "attached", "expired"]);
+
+/**
+ * One conversation (ADR 0007): a party's room (one per party), two people (dm_key = their ids, sorted),
+ * or a crew (row 6b). Lines are chat_messages; who's in it and what they've read is chat_members.
+ */
+export const chatThreads = pgTable("chat_threads", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: chatThreadKind("kind").notNull(),
+  partyId: uuid("party_id").unique().references(() => parties.id, { onDelete: "cascade" }),
+  dmKey: text("dm_key").unique(),
+  crewId: uuid("crew_id").unique(),
+  lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Who's in a thread and how far they've read. Party: the host's team and every seat (guests too). DM: both
+ * people; the recipient of a message request is `request` until they accept (or `declined`). Crew: members.
+ */
+export const chatMembers = pgTable("chat_members", {
+  threadId: uuid("thread_id").notNull().references(() => chatThreads.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  state: chatMemberState("state").notNull().default("active"),
+  lastReadAt: timestamp("last_read_at", { withTimezone: true }).notNull().defaultNow(),
+  joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.threadId, t.userId] }), index("chat_members_user_idx").on(t.userId)]);
+
+/**
+ * A voice note: the client asks for an upload URL (pending), uploads straight to object storage, then sends
+ * a line with it (attached). The worker transcribes it into moderation_items. Retention deletes the object
+ * later (expired); the line stays.
+ */
+export const voiceNotes = pgTable("voice_notes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  threadId: uuid("thread_id").notNull().references(() => chatThreads.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  objectKey: text("object_key").notNull().unique(),
+  contentType: text("content_type").notNull(),
+  bytes: integer("bytes").notNull(),
+  /** As the recorder reported it (capped); measuredMs is the transcriber's own measure, when it gives one. */
+  durationMs: integer("duration_ms").notNull(),
+  measuredMs: integer("measured_ms"),
+  status: voiceNoteStatus("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  attachedAt: timestamp("attached_at", { withTimezone: true }),
+  transcribedAt: timestamp("transcribed_at", { withTimezone: true }),
+}, (t) => [index("voice_notes_status_created_idx").on(t.status, t.createdAt)]);
+
+/**
+ * One line in a thread. `client_msg_id` is the sender's id for it: a repeat send returns the first line.
+ * System lines have no author. A party card points at a party (a challenge, a crew party).
+ */
 export const chatMessages = pgTable("chat_messages", {
   id: uuid("id").primaryKey().defaultRandom(),
-  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  threadId: uuid("thread_id").notNull().references(() => chatThreads.id, { onDelete: "cascade" }),
   userId: uuid("user_id").references(() => users.id),
+  kind: chatMessageKind("kind").notNull().default("text"),
   text: text("text"),
   sticker: text("sticker"),
-  system: boolean("system").notNull().default(false),
   /** Handles of the real users this line @-mentions, resolved when it's sent; only these are tappable. */
   mentions: text("mentions").array().notNull().default(sql`'{}'::text[]`),
+  voiceNoteId: uuid("voice_note_id").references(() => voiceNotes.id),
+  cardPartyId: uuid("card_party_id").references(() => parties.id, { onDelete: "set null" }),
+  clientMsgId: uuid("client_msg_id"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("chat_party_created_idx").on(t.partyId, t.createdAt)]);
+}, (t) => [
+  index("chat_thread_created_idx").on(t.threadId, t.createdAt),
+  uniqueIndex("chat_messages_client_msg").on(t.userId, t.clientMsgId),
+]);
+
+/**
+ * Things a person needs to look at (row 11 reviews them). Today: every voice note's transcript. Reports,
+ * flagged text and the rest join with their own `kind`.
+ */
+export const moderationItems = pgTable("moderation_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: text("kind").notNull(),
+  refId: uuid("ref_id").notNull(),
+  userId: uuid("user_id").references(() => users.id),
+  threadId: uuid("thread_id").references(() => chatThreads.id, { onDelete: "set null" }),
+  transcript: text("transcript"),
+  provider: text("provider"),
+  detail: jsonb("detail"),
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("moderation_items_ref").on(t.kind, t.refId), index("moderation_items_status_idx").on(t.status, t.createdAt)]);
 
 /** One account per (user, kind). balance is materialised and only ever changed inside the ledger transaction. */
 export const ledgerAccounts = pgTable("ledger_accounts", {
@@ -639,7 +718,9 @@ export type AdminActionRow = typeof adminActions.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;
-export type ChatMessage = typeof chatMessages.$inferSelect;
+export type ChatMessageRow = typeof chatMessages.$inferSelect;
+export type ChatThread = typeof chatThreads.$inferSelect;
+export type VoiceNote = typeof voiceNotes.$inferSelect;
 export type BankQuestion = typeof bankQuestions.$inferSelect;
 export type PartyQuestion = typeof partyQuestions.$inferSelect;
 export type ClimbRunRow = typeof climbRuns.$inferSelect;

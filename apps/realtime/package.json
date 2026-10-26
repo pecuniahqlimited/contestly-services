@@ -16,6 +16,7 @@
     "@contestly/game": "*",
     "@contestly/queue": "*",
     "@contestly/shared": "*",
+    "@contestly/storage": "*",
     "colyseus": "^0.15.0",
     "drizzle-orm": "^0.38.3"
   },
