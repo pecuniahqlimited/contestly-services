@@ -21,7 +21,8 @@ for brands, versioned, never re-asked.
    there is one.
 2. **About you is a versioned config per audience.** `about_configs (audience, version)`: one immutable
    row per admin save, numbered 1, 2, … within the audience; the highest is current. Version 1 is the
-   prototype's set, written by the seed or by the first read, so there is always a current version.
+   prototype's set, written by migration 0014 (and by `db:seed` if missing), so every database has a
+   current version; a read that finds none is an error (`about_config_missing`), never a write.
    The schema (`packages/shared/src/about.ts`) has questions (stable id, prompt, hint, single | multi,
    min/max) and options (stable id, emoji, label, lanes from the category tags, normalised; weights,
    archetype → small integer). It refuses duplicate ids, a min above the option count, unknown
@@ -34,7 +35,8 @@ for brands, versioned, never re-asked.
 4. **Answers are stored with their version.** `PATCH /me/onboarding { about: { version, answers } }` is
    checked against that version (every question answered within its range, only its own options) and
    writes `users.about_answers`, `about_version`, `about_audience`, the derived `archetype` and the lanes
-   into `interests`. Any existing version is accepted, so a client that loaded the set just before an
+   into `interests`. `who` and `about` in one request are one transaction on
+   the locked user row: rejected answers leave everything as it was. Any existing version is accepted, so a client that loaded the set just before an
    admin saved still saves. The old `users.why` is dropped.
 5. **A new version never reaches back.** Saving a version touches no user. `GET /me/onboarding` returns
    the answers, the current set and a prefill (earlier picks whose question and option ids still

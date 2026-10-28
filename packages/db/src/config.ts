@@ -56,19 +56,13 @@ type Conn = Tx | typeof db;
 export interface AboutConfigRow { audience: AboutAudience; version: number; config: AboutConfig; createdAt: Date }
 const asRow = (r: typeof aboutConfigs.$inferSelect): AboutConfigRow => ({ audience: r.audience as AboutAudience, version: r.version, config: r.config, createdAt: r.createdAt });
 
-/** Version 1 is the default set (the seed); written the first time anything asks, so there's always a current version. */
-async function ensureFirstAbout(audience: AboutAudience, conn: Conn) {
-  await conn.insert(aboutConfigs).values({ audience, version: 1, config: aboutConfigSchemaFor(audience).parse(DEFAULT_ABOUT[audience]) }).onConflictDoNothing();
-}
-
-/** About you for an audience: the newest version is current. Never empty. */
+/**
+ * About you for an audience: the newest version is current. Version 1 comes from migration 0014 (and
+ * db:seed), so a missing set is a broken database: an error, never a write here.
+ */
 export async function currentAboutConfig(audience: AboutAudience, conn: Conn = db): Promise<AboutConfigRow> {
-  const newest = () => conn.select().from(aboutConfigs).where(eq(aboutConfigs.audience, audience)).orderBy(desc(aboutConfigs.version)).limit(1);
-  let [row] = await newest();
-  if (!row) {
-    await ensureFirstAbout(audience, conn);
-    [row] = await newest();
-  }
+  const [row] = await conn.select().from(aboutConfigs).where(eq(aboutConfigs.audience, audience)).orderBy(desc(aboutConfigs.version)).limit(1);
+  if (!row) throw new Error(`about_config_missing: no About you set for "${audience}" (run db:migrate, or db:seed)`);
   return asRow(row);
 }
 
@@ -89,7 +83,9 @@ export async function saveAboutConfig(tx: Tx, audience: AboutAudience, config: u
   return asRow(row);
 }
 
-/** The seed: version 1 of each set, if it isn't there yet. */
+/** The seed: version 1 of each set (DEFAULT_ABOUT), if it isn't there yet; the same rows migration 0014 writes. */
 export async function seedAboutConfigs(conn: Conn = db) {
-  for (const audience of ["person", "brand"] as const) await ensureFirstAbout(audience, conn);
+  for (const audience of ["person", "brand"] as const) {
+    await conn.insert(aboutConfigs).values({ audience, version: 1, config: aboutConfigSchemaFor(audience).parse(DEFAULT_ABOUT[audience]) }).onConflictDoNothing();
+  }
 }

@@ -4,9 +4,9 @@
  * these rows; editing from Me answers the current version.
  */
 import { eq } from "drizzle-orm";
-import { aboutConfigVersion, currentAboutConfig, db, users, type AboutConfigRow, type User } from "@contestly/db";
+import { aboutConfigVersion, currentAboutConfig, db, users, type AboutConfigRow, type Tx, type User } from "@contestly/db";
 import {
-  answerProblems, deriveAbout, meAboutSchema, prefillAnswers, type AboutAnswers, type AboutAudience, type AboutVersion, type MeAbout, type Who,
+  answerProblems, deriveAbout, meAboutSchema, prefillAnswers, type AboutAnswers, type AboutAudience, type AboutVersion, type MeAbout, type OnboardingPatch, type Who,
 } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 
@@ -15,15 +15,28 @@ export const audienceOf = (who: string | null): AboutAudience => (who === "brand
 
 export const aboutView = (row: AboutConfigRow): AboutVersion => ({ audience: row.audience, version: row.version, config: row.config, createdAt: row.createdAt.toISOString() });
 
+/**
+ * PATCH /me/onboarding: who's playing and/or About you answers, all or nothing. The user row is locked
+ * so two edits at once apply one after the other; rejected answers roll back a `who` sent with them.
+ */
+export function updateOnboarding(userId: string, patch: OnboardingPatch): Promise<User> {
+  return db.transaction(async (tx) => {
+    let [u] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
+    if (patch.who) u = await setWho(tx, u, patch.who);
+    if (patch.about) u = await answerAbout(tx, u, patch.about.version, patch.about.answers);
+    return u;
+  });
+}
+
 /** Answers against `version` of the user's set: refused (422) unless complete and valid; then stored with what they give. */
-export async function answerAbout(u: User, version: number, answers: AboutAnswers): Promise<User> {
+async function answerAbout(tx: Tx, u: User, version: number, answers: AboutAnswers): Promise<User> {
   const audience = audienceOf(u.who);
-  const row = await aboutConfigVersion(audience, version);
+  const row = await aboutConfigVersion(audience, version, tx);
   if (!row) throw httpError(422, "unknown_about_version");
   const problems = answerProblems(row.config, answers);
   if (problems.length) throw httpError(422, "invalid_answers", problems);
   const { lanes, archetype } = deriveAbout(audience, row.config, answers);
-  const [saved] = await db.update(users)
+  const [saved] = await tx.update(users)
     .set({ aboutAudience: audience, aboutVersion: version, aboutAnswers: answers, aboutAnsweredAt: new Date(), archetype, interests: lanes })
     .where(eq(users.id, u.id)).returning();
   return saved;
@@ -33,9 +46,9 @@ export async function answerAbout(u: User, version: number, answers: AboutAnswer
  * Who's playing. Switching between person and brand means a different About you set, so answers to
  * the other set (and the archetype they gave) are cleared; lanes stay.
  */
-export async function setWho(u: User, who: Who): Promise<User> {
+async function setWho(tx: Tx, u: User, who: Who): Promise<User> {
   const otherSet = u.aboutAudience !== null && u.aboutAudience !== audienceOf(who);
-  const [saved] = await db.update(users)
+  const [saved] = await tx.update(users)
     .set({ who, ...(otherSet ? { aboutAudience: null, aboutVersion: null, aboutAnswers: null, aboutAnsweredAt: null, archetype: null } : {}) })
     .where(eq(users.id, u.id)).returning();
   return saved;

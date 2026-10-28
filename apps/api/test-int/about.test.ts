@@ -4,19 +4,20 @@
  * version given and stored with it; a new version never touches anyone's answers or archetype.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, desc, eq } from "drizzle-orm";
-import { adminActions, db, sql, users, type User } from "@contestly/db";
-import { DEFAULT_ABOUT, type AboutConfig } from "@contestly/shared";
+import { TransactionRollbackError, and, desc, eq } from "drizzle-orm";
+import { aboutConfigs, adminActions, currentAboutConfig, db, sql, users, type User } from "@contestly/db";
+import { DEFAULT_ABOUT, aboutConfigSchemaFor, type AboutConfig } from "@contestly/shared";
 import { as, makeUser, testApp } from "./harness.js";
 
 let app: Awaited<ReturnType<typeof testApp>>["app"];
-let admin: User, guest: User, brand: User;
+let admin: User, guest: User, brand: User, both: User;
 
 beforeAll(async () => {
   ({ app } = await testApp());
   admin = await makeUser("aboutadmin", { isAdmin: true });
   guest = await makeUser("aboutguest", { isGuest: true, email: null, emailVerifiedAt: null });
   brand = await makeUser("aboutbrand");
+  both = await makeUser("aboutboth");
 });
 afterAll(async () => {
   await app.close();
@@ -28,6 +29,29 @@ const put = (audience: string, config: unknown, reason?: string) =>
   app.inject({ method: "PUT", url: `/admin/onboarding/about/${audience}`, headers: as(admin), payload: { config, reason } });
 const answer = (u: User, version: number, answers: Record<string, string[]>) =>
   app.inject({ method: "PATCH", url: "/me/onboarding", headers: as(u), payload: { about: { version, answers } } });
+
+describe("version 1", () => {
+  it("comes from the migration: the prototype's sets, as DEFAULT_ABOUT", async () => {
+    for (const audience of ["person", "brand"] as const) {
+      const [v1] = await db.select().from(aboutConfigs).where(and(eq(aboutConfigs.audience, audience), eq(aboutConfigs.version, 1)));
+      expect(v1.config).toEqual(aboutConfigSchemaFor(audience).parse(DEFAULT_ABOUT[audience]));
+    }
+  });
+
+  it("a read that finds no set is an error, not a write", async () => {
+    let read = "", left = -1;
+    // Inside a transaction that's rolled back, so the brand set comes back for everything else.
+    await db.transaction(async (tx) => {
+      await tx.delete(aboutConfigs).where(eq(aboutConfigs.audience, "brand"));
+      read = await currentAboutConfig("brand", tx).then(() => "read", (e: Error) => e.message);
+      left = (await tx.select().from(aboutConfigs).where(eq(aboutConfigs.audience, "brand"))).length;
+      tx.rollback();
+    }).catch((e) => { if (!(e instanceof TransactionRollbackError)) throw e; });
+    expect(read).toMatch(/^about_config_missing/);
+    expect(left).toBe(0);
+    expect((await current("brand")).version).toBeGreaterThanOrEqual(1);
+  });
+});
 
 describe("GET /onboarding/about", () => {
   it("is public and always has a current version of each set", async () => {
@@ -93,6 +117,30 @@ describe("answers", () => {
     const edited = (await answer(guest, v2, mine.prefill)).json();
     expect(edited).toMatchObject({ aboutVersion: v2, archetype: "fan", lanes: ["Football"] });
     await put("person", DEFAULT_ABOUT.person, "integration test: put it back");
+  });
+
+  it("who and answers in one PATCH: all or nothing", async () => {
+    const person = await current("person");
+    const good = { saturday: ["match"], rather: ["beat"] };
+    expect((await app.inject({ method: "PATCH", url: "/me/onboarding", headers: as(both), payload: { who: "person", about: { version: person.version, answers: good } } })).statusCode).toBe(200);
+    const [before] = await db.select().from(users).where(eq(users.id, both.id));
+
+    // Switching to brand would clear the person answers, but the brand answers are bad: nothing changes.
+    const brandSet = await current("brand");
+    const bad = await app.inject({ method: "PATCH", url: "/me/onboarding", headers: as(both), payload: { who: "brand", about: { version: brandSet.version, answers: { does: ["nope"] } } } });
+    expect(bad.statusCode).toBe(422);
+    expect(bad.json().error).toBe("invalid_answers");
+    const [after] = await db.select().from(users).where(eq(users.id, both.id));
+    expect(after).toEqual(before);
+    expect(after).toMatchObject({ who: "person", aboutAudience: "person", archetype: "competitor" });
+
+    // An unknown version rolls back the who too.
+    expect((await app.inject({ method: "PATCH", url: "/me/onboarding", headers: as(both), payload: { who: "brand", about: { version: 999_999, answers: {} } } })).statusCode).toBe(422);
+    expect((await db.select().from(users).where(eq(users.id, both.id)))[0]).toEqual(before);
+
+    // Both valid: both land.
+    const ok = (await app.inject({ method: "PATCH", url: "/me/onboarding", headers: as(both), payload: { who: "brand", about: { version: brandSet.version, answers: { does: ["tech"], goal: ["reach"] } } } })).json();
+    expect(ok).toMatchObject({ who: "brand", archetype: "host", lanes: ["Tech"] });
   });
 
   it("a brand answers the brand set and is always host; switching who clears the other set's answers", async () => {

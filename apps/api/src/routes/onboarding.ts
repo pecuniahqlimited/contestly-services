@@ -4,7 +4,7 @@ import { currentAboutConfig, db, ledger, parties, partyPlayers, users, type User
 import { GUEST_HANDLE_PREFIX, aboutQuerySchema, isStaked, onboardingInviteSchema, onboardingPatchSchema, type Archetype, type OnboardingState, type Who } from "@contestly/shared";
 import { requireSession } from "../auth.js";
 import { httpError } from "../httpError.js";
-import { aboutView, answerAbout, meAbout, setWho } from "../about.js";
+import { aboutView, meAbout, updateOnboarding } from "../about.js";
 
 /** Where onboarding ends: Home, or the lobby of the staked invite they opened (and whether their coins cover it). */
 async function inviteState(u: User) {
@@ -50,11 +50,8 @@ export async function onboardingRoutes(app: FastifyInstance) {
    * asked before sign-up. The same call edits them from Me (answering the current version).
    */
   app.patch("/me/onboarding", async (req) => {
-    let u = requireSession(req);
-    const body = onboardingPatchSchema.parse(req.body);
-    if (body.who) u = await setWho(u, body.who);
-    if (body.about) u = await answerAbout(u, body.about.version, body.about.answers);
-    return onboardingState(u);
+    const me = requireSession(req);
+    return onboardingState(await updateOnboarding(me.id, onboardingPatchSchema.parse(req.body)));
   });
 
   /** Their About you answers, the version and what it gave, and the current set with what carries over (Me). */
