@@ -1,6 +1,12 @@
 # API_HOST and RT_HOST come from .env (docker-compose.prod.yml). Caddy fetches and renews the certificates.
 {$API_HOST} {
-	reverse_proxy api:4000
+	# Test servers only: the Mailpit inbox (profile mock in docker-compose.prod.yml). 502 when it isn't running.
+	handle /mail/* {
+		reverse_proxy mailpit:8025
+	}
+	handle {
+		reverse_proxy api:4000
+	}
 }
 
 # Colyseus: WebSocket upgrades pass through reverse_proxy as-is.
