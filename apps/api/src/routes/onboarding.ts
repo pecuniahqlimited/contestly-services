@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
-import { db, getOnboardingConfig, ledger, onboardingRounds, parties, partyPlayers, users, type User } from "@contestly/db";
-import { GUEST_HANDLE_PREFIX, archetypeOf, isStaked, onboardingInviteSchema, onboardingPicksSchema, onboardingRewardsResponseSchema, type OnboardingRewardsResponse, whyFits, type Who, type Why } from "@contestly/shared";
+import { currentAboutConfig, db, ledger, parties, partyPlayers, users, type User } from "@contestly/db";
+import { GUEST_HANDLE_PREFIX, aboutQuerySchema, isStaked, onboardingInviteSchema, onboardingPatchSchema, type Archetype, type OnboardingState, type Who } from "@contestly/shared";
 import { requireSession } from "../auth.js";
 import { httpError } from "../httpError.js";
+import { aboutView, answerAbout, meAbout, setWho } from "../about.js";
 
 /** Where onboarding ends: Home, or the lobby of the staked invite they opened (and whether their coins cover it). */
 async function inviteState(u: User) {
@@ -21,41 +22,43 @@ async function inviteState(u: User) {
 }
 
 /** What onboarding has (so no pick is asked twice), the archetype Home opens with, and where to go next. */
-async function onboardingState(u: User) {
-  const [[round], invite] = await Promise.all([db.select().from(onboardingRounds).where(eq(onboardingRounds.userId, u.id)), inviteState(u)]);
+async function onboardingState(u: User): Promise<OnboardingState> {
+  const invite = await inviteState(u);
   return {
     signedUp: !u.isGuest,
-    picks: { who: u.who, lanes: u.interests, why: u.why },
-    archetype: archetypeOf(u.who, u.why),
-    round: round ? { mode: round.mode, points: round.points, correct: round.correct, questions: round.questions, rank: round.rank, players: round.players, coinsKobo: round.coinsKobo, claimed: !!round.claimedAt, claimOutcome: round.claimOutcome } : null,
+    who: u.who as Who | null,
+    aboutVersion: u.aboutVersion,
+    lanes: u.interests,
+    archetype: u.archetype as Archetype | null,
     profileDone: !u.isGuest && !u.handle.startsWith(GUEST_HANDLE_PREFIX),
     invite,
-    next: invite && invite.status === "open" ? ("lobby" as const) : ("home" as const),
+    next: invite && invite.status === "open" ? "lobby" : "home",
   };
 }
 
 export async function onboardingRoutes(app: FastifyInstance) {
-  /** What the onboarding round pays (public: the Bag coins screen shows it before anyone has a session). */
-  app.get("/onboarding/rewards", async (): Promise<OnboardingRewardsResponse> => {
-    const c = await getOnboardingConfig();
-    return onboardingRewardsResponseSchema.parse({ questionCount: c.questionCount, questionSeconds: c.questionSeconds, soloTiers: c.soloTiers, sharedByRankKobo: c.sharedByRankKobo });
+  /** About you, the current version of the person or brand set. Public: it's asked before anyone signs up. */
+  app.get("/onboarding/about", async (req) => {
+    const { audience } = aboutQuerySchema.parse(req.query);
+    return aboutView(await currentAboutConfig(audience));
   });
 
   app.get("/onboarding", async (req) => onboardingState(requireSession(req)));
 
-  /** Save onboarding picks (who, lanes, why). Guests too: they're asked before sign-up. The same call edits them from Me. */
+  /**
+   * Who's playing, and/or About you answers against a version ({ version, answers }). Guests too: it's
+   * asked before sign-up. The same call edits them from Me (answering the current version).
+   */
   app.patch("/me/onboarding", async (req) => {
-    const me = requireSession(req);
-    const picks = onboardingPicksSchema.parse(req.body);
-    const who = (picks.who ?? me.who) as Who | null;
-    let why = (picks.why ?? me.why) as Why | null;
-    if (why && !whyFits(who, why)) {
-      if (picks.why) throw httpError(422, "why_does_not_fit_who");
-      why = null; // a new "who" clears a "why" that no longer fits it
-    }
-    const [u] = await db.update(users).set({ who, why, ...(picks.lanes ? { interests: picks.lanes } : {}) }).where(eq(users.id, me.id)).returning();
+    let u = requireSession(req);
+    const body = onboardingPatchSchema.parse(req.body);
+    if (body.who) u = await setWho(u, body.who);
+    if (body.about) u = await answerAbout(u, body.about.version, body.about.answers);
     return onboardingState(u);
   });
+
+  /** Their About you answers, the version and what it gave, and the current set with what carries over (Me). */
+  app.get("/me/onboarding", async (req) => meAbout(requireSession(req)));
 
   /** The invite this person opened before signing up, so onboarding ends in its lobby. Null clears it. */
   app.put("/onboarding/invite", async (req) => {

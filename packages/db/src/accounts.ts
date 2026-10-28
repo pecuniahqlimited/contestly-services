@@ -1,14 +1,13 @@
 /**
  * Accounts (ADR 0006): how a session or sign-in reaches a users row, guests, and signing up.
  * Signing up turns the guest's own row into an account: nothing is copied or merged. It's the one
- * place the onboarding coins are claimed and held Climb awards are paid.
+ * place held Climb awards are paid. There's no sign-up bonus (open question 5).
  */
 import { randomBytes } from "node:crypto";
 import { TransactionRollbackError, and, asc, eq, inArray } from "drizzle-orm";
-import { GUEST_HANDLE_PREFIX, normaliseEmail, type IdentityProvider, type OnboardingBonusOutcome } from "@contestly/shared";
+import { GUEST_HANDLE_PREFIX, type IdentityProvider } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { ledgerEntries, onboardingDevices, onboardingRounds, userIdentities, users, type User } from "./schema.js";
-import * as ledger from "./ledger.js";
+import { userIdentities, users, type User } from "./schema.js";
 import { payHeldAwards } from "./climb.js";
 
 type Conn = Tx | typeof db;
@@ -71,14 +70,12 @@ export async function grantConfiguredAdmins(): Promise<number> {
 
 export interface SignUpResult {
   user: User;
-  onboardingBonus: OnboardingBonusOutcome;
-  bonusKobo: number;
   awardsPaid: number;
 }
 
 /**
- * A guest signs up with a verified email (already lowercased): the same row becomes an account, its
- * onboarding coins are claimed and any held Climb awards are paid, all in this transaction. The email
+ * A guest signs up with a verified email (already lowercased): the same row becomes an account and
+ * any held Climb awards are paid, in this transaction. The email
  * must not belong to another account (callers sign into that one instead).
  */
 export async function becomeMember(tx: Tx, userId: string, email: string): Promise<SignUpResult> {
@@ -87,34 +84,6 @@ export async function becomeMember(tx: Tx, userId: string, email: string): Promi
   const [user] = await tx.update(users)
     .set({ isGuest: false, email, emailVerifiedAt: new Date(), isAdmin: locked.isAdmin || adminEmails().has(email) })
     .where(eq(users.id, userId)).returning();
-  const claim = await claimOnboardingReward(tx, user);
   const awardsPaid = await payHeldAwards(tx, userId);
-  return { user, ...claim, awardsPaid };
-}
-
-/**
- * Post the onboarding round's coins as bonus, once: the ledger key is the normalised email (so Gmail
- * aliases share it) and the device may only have claimed for this account. Needs a signed-up account
- * with an email; a round already claimed, or none, is "none".
- */
-export async function claimOnboardingReward(tx: Tx, user: User): Promise<{ onboardingBonus: OnboardingBonusOutcome; bonusKobo: number }> {
-  if (user.isGuest || !user.email) return { onboardingBonus: "none", bonusKobo: 0 };
-  const [round] = await tx.select().from(onboardingRounds).where(eq(onboardingRounds.userId, user.id)).for("update");
-  if (!round || round.claimedAt || round.coinsKobo <= 0) return { onboardingBonus: "none", bonusKobo: 0 };
-  const key = `onboarding:${normaliseEmail(user.email)}`;
-  const outcome = await claimOutcome(tx, user.id, key, round.deviceHash);
-  if (outcome === "granted") {
-    await ledger.post(tx, { userId: user.id, kind: "bonus", amountKobo: round.coinsKobo, type: "onboarding_bonus", refType: "onboarding_round", refId: user.id, idempotencyKey: key });
-  }
-  await tx.update(onboardingRounds).set({ claimedAt: new Date(), claimOutcome: outcome }).where(eq(onboardingRounds.userId, user.id));
-  return { onboardingBonus: outcome, bonusKobo: outcome === "granted" ? round.coinsKobo : 0 };
-}
-
-async function claimOutcome(tx: Tx, userId: string, key: string, deviceHash: string | null): Promise<OnboardingBonusOutcome> {
-  const [paid] = await tx.select({ id: ledgerEntries.id }).from(ledgerEntries).where(eq(ledgerEntries.idempotencyKey, key));
-  if (paid) return "already_claimed";
-  if (!deviceHash) return "granted";
-  await tx.insert(onboardingDevices).values({ deviceHash, userId }).onConflictDoNothing();
-  const [device] = await tx.select().from(onboardingDevices).where(eq(onboardingDevices.deviceHash, deviceHash));
-  return device.userId === userId ? "granted" : "device_claimed";
+  return { user, awardsPaid };
 }

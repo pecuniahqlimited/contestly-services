@@ -1,6 +1,7 @@
 # ADR 0006: Anonymous-first accounts, signed in from a WebView
 
-Status: accepted (2026-10-22). Roadmap row 5, Firebase Auth and onboarding.
+Status: accepted (2026-10-22). Roadmap row 5, Firebase Auth and onboarding. Rules 2, 7 and 8 amended by
+ADR 0009 (2026-10-28): the onboarding round and its coins are gone; About you is admin config.
 
 ## Context
 
@@ -20,7 +21,7 @@ will migrate those users.
    account-linking setting. The project is config (`FIREBASE_PROJECT_ID`, a service account secret);
    local work and the sims use the Auth emulator.
 2. **Every session starts anonymous.** The first API call from a new anonymous uid creates a `users`
-   row with `is_guest`. Guests play the onboarding round, free parties they were invited to, and Climb
+   row with `is_guest`. Guests answer About you, play free parties they were invited to, and Climb
    runs; they can't hold coins, appear on boards or profiles, win, host or move money
    (`sign_up_required`).
 3. **Identities are `(provider, external_id)` → user** (`user_identities`). `firebase` is the session
@@ -47,11 +48,9 @@ will migrate those users.
    coins; the guest row is left as it is.
 6. **The email code** is 6 digits, stored in Valkey as an HMAC with a server secret, bound to the
    session that asked, alive 10 minutes, 5 tries, a new one after 30 s, rate-limited per email and IP.
-7. **Onboarding coins wait on the round** (`onboarding_rounds`) until sign-up, then post as bonus with
-   ledger key `onboarding:<normalisedEmail>` (lowercase; Gmail dots and +tags dropped). The device
-   check (`onboarding_devices`) is best-effort: the iOS vendor id resets when the app is reinstalled,
-   and a keychain or ANDROID_ID value can be wiped or spoofed. The email key is the real guard.
-8. **Signing up pays what was waiting.** `becomeMember()` claims the coins and pays approved, unpaid
+7. ~~Onboarding coins wait on the round.~~ Removed with the round (ADR 0009). No sign-up bonus for now
+   (open question 5); when there is one, it's granted once per `normaliseEmail()` and device.
+8. **Signing up pays what was waiting.** `becomeMember()` pays approved, unpaid
    Climb awards through `approveAward()` in the same transaction. `canBePaidCash()` = signed up with a
    verified email; `canWithdraw()` adds a verified phone (row 10 calls it).
 9. **Phone is verified, not linked.** We don't offer phone sign-in, so the number is an attribute: the

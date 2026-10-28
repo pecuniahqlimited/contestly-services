@@ -1,8 +1,9 @@
 /**
  * Onboarding and sign-in end to end, against the running stack, the Firebase Auth emulator and Mailpit:
- * anonymous sessions → picks → the onboarding round (shared and solo) → email code from Mailpit → coins
- * kept on the same account; a Gmail alias gets no second bonus, nor does a second account on the same
- * device; the primary email provider fails and the backup delivers; a guest is refused on a staked party;
+ * an anonymous session → who's playing → About you (the admin's questions) → email code from Mailpit →
+ * the same row, now an account, with the lanes and archetype its picks gave; editing About you from Me;
+ * an admin saves a new version, an existing user's answers stay as they were and a new sign-up answers
+ * the new one; no coins anywhere; the primary email provider fails and the backup delivers; a guest is refused on a staked party;
  * an approved Climb award is paid on sign-up; Google and Apple through the one-time-code exchange (stub
  * provider), a reused, expired or wrong-session code refused; an existing account is signed into, not
  * merged; phone check and contact matching by hash.
@@ -10,12 +11,12 @@
  * Needs AUTH_MODE=dev, FIREBASE_AUTH_EMULATOR_HOST and EMAIL_TRANSPORT=mailpit (see .env.example).
  */
 import { createHash, randomBytes } from "node:crypto";
-import { Client } from "colyseus.js";
+import { isDeepStrictEqual as same } from "node:util";
 import { eq, desc } from "drizzle-orm";
-import { bankQuestions, climbAwards, db, emailSends, getOnboardingConfig, saveOnboardingConfig, sql, users } from "@contestly/db";
+import { climbAwards, db, emailSends, sql, users } from "@contestly/db";
 import { makeRedis } from "@contestly/queue";
-import { MSG, ONBOARDING_MSG, onboardingRewardsResponseSchema, ONBOARDING_ROOM, SIGN_UP_REQUIRED, kobo, phoneHash, type OnboardingResult } from "@contestly/shared";
-import { API, RT, api, correctAnswer, failureCount, leaks, ok, sleep, wrongAnswer } from "./sim-lib.js";
+import { SIGN_UP_REQUIRED, aboutVersionSchema, kobo, phoneHash, type AboutConfig, type AboutVersion } from "@contestly/shared";
+import { API, api, failureCount, ok, sleep } from "./sim-lib.js";
 
 const EMULATOR = process.env.FIREBASE_AUTH_EMULATOR_HOST;
 const PROJECT = process.env.FIREBASE_PROJECT_ID ?? "demo-contestly";
@@ -92,29 +93,16 @@ async function signUpByEmail(s: Session, email: string) {
   return http(s, "POST", "/auth/email/verify", { email, code });
 }
 
-// ---------------------------------------------------------------- the onboarding round
+// ---------------------------------------------------------------- About you
 
-/** Join (matchmaking), answer every question right or wrong, and resolve with this player's result. */
-async function playRound(s: Session, deviceId: string, answerRight: boolean): Promise<{ result: OnboardingResult; lobbyCounts: number[]; leaked: string[] }> {
-  const room = await new Client(RT).joinOrCreate(ONBOARDING_ROOM, { token: s.token, deviceId });
-  const lobbyCounts: number[] = [];
-  const leaked: string[] = [];
-  return new Promise((resolve, reject) => {
-    room.onMessage(ONBOARDING_MSG.lobby, (m: { players: number }) => lobbyCounts.push(m.players));
-    room.onMessage(MSG.question, async (view: any) => {
-      leaked.push(...leaks(view));
-      const [q] = await db.select().from(bankQuestions).where(eq(bankQuestions.id, view.questionId));
-      await sleep(300);
-      room.send(MSG.answer, answerRight ? correctAnswer("pick_one", q.payload) : wrongAnswer("pick_one", q.payload));
-    });
-    for (const t of [MSG.reveal, MSG.standings, MSG.finalStandings]) room.onMessage(t, () => {});
-    room.onMessage(MSG.error, (e: any) => reject(new Error(`room error ${JSON.stringify(e)}`)));
-    room.onMessage(ONBOARDING_MSG.result, (result: OnboardingResult) => {
-      void room.leave();
-      resolve({ result, lobbyCounts, leaked });
-    });
-  });
-}
+const aboutSet = async (audience: "person" | "brand"): Promise<AboutVersion> =>
+  aboutVersionSchema.parse(await (await fetch(`${API}/onboarding/about?audience=${audience}`)).json());
+/** As the app does: one screen per question, in order (no timer), then one save with the version it showed. */
+const answerAbout = (s: Session, version: number, answers: Record<string, string[]>) =>
+  http(s, "PATCH", "/me/onboarding", { about: { version, answers } });
+/** An admin saves a set (dev header: any x-dev-user passes requireAdmin in dev mode). */
+const saveSet = (audience: "person" | "brand", config: AboutConfig, reason: string) =>
+  api("tunde", "PUT", `/admin/onboarding/about/${audience}`, { config, reason }) as Promise<AboutVersion>;
 
 // ---------------------------------------------------------------- Google / Apple through the one-time code
 
@@ -147,41 +135,38 @@ if (process.env.AUTH_MODE !== "dev" || process.env.NODE_ENV === "production") {
   process.exit(1);
 }
 for (const key of await redis.keys("limit:*")) await redis.del(key);
-// Short beats so the sim doesn't wait out the real clock; restored at the end.
-const savedConfig = await getOnboardingConfig();
-await saveOnboardingConfig({ ...savedConfig, waitSeconds: 3, questionSeconds: 5, revealSeconds: 1, standingsSeconds: 1 }, null);
-
+const seededSet = (await aboutSet("person")).config;
 try {
-  console.log("\n==== anonymous first: picks, then a shared round and a solo one ====");
-  const rewards = await (await fetch(`${API}/onboarding/rewards`)).json();
-  ok(onboardingRewardsResponseSchema.safeParse(rewards).success && rewards.soloTiers[0].coinsKobo === kobo(500), "the round's rewards are public, for the Bag coins screen");
-  const [ada, bayo, chi, dami] = await Promise.all([anonymous(), anonymous(), anonymous(), anonymous()]);
-  const adaDevice = `device-ada-${tag}`;
+  console.log("\n==== anonymous first: who's playing, then About you ====");
+  // A known set saved as the current version, so the picks below mean what they say; the set that was current is put back at the end.
+  const person = await saveSet("person", { questions: [
+    { id: "saturday", prompt: "Saturday night. Where are you?", hint: "Pick all that fit", kind: "multi", min: 1, options: [
+      { id: "match", emoji: "⚽", label: "At the match", lanes: ["Football"], weights: { competitor: 1 } },
+      { id: "afrobeats", emoji: "🎶", label: "Front row, Afrobeats", lanes: ["Afrobeats", "Hip hop"], weights: { fan: 1 } },
+      { id: "quiz", emoji: "🧩", label: "Quiz night", lanes: ["Brain teasers", "General knowledge"], weights: { grinder: 1 } },
+    ] },
+    { id: "rather", prompt: "You'd rather…", hint: "Pick one", kind: "single", options: [
+      { id: "beat", emoji: "🏆", label: "Beat my friends", weights: { competitor: 3 } },
+      { id: "climb", emoji: "🧗🏾", label: "Climb the leaderboard", weights: { grinder: 3 } },
+      { id: "vibe", emoji: "🫶🏾", label: "Just vibe with people", weights: { fan: 3 } },
+    ] },
+  ] }, `sim:onboarding ${tag}: a known set`);
+  ok(person.version > 0 && (await aboutSet("person")).version === person.version, `the admin's save is the current person set (v${person.version})`);
+  ok((await aboutSet("brand")).config.questions.length >= 1, "the brand set is there too, for anyone who picks 'a brand'");
+
+  const ada = await anonymous();
   const before = await me(ada);
-  ok(before.isGuest === true && before.wallet.bonusKobo === 0, "a first anonymous session is a guest with no coins");
-  const picks = await http(ada, "PATCH", "/me/onboarding", { who: "person", lanes: ["Geography"], why: "grinder" });
-  ok(picks.body.archetype === "grinder" && picks.body.picks.lanes[0] === "Geography", "picks saved; the archetype comes back for Home");
-  const misfit = await http(ada, "PATCH", "/me/onboarding", { why: "launch" });
-  ok(misfit.status === 422, "a brand's 'why' doesn't fit a person");
-  ok((await http(ada, "GET", "/onboarding")).body.round === null, "no round yet, so the app still offers it");
+  ok(before.isGuest === true && before.wallet.bonusKobo === 0 && before.wallet.cashKobo === 0, "a first anonymous session is a guest with no coins");
+  ok((await http(ada, "PATCH", "/me/onboarding", { who: "person" })).body.who === "person", "who's playing: just me");
+  const partial = await answerAbout(ada, person.version, { saturday: ["quiz"] });
+  ok(partial.status === 422 && partial.body.error === "invalid_answers" && partial.body.details[0].questionId === "rather", "every question is answered before the save");
+  const wrongOption = await answerAbout(ada, person.version, { saturday: ["quiz"], rather: ["quiz"] });
+  ok(wrongOption.status === 422, "an option from another question is refused");
+  const picks = await answerAbout(ada, person.version, { saturday: ["quiz", "afrobeats"], rather: ["climb"] });
+  ok(picks.status === 200 && picks.body.archetype === "grinder" && picks.body.aboutVersion === person.version, `grinder: 1 + 3 beats fan 1 (${picks.body.archetype})`);
+  ok(same(picks.body.lanes, ["Afrobeats", "Hip hop", "Brain teasers", "General knowledge"]), `lanes from every pick, each once (${picks.body.lanes})`);
 
-  // Ada and Bayo onboard at the same moment: one shared room. Then Chi and Dami alone, each after the last room locked.
-  const shared = Promise.all([playRound(ada, adaDevice, true), playRound(bayo, `device-bayo-${tag}`, false)]);
-  await sleep(3500);
-  const chiRound = playRound(chi, `device-chi-${tag}`, true);
-  await sleep(3500);
-  const damiRound = playRound(dami, adaDevice, true); // same phone as Ada
-  const [[a, b], c, d] = await Promise.all([shared, chiRound, damiRound]);
-  ok(a.result.mode === "shared" && a.result.players === 2 && b.result.players === 2, "two people onboarding at once share a round");
-  ok(a.lobbyCounts.every((n) => n <= 2) && a.lobbyCounts.includes(2), `the lobby counts only real players (${a.lobbyCounts})`);
-  ok(a.result.rank === 1 && b.result.rank === 2 && a.result.coinsKobo === kobo(500) && b.result.coinsKobo === kobo(400), "shared: paid by rank, and everyone gets something");
-  ok(c.result.mode === "solo" && c.result.players === 1 && c.result.correct === 3 && c.result.coinsKobo > 0, `alone, a solo round paid by points (${c.result.points} pts → ${c.result.coinsKobo})`);
-  ok([...a.leaked, ...c.leaked].length === 0, "no correct answer is sent while a question is open");
-  ok((await me(ada)).wallet.bonusKobo === 0, "a guest's coins wait on the round, not in the wallet");
-  const again = await new Client(RT).joinOrCreate(ONBOARDING_ROOM, { token: ada.token }).then(() => "joined", (e: Error) => e.message);
-  ok(again.includes("already_played"), `one round per account (${again})`);
-
-  console.log("\n==== email code from Mailpit: the guest signs up, same account, coins kept ====");
+  console.log("\n==== email code from Mailpit: the guest signs up, same account, picks kept ====");
   const adaEmail = `sim${tag}ada@gmail.com`;
   ok((await http(ada, "POST", "/auth/email/start", { email: adaEmail })).status === 200, "a code is sent");
   const first = await mailFor(adaEmail);
@@ -189,25 +174,63 @@ try {
   ok((await http(ada, "POST", "/auth/email/start", { email: adaEmail })).body.error === "resend_cooldown", "a new code only after 30 s");
   const wrong = await http(ada, "POST", "/auth/email/verify", { email: adaEmail, code: first.code === "000000" ? "111111" : "000000" });
   ok(wrong.status === 400 && wrong.body.error === "invalid_code", "a wrong code is refused");
+  const bayo = await anonymous();
   const bayoTries = await http(bayo, "POST", "/auth/email/verify", { email: adaEmail, code: first.code });
   ok(bayoTries.status === 400, "the right code from another session is refused (codes are bound to who asked)");
   const verified = await http(ada, "POST", "/auth/email/verify", { email: adaEmail, code: first.code });
-  ok(verified.body.account === "upgraded" && verified.body.onboardingBonus === "granted" && verified.body.bonusKobo === kobo(500), `signed up, coins granted (${JSON.stringify({ ...verified.body, customToken: "…" })})`);
+  ok(verified.body.account === "upgraded" && !("onboardingBonus" in verified.body) && !("bonusKobo" in verified.body), `signed up, and nothing about coins (${JSON.stringify({ ...verified.body, customToken: "…" })})`);
   const adaMember = await withCustomToken(verified.body.customToken);
   ok(adaMember.uid === ada.uid, "the custom token is for the guest's own anonymous uid");
   const adaNow = await me(adaMember);
-  ok(adaNow.isGuest === false && adaNow.email === adaEmail && adaNow.wallet.bonusKobo === kobo(500) && adaNow.id === before.id, "same row, now an account with its 500 coins");
+  ok(adaNow.isGuest === false && adaNow.email === adaEmail && adaNow.id === before.id, "same row, now an account");
+  ok(adaNow.wallet.bonusKobo === 0 && adaNow.wallet.cashKobo === 0, "no sign-up bonus (open question 5)");
   ok((await http(ada, "POST", "/auth/email/verify", { email: adaEmail, code: first.code })).body.error === "invalid_code", "a code works once");
   const state = (await http(adaMember, "GET", "/onboarding")).body;
-  ok(state.signedUp && state.round.claimed && state.picks.why === "grinder", "onboarding knows: signed up, coins claimed, picks kept (never asked twice)");
+  ok(state.signedUp && state.archetype === "grinder" && state.aboutVersion === person.version && state.lanes.includes("Brain teasers"), "onboarding knows: signed up, About you kept (never asked twice)");
 
-  console.log("\n==== no farming: a Gmail alias, and a second account on the same device ====");
-  const alias = `s.i.m${tag}a.d.a+again@googlemail.com`;
-  const chiSignUp = await signUpByEmail(chi, alias);
-  ok(chiSignUp.body.account === "upgraded" && chiSignUp.body.onboardingBonus === "already_claimed" && chiSignUp.body.bonusKobo === 0, `an alias of the same Gmail signs up but gets no second bonus (${chiSignUp.body.onboardingBonus})`);
-  ok((await me(chi)).wallet.bonusKobo === 0, "and nothing landed in its wallet");
-  const damiSignUp = await signUpByEmail(dami, `sim${tag}dami@example.com`);
-  ok(damiSignUp.body.onboardingBonus === "device_claimed" && damiSignUp.body.bonusKobo === 0, `a new email on a device that already claimed: no bonus (${damiSignUp.body.onboardingBonus})`);
+  console.log("\n==== About you from Me, then a new version from the admin ====");
+  const mine = (await http(adaMember, "GET", "/me/onboarding")).body;
+  ok(mine.answered.version === person.version && mine.current.version === person.version && same(mine.prefill, mine.answered.answers), "Me shows the answers, prefilled against the current set");
+  const edited = await answerAbout(adaMember, person.version, { saturday: ["match"], rather: ["beat"] });
+  ok(edited.body.archetype === "competitor" && same(edited.body.lanes, ["Football"]), `editing from Me re-derives lanes and archetype (${edited.body.archetype})`);
+  await answerAbout(adaMember, person.version, { saturday: ["quiz", "afrobeats"], rather: ["climb"] }); // back to grinder
+
+  // v+1: "quiz" goes, "climb" now weighs fan, and a new question.
+  const next = await saveSet("person", { questions: [
+    { ...person.config.questions[0], options: person.config.questions[0].options.filter((o) => o.id !== "quiz") },
+    { ...person.config.questions[1], options: person.config.questions[1].options.map((o) => (o.id === "climb" ? { ...o, weights: { fan: 3 } } : o)) },
+    { id: "when", prompt: "When do you play?", hint: "Pick one", kind: "single", options: [
+      { id: "lunch", emoji: "🥪", label: "Lunch break", weights: { grinder: 1 } },
+      { id: "late", emoji: "🌙", label: "Late night", weights: { fan: 1 } },
+    ] },
+  ] }, `sim:onboarding ${tag}: drop quiz, add when`);
+  ok(next.version === person.version + 1, `a save is the next version (v${next.version})`);
+  const [adaRow] = await db.select().from(users).where(eq(users.id, adaNow.id));
+  ok(adaRow.aboutVersion === person.version && adaRow.archetype === "grinder" && same(adaRow.aboutAnswers, { saturday: ["quiz", "afrobeats"], rather: ["climb"] }), "Ada's answers, version and archetype are untouched by the new version");
+  const mineNow = (await http(adaMember, "GET", "/me/onboarding")).body;
+  ok(mineNow.current.version === next.version && mineNow.hasNewQuestions === true && same(mineNow.prefill, { saturday: ["afrobeats"], rather: ["climb"] }), `Me offers the new set, prefilled where ids still match (${JSON.stringify(mineNow.prefill)})`);
+  ok((await answerAbout(adaMember, next.version, mineNow.prefill)).status === 422, "the new question has to be answered to save against the new version");
+
+  const chi = await anonymous();
+  const chiSet = await aboutSet("person");
+  ok(chiSet.version === next.version, "a new guest gets the new version");
+  const chiPicks = await answerAbout(chi, chiSet.version, { saturday: ["match"], rather: ["climb"], when: ["late"] });
+  ok(chiPicks.body.archetype === "fan" && chiPicks.body.aboutVersion === next.version, `and the new weights: climb is fan now (${chiPicks.body.archetype})`);
+  const chiSignUp = await signUpByEmail(chi, `sim${tag}chi@example.com`);
+  ok(chiSignUp.body.account === "upgraded", "Chi signs up");
+  const chiState = (await http(await withCustomToken(chiSignUp.body.customToken), "GET", "/onboarding")).body;
+  ok(chiState.aboutVersion === next.version && chiState.archetype === "fan", "with the new version's answers and archetype");
+  const oldAnswersNewGuest = await answerAbout(await anonymous(), person.version, { saturday: ["quiz"], rather: ["beat"] });
+  ok(oldAnswersNewGuest.status === 200 && oldAnswersNewGuest.body.aboutVersion === person.version, "answers against the version a client was shown still save (it was current when they saw it)");
+
+  console.log("\n==== a brand answers the brand set, and is always host ====");
+  const brandSet = await aboutSet("brand");
+  const dami = await anonymous();
+  await http(dami, "PATCH", "/me/onboarding", { who: "brand" });
+  const brandAnswers = Object.fromEntries(brandSet.config.questions.map((q) => [q.id, q.options.slice(0, q.kind === "single" ? 1 : (q.min ?? 1)).map((o) => o.id)]));
+  const brandPicks = await answerAbout(dami, brandSet.version, brandAnswers);
+  ok(brandPicks.body.archetype === "host" && brandPicks.body.who === "brand", `a brand is host (${brandPicks.body.archetype})`);
+  ok((await answerAbout(dami, person.version, { saturday: ["match"], rather: ["beat"] })).status === 422, "a brand can't answer the person set");
 
   console.log("\n==== the primary provider fails, the backup delivers ====");
   await redis.set(`dev:email:fail:zeptomail`, "1", "EX", 60);
@@ -276,7 +299,7 @@ try {
   const ginaNewPhone = await anonymous();
   const back = await providerRoundTrip(ginaNewPhone, "google", ginaEmail);
   const backOut = await exchange(ginaNewPhone, back.deepLink.searchParams.get("code")!, back.verifier);
-  ok(backOut.body.account === "existing" && backOut.body.onboardingBonus === "none", "an identity that's already an account signs into it");
+  ok(backOut.body.account === "existing", "an identity that's already an account signs into it");
   const ginaAgain = await withCustomToken(backOut.body.customToken);
   ok(ginaAgain.uid === gina.uid && (await me(ginaAgain)).id === (await me(ginaMember)).id, "the token is for her account's uid; the new phone's guest is left alone");
   ok((await me(ginaNewPhone)).isGuest === true, "and that guest row stays a guest");
@@ -298,7 +321,7 @@ try {
   ok((await http(ginaMember, "POST", "/me/contacts/match", { hashes: [await phoneHash(randomPhone())] })).body.error === "contacts_limit", "two syncs a day");
   ok((await http(guest, "POST", "/me/contacts/match", { hashes: [await phoneHash(adaPhone)] })).body.error === SIGN_UP_REQUIRED, "guests can't look up contacts");
 } finally {
-  await saveOnboardingConfig(savedConfig, null);
+  await api("tunde", "PUT", "/admin/onboarding/about/person", { config: seededSet, reason: `sim:onboarding ${tag}: put the set back` });
   await redis.quit();
   await sql.end();
 }

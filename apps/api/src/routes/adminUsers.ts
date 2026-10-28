@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, ilike, or, type SQL } from "drizzle-orm";
 import {
-  banUser, climbAwards, climbWeeks, db, ledger, onboardingRounds, parties, partyPlayers, unbanUser, userIdentities, users,
+  banUser, climbAwards, climbWeeks, db, ledger, parties, partyPlayers, unbanUser, userIdentities, users,
 } from "@contestly/db";
 import {
   ADMIN_EVENTS_CHANNEL, adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema,
@@ -31,10 +31,9 @@ function searchWhere(q: string): SQL {
 async function userDetail(id: string) {
   const [u] = await db.select().from(users).where(and(eq(users.id, id), eq(users.isSystem, false)));
   if (!u) throw httpError(404, "not_found");
-  const [identities, wallet, [round], played, hosted, weeks, awards] = await Promise.all([
+  const [identities, wallet, played, hosted, weeks, awards] = await Promise.all([
     db.select().from(userIdentities).where(eq(userIdentities.userId, id)),
     ledger.balances(id),
-    db.select().from(onboardingRounds).where(eq(onboardingRounds.userId, id)),
     db.select({ id: parties.id, title: parties.title, status: parties.status, startsAt: parties.startsAt, rank: partyPlayers.rank, score: partyPlayers.score, prizeKobo: partyPlayers.prizeKobo })
       .from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).where(eq(partyPlayers.userId, id)).orderBy(desc(parties.startsAt)).limit(RECENT_LIMIT),
     db.select({ id: parties.id, title: parties.title, status: parties.status, startsAt: parties.startsAt, playerCount: sql<number>`(select count(*) from ${partyPlayers} pc where pc.party_id = ${parties.id})::int` })
@@ -45,11 +44,10 @@ async function userDetail(id: string) {
   return adminUserDetailSchema.parse({
     user: {
       ...adminUserRow(u), banReason: u.banReason, emailVerifiedAt: u.emailVerifiedAt?.toISOString() ?? null, phoneAdded: !!u.phoneVerifiedAt,
-      who: u.who, why: u.why, interests: u.interests, streakDays: u.streakDays,
+      who: u.who, archetype: u.archetype, aboutVersion: u.aboutVersion, interests: u.interests, streakDays: u.streakDays,
     },
     identities: identities.map((i) => ({ provider: i.provider, externalId: i.externalId, createdAt: i.createdAt.toISOString() })),
     wallet,
-    onboarding: round ? { mode: round.mode, points: round.points, coinsKobo: round.coinsKobo, claimOutcome: round.claimOutcome, playedAt: round.playedAt.toISOString() } : null,
     partiesPlayed: played.map((p) => ({ ...p, startsAt: p.startsAt.toISOString() })),
     partiesHosted: hosted.map((p) => ({ ...p, startsAt: p.startsAt.toISOString(), playerCount: Number(p.playerCount) })),
     climbWeeks: weeks.map((w) => ({ week: w.week, points: w.points, bestRunStages: w.bestRunStages })),

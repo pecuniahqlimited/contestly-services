@@ -85,6 +85,20 @@
       "when": 1793013775532,
       "tag": "0011_social_crews",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793186071948,
+      "tag": "0012_drop_onboarding_round",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793186072434,
+      "tag": "0013_about_you",
+      "breakpoints": true
     }
   ]
 }

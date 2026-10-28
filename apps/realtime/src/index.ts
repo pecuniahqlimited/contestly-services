@@ -1,18 +1,16 @@
 /**
  * Colyseus game server. Rooms live in this process; Valkey (RedisPresence + RedisDriver) holds
  * presence, room discovery and pub/sub, so a second instance is config, not code. filterBy
- * partyId means joinOrCreate lands every player of a party in the same room; onboarding rooms are
- * matchmade across instances the same way.
+ * partyId means joinOrCreate lands every player of a party in the same room.
  */
 import { createServer } from "node:http";
 // colyseus ships CJS with star re-exports Node's ESM lexer can't see; destructure the default.
 import colyseus, { RedisPresence, RedisDriver } from "colyseus";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 const { Server } = colyseus;
-import { INBOX_ROOM, ONBOARDING_ROOM, PARTY_ROOM } from "@contestly/shared";
+import { INBOX_ROOM, PARTY_ROOM } from "@contestly/shared";
 import { assertAuthConfig } from "@contestly/auth";
 import { PartyRoom } from "./PartyRoom.js";
-import { OnboardingRoom } from "./OnboardingRoom.js";
 import { InboxRoom } from "./InboxRoom.js";
 
 // Refuses AUTH_MODE=dev in production.
@@ -37,8 +35,6 @@ const gameServer = new Server({
 });
 
 gameServer.define(PARTY_ROOM, PartyRoom).filterBy(["partyId"]);
-// No filter: joinOrCreate drops a newcomer into any onboarding room still waiting (not locked, not full).
-gameServer.define(ONBOARDING_ROOM, OnboardingRoom);
 // One per user: joinOrCreate with the user's own id; onAuth refuses anyone else.
 gameServer.define(INBOX_ROOM, InboxRoom).filterBy(["userId"]);
 

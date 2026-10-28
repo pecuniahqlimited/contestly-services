@@ -1,13 +1,15 @@
 import type { FastifyInstance } from "fastify";
-import { currentEmailConfig, currentOnboardingConfig, db, getPartyConfig, recentEmailSends, recordAdminAction, saveEmailConfig, saveOnboardingConfig, setPartyConfig } from "@contestly/db";
+import { currentAboutConfig, currentEmailConfig, db, getPartyConfig, recentEmailSends, recordAdminAction, saveAboutConfig, saveEmailConfig, setPartyConfig } from "@contestly/db";
 import {
-  EMAIL_PROVIDERS, adminActionsQuerySchema, adminActionsResponseSchema, adminEmailSchema, adminOnboardingBodySchema, adminPartyLimitsSchema, adminSessionSchema,
-  backupOf, onboardingConfigVersionSchema,
+  EMAIL_PROVIDERS, aboutAudienceSchema, aboutConfigSchemaFor, adminAboutBodySchema, adminAboutPreviewResponseSchema, adminAboutPreviewSchema, adminActionsQuerySchema,
+  adminActionsResponseSchema, adminEmailSchema, adminPartyLimitsSchema, adminSessionSchema, answerProblems, backupOf, deriveAbout,
 } from "@contestly/shared";
+import { z } from "zod";
 import { requireAdmin } from "../auth.js";
 import { actionsView } from "../adminViews.js";
 import { toPerson } from "../people.js";
 import { senders } from "../email.js";
+import { aboutView } from "../about.js";
 
 /** The email page: which provider sends first, which are configured (keys are env, never shown or set here), and the last sends. */
 async function emailView() {
@@ -19,10 +21,7 @@ async function emailView() {
   };
 }
 
-async function onboardingView() {
-  const v = await currentOnboardingConfig();
-  return onboardingConfigVersionSchema.parse({ version: v.version, config: v.config, createdAt: v.createdAt?.toISOString() ?? null });
-}
+const audienceParam = (params: unknown) => z.object({ audience: aboutAudienceSchema }).parse(params).audience;
 
 export async function adminRoutes(app: FastifyInstance) {
   /** The console's gate: 200 for an admin, 403 for anyone else (it signs in with the same email code / Google flow as the app). */
@@ -37,20 +36,36 @@ export async function adminRoutes(app: FastifyInstance) {
     return adminActionsResponseSchema.parse({ actions: await actionsView(adminActionsQuerySchema.parse(req.query)) });
   });
 
-  /** The onboarding round's config (wait, timings, reward tiers, shared payouts), current version. */
-  app.get("/admin/onboarding", async (req) => {
+  /** About you for one audience (person | brand), current version. */
+  app.get("/admin/onboarding/about/:audience", async (req) => {
     requireAdmin(req);
-    return onboardingView();
+    return aboutView(await currentAboutConfig(audienceParam(req.params)));
   });
 
-  /** Save a new version; rooms created from now on use it, and GET /onboarding/rewards shows it. */
-  app.put("/admin/onboarding", async (req) => {
+  /**
+   * Save a new version (with a reason). New answers use it from now on; existing users keep the
+   * answers and archetype they have, and see the new set only if they edit from Me.
+   */
+  app.put("/admin/onboarding/about/:audience", async (req) => {
     const admin = requireAdmin(req);
-    const { config, reason } = adminOnboardingBodySchema.parse(req.body);
-    const before = await currentOnboardingConfig();
-    const saved = await saveOnboardingConfig(config, admin.id);
-    await recordAdminAction(db, { adminUserId: admin.id, action: "config.onboarding", targetType: "config", targetId: "onboarding", reason, before: { version: before.version, config: before.config }, after: { version: saved.version, config: saved.config } });
-    return onboardingView();
+    const audience = audienceParam(req.params);
+    const { config, reason } = adminAboutBodySchema.parse(req.body);
+    const saved = await db.transaction(async (tx) => {
+      const before = await currentAboutConfig(audience, tx);
+      const row = await saveAboutConfig(tx, audience, config, admin.id);
+      await recordAdminAction(tx, { adminUserId: admin.id, action: "config.onboarding_about", targetType: "config", targetId: `onboarding_about:${audience}`, reason, before: { version: before.version, config: before.config }, after: { version: row.version, config: row.config } });
+      return row;
+    });
+    return aboutView(saved);
+  });
+
+  /** How a set of picks maps (lanes, archetype, the totals behind it) against the current set or a draft not saved yet. */
+  app.post("/admin/onboarding/about/:audience/preview", async (req) => {
+    requireAdmin(req);
+    const audience = audienceParam(req.params);
+    const { answers, config: draft } = adminAboutPreviewSchema.parse(req.body);
+    const config = draft === undefined ? (await currentAboutConfig(audience)).config : aboutConfigSchemaFor(audience).parse(draft);
+    return adminAboutPreviewResponseSchema.parse({ ...deriveAbout(audience, config, answers), problems: answerProblems(config, answers) });
   });
 
   /** The party limits as stored, quick picks outside their range included (hosts don't see those). */

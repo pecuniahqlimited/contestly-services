@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type OnboardingConfig, type PartyLimits } from "@contestly/shared";
+import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -39,9 +39,17 @@ export const users = pgTable("users", {
   phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
   /** HMAC(PHONE_HASH_SECRET, sha256(phone)): what contact matching compares. One account per number. */
   phoneHmac: text("phone_hmac").unique(),
-  /** Onboarding picks, asked once and editable from Me. Lanes are `interests`. */
+  /** Who's playing (person | brand), asked once and editable from Me. */
   who: text("who"),
-  why: text("why"),
+  /**
+   * About you: the picks, against the version of the audience's set they were given for. Lanes go to
+   * `interests`; the archetype is what Home leads with. A new config version never touches these.
+   */
+  aboutAudience: text("about_audience"),
+  aboutVersion: integer("about_version"),
+  aboutAnswers: jsonb("about_answers").$type<AboutAnswers>(),
+  aboutAnsweredAt: timestamp("about_answered_at", { withTimezone: true }),
+  archetype: text("archetype"),
   /** Banned by an admin: can't sign in, join, host or play (assertNotBanned). Unban clears both. */
   bannedAt: timestamp("banned_at", { withTimezone: true }),
   banReason: text("ban_reason"),
@@ -76,36 +84,6 @@ export const userIdentities = pgTable("user_identities", {
 }, (t) => [primaryKey({ columns: [t.provider, t.externalId] }), index("user_identities_user_idx").on(t.userId)]);
 
 /**
- * The onboarding round's result, one per account. Coins stay here while the player is a guest and are
- * posted as bonus at sign-up (claimed_at), at most once per normalised email and once per device.
- */
-export const onboardingRounds = pgTable("onboarding_rounds", {
-  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
-  mode: text("mode").notNull(), // solo | shared
-  players: integer("players").notNull(),
-  points: integer("points").notNull(),
-  correct: integer("correct").notNull(),
-  questions: integer("questions").notNull(),
-  rank: integer("rank").notNull(),
-  coinsKobo: integer("coins_kobo").notNull(),
-  /** SHA-256 of the app's device id (best-effort; the email key is the real guard). */
-  deviceHash: text("device_hash"),
-  /** The bank questions it played, so a first party doesn't repeat them. */
-  bankQuestionIds: uuid("bank_question_ids").array().notNull().default(sql`'{}'::uuid[]`),
-  playedAt: timestamp("played_at", { withTimezone: true }).notNull().defaultNow(),
-  claimedAt: timestamp("claimed_at", { withTimezone: true }),
-  /** granted | already_claimed | device_claimed */
-  claimOutcome: text("claim_outcome"),
-});
-
-/** Devices that have had an onboarding bonus, and for whom. */
-export const onboardingDevices = pgTable("onboarding_devices", {
-  deviceHash: text("device_hash").primaryKey(),
-  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-/**
  * Append-only: every admin action, who did it, to what, the state before and after, and why. Destructive
  * actions carry a reason. Never updated or deleted (like the ledger).
  */
@@ -121,13 +99,17 @@ export const adminActions = pgTable("admin_actions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("admin_actions_target_idx").on(t.targetType, t.targetId, t.createdAt), index("admin_actions_created_idx").on(t.createdAt)]);
 
-/** The onboarding round's config, one immutable row per admin save; the newest is current. */
-export const onboardingConfigs = pgTable("onboarding_configs", {
-  version: serial("version").primaryKey(),
-  config: jsonb("config").$type<OnboardingConfig>().notNull(),
+/**
+ * About you, per audience (person | brand): one immutable row per admin save, numbered 1, 2, … within
+ * the audience; the highest is current. Users' answers name the version they answered.
+ */
+export const aboutConfigs = pgTable("about_configs", {
+  audience: text("audience").notNull(),
+  version: integer("version").notNull(),
+  config: jsonb("config").$type<AboutConfig>().notNull(),
   createdByUserId: uuid("created_by_user_id").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [primaryKey({ columns: [t.audience, t.version] })]);
 
 /** Which email provider sends first: one immutable row per admin save; the newest is current. The other is the fallback. */
 export const emailConfigs = pgTable("email_configs", {
@@ -783,7 +765,6 @@ export type Crew = typeof crews.$inferSelect;
 export type CrewMember = typeof crewMembers.$inferSelect;
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
-export type OnboardingRound = typeof onboardingRounds.$inferSelect;
 export type AdminActionRow = typeof adminActions.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;

@@ -7,6 +7,7 @@ export * from "./person.js";
 export * from "./climb.js";
 export * from "./categories.js";
 export * from "./accounts.js";
+export * from "./about.js";
 export * from "./admin.js";
 export * from "./chat.js";
 export * from "./social.js";
@@ -22,7 +23,7 @@ export const naira = (k: number) => "₦" + (k / 100).toLocaleString("en-NG", { 
 
 /** Bonus coins are counted in kobo like cash (1 coin = 100 kobo) but shown without the ₦. */
 const KOBO_PER_COIN = 100;
-/** Coins as a number, for inputs and arithmetic (the console's onboarding editor, Bag coins): 50_000 kobo → 500. */
+/** Coins as a number, for inputs and arithmetic (inputs in the console and the app): 50_000 kobo → 500. */
 export const coinsFromKobo = (k: number): number => k / KOBO_PER_COIN;
 /** Coins as text for display: 50_000 kobo → "500". */
 export const coins = (k: number) => coinsFromKobo(k).toLocaleString("en-NG", { maximumFractionDigits: 2 });
@@ -111,7 +112,7 @@ export type FlagReason = (typeof FLAG_REASONS)[number];
 /** Flags name their question, so a flag that arrives late never lands on the next one. */
 export const flagSchema = z.object({ questionId: z.string().uuid(), reason: z.enum(FLAG_REASONS) });
 
-/** Bonus coins a dev-header user (AUTH_MODE=dev) starts with. Real accounts get the onboarding round's coins instead. */
+/** Bonus coins a dev-header user (AUTH_MODE=dev) starts with. Real accounts start with none (no sign-up bonus yet, open question 5). */
 export const WELCOME_BONUS_KOBO = kobo(500);
 
 /**

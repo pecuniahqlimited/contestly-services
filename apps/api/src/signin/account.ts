@@ -2,14 +2,14 @@
  * Which account a verified sign-in lands on (ADR 0006), shared by the email code and Google/Apple:
  *  1. the provider identity is already an account's → that account;
  *  2. the verified email is an account's → that account (and the identity is attached to it);
- *  3. the session is a guest → the guest signs up: same row, its coins claimed, held awards paid;
+ *  3. the session is a guest → the guest signs up: same row, held awards paid;
  *  4. otherwise (a signed-up session signing into a new email) → sign_out_first.
- * An existing account never takes the guest's coins or anything else; the guest row is left as it is.
+ * An existing account never takes anything from the guest; the guest row is left as it is.
  */
 import { attachIdentity, becomeMember, db, firebaseUidFor, memberByEmail, userByIdentity, users, type User } from "@contestly/db";
 import { assertNotBanned, createCustomToken } from "@contestly/auth";
 import { eq } from "drizzle-orm";
-import type { OAuthProvider, OnboardingBonusOutcome, SignInAccount, SignInResult } from "@contestly/shared";
+import type { OAuthProvider, SignInAccount, SignInResult } from "@contestly/shared";
 import { putOnBoard } from "../climb/boards.js";
 import { httpError } from "../httpError.js";
 
@@ -22,11 +22,9 @@ export interface VerifiedSignIn {
 export interface SignInOutcome {
   userId: string;
   account: SignInAccount;
-  onboardingBonus: OnboardingBonusOutcome;
-  bonusKobo: number;
 }
 
-const existing = (userId: string): SignInOutcome => ({ userId, account: "existing", onboardingBonus: "none", bonusKobo: 0 });
+const existing = (userId: string): SignInOutcome => ({ userId, account: "existing" });
 
 export async function signIn(session: User, v: VerifiedSignIn): Promise<SignInOutcome> {
   const outcome = await db.transaction(async (tx): Promise<SignInOutcome> => {
@@ -42,8 +40,8 @@ export async function signIn(session: User, v: VerifiedSignIn): Promise<SignInOu
     if (!session.isGuest) throw httpError(409, "sign_out_first");
     if (!v.email) throw httpError(422, "email_not_verified");
     if (v.identity) await attachIdentity(tx, session.id, v.identity.provider, v.identity.subject);
-    const up = await becomeMember(tx, session.id, v.email);
-    return { userId: session.id, account: "upgraded", onboardingBonus: up.onboardingBonus, bonusKobo: up.bonusKobo };
+    await becomeMember(tx, session.id, v.email);
+    return { userId: session.id, account: "upgraded" };
   });
   if (outcome.account === "upgraded") await putOnBoard(outcome.userId);
   return outcome;
@@ -54,5 +52,5 @@ export async function withSessionToken(o: SignInOutcome): Promise<SignInResult> 
   const [account] = await db.select({ bannedAt: users.bannedAt }).from(users).where(eq(users.id, o.userId));
   assertNotBanned(account); // a banned account can't be signed into, by any route
   const uid = await db.transaction((tx) => firebaseUidFor(o.userId, tx));
-  return { customToken: await createCustomToken(uid), account: o.account, onboardingBonus: o.onboardingBonus, bonusKobo: o.bonusKobo };
+  return { customToken: await createCustomToken(uid), account: o.account };
 }

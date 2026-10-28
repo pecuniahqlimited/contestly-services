@@ -57,7 +57,7 @@ export async function buildApp(opts: AppOptions = {}) {
     if (err instanceof ZodError) return reply.code(400).send({ error: "validation", issues: err.issues });
     if (err instanceof Unauthorized) return reply.code(401).send({ error: err.message });
     if (err instanceof InsufficientFunds) return reply.code(402).send({ error: "insufficient_funds" });
-    if (err.statusCode) return reply.code(err.statusCode).send({ error: err.message });
+    if (err.statusCode) return reply.code(err.statusCode).send({ error: err.message, ...(err.details === undefined ? {} : { details: err.details }) });
     app.log.error(err);
     return reply.code(500).send({ error: "internal" });
   });

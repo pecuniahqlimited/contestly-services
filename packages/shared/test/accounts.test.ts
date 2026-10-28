@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  coins, coinsFromKobo, DEFAULT_ONBOARDING_CONFIG, archetypeOf, handleSchema, isStaked, normaliseEmail, normalisePhone, phoneHash, sharedCoins, soloCoins, whyFits,
+  coins, coinsFromKobo, handleSchema, isStaked, normaliseEmail, normalisePhone, phoneHash,
 } from "../src/index.js";
 
-describe("normaliseEmail (the onboarding-bonus key)", () => {
+describe("normaliseEmail (one key per mailbox)", () => {
   it("lowercases", () => expect(normaliseEmail("  Ada@Example.COM ")).toBe("ada@example.com"));
   it("drops Gmail dots and +tags, and folds googlemail.com into gmail.com", () => {
     expect(normaliseEmail("A.d.A+onboarding@gmail.com")).toBe("ada@gmail.com");
@@ -28,20 +28,6 @@ describe("phoneHash", () => {
   });
 });
 
-describe("onboarding coins", () => {
-  const tiers = DEFAULT_ONBOARDING_CONFIG.soloTiers;
-  it("pays the best tier reached, and the floor for zero", () => {
-    expect(soloCoins(900, tiers)).toBe(50_000);
-    expect(soloCoins(800, tiers)).toBe(50_000);
-    expect(soloCoins(799, tiers)).toBe(40_000);
-    expect(soloCoins(0, tiers)).toBe(20_000);
-  });
-  it("pays everyone in a shared round, past the list at the last amount", () => {
-    const byRank = DEFAULT_ONBOARDING_CONFIG.sharedByRankKobo;
-    expect([1, 2, 3, 4, 7].map((r) => sharedCoins(r, byRank))).toEqual([50_000, 40_000, 30_000, 20_000, 20_000]);
-  });
-});
-
 describe("coins", () => {
   it("coinsFromKobo is the number, coins() the text", () => {
     expect(coinsFromKobo(50_000)).toBe(500);
@@ -50,18 +36,7 @@ describe("coins", () => {
   });
 });
 
-describe("picks", () => {
-  it("a person's why is a person answer, a brand's a brand answer", () => {
-    expect(whyFits("person", "grinder")).toBe(true);
-    expect(whyFits("person", "launch")).toBe(false);
-    expect(whyFits("brand", "launch")).toBe(true);
-    expect(whyFits(null, "fan")).toBe(true);
-  });
-  it("the archetype is a person's why; brands have none", () => {
-    expect(archetypeOf("person", "grinder")).toBe("grinder");
-    expect(archetypeOf("brand", "reach")).toBeNull();
-    expect(archetypeOf(null, null)).toBeNull();
-  });
+describe("handles", () => {
   it("guest handles are reserved", () => {
     expect(handleSchema.safeParse("guest_abc").success).toBe(false);
     expect(handleSchema.safeParse("ada.o").success).toBe(true);

@@ -5,7 +5,6 @@
  */
 import { z } from "zod";
 import { personSchema } from "./person.js";
-import { onboardingConfigSchema } from "./accounts.js";
 
 const iso = z.string();
 const isoOrNull = iso.nullable();
@@ -46,14 +45,6 @@ export const adminEditQuestionSchema = z.object({
   reason: reasonSchema,
 });
 
-/** Tiers best first, ending at 0 points so every score pays something. */
-const orderedOnboardingConfig = onboardingConfigSchema.superRefine((c, ctx) => {
-  const mins = c.soloTiers.map((t) => t.minPoints);
-  if (mins.some((m, i) => i > 0 && m >= mins[i - 1])) ctx.addIssue({ code: "custom", path: ["soloTiers"], message: "tiers go from the most points down" });
-  if (mins[mins.length - 1] !== 0) ctx.addIssue({ code: "custom", path: ["soloTiers"], message: "the last tier starts at 0 points" });
-});
-export const adminOnboardingBodySchema = z.object({ config: orderedOnboardingConfig, reason: z.string().trim().max(500).optional() });
-
 export const adminActionsQuerySchema = z.object({ targetType: z.string().optional(), targetId: z.string().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
 
 // ---------------------------------------------------------------- responses
@@ -71,12 +62,11 @@ export const adminUserSearchResponseSchema = z.object({ users: z.array(adminUser
 export const adminUserDetailSchema = z.object({
   user: adminUserRowSchema.extend({
     banReason: z.string().nullable(), emailVerifiedAt: isoOrNull, phoneAdded: z.boolean(),
-    who: z.string().nullable(), why: z.string().nullable(), interests: z.array(z.string()), streakDays: z.number().int(),
+    who: z.string().nullable(), archetype: z.string().nullable(), aboutVersion: z.number().int().nullable(), interests: z.array(z.string()), streakDays: z.number().int(),
   }),
   /** How this account is reached (provider + external id; the Firebase session uid, Google/Apple subjects). */
   identities: z.array(z.object({ provider: z.string(), externalId: z.string(), createdAt: iso })),
   wallet: z.object({ cashKobo: z.number().int(), bonusKobo: z.number().int() }),
-  onboarding: z.object({ mode: z.string(), points: z.number().int(), coinsKobo: z.number().int(), claimOutcome: z.string().nullable(), playedAt: iso }).nullable(),
   partiesPlayed: z.array(z.object({ id: uuid, title: z.string(), status: z.string(), startsAt: iso, rank: z.number().int().nullable(), score: z.number().int().nullable(), prizeKobo: z.number().int().nullable() })),
   partiesHosted: z.array(z.object({ id: uuid, title: z.string(), status: z.string(), startsAt: iso, playerCount: z.number().int() })),
   climbWeeks: z.array(z.object({ week: z.string(), points: z.number().int(), bestRunStages: z.number().int() })),
@@ -159,9 +149,6 @@ export type AdminQuestionDetail = z.infer<typeof adminQuestionDetailSchema>;
 
 /** POST /admin/questions/:id/edit: the review it opened; the questions service judges it. */
 export const adminQuestionReviewResponseSchema = z.object({ reviewId: uuid, status: z.literal("pending") });
-
-export const onboardingConfigVersionSchema = z.object({ version: z.number().int().nullable(), config: onboardingConfigSchema, createdAt: isoOrNull });
-export type OnboardingConfigVersion = z.infer<typeof onboardingConfigVersionSchema>;
 
 /** Valkey channel for admin events the rooms act on (a ban removes that user from any room). */
 export const ADMIN_EVENTS_CHANNEL = "admin:events";

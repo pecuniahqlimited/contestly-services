@@ -81,7 +81,7 @@ describe("ban", () => {
       expect.soft(res.json().error, `${method} ${url}`).toBe("account_banned");
     }
     // Any sign-in that lands on the account (email code, Google, Apple) is refused before a token is minted.
-    await expect(withSessionToken({ userId: target.id, account: "existing", onboardingBonus: "none", bonusKobo: 0 })).rejects.toMatchObject({ statusCode: 403, message: "account_banned" });
+    await expect(withSessionToken({ userId: target.id, account: "existing" })).rejects.toMatchObject({ statusCode: 403, message: "account_banned" });
 
     const [{ n }] = await db.select({ n: count() }).from(adminActions).where(and(eq(adminActions.targetId, target.id), eq(adminActions.action, "user.ban")));
     expect(Number(n)).toBe(1);
@@ -185,18 +185,5 @@ describe("question queue", () => {
     expect(res.json().question).toMatchObject({ payload: null, explanation: null, inUnstartedParty: true });
     expect(res.json().generation).toEqual([]);
     expect((await app.inject({ method: "POST", url: `/admin/questions/${q.id}/edit`, headers: as(admin), payload: { payload, claim: "A is right", ...reason } })).json().error).toBe("in_unstarted_party");
-  });
-});
-
-describe("onboarding config", () => {
-  it("is versioned, validated, logged, and what /onboarding/rewards serves", async () => {
-    const current = (await app.inject({ method: "GET", url: "/admin/onboarding", headers: as(admin) })).json();
-    const unordered = { ...current.config, soloTiers: [{ minPoints: 100, coinsKobo: 1 }, { minPoints: 500, coinsKobo: 2 }] };
-    expect((await app.inject({ method: "PUT", url: "/admin/onboarding", headers: as(admin), payload: { config: unordered } })).statusCode).toBe(400);
-    const next = { ...current.config, sharedByRankKobo: [kobo(600), kobo(300)] };
-    const saved = (await app.inject({ method: "PUT", url: "/admin/onboarding", headers: as(admin), payload: { config: next, reason: "test" } })).json();
-    expect(saved.version).toBeGreaterThan(current.version ?? 0);
-    expect((await app.inject({ method: "GET", url: "/onboarding/rewards" })).json().sharedByRankKobo).toEqual([kobo(600), kobo(300)]);
-    await app.inject({ method: "PUT", url: "/admin/onboarding", headers: as(admin), payload: { config: current.config, reason: "test: put it back" } });
   });
 });

@@ -1,13 +1,12 @@
 /**
  * "Seen by a seated player": the one rule for not repeating questions. A bank question counts as
- * seen by a player once they were in the match when it ran in another party (answered or not), or
- * in their onboarding round.
+ * seen by a player once they were in the match when it ran in another party (answered or not).
  * The questions service excludes these when building a set, and the worker checks the final
  * roster against the sealed set at start; both read it from here.
  */
-import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import { db } from "./client.js";
-import { bankQuestions, onboardingRounds, partyAnswers, partyPlayers, partyQuestions } from "./schema.js";
+import { partyAnswers, partyPlayers, partyQuestions } from "./schema.js";
 
 export interface SeenQuestion {
   bankId: string;
@@ -22,12 +21,7 @@ export async function seenBySeated(partyId: string): Promise<SeenQuestion[]> {
     .from(partyAnswers)
     .innerJoin(partyQuestions, eq(partyAnswers.questionId, partyQuestions.id))
     .where(and(inArray(partyAnswers.userId, seated), isNotNull(partyQuestions.sourceRef), ne(partyAnswers.partyId, partyId)));
-  const onboarding = await db
-    .selectDistinct({ bankId: bankQuestions.id, payload: bankQuestions.payload })
-    .from(onboardingRounds)
-    .innerJoin(bankQuestions, sql`${bankQuestions.id} = any(${onboardingRounds.bankQuestionIds})`)
-    .where(inArray(onboardingRounds.userId, seated));
-  return [...rows.map((r) => ({ bankId: r.bankId!, payload: r.payload })), ...onboarding];
+  return rows.map((r) => ({ bankId: r.bankId!, payload: r.payload }));
 }
 
 /**

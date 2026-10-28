@@ -1,12 +1,10 @@
 /**
- * Accounts and onboarding: sign-in, guests, the onboarding picks and round, phone and contacts.
+ * Accounts and onboarding: sign-in, guests, who's playing and where onboarding ends, phone and contacts.
  * The app and the API both use these, so a number is hashed and an email normalised the same way
  * on both sides (ADR 0006).
  */
 import { z } from "zod";
-import { CATEGORIES } from "./categories.js";
-
-const kobo = (naira: number) => naira * 100;
+import { ARCHETYPES } from "./about.js";
 
 // ---------------------------------------------------------------- errors
 
@@ -24,8 +22,9 @@ export const accountEmail = (email: string) => email.trim().toLowerCase();
 const GMAIL_DOMAINS = new Set(["gmail.com", "googlemail.com"]);
 
 /**
- * The onboarding-bonus key: lowercase, and for Gmail the dots and any +tag dropped (Gmail delivers
- * a.b+x@gmail.com to ab@gmail.com), with googlemail.com folded into gmail.com.
+ * One person's mailbox, however it's spelled: lowercase, and for Gmail the dots and any +tag dropped
+ * (Gmail delivers a.b+x@gmail.com to ab@gmail.com), with googlemail.com folded into gmail.com. The key
+ * a sign-up bonus will be granted once per, when there is one (open question 5).
  */
 export function normaliseEmail(email: string): string {
   const lower = accountEmail(email);
@@ -47,21 +46,11 @@ export const emailVerifySchema = z.object({ email: emailSchema, code: z.string()
 export const SIGN_IN_ACCOUNTS = ["upgraded", "existing"] as const;
 export type SignInAccount = (typeof SIGN_IN_ACCOUNTS)[number];
 
-/**
- * What happened to the onboarding round's coins at sign-up. "already_claimed": this email (or a
- * Gmail alias of it) had them already. "device_claimed": this device had them for another account.
- * "none": no round, or nothing to claim (an existing account never takes a guest's coins).
- */
-export const ONBOARDING_BONUS_OUTCOMES = ["granted", "already_claimed", "device_claimed", "none"] as const;
-export type OnboardingBonusOutcome = (typeof ONBOARDING_BONUS_OUTCOMES)[number];
-
 /** POST /auth/email/verify and /auth/exchange. */
 export const signInResultSchema = z.object({
   /** Sign in to Firebase with this (signInWithCustomToken). */
   customToken: z.string().min(1),
   account: z.enum(SIGN_IN_ACCOUNTS),
-  onboardingBonus: z.enum(ONBOARDING_BONUS_OUTCOMES),
-  bonusKobo: z.number().int().min(0),
 });
 export type SignInResult = z.infer<typeof signInResultSchema>;
 
@@ -94,34 +83,11 @@ export const authExchangeSchema = z.object({ code: base64url, verifier: base64ur
 /** POST /auth/oauth/start: where to open the system browser. */
 export const oauthStartResponseSchema = z.object({ url: z.string().url() });
 
-// ---------------------------------------------------------------- onboarding picks
+// ---------------------------------------------------------------- onboarding
 
+/** Who's playing: a person, or a brand. Picks which About you set they answer. */
 export const WHO = ["person", "brand"] as const;
 export type Who = (typeof WHO)[number];
-/** "Why you're here" for a person is the archetype; it only changes what Home leads with. */
-export const ARCHETYPES = ["competitor", "host", "grinder", "fan"] as const;
-export type Archetype = (typeof ARCHETYPES)[number];
-export const BRAND_WHYS = ["launch", "reach", "reward", "culture"] as const;
-export const WHYS = [...ARCHETYPES, ...BRAND_WHYS] as const;
-export type Why = (typeof WHYS)[number];
-
-export const onboardingPicksSchema = z.object({
-  who: z.enum(WHO).optional(),
-  /** Lanes (multi-select); stored as the user's interests. */
-  lanes: z.array(z.enum(CATEGORIES)).min(1).max(10).optional(),
-  why: z.enum(WHYS).optional(),
-}).refine((p) => Object.keys(p).length > 0, "nothing to save");
-export type OnboardingPicksInput = z.infer<typeof onboardingPicksSchema>;
-
-/** A person's "why" fits the person answers, a brand's the brand ones. */
-export function whyFits(who: Who | null, why: Why): boolean {
-  if (who === "brand") return (BRAND_WHYS as readonly string[]).includes(why);
-  return (ARCHETYPES as readonly string[]).includes(why);
-}
-
-/** A person's archetype is their "why"; brands have none. */
-export const archetypeOf = (who: string | null, why: string | null): Archetype | null =>
-  who !== "brand" && why && (ARCHETYPES as readonly string[]).includes(why) ? (why as Archetype) : null;
 
 /** Guests are named "Guest" with a handle nobody chooses; the Profile screen replaces both. */
 export const GUEST_HANDLE_PREFIX = "guest_";
@@ -129,101 +95,16 @@ export const guestNameSchema = z.object({ displayName: z.string().trim().min(2).
 
 export const onboardingInviteSchema = z.object({ partyId: z.string().uuid().nullable() });
 
-// ---------------------------------------------------------------- the onboarding round
-
-export const ONBOARDING_ROOM = "onboarding";
-/** Messages the onboarding room adds to the party protocol (it reuses question / reveal / standings / final). */
-export const ONBOARDING_MSG = {
-  /** Waiting to start: { players, startsAt }. The count is the real number in the room. */
-  lobby: "onboarding:lobby",
-  /** This player's result: OnboardingResult. */
-  result: "onboarding:result",
-} as const;
-
-export const onboardingConfigSchema = z.object({
-  /** How long a new room waits for others onboarding at the same moment before it starts. */
-  waitSeconds: z.number().int().min(0).max(30),
-  maxPlayers: z.number().int().min(1).max(20),
-  questionCount: z.number().int().min(1).max(5),
-  questionSeconds: z.number().int().min(5).max(30),
-  revealSeconds: z.number().int().min(1).max(10),
-  standingsSeconds: z.number().int().min(1).max(10),
-  basePoints: z.number().int().positive(),
-  maxSpeedBonus: z.number().int().min(0),
-  /** Bank questions this hard or easier (0 everyone gets it … 1 nobody does). */
-  maxDifficulty: z.number().min(0).max(1),
-  /** Alone: coins by points, best tier first. */
-  soloTiers: z.array(z.object({ minPoints: z.number().int().min(0), coinsKobo: z.number().int().min(0) })).min(1),
-  /** Shared: coins by rank (1st, 2nd, …); everyone past the list gets the last. Everyone is paid. */
-  sharedByRankKobo: z.array(z.number().int().min(0)).min(1),
-});
-export type OnboardingConfig = z.infer<typeof onboardingConfigSchema>;
-export const DEFAULT_ONBOARDING_CONFIG: OnboardingConfig = {
-  waitSeconds: 6,
-  maxPlayers: 8,
-  questionCount: 3,
-  questionSeconds: 10,
-  revealSeconds: 3,
-  standingsSeconds: 3,
-  basePoints: 200,
-  maxSpeedBonus: 100,
-  maxDifficulty: 0.5,
-  soloTiers: [
-    { minPoints: 800, coinsKobo: kobo(500) },
-    { minPoints: 500, coinsKobo: kobo(400) },
-    { minPoints: 200, coinsKobo: kobo(300) },
-    { minPoints: 0, coinsKobo: kobo(200) },
-  ],
-  sharedByRankKobo: [kobo(500), kobo(400), kobo(300), kobo(200)],
-};
-
-/**
- * GET /onboarding/rewards (public): what the onboarding round pays, for the Bag coins screen. Admins edit
- * the config (row 5a); this is the read-only view of it.
- */
-export const onboardingRewardsResponseSchema = z.object({
-  questionCount: z.number().int(),
-  questionSeconds: z.number().int(),
-  soloTiers: onboardingConfigSchema.shape.soloTiers,
-  sharedByRankKobo: onboardingConfigSchema.shape.sharedByRankKobo,
-});
-export type OnboardingRewardsResponse = z.infer<typeof onboardingRewardsResponseSchema>;
-
-/** Solo coins for a score: the best tier it reaches (the last tier catches everything). */
-export function soloCoins(points: number, tiers: OnboardingConfig["soloTiers"]): number {
-  return (tiers.find((t) => points >= t.minPoints) ?? tiers[tiers.length - 1]).coinsKobo;
-}
-/** Shared-round coins for a rank (1-based). */
-export const sharedCoins = (rank: number, byRank: number[]) => byRank[Math.min(rank, byRank.length) - 1];
-
-export const onboardingResultSchema = z.object({
-  mode: z.enum(["solo", "shared"]),
-  points: z.number().int(),
-  correct: z.number().int(),
-  questions: z.number().int(),
-  rank: z.number().int(),
-  players: z.number().int(),
-  /** Kept on the round until sign-up; then posted as bonus coins (once per email and device). */
-  coinsKobo: z.number().int(),
-});
-export type OnboardingResult = z.infer<typeof onboardingResultSchema>;
-
-/** ONBOARDING_MSG.lobby: the real people in the room (no bots), and when the round starts. */
-export const onboardingLobbySchema = z.object({
-  players: z.number().int(),
-  roster: z.array(z.object({ id: z.string().uuid(), displayName: z.string(), avatarEmoji: z.string() })),
-  startsAt: z.string().datetime(),
-});
-export type OnboardingLobby = z.infer<typeof onboardingLobbySchema>;
-
 /** GET /onboarding (and PATCH /me/onboarding, PUT /onboarding/invite): what onboarding has, and where it goes next. */
 export const onboardingStateSchema = z.object({
   signedUp: z.boolean(),
   /** Null until asked: no pick is asked twice. */
-  picks: z.object({ who: z.enum(WHO).nullable(), lanes: z.array(z.string()), why: z.enum(WHYS).nullable() }),
-  /** What Home leads with (grinder: The Climb). Null for brands and before the "why" pick. */
+  who: z.enum(WHO).nullable(),
+  /** The About you version answered; null until then. GET /me/onboarding has the answers. */
+  aboutVersion: z.number().int().nullable(),
+  lanes: z.array(z.string()),
+  /** What Home leads with (grinder: The Climb). Brands are host. Null before About you. */
   archetype: z.enum(ARCHETYPES).nullable(),
-  round: onboardingResultSchema.extend({ claimed: z.boolean(), claimOutcome: z.enum(ONBOARDING_BONUS_OUTCOMES).nullable() }).nullable(),
   profileDone: z.boolean(),
   /** The staked invite opened before sign-up, so onboarding ends in its lobby. */
   invite: z.object({
