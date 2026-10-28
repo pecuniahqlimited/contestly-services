@@ -10,6 +10,13 @@ import { ARCHETYPES } from "./about.js";
 
 /** A guest tried something only an account can do (money, boards, profiles, creating parties). */
 export const SIGN_UP_REQUIRED = "sign_up_required";
+/** 401: no session, or a token that doesn't verify (bad, expired, another project). Sign in again. */
+export const UNAUTHORIZED = "unauthorized";
+/**
+ * 401: the token is valid but its account no longer exists (deleted, or a cleaned-up guest). The app
+ * should sign out of Firebase and start a fresh anonymous session; retrying with this token never works.
+ */
+export const ACCOUNT_GONE = "account_gone";
 
 // ---------------------------------------------------------------- email
 

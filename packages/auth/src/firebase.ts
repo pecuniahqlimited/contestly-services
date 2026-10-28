@@ -25,13 +25,38 @@ async function firebaseAuth(): Promise<Auth> {
   return auth;
 }
 
-/** null for a token that doesn't verify (expired, forged, another project). */
-export async function verifyIdToken(token: string): Promise<DecodedIdToken | null> {
+const USER_NOT_FOUND = "auth/user-not-found";
+
+/**
+ * A session token checked: "valid", "invalid" (expired, forged, another project), or "user_gone": the
+ * token is genuine but its Firebase user was deleted. The emulator always looks the user up while
+ * verifying and reports that last case as user-not-found; production doesn't look (resolveUser does,
+ * for a first-seen anonymous uid), so both modes end in the same answer.
+ */
+export type CheckedToken = { kind: "valid"; token: DecodedIdToken } | { kind: "invalid" } | { kind: "user_gone" };
+export async function checkIdToken(token: string): Promise<CheckedToken> {
   const a = await firebaseAuth();
   try {
-    return await a.verifyIdToken(token);
-  } catch {
-    return null;
+    return { kind: "valid", token: await a.verifyIdToken(token) };
+  } catch (e) {
+    return (e as { code?: string }).code === USER_NOT_FOUND ? { kind: "user_gone" } : { kind: "invalid" };
+  }
+}
+
+/** The token's claims, or null for any token that isn't valid (the phone check needs no more than that). */
+export async function verifyIdToken(token: string): Promise<DecodedIdToken | null> {
+  const checked = await checkIdToken(token);
+  return checked.kind === "valid" ? checked.token : null;
+}
+
+/** Whether Firebase still has this user (the guest clean-up deletes the anonymous user with its row). */
+export async function firebaseUserExists(uid: string): Promise<boolean> {
+  try {
+    await (await firebaseAuth()).getUser(uid);
+    return true;
+  } catch (e) {
+    if ((e as { code?: string }).code === USER_NOT_FOUND) return false;
+    throw e;
   }
 }
 

@@ -172,7 +172,7 @@ npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 bran
 npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
 npm test                # unit tests (shared, game, email, realtime, apps/questions, apps/api); no infra needed
-npm run test:int        # integration tests against local Postgres + Valkey (apps/api/test-int: admin permissions, bans, cancel, question queue, About you versions and answers, chat rules, crews and party points)
+npm run test:int        # integration tests against local Postgres + Valkey + the Auth emulator (apps/api/test-int: admin permissions, bans, cancel, question queue, About you versions and answers, rejected sessions, chat rules, crews and party points)
 scripts/smoke.sh        # end-to-end check against the running stack
 npm run sim             # the sims against the running stack: sim:sealed (generated set, 3 players),
                         # sim:curate (PDF read → curate review → play with two flag-voids → settle), sim:stakes,

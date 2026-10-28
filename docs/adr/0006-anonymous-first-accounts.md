@@ -61,6 +61,13 @@ will migrate those users.
     hash of a phone number is guessable, so the protections are that nothing sent is stored, only
     people who added a number can be found, and lookups are capped (1,000 per request; 2 syncs and
     2,000 hashes per user per day).
+12. **Rejected sessions say why** (added 2026-10-28). A token that doesn't verify (bad, expired, another
+    project) is 401 `unauthorized`: sign in again. A valid token whose account no longer exists is 401
+    `account_gone`: a custom token with no `user_identities` row (we only mint those for accounts, and
+    identities go when the user row is deleted), or an anonymous token whose Firebase user was deleted
+    (the guest clean-up deletes both). The app signs out and starts a fresh anonymous session. A brand-new
+    anonymous uid is still a first sight and gets a guest row; telling it from a cleaned-up guest costs
+    one Firebase lookup, on that first request only. Banned stays 403 `account_banned`.
 11. **Dev mode can't ship.** `AUTH_MODE=dev` (the `x-dev-user` header, and stand-in Google/Apple
     pages) refuses to start when `NODE_ENV=production`; in firebase mode the header is ignored.
 
