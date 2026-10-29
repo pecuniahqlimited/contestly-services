@@ -1,12 +1,13 @@
 import { Worker } from "bullmq";
-import { and, asc, eq, count, lte } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, clearExpiredArchives, getAccountsConfig, type Party, type Tx } from "@contestly/db";
+import { and, asc, eq } from "drizzle-orm";
+import { db, parties, partyPlayers, partyPrizes, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, type Party, type Tx } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
+import { GENERATION_FAILED_MESSAGE, refundParty as refundPartyWith, startOrCancel, sweepOverdue, type StartDeps } from "./partyStart.js";
 import { selectTranscriber } from "./transcribe/index.js";
 
 const connection = makeRedis();
@@ -17,14 +18,6 @@ const emit = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVEN
 /** A system line the worker wrote reaches the party's room once its transaction has committed. */
 async function publishLine(line: ChatMessage) {
   for (const d of await lineDeliveries(line)) await pub.publish(d.channel, JSON.stringify(d.payload));
-}
-
-const GENERATION_FAILED_MESSAGE = "We couldn't build the questions for this party. Everyone has been refunded.";
-
-/** A curate party may start only when its whole play order exists and every question in it was approved. */
-async function curateSetApproved(tx: Tx, p: Party): Promise<boolean> {
-  const rows = await tx.select({ status: partyQuestions.status }).from(partyQuestions).where(and(eq(partyQuestions.partyId, p.id), eq(partyQuestions.reserve, false)));
-  return rows.length === p.questionCount && rows.every((r) => r.status === "pending");
 }
 
 /** Push notifications. Locally this logs; wire FCM/APNs here (device tokens table + firebase-admin messaging). */
@@ -43,76 +36,12 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   }
 }, { connection });
 
-/** Refund and cancel (packages/db, the one cancel path), then tell the room. */
-async function refundParty(tx: Tx, p: Party, message: string) {
-  const refunded = await refundAndCancel(tx, p, message);
-  await emit({ partyId: p.id, status: "cancelled" });
-  return refunded;
-}
-
 /** An admin cancelled a scheduled or live party. Idempotent: a party already over is left alone. */
 async function adminCancel(partyId: string) {
   const out = await db.transaction((tx) => adminCancelParty(tx, partyId));
   if (!out.cancelled) return;
   await emit({ partyId, status: "cancelled" });
   console.log(`[party] ${partyId}: cancelled by an admin, ${out.refunded} refunded`);
-}
-
-/**
- * What a sealed set needs at start (ADR 0002). It was built at creation, so normally the only work
- * is checking the final roster: if nobody seated has seen any of its questions it starts as is,
- * instantly; otherwise just those are swapped first.
- */
-type StartFollowUp = "none" | "reseal" | "generate";
-
-/** Start a party at startsAt, or cancel + refund if too few people joined or it has nothing to play. */
-async function startOrCancel(partyId: string) {
-  const cfg = await getPartyConfig();
-  let line: ChatMessage | undefined;
-  const started = await db.transaction(async (tx): Promise<StartFollowUp | false> => {
-    const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "open") return false;
-    const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
-    if (Number(n) < cfg.minPlayers) {
-      const refunded = await refundParty(tx, p, "Not enough players joined. Everyone has been refunded.");
-      console.log(`[party] ${p.title} cancelled, ${refunded} refunded`);
-      return false;
-    }
-    if (p.mode === "curate" && !(await curateSetApproved(tx, p))) {
-      const refunded = await refundParty(tx, p, "The host didn't finish reviewing the questions. Everyone has been refunded.");
-      console.log(`[party] ${p.title}: curate set not approved at start, cancelled and ${refunded} refunded`);
-      return false;
-    }
-    if (p.mode === "sealed" && p.questionsStatus === "failed") {
-      const refunded = await refundParty(tx, p, GENERATION_FAILED_MESSAGE);
-      console.log(`[party] ${p.title}: question set still failed at start, cancelled and ${refunded} refunded`);
-      return false;
-    }
-    const followUp = await sealedFollowUp(p);
-    await tx.update(parties).set({
-      status: "live",
-      liveAt: new Date(),
-      ...(followUp === "none" ? {} : { questionsStatus: "generating" as const }),
-    }).where(eq(parties.id, partyId));
-    line = await systemLine(tx, partyId, "The party is starting. Good luck!");
-    console.log(`[party] ${p.title} is live with ${n} players${followUp === "reseal" ? "; swapping questions a player has already seen" : ""}`);
-    return followUp;
-  });
-  if (started === false) return;
-  if (line) await publishLine(line);
-  // After commit, so the room never reads the set's state from before this transaction.
-  await emit({ partyId, status: "live" });
-  if (started === "reseal") await questionJobs.add("reseal_for_roster", { kind: "reseal_for_roster", partyId }, { jobId: `reseal-${partyId}` });
-  if (started === "generate") await questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}-start` });
-  // Watchdog: if the realtime room's heartbeat key goes stale mid-round, cancel and refund.
-  await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 });
-}
-
-async function sealedFollowUp(p: Party): Promise<StartFollowUp> {
-  if (p.mode !== "sealed") return "none";
-  if (p.questionsStatus === "not_started") return "generate"; // a party from before sets were built at creation
-  if (p.questionsStatus === "generating") return "none"; // still building: it runs the roster check itself when done
-  return (await seenInSet(p.id)).length ? "reseal" : "none";
 }
 
 /**
@@ -211,28 +140,23 @@ async function watchdog(partyId: string) {
   });
 }
 
-const SWEEP_EVERY_MS = 60_000;
-/** A start job normally fires on time; the sweep leaves a party this long so it only picks up what was missed. */
-const SWEEP_GRACE_MS = 30_000;
-const SWEEP_BATCH = 100;
+/** Starts, cancels and the sweep (partyStart.ts) reach the rest of the system through these. */
+const startDeps: StartDeps = {
+  emit, publishLine,
+  queueQuestions: (kind, partyId) => kind === "reseal_for_roster"
+    ? questionJobs.add("reseal_for_roster", { kind, partyId }, { jobId: `reseal-${partyId}` })
+    : questionJobs.add("generate_set", { kind, partyId }, { jobId: `generate-set-${partyId}-start` }),
+  queueWatchdog: (partyId) => partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 }),
+};
+const refundParty = (tx: Tx, p: Party, message: string) => refundPartyWith(startDeps, tx, p, message);
 
-/**
- * Every minute: any open party past its startsAt (its start job lost to a Valkey flush or a crash, or a
- * party written straight to the database) starts or cancels with refunds now. startOrCancel locks the
- * row and re-checks the status, so racing the real start job is harmless.
- */
-async function sweepOverdue() {
-  const overdue = await db.select({ id: parties.id }).from(parties)
-    .where(and(eq(parties.status, "open"), lte(parties.startsAt, new Date(Date.now() - SWEEP_GRACE_MS))))
-    .orderBy(asc(parties.startsAt)).limit(SWEEP_BATCH);
-  for (const p of overdue) await startOrCancel(p.id);
-  if (overdue.length) console.log(`[party] sweep: ${overdue.length} overdue ${overdue.length === 1 ? "party" : "parties"} started or cancelled`);
-}
+/** Every minute, the sweep for any open party whose start job never ran. */
+const SWEEP_EVERY_MS = 60_000;
 
 const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   const d = job.data;
-  if (d.kind === "sweep") return sweepOverdue();
-  if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(d.partyId);
+  if (d.kind === "sweep") return sweepOverdue(startDeps);
+  if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(startDeps, d.partyId);
   if (d.kind === "settle") return settle(d.partyId);
   if (d.kind === "watchdog") return watchdog(d.partyId);
   if (d.kind === "cancel_generation_failed") return cancelGenerationFailed(d.partyId);
