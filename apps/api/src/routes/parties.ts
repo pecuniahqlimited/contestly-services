@@ -1,13 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, partyPrizes, follows, ledger, getPartyConfig, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers } from "@contestly/db";
-import { type ChatMessage, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
+import { db, users, parties, partyPlayers, partyPrizes, follows, ledger, getPartyConfig, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers } from "@contestly/db";
+import { type ChatMessage, type LeavePartyResponse, type PlayerLeftEvent, PARTY_EVENTS_CHANNEL, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
 import { notifyQueue } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
 import { partySummaries } from "../partySummaries.js";
 import { potKobo } from "../places.js";
 import { publishLine } from "../chats.js";
+import { valkey } from "../redis.js";
 import { createParty } from "../partyCreate.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 
@@ -142,8 +143,7 @@ export async function partiesRoutes(app: FastifyInstance) {
       if (Number(n) >= p.maxPlayers) return { status: 409, body: { error: "party_full" } };
       const already = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, id), eq(partyPlayers.userId, me.id)));
       if (already.length) return { status: 200, body: { joined: true, replayed: true } };
-      const paid = await ledger.charge(tx, { userId: me.id, amountKobo: p.entryKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
-      await tx.insert(partyPlayers).values({ partyId: id, userId: me.id });
+      const paid = await takeSeat(tx, p, me.id, p.entryKobo);
       await acceptInvite(tx, id, me.id);
       await joinPartyThread(tx, id, me.id);
       line = await systemLine(tx, id, `${me.displayName} joined`);
@@ -152,5 +152,32 @@ export async function partiesRoutes(app: FastifyInstance) {
     if (line) await publishLine(line);
     req.log.info({ partyId: id, userId: me.id, status: result.status }, "party join");
     return reply.code(result.status).send(result.body);
+  });
+
+  /**
+   * Leave: a seated player who isn't the host, while the party is open and outside the leave lock
+   * (CLAUDE.md, Parties). The whole entry comes back as it was paid, in one transaction with the row
+   * lock; a retry or a double tap gets the same result. The lobby room hears it over party:events.
+   */
+  app.post("/parties/:id/leave", async (req, reply) => {
+    const me = requireSession(req);
+    const id = uuidParam(req);
+    const result = await db.transaction(async (tx) => {
+      const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
+      if (!p) return null;
+      return { p, out: await leaveSeat(tx, p, me) };
+    });
+    if (!result) return reply.code(404).send({ error: "not_found" });
+    const { p, out } = result;
+    req.log.info({ partyId: id, userId: me.id, outcome: out.ok ? (out.replayed ? "replayed" : "left") : out.error }, "party leave");
+    if (!out.ok) return reply.code(out.status).send({ error: out.error });
+    const seats = { taken: out.taken, max: p.maxPlayers };
+    if (!out.replayed) {
+      if (out.line) await publishLine(out.line);
+      const ev: PlayerLeftEvent = { partyId: id, status: "player_left", userId: me.id, seats };
+      await valkey().publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
+    }
+    const body: LeavePartyResponse = { left: true, replayed: out.replayed, refund: out.refund, potKobo: potKobo(p, out.taken), seats };
+    return body;
   });
 }

@@ -11,6 +11,7 @@ export * from "./about.js";
 export * from "./admin.js";
 export * from "./chat.js";
 export * from "./social.js";
+export * from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
@@ -268,6 +269,8 @@ export const MSG = {
   /** Inbox room: a line landed in one of the user's DM or crew threads (inboxUpdateSchema). */
   inbox: "inbox",
   presence: "presence",
+  /** Lobby: the seat count changed (someone left): { partyId, taken, max }. */
+  seats: "seats",
   /** A question was voided by player flags: { questionId, idx, replacementAdded, total }. */
   questionVoided: "question:voided",
   /** The party's question set changed state (generating / ready / failed). Never carries content. */

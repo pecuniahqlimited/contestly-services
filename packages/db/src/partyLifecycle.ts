@@ -9,11 +9,13 @@ import type { Tx } from "./client.js";
 import { parties, partyPlayers, type Party } from "./schema.js";
 import { systemLine } from "./chat.js";
 import * as ledger from "./ledger.js";
+import { entryChargeKey } from "./seats.js";
 
 /** Refund every entry leg by leg, release exactly what was held for the host's cash prize, and mark it cancelled. Returns the players refunded. */
 export async function refundAndCancel(tx: Tx, p: Party, message: string): Promise<number> {
   const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, p.id));
-  for (const pl of players) await ledger.refund(tx, { chargeKey: `party_entry:${p.id}:${pl.userId}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_refund:${p.id}:${pl.userId}` });
+  // A seat charged under its own key (one per seat since leaving exists) is refunded under its own key too.
+  for (const pl of players) await ledger.refund(tx, { chargeKey: entryChargeKey(pl), type: "party_refund", refType: "party", refId: p.id, idempotencyKey: pl.entryKey ? `party_refund:${pl.id}` : `party_refund:${p.id}:${pl.userId}` });
   await ledger.release(tx, { holdKey: `party_fund:${p.id}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
   await tx.update(parties).set({ status: "cancelled", endedAt: new Date() }).where(eq(parties.id, p.id));
   await systemLine(tx, p.id, message);

@@ -16,6 +16,7 @@ import * as ledger from "./ledger.js";
 import { currentPrizes, savePrizes } from "./climb.js";
 import { seedAboutConfigs } from "./config.js";
 import { joinThread, partyThreadId, systemLine } from "./chat.js";
+import { takeSeat } from "./seats.js";
 
 const uid = (n: number) => `00000000-0000-4000-8000-1000000000${String(n).padStart(2, "0")}`;
 
@@ -103,10 +104,8 @@ await db.transaction(async (tx) => {
     [giveaway, "zee"],
   ] as const;
   for (const [p, handle] of seats) {
-    const key = `party_entry:${p.id}:${by[handle]}`;
-    if (p.entryKobo) await topUp(tx, by[handle], p.entryKobo, key);
-    await ledger.charge(tx, { userId: by[handle], amountKobo: p.entryKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: key });
-    await tx.insert(partyPlayers).values({ partyId: p.id, userId: by[handle] });
+    if (p.entryKobo) await topUp(tx, by[handle], p.entryKobo, `party_entry:${p.id}:${by[handle]}`);
+    await takeSeat(tx, p, by[handle], p.entryKobo);
   }
 
   // Each party's chat: the host and seats are members; a few lines in the Afrobeats lobby.

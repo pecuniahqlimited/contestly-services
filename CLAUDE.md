@@ -51,6 +51,16 @@ Screens, flows and copy are defined by the prototype in `contestly-app` (`../con
 4. **Communities / interest leaderboards.** Later. Design the leaderboard tables so a scope other than "friends" is possible.
 5. **Sign-up bonus.** Deferred (Oct 2026): no bonus for now. When added, it's an admin-set amount of bonus coins, once per normalised email and device. Re-asking existing users after About you changes is also deferred.
 
+### Parties: joining and leaving
+
+Decided Oct 2026 (product decision):
+
+- **Leaving** is `POST /parties/:id/leave`. A seated player (account or guest) may leave while the party is open and more than 2 minutes before `startsAt` (`PARTY_LEAVE_LOCK_SECONDS`, `leaveWindow()` in shared). Inside the 2 minutes, or once it's live: 409 `party_locked`; finished or cancelled: 409 `party_closed`. Never joined: 409 `not_in_party`.
+- **The host can't leave** (the creator, or from row 8 anyone hosting on a brand's behalf; `isHostTeam()`): 409 `host_must_cancel`. Hosts can't cancel a party themselves yet; only an admin can (`POST /admin/parties/:id/cancel`).
+- **The whole entry comes back as it was paid**, bonus to bonus and cash to cash, in the same transaction as the leave, with the party row locked like a join. A pooled pot shrinks by it. A retry or a double tap gets the same answer (`replayed: true`) and moves nothing.
+- **Each seat is its own entry.** A seat has an id; its entry is charged under `party_entry:<seat id>` and a leave refunds under `party_leave_refund:<seat id>`, so leaving and rejoining charges a new entry and no two refunds share a key. Seats from before this keep their per-party key (`entryChargeKey()`). Leaves are recorded in `party_leaves`.
+- The lobby hears it on `party:events` (`player_left`): the leaver's connections are closed, presence drops them and everyone gets the new seat count (`MSG.seats`).
+
 ### Party gameplay (Kahoot-style, every round)
 
 Each question runs three beats on the clock, server-scheduled; the client never decides timing or scoring.
@@ -172,10 +182,10 @@ npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 bran
 npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
 npm test                # unit tests (shared, game, email, realtime, apps/questions, apps/api); no infra needed
-npm run test:int        # integration tests against local Postgres + Valkey + the Auth emulator (apps/api/test-int: admin permissions, bans, cancel, question queue, About you versions and answers, rejected sessions, account deletion, chat rules, crews and party points)
+npm run test:int        # integration tests against local Postgres + Valkey + the Auth emulator (apps/api/test-int: admin permissions, bans, cancel, question queue, About you versions and answers, rejected sessions, account deletion, leaving a party, the overdue-party sweep, chat rules, crews and party points)
 scripts/smoke.sh        # end-to-end check against the running stack
 npm run sim             # the sims against the running stack: sim:sealed (generated set, 3 players),
-                        # sim:curate (PDF read → curate review → play with two flag-voids → settle), sim:stakes,
+                        # sim:curate (PDF read → curate review → play with two flag-voids → settle), sim:stakes (incl. leaving, the lobby room),
                         # sim:climb (runs, Today's challenge, boards, week close → approved prizes),
                         # sim:onboarding (anonymous → About you → email code via Mailpit → lanes + archetype kept; edit from Me,
                         # a new admin version leaves old answers alone; provider fallback, guests, held awards,
@@ -259,6 +269,8 @@ Done:
 - ~~5c. Onboarding v2 (services)~~: the coins round removed (OnboardingRoom, `onboarding_rounds`, `onboarding_devices`, `onboarding_configs`, `/onboarding/rewards`, the reward claim at sign-up, the seeded starter questions; migration 0012). About you as versioned admin config per audience (`about_configs`, schema and `deriveAbout()` in `packages/shared/src/about.ts`): `GET /onboarding/about?audience=`, `PATCH /me/onboarding { who?, about: { version, answers } }` stores answers with their version plus lanes and archetype, `GET /me/onboarding` with the current set and a prefill for editing from Me; `GET/PUT /admin/onboarding/about/:audience` (logged with a reason) and `POST …/preview`. `who` and `about` in one PATCH are one transaction. Version 1 is the prototype's set, written by migration 0014 (and `db:seed`); a read with no set is an error. ADR 0009. `npm run sim:onboarding`.
 
 - ~~Account deletion (services)~~ (store requirement, Oct 2026): `DELETE /me` after a fresh re-verification (a sign-in to the same account in the last 5 minutes; `GET /me/deletion` for blockers and the window), refused with `cash_balance` or `active_party`. A soft delete in one transaction: archive columns, live email cleared (it can sign up again), handle/name/face become the deleted placeholders, identities disabled (live ones unique), bonus forfeited through the ledger, crews handed over, follows and crew invites moved to archive tables (shown to admins), pending party invites dismissed, unpaid Climb prizes voided (logged as the system), a run in progress abandoned; the Firebase user disabled. `liveUser` excludes it everywhere; admins find it by archived email, handle, phone or id and every view is logged; retention job shipped off (`/admin/accounts-config`). ADR 0010.
+
+- ~~Leaving a party (services)~~ (Oct 2026): `POST /parties/:id/leave` under the rules in Parties above; one entry per seat (`packages/db/src/seats.ts`: `takeSeat`, `leaveSeat`); the lobby drops the player over `party:events`; account deletion's `active_party` lists each party with leave / starts_soon / host. `test-int/leave.test.ts`, `sim:stakes`, `smoke.sh`.
 
 - ~~6a. Chat (services)~~: one thread model for party, DM and crew chat (ADR 0007); every room write carries a client message id (a repeat returns the first line); `InboxRoom` per user for DMs, crews and Chats › Parties, live inbox updates over Valkey; the DM rule with message requests; profanity masked; per-user send rate limit; voice notes via presigned upload, signed playback, worker transcription (`Transcriber`, mock) into `moderation_items`, retention clean-up; unread counts, paged history. Chat config in app_config "chat". `npm run sim:chat`.
 

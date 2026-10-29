@@ -239,11 +239,30 @@ export const parties = pgTable("parties", {
 export const partyPlayers = pgTable("party_players", {
   partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
   userId: uuid("user_id").notNull().references(() => users.id),
+  /** This seat. Leaving and rejoining makes a new one, so each entry's charge and refund keys are its own. */
+  id: uuid("id").notNull().defaultRandom().unique(),
+  /** The ledger key the entry was charged under; null for seats from before leaving existed (entryChargeKey()). */
+  entryKey: text("entry_key"),
   joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
   score: integer("score"),
   rank: integer("rank"),
   prizeKobo: integer("prize_kobo"),
 }, (t) => [primaryKey({ columns: [t.partyId, t.userId] }), index("party_players_user_idx").on(t.userId)]);
+
+/**
+ * A seat given up before the party locked (POST /parties/:id/leave): what was refunded, kept so a retry
+ * answers with the same result and so a party's history shows who left.
+ */
+export const partyLeaves = pgTable("party_leaves", {
+  /** The seat's id (party_players.id) as it was. */
+  entryId: uuid("entry_id").primaryKey(),
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  joinedAt: timestamp("joined_at", { withTimezone: true }).notNull(),
+  refundedBonusKobo: integer("refunded_bonus_kobo").notNull(),
+  refundedCashKobo: integer("refunded_cash_kobo").notNull(),
+  leftAt: timestamp("left_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("party_leaves_party_user_idx").on(t.partyId, t.userId, t.leftAt)]);
 
 /**
  * Someone asked to a party by a player or the host's team. Only people the inviter is connected to

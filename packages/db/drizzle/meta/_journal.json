@@ -120,6 +120,13 @@
       "when": 1793296373850,
       "tag": "0016_deletion_archives",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793302532530,
+      "tag": "0017_party_leave",
+      "breakpoints": true
     }
   ]
 }

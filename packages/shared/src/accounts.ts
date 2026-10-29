@@ -150,6 +150,26 @@ export const DELETION_BLOCKER_MESSAGES = {
   [ACTIVE_PARTY]: "Finish or leave your open parties first",
 } as const;
 export type DeletionBlocker = keyof typeof DELETION_BLOCKER_MESSAGES;
+/** active_party when one of the parties can't be left right now (it starts within the lock, or is live). */
+export const ACTIVE_PARTY_STARTS_SOON_MESSAGE = "A party you're in starts soon. Try again once it's over";
+
+/**
+ * For active_party, each party in the way and what the person can do about it: leave it now, wait
+ * (starts_soon: inside the leave lock, or already live), or it's theirs (host: hosts can't leave, and
+ * only an admin can cancel a party today).
+ */
+export const BLOCKING_PARTY_ACTIONS = ["leave", "starts_soon", "host"] as const;
+export const blockingPartySchema = z.object({
+  id: z.string().uuid(), title: z.string(), startsAt: z.string().datetime(), action: z.enum(BLOCKING_PARTY_ACTIONS),
+});
+export type BlockingParty = z.infer<typeof blockingPartySchema>;
+/** A blocker as GET /me/deletion lists it and DELETE /me's 409 carries it in `details`. */
+export const deletionBlockerViewSchema = z.object({
+  code: z.enum([CASH_BALANCE, ACTIVE_PARTY]), message: z.string(),
+  /** active_party only. */
+  parties: z.array(blockingPartySchema).optional(),
+});
+export type DeletionBlockerView = z.infer<typeof deletionBlockerViewSchema>;
 
 /** DELETE /me. */
 export const deleteAccountSchema = z.object({ reason: z.enum(DELETION_REASONS).optional() });
@@ -158,7 +178,7 @@ export const deleteAccountSchema = z.object({ reason: z.enum(DELETION_REASONS).o
 export const deletionStatusSchema = z.object({
   /** Null when not re-verified in the window; else when the window closes. */
   reverifiedUntil: z.string().datetime().nullable(),
-  blockers: z.array(z.object({ code: z.enum([CASH_BALANCE, ACTIVE_PARTY]), message: z.string() })),
+  blockers: z.array(deletionBlockerViewSchema),
   reasons: z.array(z.enum(DELETION_REASONS)),
 });
 export type DeletionStatus = z.infer<typeof deletionStatusSchema>;

@@ -1,13 +1,15 @@
 /**
- * Stakes against the running stack: the limits endpoint, every refusal checkStakes makes, the host's cash prize held at
- * creation, paid out by place with no rake and released on cancel, and a brand's goods awarded one fulfilment per place.
+ * Stakes against the running stack: the limits endpoint, every refusal checkStakes makes, leaving a staked party (the
+ * entry back, the lobby room drops the player and shows the seats), the host's cash prize held at creation, paid out by
+ * place with no rake and released on cancel, and a brand's goods awarded one fulfilment per place.
  * Rounds aren't played here (party-sim does that): a party is settled by writing ranks and queueing the worker's settle job.
  */
+import { Client } from "colyseus.js";
 import { and, eq } from "drizzle-orm";
 import { db, ledgerEntries, parties, partyPlayers, prizeFulfilments, sql } from "@contestly/db";
 import { closeQueues, partyQueue } from "@contestly/queue";
-import { kobo, type PartyLimitsResponse } from "@contestly/shared";
-import { api, call, failureCount, inMinutes, ok, partyNetKobo, waitFor } from "./sim-lib.js";
+import { LEFT_PARTY, MSG, PARTY_ROOM, kobo, type PartyLimitsResponse } from "@contestly/shared";
+import { RT, api, call, failureCount, inMinutes, ok, partyNetKobo, waitFor } from "./sim-lib.js";
 
 const BRIEF = "Nigerian music history: Fela, highlife and the artists who built Afrobeats";
 const base = { brief: BRIEF, startsAt: inMinutes(30), questionCount: 3, secondsPerQuestion: 5 };
@@ -66,6 +68,32 @@ const p = await api("tunde", "POST", "/parties", pooled);
 ok(p.entryKobo === kobo(750) && p.splitId === "70_30", "a ₦750 entry and 70/30 are accepted");
 // 1 seat × ₦750 = ₦750, less 10% = ₦675 → 70/30
 ok(p.places.map((x: any) => x.amountKobo).join() === [kobo(472.5), kobo(202.5)].join(), `places are the pot right now after the rake (${p.places.map((x: any) => x.amountKobo)})`);
+
+console.log("\n==== leaving a staked party ====");
+{
+  const room = async (h: string) => {
+    const r = await new Client(RT).joinOrCreate(PARTY_ROOM, { partyId: p.id, devUser: h });
+    const seen = { seats: null as any, online: [] as string[], error: null as string | null, closed: null as number | null };
+    for (const t of [MSG.phase, MSG.chatMessage, MSG.questionsStatus]) r.onMessage(t, () => {});
+    r.onMessage(MSG.seats, (m: any) => { seen.seats = m; });
+    r.onMessage(MSG.presence, (m: any) => { seen.online = m.online.map((o: any) => o.handle); });
+    r.onMessage(MSG.error, (m: any) => { seen.error = m.error; });
+    r.onLeave((code) => { seen.closed = code; });
+    return { r, seen };
+  };
+  await api("kemz", "POST", `/parties/${p.id}/join`);
+  const host = await room("tunde");
+  const kemz = await room("kemz");
+  ok(!!(await waitFor(async () => host.seen.online.includes("kemz"))), "kemz is in the lobby");
+  const left = await api("kemz", "POST", `/parties/${p.id}/leave`);
+  ok(left.refund.toBonusKobo + left.refund.toCashKobo === kobo(750) && left.seats.taken === 1 && left.potKobo === kobo(750), `kemz left with the whole ₦750 back (${JSON.stringify(left.refund)})`);
+  ok((await partyNetKobo(await userId("kemz"), p.id)) === 0, "the ledger nets to zero for kemz in this party");
+  ok(!!(await waitFor(async () => kemz.seen.closed !== null)) && kemz.seen.error === LEFT_PARTY, `kemz's own connection was told and closed (${kemz.seen.error}, ${kemz.seen.closed})`);
+  ok(!!(await waitFor(async () => host.seen.seats?.taken === 1 && !host.seen.online.includes("kemz"))), `the lobby shows one seat taken and kemz gone (${JSON.stringify(host.seen.seats)})`);
+  ok((await api("kemz", "POST", `/parties/${p.id}/leave`)).replayed === true, "leaving again is a no-op");
+  ok((await call("tunde", "POST", `/parties/${p.id}/leave`)).body.error === "host_must_cancel", "the host can't leave");
+  await host.r.leave();
+}
 
 console.log("\n==== free: entry 0, no prize, bragging rights ====");
 const totalOf = async (h: string) => { const w = (await api(h, "GET", "/me")).wallet; return w.cashKobo + w.bonusKobo as number; };

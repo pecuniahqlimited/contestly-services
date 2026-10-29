@@ -14,7 +14,7 @@ import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, resolveUser } from "@contestly/auth";
 import { partyQueue, questionsQueue } from "@contestly/queue";
-import { MSG, PARTY_EVENTS_CHANNEL, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { LEFT_PARTY, MSG, PARTY_EVENTS_CHANNEL, type PlayerLeftEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member extends ChatSender {
@@ -26,6 +26,8 @@ const toMatchQuestion = (q: typeof partyQuestions.$inferSelect): MatchQuestion =
   ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined });
 
 const QUESTIONS_PROGRESS = "questions_progress";
+/** WebSocket close code for a player's connections once they've left the party (they hold no seat to come back to). */
+const LEFT_CLOSE_CODE = 4409;
 
 type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "finished" | "cancelled";
 
@@ -140,6 +142,7 @@ export class PartyRoom extends SafeRoom {
         return;
       }
       if (ev.partyId !== this.partyId) return;
+      if (ev.status === "player_left") return this.run("player left", () => this.onPlayerLeft(ev as PlayerLeftEvent));
       // The set is built at creation, so "live" usually finds it ready and the round starts at once. If a
       // late joiner had seen a question, the set is being swapped and "questions_ready" starts it.
       if (ev.status === "live" || ev.status.startsWith("questions_")) {
@@ -170,6 +173,7 @@ export class PartyRoom extends SafeRoom {
 
   onJoin(client: Client) {
     const me = client.auth as Member;
+    this.removed.delete(me.id); // seated again after leaving (a banned or deleted user never gets past onAuth)
     this.members.set(client.sessionId, me);
     if (me.plays) this.match?.addPlayer(me.id);
     this.broadcastPresence();
@@ -399,6 +403,21 @@ export class PartyRoom extends SafeRoom {
       questions: questionDisclosure(this.party),
     });
     if (this.lastBroadcast && this.phase !== "lobby") client.send(this.lastBroadcast.type, this.lastBroadcast.payload);
+  }
+
+  /**
+   * A player gave up their seat (the API, over party:events): their connections are closed without a
+   * reconnection grace, presence drops them, and everyone sees the new seat count. Seats only change
+   * before start, so there's no match to touch.
+   */
+  private onPlayerLeft(ev: PlayerLeftEvent) {
+    for (const client of [...this.clients]) {
+      if (this.userIdOf(client) !== ev.userId) continue;
+      this.removed.add(ev.userId);
+      client.send(MSG.error, { error: LEFT_PARTY });
+      client.leave(LEFT_CLOSE_CODE);
+    }
+    this.broadcast(MSG.seats, { partyId: this.partyId, ...ev.seats });
   }
 
   /** Real presence only: the people actually connected to this room right now. */

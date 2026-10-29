@@ -4,7 +4,7 @@
  * seated, the party's chat opens, invites go out, and the set starts building (ADR 0002).
  */
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
-import {
+import { takeSeat,
   canOfferNonCashPrize, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles, partyInvites,
   partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Party, type Tx, type User,
 } from "@contestly/db";
@@ -67,8 +67,7 @@ export async function createParty(me: User, body: CreatePartyInput, opts: Create
     // A sealed party's host plays: seated, and pooled hosts pay their own entry like everyone else.
     // A curate host reviews the questions and so never plays: not seated, never charged an entry.
     if (body.mode === "sealed") {
-      await ledger.charge(tx, { userId: me.id, amountKobo: body.funding === "pooled" ? body.entryKobo : 0, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: `party_entry:${p.id}:${me.id}` });
-      await tx.insert(partyPlayers).values({ partyId: p.id, userId: me.id });
+      await takeSeat(tx, p, me.id, body.funding === "pooled" ? body.entryKobo : 0);
     }
     if (opts.rematchOf) await copySources(tx, opts.rematchOf, p.id, me.id);
     // The host's team is in the party's chat whether or not they play.

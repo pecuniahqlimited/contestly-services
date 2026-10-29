@@ -7,7 +7,7 @@
  * logged) and a run in progress ends as abandoned. Crew hand-over and the Firebase user are the API's part.
  */
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
-import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, type DeletionBlocker } from "@contestly/shared";
+import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, leaveWindow, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import {
   archivedCrewInvites, archivedFollows, climbAwards, climbRuns, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, userIdentities, users, type User,
@@ -31,6 +31,21 @@ export async function deletionBlockers(conn: Conn, userId: string): Promise<Dele
   if ((cash?.balance ?? 0) > 0) blockers.push("cash_balance");
   if (seated || hosting) blockers.push("active_party");
   return blockers;
+}
+
+/**
+ * The unfinished parties behind active_party, each with what the person can do: leave it now, wait
+ * (it starts within the leave lock, or is live), or it's theirs to host (hosts can't leave).
+ */
+export async function blockingParties(conn: Conn, userId: string, now = new Date()): Promise<BlockingParty[]> {
+  const [seated, hosted] = await Promise.all([
+    conn.select({ p: parties }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).where(and(eq(partyPlayers.userId, userId), unfinished)),
+    conn.select().from(parties).where(and(eq(parties.createdByUserId, userId), unfinished)),
+  ]);
+  const byId = new Map<string, BlockingParty>();
+  for (const { p } of seated) byId.set(p.id, { id: p.id, title: p.title, startsAt: p.startsAt.toISOString(), action: leaveWindow(p, now) === "open" ? "leave" : "starts_soon" });
+  for (const p of hosted) byId.set(p.id, { id: p.id, title: p.title, startsAt: p.startsAt.toISOString(), action: "host" });
+  return [...byId.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 }
 
 /** The live handle a deleted account takes: unique (its id) and reserved (handleSchema refuses the prefix). */
