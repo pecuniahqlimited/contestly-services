@@ -20,6 +20,12 @@ echo "leave:    $(curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/$P
 echo "again:    $(curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/$PID/leave)"
 echo "host:     $(curl -s -H 'x-dev-user: tunde' -X POST localhost:4000/parties/$PID/leave)"
 echo "rejoin:   $(curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/$PID/join)"
+# The host cancels their own party: every seat refunded, a retry answers the same, nobody else may.
+CID=$(curl "${H[@]}" -X POST localhost:4000/parties -d '{"title":"Smoke cancel","brief":"Lagos landmarks","entryKobo":20000,"maxPlayers":6,"funding":"pooled","split":"winner","startsAt":"'"$(date -u -v+30M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "+30 minutes" +%Y-%m-%dT%H:%M:%SZ)"'"}' | j "d['id']")
+curl -s -H 'x-dev-user: zee' -X POST localhost:4000/parties/$CID/join >/dev/null
+echo "not host: $(curl -s -H 'x-dev-user: zee' -H 'content-type: application/json' -X POST localhost:4000/parties/$CID/cancel -d '{}')"
+echo "cancel:   $(curl "${H[@]}" -X POST localhost:4000/parties/$CID/cancel -d '{"reason":"smoke"}')"
+echo "again:    $(curl "${H[@]}" -X POST localhost:4000/parties/$CID/cancel -d '{}')"
 echo "detail:   $(curl "${H[@]}" localhost:4000/parties/$PID | j "d['status'], d['playerCount'], d['potKobo']")"
 echo "climb:    $(curl "${H[@]}" localhost:4000/climb | j "d['ladder']['version'], len(d['ladder']['stages']), d['week']['week']")"
 RUN=$(curl "${H[@]}" -X POST localhost:4000/climb/runs | j "d['run']['id'], d['round']['type']")

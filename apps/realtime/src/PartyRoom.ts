@@ -14,7 +14,7 @@ import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, resolveUser } from "@contestly/auth";
 import { partyQueue, questionsQueue } from "@contestly/queue";
-import { LEFT_PARTY, MSG, PARTY_EVENTS_CHANNEL, type PlayerLeftEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_EVENTS_CHANNEL, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member extends ChatSender {
@@ -26,8 +26,6 @@ const toMatchQuestion = (q: typeof partyQuestions.$inferSelect): MatchQuestion =
   ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined });
 
 const QUESTIONS_PROGRESS = "questions_progress";
-/** WebSocket close code for a player's connections once they've left the party (they hold no seat to come back to). */
-const LEFT_CLOSE_CODE = 4409;
 
 type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "finished" | "cancelled";
 
@@ -142,17 +140,14 @@ export class PartyRoom extends SafeRoom {
         return;
       }
       if (ev.partyId !== this.partyId) return;
-      if (ev.status === "player_left") return this.run("player left", () => this.onPlayerLeft(ev as PlayerLeftEvent));
+      if (ev.status === "player_left") return this.run("player left", () => this.onPlayerLeft(ev as SeatsChangedEvent));
+      if (ev.status === "player_joined") return this.run("player joined", () => this.broadcastSeats(ev as SeatsChangedEvent));
       // The set is built at creation, so "live" usually finds it ready and the round starts at once. If a
       // late joiner had seen a question, the set is being swapped and "questions_ready" starts it.
       if (ev.status === "live" || ev.status.startsWith("questions_")) {
         this.run(`round: ${ev.status}`, () => this.onSetOrLifecycleChange(ev.status));
       }
-      if (ev.status === "cancelled") {
-        this.setPhase("cancelled");
-        this.broadcast(MSG.phase, { phase: "cancelled" });
-        this.run("cancelled: disconnect", () => this.disconnect());
-      }
+      if (ev.status === "cancelled") this.run("cancelled", () => this.onCancelled(ev as PartyCancelledEvent));
     });
 
     // Room created after the party already went live (e.g. everyone reconnecting): pick the round up.
@@ -410,14 +405,30 @@ export class PartyRoom extends SafeRoom {
    * reconnection grace, presence drops them, and everyone sees the new seat count. Seats only change
    * before start, so there's no match to touch.
    */
-  private onPlayerLeft(ev: PlayerLeftEvent) {
+  private onPlayerLeft(ev: SeatsChangedEvent) {
     for (const client of [...this.clients]) {
       if (this.userIdOf(client) !== ev.userId) continue;
       this.removed.add(ev.userId);
       client.send(MSG.error, { error: LEFT_PARTY });
-      client.leave(LEFT_CLOSE_CODE);
+      client.leave(PARTY_LEFT_CLOSE_CODE);
     }
+    this.broadcastSeats(ev);
+  }
+
+  /** The lobby's seat count, live both ways (joins and leaves come from the API over party:events). */
+  private broadcastSeats(ev: SeatsChangedEvent) {
     this.broadcast(MSG.seats, { partyId: this.partyId, ...ev.seats });
+  }
+
+  /**
+   * Cancelled (worker, admin or host). Everyone hears it; a host's cancel carries the message to show and
+   * closes each connection with its own code, so the app can tell it from a dropped socket.
+   */
+  private onCancelled(ev: PartyCancelledEvent) {
+    this.setPhase("cancelled");
+    this.broadcast(MSG.phase, { phase: "cancelled", ...(ev.by ? { by: ev.by } : {}), ...(ev.message ? { message: ev.message } : {}) });
+    if (ev.by === "host") for (const client of [...this.clients]) client.leave(HOST_CANCELLED_CLOSE_CODE);
+    this.run("cancelled: disconnect", () => this.disconnect());
   }
 
   /** Real presence only: the people actually connected to this room right now. */

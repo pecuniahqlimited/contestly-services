@@ -147,18 +147,18 @@ export const ACTIVE_PARTY = "active_party";
 /** What the app shows for each blocker. */
 export const DELETION_BLOCKER_MESSAGES = {
   [CASH_BALANCE]: "Contact support to withdraw first",
-  [ACTIVE_PARTY]: "Finish or leave your open parties first",
+  [ACTIVE_PARTY]: "Leave or cancel your open parties first",
 } as const;
 export type DeletionBlocker = keyof typeof DELETION_BLOCKER_MESSAGES;
 /** active_party when one of the parties can't be left right now (it starts within the lock, or is live). */
 export const ACTIVE_PARTY_STARTS_SOON_MESSAGE = "A party you're in starts soon. Try again once it's over";
 
 /**
- * For active_party, each party in the way and what the person can do about it: leave it now, wait
- * (starts_soon: inside the leave lock, or already live), or it's theirs (host: hosts can't leave, and
- * only an admin can cancel a party today).
+ * For active_party, each party in the way and what the person can do about it: leave it (a seat, outside
+ * the leave lock), cancel it (theirs to host, still open), or wait (starts_soon: a seat inside the lock,
+ * or any party already live, theirs or not).
  */
-export const BLOCKING_PARTY_ACTIONS = ["leave", "starts_soon", "host"] as const;
+export const BLOCKING_PARTY_ACTIONS = ["leave", "cancel", "starts_soon"] as const;
 export const blockingPartySchema = z.object({
   id: z.string().uuid(), title: z.string(), startsAt: z.string().datetime(), action: z.enum(BLOCKING_PARTY_ACTIONS),
 });

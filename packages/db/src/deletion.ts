@@ -34,8 +34,8 @@ export async function deletionBlockers(conn: Conn, userId: string): Promise<Dele
 }
 
 /**
- * The unfinished parties behind active_party, each with what the person can do: leave it now, wait
- * (it starts within the leave lock, or is live), or it's theirs to host (hosts can't leave).
+ * The unfinished parties behind active_party, each with what the person can do: leave it (a seat outside
+ * the lock), cancel it (theirs, still open; hosts can't leave), or wait (a seat inside the lock, or live).
  */
 export async function blockingParties(conn: Conn, userId: string, now = new Date()): Promise<BlockingParty[]> {
   const [seated, hosted] = await Promise.all([
@@ -44,7 +44,7 @@ export async function blockingParties(conn: Conn, userId: string, now = new Date
   ]);
   const byId = new Map<string, BlockingParty>();
   for (const { p } of seated) byId.set(p.id, { id: p.id, title: p.title, startsAt: p.startsAt.toISOString(), action: leaveWindow(p, now) === "open" ? "leave" : "starts_soon" });
-  for (const p of hosted) byId.set(p.id, { id: p.id, title: p.title, startsAt: p.startsAt.toISOString(), action: "host" });
+  for (const p of hosted) byId.set(p.id, { id: p.id, title: p.title, startsAt: p.startsAt.toISOString(), action: p.status === "open" ? "cancel" : "starts_soon" });
   return [...byId.values()].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
 }
 

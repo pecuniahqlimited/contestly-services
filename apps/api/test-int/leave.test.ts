@@ -173,17 +173,17 @@ describe("account deletion and leaving", () => {
     // The one starting soon goes ahead without them (as the start job would); the other they leave.
     await db.update(parties).set({ status: "finished", endedAt: new Date() }).where(eq(parties.id, soon.id));
     const status = (await app.inject({ method: "GET", url: "/me/deletion", headers: as(seun) })).json();
-    expect(status.blockers).toEqual([{ code: "active_party", message: "Finish or leave your open parties first", parties: [expect.objectContaining({ id: later.id, action: "leave" })] }]);
+    expect(status.blockers).toEqual([{ code: "active_party", message: "Leave or cancel your open parties first", parties: [expect.objectContaining({ id: later.id, action: "leave" })] }]);
     expect((await leave(seun, later.id)).statusCode).toBe(200);
     const deleted = await app.inject({ method: "DELETE", url: "/me", headers: as(seun), payload: {} });
     expect([deleted.statusCode, deleted.body]).toEqual([200, JSON.stringify({ deleted: true })]);
   });
 
-  it("a host's own party says so", async () => {
+  it("a host's own open party says cancel", async () => {
     const host = await makeUser("lvhost7");
     await party(host);
     const status = (await app.inject({ method: "GET", url: "/me/deletion", headers: as(host) })).json();
-    expect(status.blockers[0].parties).toEqual([expect.objectContaining({ action: "host" })]);
+    expect(status.blockers[0].parties).toEqual([expect.objectContaining({ action: "cancel" })]);
   });
 });
 

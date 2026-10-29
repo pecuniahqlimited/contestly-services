@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
+import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -231,6 +231,15 @@ export const parties = pgTable("parties", {
   liveAt: timestamp("live_at", { withTimezone: true }),
   /** When it finished or was cancelled; the source sweep counts its retention window from here. */
   endedAt: timestamp("ended_at", { withTimezone: true }),
+  /**
+   * Who cancelled it, once cancelled: "host" (the host, POST /parties/:id/cancel), "admin" (who and why are
+   * in admin_actions) or "system" (the start job, a failed set, a lost room).
+   */
+  cancelledBy: text("cancelled_by").$type<CancelledBy>(),
+  /** The host who cancelled (cancelledBy "host"). */
+  cancelledByUserId: uuid("cancelled_by_user_id").references(() => users.id),
+  /** The host's optional reason; never shown publicly. */
+  cancelReason: text("cancel_reason"),
   /** Set when record_play has folded this party's answer stats into the bank (job idempotency). */
   playStatsRecordedAt: timestamp("play_stats_recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

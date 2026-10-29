@@ -127,6 +127,13 @@
       "when": 1793302532530,
       "tag": "0017_party_leave",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793304593312,
+      "tag": "0018_host_cancel",
+      "breakpoints": true
     }
   ]
 }

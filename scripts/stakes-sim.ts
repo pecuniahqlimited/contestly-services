@@ -1,6 +1,7 @@
 /**
  * Stakes against the running stack: the limits endpoint, every refusal checkStakes makes, leaving a staked party (the
- * entry back, the lobby room drops the player and shows the seats), the host's cash prize held at creation, paid out by
+ * entry back, the lobby room drops the player and shows the seats) and the host cancelling it (every seat refunded,
+ * the room told and closed), the host's cash prize held at creation, paid out by
  * place with no rake and released on cancel, and a brand's goods awarded one fulfilment per place.
  * Rounds aren't played here (party-sim does that): a party is settled by writing ranks and queueing the worker's settle job.
  */
@@ -69,12 +70,13 @@ ok(p.entryKobo === kobo(750) && p.splitId === "70_30", "a ₦750 entry and 70/30
 // 1 seat × ₦750 = ₦750, less 10% = ₦675 → 70/30
 ok(p.places.map((x: any) => x.amountKobo).join() === [kobo(472.5), kobo(202.5)].join(), `places are the pot right now after the rake (${p.places.map((x: any) => x.amountKobo)})`);
 
-console.log("\n==== leaving a staked party ====");
+console.log("\n==== leaving a staked party, then the host cancels it ====");
 {
   const room = async (h: string) => {
     const r = await new Client(RT).joinOrCreate(PARTY_ROOM, { partyId: p.id, devUser: h });
-    const seen = { seats: null as any, online: [] as string[], error: null as string | null, closed: null as number | null };
-    for (const t of [MSG.phase, MSG.chatMessage, MSG.questionsStatus]) r.onMessage(t, () => {});
+    const seen = { seats: null as any, online: [] as string[], error: null as string | null, closed: null as number | null, phase: null as any };
+    for (const t of [MSG.chatMessage, MSG.questionsStatus]) r.onMessage(t, () => {});
+    r.onMessage(MSG.phase, (m: any) => { seen.phase = m; });
     r.onMessage(MSG.seats, (m: any) => { seen.seats = m; });
     r.onMessage(MSG.presence, (m: any) => { seen.online = m.online.map((o: any) => o.handle); });
     r.onMessage(MSG.error, (m: any) => { seen.error = m.error; });
@@ -92,7 +94,18 @@ console.log("\n==== leaving a staked party ====");
   ok(!!(await waitFor(async () => host.seen.seats?.taken === 1 && !host.seen.online.includes("kemz"))), `the lobby shows one seat taken and kemz gone (${JSON.stringify(host.seen.seats)})`);
   ok((await api("kemz", "POST", `/parties/${p.id}/leave`)).replayed === true, "leaving again is a no-op");
   ok((await call("tunde", "POST", `/parties/${p.id}/leave`)).body.error === "host_must_cancel", "the host can't leave");
-  await host.r.leave();
+
+  await api("ada.o", "POST", `/parties/${p.id}/join`);
+  ok(!!(await waitFor(async () => host.seen.seats?.taken === 2)), `joining updates the lobby's seat count too (${JSON.stringify(host.seen.seats)})`);
+  const ada = await room("ada.o");
+  ok((await call("ada.o", "POST", `/parties/${p.id}/cancel`)).status === 403, "a player can't cancel the host's party");
+  const cancelled = await api("tunde", "POST", `/parties/${p.id}/cancel`, { reason: "sim: change of plans" });
+  ok(cancelled.refunded.seats === 2 && cancelled.refunded.toBonusKobo + cancelled.refunded.toCashKobo === 2 * kobo(750), `the host cancelled: both seats refunded (${JSON.stringify(cancelled.refunded)})`);
+  const told = "The host cancelled this party. Your entry is back in your wallet.";
+  ok(!!(await waitFor(async () => ada.seen.closed !== null)) && ada.seen.phase?.by === "host" && ada.seen.phase?.message === told, `the room told ada and closed (${ada.seen.closed}: ${ada.seen.phase?.message})`);
+  ok(ada.seen.closed === 4410, "with the host-cancelled close code");
+  for (const h of ["ada.o", "tunde"]) ok((await partyNetKobo(await userId(h), p.id)) === 0, `${h} nets to zero in this party`);
+  ok((await api("tunde", "POST", `/parties/${p.id}/cancel`)).replayed === true, "cancelling again is a no-op");
 }
 
 console.log("\n==== free: entry 0, no prize, bragging rights ====");

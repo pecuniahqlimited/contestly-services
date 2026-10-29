@@ -22,7 +22,7 @@ export const GENERATION_FAILED_MESSAGE = "We couldn't build the questions for th
 
 /** Refund and cancel (packages/db, the one cancel path), then tell the room. */
 export async function refundParty(deps: Pick<StartDeps, "emit">, tx: Tx, p: Party, message: string) {
-  const refunded = await refundAndCancel(tx, p, message);
+  const { players: refunded } = await refundAndCancel(tx, p, message);
   await deps.emit({ partyId: p.id, status: "cancelled" });
   return refunded;
 }

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, partyPrizes, follows, ledger, getPartyConfig, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers } from "@contestly/db";
-import { type ChatMessage, type LeavePartyResponse, type PlayerLeftEvent, PARTY_EVENTS_CHANNEL, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
+import { db, users, parties, partyPlayers, partyPrizes, follows, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers } from "@contestly/db";
+import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, PARTY_EVENTS_CHANNEL, hostCancelMessage, hostCancelSchema, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
 import { notifyQueue } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
@@ -132,6 +132,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const me = requireSession(req);
     const id = uuidParam(req);
     let line: ChatMessage | undefined;
+    let seats: SeatsChangedEvent["seats"] | undefined;
     const result = await db.transaction(async (tx) => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
       if (!p) return { status: 404, body: { error: "not_found" } };
@@ -147,9 +148,11 @@ export async function partiesRoutes(app: FastifyInstance) {
       await acceptInvite(tx, id, me.id);
       await joinPartyThread(tx, id, me.id);
       line = await systemLine(tx, id, `${me.displayName} joined`);
+      seats = { taken: Number(n) + 1, max: p.maxPlayers };
       return { status: 201, body: { joined: true, paid, potKobo: potKobo(p, Number(n) + 1) } };
     });
     if (line) await publishLine(line);
+    if (seats) await publishPartyEvent({ partyId: id, status: "player_joined", userId: me.id, seats } satisfies SeatsChangedEvent);
     req.log.info({ partyId: id, userId: me.id, status: result.status }, "party join");
     return reply.code(result.status).send(result.body);
   });
@@ -174,10 +177,33 @@ export async function partiesRoutes(app: FastifyInstance) {
     const seats = { taken: out.taken, max: p.maxPlayers };
     if (!out.replayed) {
       if (out.line) await publishLine(out.line);
-      const ev: PlayerLeftEvent = { partyId: id, status: "player_left", userId: me.id, seats };
-      await valkey().publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
+      await publishPartyEvent({ partyId: id, status: "player_left", userId: me.id, seats } satisfies SeatsChangedEvent);
     }
     const body: LeavePartyResponse = { left: true, replayed: out.replayed, refund: out.refund, potKobo: potKobo(p, out.taken), seats };
     return body;
   });
+
+  /**
+   * The host cancels their own party (CLAUDE.md, Parties): while it's open, inside the leave lock too, until
+   * it goes live. Every seat refunded the way it was paid through the one cancel path, with the row locked;
+   * a retry answers the same. The room is told over party:events; the nudge (row 9) is queued.
+   */
+  app.post("/parties/:id/cancel", async (req, reply) => {
+    const me = requireUser(req);
+    const id = uuidParam(req);
+    const { reason } = hostCancelSchema.parse(req.body ?? {});
+    const out = await db.transaction((tx) => hostCancelParty(tx, id, me.id, reason));
+    if (!out) return reply.code(404).send({ error: "not_found" });
+    req.log.info({ partyId: id, userId: me.id, outcome: out.ok ? (out.result.replayed ? "replayed" : "cancelled") : out.error }, "party cancel by host");
+    if (!out.ok) return reply.code(out.status).send({ error: out.error });
+    if (!out.result.replayed) {
+      if (out.line) await publishLine(out.line);
+      await publishPartyEvent({ partyId: id, status: "cancelled", by: "host", message: hostCancelMessage(out.party) } satisfies PartyCancelledEvent);
+      await notify.add("party_cancelled", { kind: "party_cancelled", partyId: id, by: "host", hostId: me.id, toUserIds: out.seatedUserIds, refunded: out.party.entryKobo > 0 });
+    }
+    return out.result;
+  });
 }
+
+/** API → realtime, over Valkey (never a direct call). */
+const publishPartyEvent = (ev: SeatsChangedEvent | PartyCancelledEvent) => valkey().publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));

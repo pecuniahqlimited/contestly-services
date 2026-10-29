@@ -12,6 +12,7 @@ export * from "./admin.js";
 export * from "./chat.js";
 export * from "./social.js";
 export * from "./partyLeave.js";
+import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
@@ -269,7 +270,7 @@ export const MSG = {
   /** Inbox room: a line landed in one of the user's DM or crew threads (inboxUpdateSchema). */
   inbox: "inbox",
   presence: "presence",
-  /** Lobby: the seat count changed (someone left): { partyId, taken, max }. */
+  /** Lobby: the seat count changed (someone joined or left): { partyId, taken, max }. */
   seats: "seats",
   /** A question was voided by player flags: { questionId, idx, replacementAdded, total }. */
   questionVoided: "question:voided",
@@ -298,12 +299,17 @@ export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserI
 export type NotifyQuestionsFailedJob = { kind: "questions_failed"; partyId: string; hostId: string; reason: string };
 /** People were @-mentioned in a chat line (only real members of the thread; never the author). Delivery is row 9's nudge. */
 export type NotifyMentionJob = { kind: "chat_mention"; threadId: string; messageId: string; fromUserId: string; toUserIds: string[] };
-export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob | NotifyMentionJob;
+/**
+ * A party was cancelled by its host. The hook for row 9's nudge ("your party was cancelled, your entry is back"):
+ * `toUserIds` are the seated players other than the host, as they were when it was cancelled.
+ */
+export type NotifyPartyCancelledJob = { kind: "party_cancelled"; partyId: string; by: "host"; hostId: string; toUserIds: string[]; refunded: boolean };
+export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob | NotifyMentionJob | NotifyPartyCancelledJob;
 /** Chat jobs in the worker: transcribe a voice note into the moderation queue. */
 export type ChatJob = { kind: "transcribe_voice"; voiceNoteId: string };
 /**
  * `cancel_generation_failed`: a party that is already live has no playable set (its start-time
- * re-check couldn't be completed); the worker refunds (money only moves in the worker). Before
+ * re-check couldn't be completed); the worker refunds (it owns that cancel). Before
  * start, a failed generation never cancels: the host is notified and can retry.
  */
 export type PartyJob =
@@ -866,7 +872,12 @@ export const roomPhaseSchema = z.object({
   phase: z.enum(ROOM_PHASES),
   partyStatus: z.enum(PARTY_STATUSES).optional(),
   questions: questionDisclosureSchema.optional(),
+  /** On "cancelled" by the host: who, and the line to show (hostCancelMessage); the room then closes with HOST_CANCELLED_CLOSE_CODE. */
+  by: z.enum(CANCELLED_BY).optional(),
+  message: z.string().optional(),
 });
+/** MSG.seats: the lobby's seat count, sent whenever someone joins or leaves. */
+export const roomSeatsSchema = z.object({ partyId: z.string().uuid(), taken: z.number().int().nonnegative(), max: z.number().int().positive() });
 
 /** Someone actually connected to the room right now. `plays` is false for a curate host, who watches. */
 export const roomMemberSchema = z.object({ id: z.string().uuid(), handle: z.string(), displayName: z.string(), avatarEmoji: z.string(), plays: z.boolean() });

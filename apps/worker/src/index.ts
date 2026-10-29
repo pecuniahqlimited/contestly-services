@@ -31,6 +31,9 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
     console.log(`[notify] invites for party ${d.partyId} → ${d.toUserIds.length} users`);
   } else if (d.kind === "questions_failed") {
     console.log(`[notify] host ${d.hostId}: questions for party ${d.partyId} couldn't be made — "${d.reason}" (retry or edit the brief)`);
+  } else if (d.kind === "party_cancelled") {
+    // Row 9's nudge: "<host> cancelled <party>; your entry is back" to each seat. Logged until pushes exist.
+    console.log(`[notify] party ${d.partyId} cancelled by its host → ${d.toUserIds.length} player(s)${d.refunded ? ", entries refunded" : ""}`);
   } else if (d.kind === "chat_mention") {
     console.log(`[notify] @mention in thread ${d.threadId} → ${d.toUserIds.length} user(s) (batched per thread from row 9)`);
   }
