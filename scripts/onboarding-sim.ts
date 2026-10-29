@@ -307,6 +307,26 @@ try {
   const byEmail = await signUpByEmail(await anonymous(), ginaEmail);
   ok(byEmail.body.account === "existing" && (await withCustomToken(byEmail.body.customToken)).uid === gina.uid, "her email code signs into the account Google made");
 
+  console.log("\n==== deleting an account: re-verify, delete, gone; the email signs up again as someone new ====");
+  const ivy = await anonymous();
+  const ivyEmail = `sim${tag}ivy@example.com`;
+  const ivyMember = await withCustomToken((await signUpByEmail(ivy, ivyEmail)).body.customToken);
+  const ivyId = (await me(ivyMember)).id;
+  ok((await http(ivyMember, "DELETE", "/me", {})).body.error === "reverify_required", "deleting needs a fresh sign-in first");
+  const rv = await providerRoundTrip(ivyMember, "google", ivyEmail);
+  const again = await exchange(ivyMember, rv.deepLink.searchParams.get("code")!, rv.verifier);
+  ok(again.body.account === "existing", "signing in again to the same account (Google)…");
+  const status = (await http(ivyMember, "GET", "/me/deletion")).body;
+  ok(!!status.reverifiedUntil && status.blockers.length === 0, "…opens the 5-minute window, with nothing in the way");
+  const gone = await http(ivyMember, "DELETE", "/me", { reason: "not_using" });
+  ok(gone.status === 200 && gone.body.deleted === true, "deleted");
+  const after = await http(ivyMember, "GET", "/me");
+  ok(after.status === 401 && after.body.error === "account_gone", `its session is gone (${after.status} ${after.body.error})`);
+  const ivyAgain = await signUpByEmail(await anonymous(), ivyEmail);
+  ok(ivyAgain.body.account === "upgraded", "the same email signs up again");
+  const ivyNew = await me(await withCustomToken(ivyAgain.body.customToken));
+  ok(ivyNew.id !== ivyId && ivyNew.email === ivyEmail, "as a new account, not the deleted one");
+
   console.log("\n==== phone: verified, not linked; contacts matched by hash ====");
   const adaPhone = randomPhone();
   const added = await http(adaMember, "POST", "/me/phone", { idToken: await phoneCheckToken(adaPhone) });

@@ -4,7 +4,7 @@
  * a missing set is rebuilt from it. ▲/▼ compare with the snapshot the worker takes when each Lagos day begins.
  */
 import { and, eq, inArray } from "drizzle-orm";
-import { climbWeeks, db, follows, users } from "@contestly/db";
+import { climbWeeks, db, follows, liveUser, users } from "@contestly/db";
 import { valkey } from "../redis.js";
 import { CLIMB_BOARD_TTL_SECONDS, lagosDay, weekOf, climbBoardKey, climbBoardStartOfDayKey, type ClimbBoardRow, type ClimbDay, type Person } from "@contestly/shared";
 import { competitionRanks } from "@contestly/game";
@@ -14,8 +14,8 @@ const r = valkey;
 
 /** Put a player's week points on the board. Guests play but aren't on boards until they sign up (then putOnBoard). */
 export async function setWeekPoints(week: ClimbDay, userId: string, points: number) {
-  const [u] = await db.select({ isGuest: users.isGuest }).from(users).where(eq(users.id, userId));
-  if (!u || u.isGuest) return;
+  const [u] = await db.select({ isGuest: users.isGuest, deletedAt: users.deletedAt }).from(users).where(eq(users.id, userId));
+  if (!u || u.isGuest || u.deletedAt) return;
   const key = climbBoardKey(week);
   await ensureBoard(week);
   await r().multi().zadd(key, points, userId).expire(key, CLIMB_BOARD_TTL_SECONDS).exec();
@@ -26,7 +26,7 @@ async function ensureBoard(week: ClimbDay) {
   const key = climbBoardKey(week);
   if (await r().exists(key)) return;
   const rows = await db.select({ userId: climbWeeks.userId, points: climbWeeks.points }).from(climbWeeks)
-    .innerJoin(users, and(eq(users.id, climbWeeks.userId), eq(users.isGuest, false))).where(eq(climbWeeks.week, week));
+    .innerJoin(users, and(eq(users.id, climbWeeks.userId), eq(users.isGuest, false), liveUser)).where(eq(climbWeeks.week, week));
   if (!rows.length) return;
   await r().multi().zadd(key, ...rows.flatMap((x) => [x.points, x.userId])).expire(key, CLIMB_BOARD_TTL_SECONDS).exec();
 }
@@ -66,7 +66,7 @@ async function hydrate(week: ClimbDay, scored: Scored[], viewerId: string): Prom
   const ids = scored.map((s) => s.userId);
   if (!ids.length) return [];
   const [people, weeks] = await Promise.all([
-    db.select(personColumns).from(users).where(inArray(users.id, ids)),
+    db.select(personColumns).from(users).where(and(inArray(users.id, ids), liveUser)),
     db.select().from(climbWeeks).where(and(eq(climbWeeks.week, week), inArray(climbWeeks.userId, ids))),
   ]);
   const personOf = new Map(people.map((p) => [p.id, p as Person]));

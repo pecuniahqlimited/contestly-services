@@ -9,6 +9,7 @@ import { createCustomToken, deleteFirebaseUser } from "@contestly/auth";
 import { db, sql, userIdentities, users } from "@contestly/db";
 import { ACCOUNT_BANNED, ACCOUNT_GONE, UNAUTHORIZED } from "@contestly/shared";
 import { buildApp } from "../src/app.js";
+import { markReverified } from "../src/reverify.js";
 import { makeUser, tag } from "./harness.js";
 
 const EMULATOR = process.env.FIREBASE_AUTH_EMULATOR_HOST;
@@ -35,6 +36,11 @@ async function idt(path: string, body: unknown) {
 }
 const anonymous = () => idt("accounts:signUp", { returnSecureToken: true });
 const sessionFor = async (uid: string) => (await idt("accounts:signInWithCustomToken", { token: await createCustomToken(uid), returnSecureToken: true })).idToken;
+/** The emulator's admin view of a user (null if Firebase has none). */
+async function firebaseRecord(uid: string) {
+  const res = await fetch(`${IDT}/projects/${PROJECT}/accounts:lookup`, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer owner" }, body: JSON.stringify({ localId: [uid] }) });
+  return ((await res.json()) as { users?: { localId: string; disabled?: boolean }[] }).users?.[0] ?? null;
+}
 const me = (token: string) => app.inject({ method: "GET", url: "/me", headers: { authorization: `Bearer ${token}` } });
 
 /** An unsigned ID token with these claims. The emulator skips the signature, so only the claims decide. */
@@ -93,6 +99,34 @@ describe("401 account_gone: a valid token, no account", () => {
     const res = await me((await anonymous()).idToken);
     expect(res.statusCode).toBe(200);
     expect(res.json().isGuest).toBe(true);
+  });
+});
+
+describe("401 account_gone after the owner deletes the account (ADR 0010)", () => {
+  it("its custom-token session, and Firebase has the user disabled (not deleted)", async () => {
+    const u = await makeUser("deltoken");
+    const uid = `deleted-${tag}`;
+    await db.insert(userIdentities).values({ provider: "firebase", externalId: uid, userId: u.id });
+    const token = await sessionFor(uid);
+    expect((await me(token)).statusCode).toBe(200);
+    await markReverified(u.id);
+    const res = await app.inject({ method: "DELETE", url: "/me", headers: { authorization: `Bearer ${token}` }, payload: {} });
+    expect(res.statusCode, res.body).toBe(200);
+    const after = await me(token);
+    expect([after.statusCode, after.json().error]).toEqual([401, ACCOUNT_GONE]);
+    expect(await firebaseRecord(uid)).toMatchObject({ localId: uid, disabled: true }); // still there, disabled
+  });
+
+  it("a signed-up guest's leftover anonymous token is gone too, never a new guest", async () => {
+    const { idToken, localId } = await anonymous();
+    const id = (await me(idToken)).json().id;
+    await db.update(users).set({ isGuest: false, email: `anon${tag}@example.com`, emailVerifiedAt: new Date() }).where(eq(users.id, id));
+    await markReverified(id);
+    expect((await app.inject({ method: "DELETE", url: "/me", headers: { authorization: `Bearer ${idToken}` }, payload: {} })).statusCode).toBe(200);
+    const after = await me(idToken);
+    expect([after.statusCode, after.json().error]).toEqual([401, ACCOUNT_GONE]);
+    const rows = await db.select().from(userIdentities).where(eq(userIdentities.externalId, localId));
+    expect(rows.map((r) => [r.userId, !!r.disabledAt])).toEqual([[id, true]]);
   });
 });
 

@@ -1,11 +1,11 @@
 import { eq } from "drizzle-orm";
-import { db, guestForFirebaseUid, isBanned, ledger, userByIdentity, users, type User } from "@contestly/db";
+import { db, guestForFirebaseUid, identityWasDisabled, isBanned, ledger, userByIdentity, users, type User } from "@contestly/db";
 import { ACCOUNT_BANNED, ACCOUNT_GONE, UNAUTHORIZED } from "@contestly/shared";
 import { authMode } from "./mode.js";
-import { checkIdToken, firebaseUserExists, isAnonymousToken } from "./firebase.js";
+import { checkIdToken, firebaseUserActive, isAnonymousToken } from "./firebase.js";
 
 export * from "./mode.js";
-export { createCustomToken, deleteFirebaseUser, verifyIdToken } from "./firebase.js";
+export { createCustomToken, deleteFirebaseUser, disableFirebaseUser, verifyIdToken } from "./firebase.js";
 
 /** 401. The message is the error code the API replies with. */
 export class Unauthorized extends Error { constructor(msg: string = UNAUTHORIZED) { super(msg); } }
@@ -44,7 +44,8 @@ async function devUser(raw: string): Promise<User> {
  * - `Authorization: Bearer <Firebase ID token>`: the uid's account. A token that doesn't verify (bad,
  *   expired, another project) is Unauthorized. A valid token with no account behind it is AccountGone:
  *   a custom token (we only mint those for accounts, so its account was deleted), or an anonymous one
- *   whose Firebase user is gone too (a cleaned-up guest). Any other anonymous session is a first
+ *   whose uid was a deleted account's or whose Firebase user is gone (a cleaned-up guest) or disabled
+ *   (a deleted account). Any other anonymous session is a first
  *   sight and gets a guest row.
  * - `x-dev-user: <handle>`: only with AUTH_MODE=dev, ignored entirely otherwise. Creates the user on
  *   first sight with the dev welcome coins.
@@ -62,6 +63,7 @@ export async function resolveUser(h: { authorization?: string; devUser?: string 
   const known = await userByIdentity("firebase", decoded.uid); // a deleted user row takes its identities with it
   if (known) return { user: known, via: "token" };
   if (!isAnonymousToken(decoded)) throw new AccountGone();
-  if (!(await firebaseUserExists(decoded.uid))) throw new AccountGone(); // only on first sight: one lookup per new guest
+  // Only on first sight (one lookup per new guest): a deleted account's uid, or a cleaned-up guest's, is gone.
+  if ((await identityWasDisabled("firebase", decoded.uid)) || !(await firebaseUserActive(decoded.uid))) throw new AccountGone();
   return { user: await guestForFirebaseUid(decoded.uid), via: "token" };
 }

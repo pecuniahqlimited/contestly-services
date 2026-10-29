@@ -1,7 +1,9 @@
 # ADR 0006: Anonymous-first accounts, signed in from a WebView
 
 Status: accepted (2026-10-22). Roadmap row 5, Firebase Auth and onboarding. Rules 2, 7 and 8 amended by
-ADR 0009 (2026-10-28): the onboarding round and its coins are gone; About you is admin config.
+ADR 0009 (2026-10-28): the onboarding round and its coins are gone; About you is admin config. Rules 3
+and 4 amended by ADR 0010 (2026-10-29): a deleted account's identities are disabled and only live ones
+are unique; a signed-up session may start Google/Apple to re-verify.
 
 ## Context
 

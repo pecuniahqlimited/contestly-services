@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { and, eq, ne } from "drizzle-orm";
-import { answerRequest, canReadThread, chatMembers, db, getChatConfig, markRead, memberOf, messagesPage, openDm, threadById, users, voiceNotes } from "@contestly/db";
+import { answerRequest, canReadThread, chatMembers, db, getChatConfig, markRead, memberOf, messagesPage, liveUser, openDm, threadById, users, voiceNotes } from "@contestly/db";
 import { VOICE_PLAYBACK_URL_SECONDS, VOICE_UPLOAD_URL_SECONDS, chatPageQuerySchema, voiceUploadRequestSchema } from "@contestly/shared";
 import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
@@ -54,7 +54,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   /** Open (or find) the thread with someone: direct, or a message request (ADR 0007). */
   app.post("/dm/:id", async (req) => {
     const me = requireUser(req);
-    const [them] = await db.select().from(users).where(eq(users.id, uuidParam(req)));
+    const [them] = await db.select().from(users).where(and(eq(users.id, uuidParam(req)), liveUser));
     if (!them) throw httpError(404, "not_found");
     return openDm(me, them);
   });

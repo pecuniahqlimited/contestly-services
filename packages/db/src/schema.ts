@@ -69,7 +69,23 @@ export const users = pgTable("users", {
   bestStreakDays: integer("best_streak_days").notNull().default(0),
   lastPlayedOn: text("last_played_on"), // YYYY-MM-DD, used for streaks
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+  /**
+   * Deleted by its owner (ADR 0010): a soft delete. The row and its id stay, with the ledger and every
+   * record that points here. The live email is cleared (it can sign up again as a new account), the live
+   * handle, name and face become the deleted placeholders, and what they were moves to the archive below
+   * until the retention job clears it (archive_cleared_at).
+   */
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedReason: text("deleted_reason"),
+  archivedEmail: text("archived_email"),
+  archivedHandle: text("archived_handle"),
+  archivedDisplayName: text("archived_display_name"),
+  archivedAvatarEmoji: text("archived_avatar_emoji"),
+  archivedBio: text("archived_bio"),
+  archivedPhone: text("archived_phone"),
+  archivedPhoneHmac: text("archived_phone_hmac"),
+  archiveClearedAt: timestamp("archive_cleared_at", { withTimezone: true }),
+}, (t) => [index("users_archived_email_idx").on(t.archivedEmail), index("users_archived_handle_idx").on(t.archivedHandle)]);
 
 /**
  * How a session or a sign-in reaches an account: (provider, external id). "firebase" is the session
@@ -77,11 +93,20 @@ export const users = pgTable("users", {
  * subject, from our own OAuth flow. "supabase" joins in the migration (row 11b).
  */
 export const userIdentities = pgTable("user_identities", {
+  id: uuid("id").primaryKey().defaultRandom(),
   provider: text("provider").notNull(),
   externalId: text("external_id").notNull(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [primaryKey({ columns: [t.provider, t.externalId] }), index("user_identities_user_idx").on(t.userId)]);
+  /**
+   * Set when the account was deleted: the row is kept (who it was) but reaches nothing, and the same
+   * Google/Apple subject may then belong to a new account. Live identities are unique.
+   */
+  disabledAt: timestamp("disabled_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("user_identities_live_key").on(t.provider, t.externalId).where(sql`disabled_at is null`),
+  index("user_identities_user_idx").on(t.userId),
+]);
 
 /**
  * Append-only: every admin action, who did it, to what, the state before and after, and why. Destructive

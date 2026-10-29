@@ -5,6 +5,7 @@
  */
 import { z } from "zod";
 import { personSchema } from "./person.js";
+import { accountsConfigSchema } from "./accounts.js";
 
 const iso = z.string();
 const isoOrNull = iso.nullable();
@@ -15,6 +16,9 @@ const uuid = z.string().uuid();
 /** Why: required on every destructive action (ban, unban, cancel, retire, restore, edit), kept in admin_actions. */
 export const reasonSchema = z.string().trim().min(3, "say why (3+ characters)").max(500);
 export const adminReasonBodySchema = z.object({ reason: reasonSchema });
+
+/** PUT /admin/accounts-config: the deleted-account archive retention (null = keep forever). Logged with a reason. */
+export const adminAccountsConfigBodySchema = z.object({ config: accountsConfigSchema, reason: reasonSchema });
 
 export const adminUserSearchSchema = z.object({ q: z.string().trim().min(1).max(254) });
 export const adminLedgerQuerySchema = z.object({ before: z.string().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) });
@@ -55,6 +59,8 @@ export const adminUserRowSchema = z.object({
   id: uuid, handle: z.string(), displayName: z.string(), avatarEmoji: z.string(),
   email: z.string().nullable(), isGuest: z.boolean(), isAdmin: z.boolean(), isBrand: z.boolean(),
   bannedAt: isoOrNull, createdAt: iso,
+  /** Deleted by its owner (ADR 0010): the row stays; handle and email above are the archived ones. */
+  deletedAt: isoOrNull,
 });
 export type AdminUserRow = z.infer<typeof adminUserRowSchema>;
 export const adminUserSearchResponseSchema = z.object({ users: z.array(adminUserRowSchema) });
@@ -65,7 +71,14 @@ export const adminUserDetailSchema = z.object({
     who: z.string().nullable(), archetype: z.string().nullable(), aboutVersion: z.number().int().nullable(), interests: z.array(z.string()), streakDays: z.number().int(),
   }),
   /** How this account is reached (provider + external id; the Firebase session uid, Google/Apple subjects). */
-  identities: z.array(z.object({ provider: z.string(), externalId: z.string(), createdAt: iso })),
+  identities: z.array(z.object({ provider: z.string(), externalId: z.string(), createdAt: iso, disabledAt: isoOrNull })),
+  /** Null unless the owner deleted it. Viewing a deleted account is logged (user.view_deleted). */
+  deletion: z.object({
+    at: iso, reason: z.string().nullable(),
+    /** What the account was, as archived; nulls once the retention job has cleared the archive. */
+    archived: z.object({ email: z.string().nullable(), handle: z.string().nullable(), displayName: z.string().nullable(), avatarEmoji: z.string().nullable(), bio: z.string().nullable(), phone: z.string().nullable() }),
+    archiveClearedAt: isoOrNull,
+  }).nullable(),
   wallet: z.object({ cashKobo: z.number().int(), bonusKobo: z.number().int() }),
   partiesPlayed: z.array(z.object({ id: uuid, title: z.string(), status: z.string(), startsAt: iso, rank: z.number().int().nullable(), score: z.number().int().nullable(), prizeKobo: z.number().int().nullable() })),
   partiesHosted: z.array(z.object({ id: uuid, title: z.string(), status: z.string(), startsAt: iso, playerCount: z.number().int() })),
@@ -152,7 +165,8 @@ export const adminQuestionReviewResponseSchema = z.object({ reviewId: uuid, stat
 
 /** Valkey channel for admin events the rooms act on (a ban removes that user from any room). */
 export const ADMIN_EVENTS_CHANNEL = "admin:events";
-export type AdminEvent = { kind: "user_banned"; userId: string };
+/** Rooms drop the user at once: a ban (account_banned) or the owner deleting the account (account_gone). */
+export type AdminEvent = { kind: "user_banned" | "user_deleted"; userId: string };
 
 /** Errors the admin routes add. */
 export const ACCOUNT_BANNED = "account_banned";

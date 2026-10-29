@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, ilike, or, type SQL } from "drizzle-orm";
 import {
-  banUser, climbAwards, climbWeeks, db, ledger, parties, partyPlayers, unbanUser, userIdentities, users,
+  banUser, climbAwards, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
 } from "@contestly/db";
 import {
   ADMIN_EVENTS_CHANNEL, adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema,
-  adminUserSearchSchema, type AdminEvent,
+  adminUserSearchSchema, normalisePhone, type AdminEvent,
 } from "@contestly/shared";
 import { sql } from "drizzle-orm";
 import { requireAdmin, uuidParam } from "../auth.js";
@@ -19,13 +19,19 @@ const CLIMB_WEEKS_SHOWN = 8;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
-/** By id, @handle (prefix), email (exact or prefix), else handle or name (prefix). Never system accounts. */
+/**
+ * By id, @handle (prefix), email (exact or prefix), phone (any way it's written), else handle or name
+ * (prefix). Deleted accounts match on what they were too (the archive). Never system accounts.
+ */
 function searchWhere(q: string): SQL {
   if (UUID.test(q)) return eq(users.id, q);
-  if (q.startsWith("@")) return ilike(users.handle, `${escapeLike(q.slice(1).toLowerCase())}%`);
+  const handleLike = (h: string) => { const like = `${escapeLike(h.toLowerCase())}%`; return or(ilike(users.handle, like), ilike(users.archivedHandle, like))!; };
+  if (q.startsWith("@")) return handleLike(q.slice(1));
   const like = `${escapeLike(q.toLowerCase())}%`;
-  if (q.includes("@")) return or(eq(users.email, q.toLowerCase()), ilike(users.email, like))!;
-  return or(ilike(users.handle, like), ilike(users.displayName, like))!;
+  if (q.includes("@")) return or(eq(users.email, q.toLowerCase()), ilike(users.email, like), eq(users.archivedEmail, q.toLowerCase()), ilike(users.archivedEmail, like))!;
+  const phone = normalisePhone(q);
+  if (phone) return or(eq(users.phone, phone), eq(users.archivedPhone, phone))!;
+  return or(handleLike(q), ilike(users.displayName, like), ilike(users.archivedDisplayName, like))!;
 }
 
 async function userDetail(id: string) {
@@ -46,7 +52,11 @@ async function userDetail(id: string) {
       ...adminUserRow(u), banReason: u.banReason, emailVerifiedAt: u.emailVerifiedAt?.toISOString() ?? null, phoneAdded: !!u.phoneVerifiedAt,
       who: u.who, archetype: u.archetype, aboutVersion: u.aboutVersion, interests: u.interests, streakDays: u.streakDays,
     },
-    identities: identities.map((i) => ({ provider: i.provider, externalId: i.externalId, createdAt: i.createdAt.toISOString() })),
+    identities: identities.map((i) => ({ provider: i.provider, externalId: i.externalId, createdAt: i.createdAt.toISOString(), disabledAt: i.disabledAt?.toISOString() ?? null })),
+    deletion: u.deletedAt ? {
+      at: u.deletedAt.toISOString(), reason: u.deletedReason, archiveClearedAt: u.archiveClearedAt?.toISOString() ?? null,
+      archived: { email: u.archivedEmail, handle: u.archivedHandle, displayName: u.archivedDisplayName, avatarEmoji: u.archivedAvatarEmoji, bio: u.archivedBio, phone: u.archivedPhone },
+    } : null,
     wallet,
     partiesPlayed: played.map((p) => ({ ...p, startsAt: p.startsAt.toISOString() })),
     partiesHosted: hosted.map((p) => ({ ...p, startsAt: p.startsAt.toISOString(), playerCount: Number(p.playerCount) })),
@@ -63,9 +73,14 @@ export async function adminUsersRoutes(app: FastifyInstance) {
     return adminUserSearchResponseSchema.parse({ users: rows.map(adminUserRow) });
   });
 
+  /** A deleted account is fully visible here, and every look at it is logged (who looked, when). */
   app.get("/admin/users/:id", async (req) => {
-    requireAdmin(req);
-    return userDetail(uuidParam(req));
+    const admin = requireAdmin(req);
+    const detail = await userDetail(uuidParam(req));
+    if (detail.deletion) {
+      await recordAdminAction(db, { adminUserId: admin.id, action: "user.view_deleted", targetType: "user", targetId: detail.user.id, before: null, after: null });
+    }
+    return detail;
   });
 
   /** The user's ledger, newest first, a page at a time (?before= from the last page's nextBefore). */

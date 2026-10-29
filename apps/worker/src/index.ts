@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { and, asc, eq, count, lte } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, type Party, type Tx } from "@contestly/db";
+import { db, parties, partyPlayers, partyPrizes, partyQuestions, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, seenInSet, refundAndCancel, adminCancelParty, clearExpiredArchives, getAccountsConfig, type Party, type Tx } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
@@ -269,6 +269,11 @@ const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, asyn
   } else if (job.data.kind === "purge_voice_notes") {
     const out = await purgeVoiceNotes(store);
     if (out.unsent || out.expired) console.log(`[housekeeping] voice notes: ${out.unsent} unsent upload(s) deleted, ${out.expired} expired`);
+  } else if (job.data.kind === "purge_deleted_archives") {
+    const { deletedArchiveRetentionDays: days } = await getAccountsConfig();
+    if (days === null) return; // shipped off: no period until the privacy policy sets one
+    const n = await clearExpiredArchives(new Date(Date.now() - days * DAY_MS));
+    if (n) console.log(`[housekeeping] cleared the archive of ${n} account(s) deleted more than ${days} days ago`);
   }
 }, { connection });
 /** Every day at 03:00 Lagos, when nobody's playing. */
@@ -278,6 +283,10 @@ await housekeepingJobs.upsertJobScheduler("purge_email_sends", { pattern: PURGE_
 /** Every day at 03:30 Lagos. */
 const PURGE_VOICE_NOTES = "30 3 * * *";
 await housekeepingJobs.upsertJobScheduler("purge_voice_notes", { pattern: PURGE_VOICE_NOTES, tz: CLIMB_TIME_ZONE }, { name: "purge_voice_notes", data: { kind: "purge_voice_notes" } });
+
+/** Every day at 04:00 Lagos. */
+const PURGE_DELETED_ARCHIVES = "0 4 * * *";
+await housekeepingJobs.upsertJobScheduler("purge_deleted_archives", { pattern: PURGE_DELETED_ARCHIVES, tz: CLIMB_TIME_ZONE }, { name: "purge_deleted_archives", data: { kind: "purge_deleted_archives" } });
 
 for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker, chatWorker]) {
   w.on("failed", (job, err) => console.error(`[${w.name}] job ${job?.id} failed:`, err.message));

@@ -4,7 +4,7 @@
  * by HMAC over the app's SHA-256 of each number, against people who added a number; nothing sent is kept.
  */
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { db, userByIdentity, users, type User } from "@contestly/db";
+import { db, liveUser, userByIdentity, users, type User } from "@contestly/db";
 import { deleteFirebaseUser, verifyIdToken } from "@contestly/auth";
 import { CONTACT_HASHES_PER_DAY, CONTACT_SYNCS_PER_DAY, lagosDay, normalisePhone, phoneHash } from "@contestly/shared";
 import { httpError } from "./httpError.js";
@@ -40,7 +40,7 @@ export async function matchContacts(me: User, hashes: string[]) {
   await limit(`contacts:hashes:${me.id}:${day}`, CONTACT_HASHES_PER_DAY, DAY_SECONDS, "contacts_limit", hashes.length);
   const hmacs = [...new Set(hashes)].map(phoneHmac);
   const rows = await db.select(personColumns).from(users)
-    .where(and(inArray(users.phoneHmac, hmacs), eq(users.isGuest, false), eq(users.isSystem, false), ne(users.id, me.id)));
+    .where(and(inArray(users.phoneHmac, hmacs), eq(users.isGuest, false), eq(users.isSystem, false), ne(users.id, me.id), liveUser));
   const relations = await viewerRelations(me.id, rows.map((r) => r.id));
   return { matches: rows.map((r) => ({ ...r, viewer: relations.get(r.id)! })) };
 }

@@ -3,8 +3,8 @@
  * socialBoardRanks. The friends board lists you and the people you follow who've scored; a crew board lists
  * every member, with last week's champion crowned.
  */
-import { eq, inArray } from "drizzle-orm";
-import { db, follows, socialScores, users } from "@contestly/db";
+import { and, eq, inArray } from "drizzle-orm";
+import { db, follows, liveUser, socialScores, users } from "@contestly/db";
 import { socialBoardRanks } from "@contestly/game";
 import { lagosDay, weekEndsAt, weekOf, type BoardPeriod, type Person, type SocialBoard } from "@contestly/shared";
 import { personColumns } from "./people.js";
@@ -21,7 +21,7 @@ export async function socialBoard(userIds: string[], period: BoardPeriod, viewer
   const week = weekOf(today);
   const scores = (await socialScores(userIds, period, today)).filter((s) => opts.everyone || s.userId === viewerId || s.climb + s.parties > 0);
   const ranked = socialBoardRanks(scores);
-  const people = ranked.length ? await db.select(personColumns).from(users).where(inArray(users.id, ranked.map((r) => r.userId))) : [];
+  const people = ranked.length ? await db.select(personColumns).from(users).where(and(inArray(users.id, ranked.map((r) => r.userId)), liveUser)) : [];
   const personOf = new Map(people.map((p) => [p.id, p as Person]));
   const rows = ranked.filter((r) => personOf.has(r.userId))
     .map((r) => ({

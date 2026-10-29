@@ -14,3 +14,4 @@ export * from "./accounts.js";
 export * from "./email.js";
 export * from "./admin.js";
 export * from "./partyLifecycle.js";
+export * from "./deletion.js";

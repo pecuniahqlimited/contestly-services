@@ -1,8 +1,8 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
-  DEFAULT_ABOUT, DEFAULT_CHAT_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_SOCIAL_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
-  aboutConfigSchemaFor, chatConfigSchema, climbSettingsSchema, socialConfigSchema, partyConfigSchema, questionsConfigSchema,
+  DEFAULT_ABOUT, DEFAULT_ACCOUNTS_CONFIG, DEFAULT_CHAT_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_SOCIAL_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
+  aboutConfigSchemaFor, accountsConfigSchema, chatConfigSchema, climbSettingsSchema, socialConfigSchema, partyConfigSchema, questionsConfigSchema,
   type AboutAudience, type AboutConfig,
 } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
@@ -48,6 +48,11 @@ export const getChatConfig = chat.get;
 export const setChatConfig = chat.set;
 
 /** Social: crew size, party points (bragging-rights parties only), challenges a day, streak milestones. */
+/** Accounts: how long a deleted account's archive is kept before the worker clears it (ADR 0010). Null = forever. */
+const accounts = configEntry("accounts", accountsConfigSchema, DEFAULT_ACCOUNTS_CONFIG);
+export const getAccountsConfig = accounts.get;
+export const setAccountsConfig = accounts.set;
+
 const social = configEntry("social", socialConfigSchema, DEFAULT_SOCIAL_CONFIG);
 export const getSocialConfig = social.get;
 export const setSocialConfig = social.set;

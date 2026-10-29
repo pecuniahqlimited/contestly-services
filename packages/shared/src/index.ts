@@ -14,7 +14,7 @@ export * from "./social.js";
 import { profileSocialSchema } from "./social.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
-import { GUEST_HANDLE_PREFIX } from "./accounts.js";
+import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX } from "./accounts.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
 const KOBO_PER_NAIRA = 100;
@@ -175,7 +175,7 @@ export function inferCategory(brief: string): Category {
 }
 
 export const handleSchema = z.string().min(3).max(20).regex(/^[a-z0-9_.]+$/, "lowercase letters, numbers, _ and . only")
-  .refine((h) => !h.startsWith(GUEST_HANDLE_PREFIX), "that handle is reserved");
+  .refine((h) => !h.startsWith(GUEST_HANDLE_PREFIX) && !h.startsWith(DELETED_HANDLE_PREFIX), "that handle is reserved");
 
 export const upsertMeSchema = z.object({
   displayName: z.string().min(1).max(40),
@@ -311,9 +311,11 @@ export type PartyJob =
   | { kind: "sweep" };
 /**
  * Daily clean-up in the worker: `purge_email_sends` deletes the email send log past its retention;
- * `purge_voice_notes` deletes uploads nobody sent and voice notes past their retention from storage.
+ * `purge_voice_notes` deletes uploads nobody sent and voice notes past their retention from storage;
+ * `purge_deleted_archives` clears deleted accounts' archived personal fields past the accounts retention
+ * (does nothing while that's unset; ADR 0010).
  */
-export type HousekeepingJob = { kind: "purge_email_sends" } | { kind: "purge_voice_notes" };
+export type HousekeepingJob = { kind: "purge_email_sends" } | { kind: "purge_voice_notes" } | { kind: "purge_deleted_archives" };
 /**
  * Questions-service jobs (ADR 0002). `generate_set` builds and seals the set when the party is
  * created (curate: when the host asks for drafts) and publishes the set's state on

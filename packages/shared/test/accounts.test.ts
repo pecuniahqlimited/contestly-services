@@ -39,6 +39,7 @@ describe("coins", () => {
 describe("handles", () => {
   it("guest handles are reserved", () => {
     expect(handleSchema.safeParse("guest_abc").success).toBe(false);
+    expect(handleSchema.safeParse("deleted_abc").success).toBe(false);
     expect(handleSchema.safeParse("ada.o").success).toBe(true);
   });
 });

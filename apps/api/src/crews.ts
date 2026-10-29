@@ -130,28 +130,35 @@ export async function removeFromCrew(me: User, crewId: string, userId: string) {
 }
 
 /** Leave. A leaving creator hands the crew over (nextCreator); the last one out archives it. */
-export async function leaveCrew(me: User, crewId: string) {
-  return db.transaction(async (tx) => {
-    await lockCrew(tx, crewId);
-    const { role } = await membership(tx, crewId, me.id);
-    await dropMember(tx, crewId, me.id);
-    const remaining = await tx.select({ userId: crewMembers.userId, role: crewMembers.role, joinedAt: crewMembers.joinedAt, person: personColumns })
-      .from(crewMembers).innerJoin(users, eq(users.id, crewMembers.userId)).where(eq(crewMembers.crewId, crewId));
-    if (!remaining.length) {
-      await tx.update(crews).set({ archivedAt: new Date() }).where(eq(crews.id, crewId));
-      await tx.update(crewInvites).set({ status: "dismissed", respondedAt: new Date() }).where(and(eq(crewInvites.crewId, crewId), eq(crewInvites.status, "pending")));
-      return { archived: true, newCreator: null, lines: [] as ChatMessage[] };
-    }
-    let text = `${me.displayName} left the crew.`;
-    let newCreator: Person | null = null;
-    if (role === "creator") {
-      const next = nextCreator(remaining)!;
-      await tx.update(crewMembers).set({ role: "creator" }).where(and(eq(crewMembers.crewId, crewId), eq(crewMembers.userId, next.userId)));
-      newCreator = next.person;
-      text += ` ${next.person.displayName} runs it now.`;
-    }
-    return { archived: false, newCreator, lines: [await crewLine(tx, crewId, text)] };
-  });
+export const leaveCrew = (me: User, crewId: string) => db.transaction((tx) => leaveCrewIn(tx, me, crewId));
+
+/** The crews someone is in (deleting an account leaves each of them). */
+export async function crewIdsOf(q: Tx | typeof db, userId: string): Promise<string[]> {
+  return (await q.select({ id: crewMembers.crewId }).from(crewMembers).innerJoin(crews, and(eq(crews.id, crewMembers.crewId), isNull(crews.archivedAt)))
+    .where(eq(crewMembers.userId, userId))).map((r) => r.id);
+}
+
+/** Leave inside the caller's transaction: the same hand-over as leaveCrew. */
+export async function leaveCrewIn(tx: Tx, me: User, crewId: string) {
+  await lockCrew(tx, crewId);
+  const { role } = await membership(tx, crewId, me.id);
+  await dropMember(tx, crewId, me.id);
+  const remaining = await tx.select({ userId: crewMembers.userId, role: crewMembers.role, joinedAt: crewMembers.joinedAt, person: personColumns })
+    .from(crewMembers).innerJoin(users, eq(users.id, crewMembers.userId)).where(eq(crewMembers.crewId, crewId));
+  if (!remaining.length) {
+    await tx.update(crews).set({ archivedAt: new Date() }).where(eq(crews.id, crewId));
+    await tx.update(crewInvites).set({ status: "dismissed", respondedAt: new Date() }).where(and(eq(crewInvites.crewId, crewId), eq(crewInvites.status, "pending")));
+    return { archived: true, newCreator: null, lines: [] as ChatMessage[] };
+  }
+  let text = `${me.displayName} left the crew.`;
+  let newCreator: Person | null = null;
+  if (role === "creator") {
+    const next = nextCreator(remaining)!;
+    await tx.update(crewMembers).set({ role: "creator" }).where(and(eq(crewMembers.crewId, crewId), eq(crewMembers.userId, next.userId)));
+    newCreator = next.person;
+    text += ` ${next.person.displayName} runs it now.`;
+  }
+  return { archived: false, newCreator, lines: [await crewLine(tx, crewId, text)] };
 }
 
 // ---- reading ---------------------------------------------------------------------------

@@ -59,7 +59,7 @@ export async function markRead(threadId: string, userId: string, at = new Date()
 const exists = (q: Conn, query: ReturnType<typeof sql>) => q.execute(sql`select exists(${query}) as yes`).then((r) => !!(r as unknown as { yes: boolean }[])[0]?.yes);
 
 /** Loads the facts dmPermission() decides on. */
-export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient: Pick<User, "id" | "isGuest" | "isSystem">): Promise<DmPermission> {
+export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient: Pick<User, "id" | "isGuest" | "isSystem" | "deletedAt">): Promise<DmPermission> {
   if (sender.id === recipient.id) return "refused";
   const [recipientFollowsSender, playedTogether, shareCrew, joinedSendersParty] = await Promise.all([
     exists(q, sql`select 1 from ${follows} where follower_id = ${recipient.id} and followee_id = ${sender.id}`),
@@ -73,7 +73,7 @@ export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient
       : false,
   ]);
   return dmPermission({
-    sender, recipient, recipientFollowsSender, playedTogether, shareCrew, joinedSendersParty,
+    sender, recipient: { isGuest: recipient.isGuest, isSystem: recipient.isSystem, isDeleted: recipient.deletedAt !== null }, recipientFollowsSender, playedTogether, shareCrew, joinedSendersParty,
   });
 }
 

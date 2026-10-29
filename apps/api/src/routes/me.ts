@@ -1,14 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { and, count, desc, eq, max, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { canWithdraw, db, follows, parties, partyPlayers, users, ledger } from "@contestly/db";
-import { addPhoneSchema, contactsMatchSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
+import { canWithdraw, db, follows, liveUser, parties, partyPlayers, users, ledger } from "@contestly/db";
+import { addPhoneSchema, contactsMatchSchema, deleteAccountResponseSchema, deleteAccountSchema, deletionStatusSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
 import { requireSession, requireUser } from "../auth.js";
 import { httpError } from "../httpError.js";
 import { addPhone, matchContacts } from "../phone.js";
 import { myParties } from "../myParties.js";
 import { personColumns } from "../people.js";
 import { publicUser } from "./users.js";
+import { deleteAccount, deletionStatus } from "../accountDeletion.js";
 
 /** People you've played with, at most this many. */
 const PLAYED_WITH_LIMIT = 20;
@@ -23,6 +24,22 @@ export async function meRoutes(app: FastifyInstance) {
       ...publicUser(u), isGuest: u.isGuest, isAdmin: u.isAdmin, email: u.email, phoneAdded: !!u.phoneVerifiedAt,
       canWithdraw: canWithdraw(u), wallet: await ledger.balances(u.id),
     };
+  });
+
+  /**
+   * Before deleting: what would stop it (cash, an unfinished party) and whether the re-verification is
+   * fresh. Signing in again (email code, Google or Apple) to this account opens a 5-minute window.
+   */
+  app.get("/me/deletion", async (req) => deletionStatusSchema.parse(await deletionStatus(requireUser(req))));
+
+  /**
+   * Delete the account (ADR 0010): a soft delete, within the re-verification window. 403 reverify_required,
+   * 409 cash_balance or active_party (with details.message). The session stops working (account_gone).
+   */
+  app.delete("/me", async (req) => {
+    const me = requireUser(req);
+    const { reason } = deleteAccountSchema.parse(req.body ?? {});
+    return deleteAccountResponseSchema.parse(await deleteAccount(me, reason, req.log));
   });
 
   /** Name and face (and Me edits): display name, @handle, avatar, bio, interests. Signed-up accounts only. */
@@ -66,7 +83,7 @@ export async function meRoutes(app: FastifyInstance) {
       .innerJoin(parties, and(eq(parties.id, mine.partyId), eq(parties.status, "finished")))
       .innerJoin(partyPlayers, and(eq(partyPlayers.partyId, mine.partyId), ne(partyPlayers.userId, me.id)))
       .innerJoin(users, eq(users.id, partyPlayers.userId))
-      .where(and(eq(mine.userId, me.id), eq(users.isSystem, false), eq(users.isGuest, false),
+      .where(and(eq(mine.userId, me.id), eq(users.isSystem, false), eq(users.isGuest, false), liveUser,
         sql`not exists (select 1 from ${follows} f where f.follower_id = ${me.id} and f.followee_id = ${users.id})`))
       .groupBy(users.id)
       .orderBy(desc(count()), desc(max(ended)))

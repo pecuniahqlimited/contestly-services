@@ -130,7 +130,9 @@ export async function feedFor(userIds: string[], opts: { before?: string; limit:
   // A private party's finish only for people who were in it (or hosted it).
   const visible = sql`(${feedEvents.partyId} is null or exists (select 1 from parties p where p.id = ${feedEvents.partyId} and (p.visibility = 'public' or p.created_by_user_id = ${opts.viewerId}
     or exists (select 1 from party_players v where v.party_id = p.id and v.user_id = ${opts.viewerId}))))`;
-  const rows = await db.select().from(feedEvents).where(and(inArray(feedEvents.userId, userIds), cursor, visible))
+  // A deleted account's events leave the feed with it.
+  const live = sql`not exists (select 1 from users d where d.id = ${feedEvents.userId} and d.deleted_at is not null)`;
+  const rows = await db.select().from(feedEvents).where(and(inArray(feedEvents.userId, userIds), cursor, visible, live))
     .orderBy(desc(feedEvents.createdAt)).limit(opts.limit + 1);
   const page = rows.slice(0, opts.limit);
   return { rows: page, before: rows.length > opts.limit ? page.at(-1)!.id : null };

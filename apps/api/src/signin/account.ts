@@ -11,6 +11,7 @@ import { assertNotBanned, createCustomToken } from "@contestly/auth";
 import { eq } from "drizzle-orm";
 import type { OAuthProvider, SignInAccount, SignInResult } from "@contestly/shared";
 import { putOnBoard } from "../climb/boards.js";
+import { markReverified } from "../reverify.js";
 import { httpError } from "../httpError.js";
 
 export interface VerifiedSignIn {
@@ -44,6 +45,8 @@ export async function signIn(session: User, v: VerifiedSignIn): Promise<SignInOu
     return { userId: session.id, account: "upgraded" };
   });
   if (outcome.account === "upgraded") await putOnBoard(outcome.userId);
+  // A signed-up session signing into itself again: that's the re-verification account deletion asks for.
+  if (!session.isGuest && outcome.userId === session.id) await markReverified(session.id);
   return outcome;
 }
 

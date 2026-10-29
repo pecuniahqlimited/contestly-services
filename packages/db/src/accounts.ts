@@ -4,7 +4,7 @@
  * place held Climb awards are paid. There's no sign-up bonus (open question 5).
  */
 import { randomBytes } from "node:crypto";
-import { TransactionRollbackError, and, asc, eq, inArray } from "drizzle-orm";
+import { TransactionRollbackError, and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { GUEST_HANDLE_PREFIX, type IdentityProvider } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { userIdentities, users, type User } from "./schema.js";
@@ -12,23 +12,35 @@ import { payHeldAwards } from "./climb.js";
 
 type Conn = Tx | typeof db;
 
-/** The account behind (provider, external id), if any. */
+/** A users row that hasn't been deleted (ADR 0010). Use it wherever someone is found, listed or reached. */
+export const liveUser = isNull(users.deletedAt);
+/** An identity that still reaches its account (a deleted account's are disabled). */
+const liveIdentity = isNull(userIdentities.disabledAt);
+
+/** The live account behind (provider, external id), if any. A deleted account's identities reach nothing. */
 export async function userByIdentity(provider: IdentityProvider, externalId: string, conn: Conn = db): Promise<User | null> {
   const [row] = await conn.select({ u: users }).from(userIdentities).innerJoin(users, eq(users.id, userIdentities.userId))
-    .where(and(eq(userIdentities.provider, provider), eq(userIdentities.externalId, externalId)));
+    .where(and(eq(userIdentities.provider, provider), eq(userIdentities.externalId, externalId), liveIdentity, liveUser));
   return row?.u ?? null;
+}
+
+/** Whether (provider, external id) belonged to an account that was deleted: its sessions are gone, never a new guest. */
+export async function identityWasDisabled(provider: IdentityProvider, externalId: string): Promise<boolean> {
+  const [row] = await db.select({ id: userIdentities.id }).from(userIdentities)
+    .where(and(eq(userIdentities.provider, provider), eq(userIdentities.externalId, externalId), isNotNull(userIdentities.disabledAt))).limit(1);
+  return !!row;
 }
 
 /** A signed-up account by its (lowercased) email. Guests never own an email. */
 export async function memberByEmail(email: string, conn: Conn = db): Promise<User | null> {
-  const [u] = await conn.select().from(users).where(and(eq(users.email, email), eq(users.isGuest, false)));
+  const [u] = await conn.select().from(users).where(and(eq(users.email, email), eq(users.isGuest, false), liveUser));
   return u ?? null;
 }
 
 /** Reach `userId` by (provider, external id) from now on. Idempotent; never moves an identity to another account. */
 export async function attachIdentity(tx: Tx, userId: string, provider: IdentityProvider, externalId: string) {
   await tx.insert(userIdentities).values({ provider, externalId, userId }).onConflictDoNothing();
-  const [row] = await tx.select().from(userIdentities).where(and(eq(userIdentities.provider, provider), eq(userIdentities.externalId, externalId)));
+  const [row] = await tx.select().from(userIdentities).where(and(eq(userIdentities.provider, provider), eq(userIdentities.externalId, externalId), liveIdentity));
   if (row.userId !== userId) throw Object.assign(new Error("identity_in_use"), { statusCode: 409 });
 }
 
@@ -51,7 +63,7 @@ export async function guestForFirebaseUid(uid: string): Promise<User> {
  */
 export async function firebaseUidFor(userId: string, conn: Tx): Promise<string> {
   const [row] = await conn.select({ uid: userIdentities.externalId }).from(userIdentities)
-    .where(and(eq(userIdentities.userId, userId), eq(userIdentities.provider, "firebase"))).orderBy(asc(userIdentities.createdAt)).limit(1);
+    .where(and(eq(userIdentities.userId, userId), eq(userIdentities.provider, "firebase"), liveIdentity)).orderBy(asc(userIdentities.createdAt)).limit(1);
   if (row) return row.uid;
   await attachIdentity(conn, userId, "firebase", userId);
   return userId;

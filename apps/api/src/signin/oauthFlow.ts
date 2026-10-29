@@ -28,8 +28,11 @@ const callbackUrl = (provider: OAuthProvider) => `${apiPublicUrl()}/auth/oauth/$
 /** Where the browser may be sent back to: AUTH_RETURN_URLS, comma-separated (contestly://auth, https://play.contestlyapp.com/auth, …). */
 const allowedReturns = () => new Set((process.env.AUTH_RETURN_URLS ?? "contestly://auth").split(",").map((u) => u.trim()).filter(Boolean));
 
+/**
+ * Any session may start: a guest signing up or in, or a signed-up account signing in to itself again (the
+ * re-verification account deletion asks for). Where it lands is signIn()'s rule, the same as the email code.
+ */
 export async function startOAuth(session: User, p: { provider: OAuthProvider; returnTo: string; challenge: string }): Promise<{ url: string }> {
-  if (!session.isGuest) throw httpError(409, "sign_out_first");
   const client = oauthClients[p.provider];
   if (!client) throw httpError(503, "provider_unavailable");
   if (!allowedReturns().has(p.returnTo)) throw httpError(400, "return_url_not_allowed");

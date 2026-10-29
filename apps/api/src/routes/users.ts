@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, asc, count, desc, eq, min, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { climbRuns, climbWeeks, db, dmPermissionBetween, users, follows, parties, partyPlayers, partiesHostedBy } from "@contestly/db";
+import { climbRuns, climbWeeks, db, dmPermissionBetween, liveUser, users, follows, parties, partyPlayers, partiesHostedBy } from "@contestly/db";
 import { currentStreak, feedQuerySchema, followAlertSchema, lagosDay, MAX_PROFILE_RECENT_PARTIES, type Person } from "@contestly/shared";
 import { requireUser, uuidParam } from "../auth.js";
 import { publicParty } from "../partyView.js";
@@ -80,7 +80,7 @@ const FOLLOW_LISTS = {
 
 async function userByHandle(req: FastifyRequest, reply: FastifyReply) {
   const { handle } = req.params as { handle: string };
-  const [u] = await db.select().from(users).where(and(eq(users.handle, handle), eq(users.isSystem, false), eq(users.isGuest, false)));
+  const [u] = await db.select().from(users).where(and(eq(users.handle, handle), eq(users.isSystem, false), eq(users.isGuest, false), liveUser));
   if (!u) reply.code(404).send({ error: "not_found" });
   return u;
 }
@@ -139,7 +139,7 @@ export async function usersRoutes(app: FastifyInstance) {
     const me = requireUser(req);
     const id = uuidParam(req);
     if (id === me.id) return reply.code(400).send({ error: "cannot_follow_self" });
-    const [them] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, id), eq(users.isSystem, false), eq(users.isGuest, false)));
+    const [them] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, id), eq(users.isSystem, false), eq(users.isGuest, false), liveUser));
     if (!them) return reply.code(404).send({ error: "not_found" });
     await db.insert(follows).values({ followerId: me.id, followeeId: id }).onConflictDoNothing();
     const [row] = await db.select().from(follows).where(and(eq(follows.followerId, me.id), eq(follows.followeeId, id)));

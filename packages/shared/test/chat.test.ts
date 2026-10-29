@@ -3,11 +3,14 @@ import { chatSendSchema, dmKey, dmPermission, maskProfanity, partyChatFromOutsid
 
 const person = { isGuest: false, isBrand: false, isSystem: false };
 const facts = (over: Partial<DmFacts> = {}): DmFacts => ({
-  sender: person, recipient: person, recipientFollowsSender: false, playedTogether: false, shareCrew: false, joinedSendersParty: false, ...over,
+  sender: person, recipient: { ...person, isDeleted: false }, recipientFollowsSender: false, playedTogether: false, shareCrew: false, joinedSendersParty: false, ...over,
 });
 
 describe("dmPermission", () => {
   it("asks a stranger with a request", () => expect(dmPermission(facts())).toBe("request"));
+  it("refuses a deleted account, whatever connects them", () => {
+    expect(dmPermission(facts({ recipient: { ...person, isDeleted: true }, recipientFollowsSender: true, playedTogether: true, shareCrew: true }))).toBe("refused");
+  });
   it("is direct when the recipient follows the sender", () => expect(dmPermission(facts({ recipientFollowsSender: true }))).toBe("direct"));
   it("is direct after a finished party together", () => expect(dmPermission(facts({ playedTogether: true }))).toBe("direct"));
   it("is direct between crewmates", () => expect(dmPermission(facts({ shareCrew: true }))).toBe("direct"));

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
-import { db, dmPermissionBetween, follows, getPartyConfig, getSocialConfig, openDm, partyCardLine, users } from "@contestly/db";
+import { db, dmPermissionBetween, follows, getPartyConfig, getSocialConfig, liveUser, openDm, partyCardLine, users } from "@contestly/db";
 import { CATEGORIES, boardQuerySchema, challengeBrief, createPartySchema, feedQuerySchema, lagosDay, type Category } from "@contestly/shared";
 import { requireUser, uuidParam } from "../auth.js";
 import { httpError } from "../httpError.js";
@@ -30,7 +30,7 @@ export async function socialRoutes(app: FastifyInstance) {
    */
   app.post("/users/:id/challenge", async (req, reply) => {
     const me = requireUser(req);
-    const [them] = await db.select().from(users).where(and(eq(users.id, uuidParam(req)), eq(users.isGuest, false), eq(users.isSystem, false)));
+    const [them] = await db.select().from(users).where(and(eq(users.id, uuidParam(req)), eq(users.isGuest, false), eq(users.isSystem, false), liveUser));
     if (!them) throw httpError(404, "not_found");
     if ((await dmPermissionBetween(db, me, them)) === "refused") throw httpError(403, "cannot_challenge");
     const [{ challengesPerDay }, { limits }] = await Promise.all([getSocialConfig(), getPartyConfig()]);

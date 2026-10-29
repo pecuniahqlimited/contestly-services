@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { currentAboutConfig, currentEmailConfig, db, getPartyConfig, recentEmailSends, recordAdminAction, saveAboutConfig, saveEmailConfig, setPartyConfig } from "@contestly/db";
+import { currentAboutConfig, currentEmailConfig, db, getAccountsConfig, getPartyConfig, recentEmailSends, recordAdminAction, saveAboutConfig, saveEmailConfig, setAccountsConfig, setPartyConfig } from "@contestly/db";
 import {
-  EMAIL_PROVIDERS, aboutAudienceSchema, aboutConfigSchemaFor, adminAboutBodySchema, adminAboutPreviewResponseSchema, adminAboutPreviewSchema, adminActionsQuerySchema,
+  EMAIL_PROVIDERS, aboutAudienceSchema, adminAccountsConfigBodySchema, aboutConfigSchemaFor, adminAboutBodySchema, adminAboutPreviewResponseSchema, adminAboutPreviewSchema, adminActionsQuerySchema,
   adminActionsResponseSchema, adminEmailSchema, adminPartyLimitsSchema, adminSessionSchema, answerProblems, backupOf, deriveAbout,
 } from "@contestly/shared";
 import { z } from "zod";
@@ -66,6 +66,22 @@ export async function adminRoutes(app: FastifyInstance) {
     const { answers, config: draft } = adminAboutPreviewSchema.parse(req.body);
     const config = draft === undefined ? (await currentAboutConfig(audience)).config : aboutConfigSchemaFor(audience).parse(draft);
     return adminAboutPreviewResponseSchema.parse({ ...deriveAbout(audience, config, answers), problems: answerProblems(config, answers) });
+  });
+
+  /** Accounts: how long a deleted account's archive is kept (null = forever, the default until the privacy policy sets it). */
+  app.get("/admin/accounts-config", async (req) => {
+    requireAdmin(req);
+    return { config: await getAccountsConfig() };
+  });
+
+  /** Set the retention period. The worker's daily job clears archives older than it; logged with a reason. */
+  app.put("/admin/accounts-config", async (req) => {
+    const admin = requireAdmin(req);
+    const { config, reason } = adminAccountsConfigBodySchema.parse(req.body);
+    const before = await getAccountsConfig();
+    const saved = await setAccountsConfig(config);
+    await recordAdminAction(db, { adminUserId: admin.id, action: "config.accounts", targetType: "config", targetId: "accounts", reason, before, after: saved });
+    return { config: saved };
   });
 
   /** The party limits as stored, quick picks outside their range included (hosts don't see those). */

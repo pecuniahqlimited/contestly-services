@@ -121,6 +121,58 @@ export const onboardingStateSchema = z.object({
 });
 export type OnboardingState = z.infer<typeof onboardingStateSchema>;
 
+// ---------------------------------------------------------------- deleting an account (ADR 0010)
+
+/**
+ * A soft delete: the row, its id and the ledger stay so the account can always be traced; everything
+ * people see of it goes. The live handle becomes this prefix plus part of the id, the name and face the
+ * ones below, so past chat lines and results read "Deleted player" with no per-screen rule.
+ */
+export const DELETED_HANDLE_PREFIX = "deleted_";
+export const DELETED_DISPLAY_NAME = "Deleted player";
+export const DELETED_AVATAR_EMOJI = "👤";
+
+/** Deleting needs a sign-in (email code, Google or Apple) to the same account this recently. */
+export const REVERIFY_WINDOW_SECONDS = 5 * 60;
+
+export const DELETION_REASONS = ["not_using", "too_many_notifications", "privacy", "another_account", "other"] as const;
+export type DeletionReason = (typeof DELETION_REASONS)[number];
+
+/** 403: sign in again (email code, Google or Apple) first; then DELETE /me within REVERIFY_WINDOW_SECONDS. */
+export const REVERIFY_REQUIRED = "reverify_required";
+/** 409: there's cash in the wallet. Until withdrawals exist (row 10), support pays it out. */
+export const CASH_BALANCE = "cash_balance";
+/** 409: seated in or hosting a party that hasn't finished or been cancelled. */
+export const ACTIVE_PARTY = "active_party";
+/** What the app shows for each blocker. */
+export const DELETION_BLOCKER_MESSAGES = {
+  [CASH_BALANCE]: "Contact support to withdraw first",
+  [ACTIVE_PARTY]: "Finish or leave your open parties first",
+} as const;
+export type DeletionBlocker = keyof typeof DELETION_BLOCKER_MESSAGES;
+
+/** DELETE /me. */
+export const deleteAccountSchema = z.object({ reason: z.enum(DELETION_REASONS).optional() });
+
+/** GET /me/deletion: what would stop a delete now, and whether the re-verification is fresh. */
+export const deletionStatusSchema = z.object({
+  /** Null when not re-verified in the window; else when the window closes. */
+  reverifiedUntil: z.string().datetime().nullable(),
+  blockers: z.array(z.object({ code: z.enum([CASH_BALANCE, ACTIVE_PARTY]), message: z.string() })),
+  reasons: z.array(z.enum(DELETION_REASONS)),
+});
+export type DeletionStatus = z.infer<typeof deletionStatusSchema>;
+export const deleteAccountResponseSchema = z.object({ deleted: z.literal(true) });
+
+/**
+ * app_config "accounts". `deletedArchiveRetentionDays`: after this many days a deleted account's archive
+ * (email, phone, name, face, bio, About you answers) is cleared, keeping the row, its id and the ledger.
+ * Null = never (shipped that way until the privacy policy sets the period).
+ */
+export const accountsConfigSchema = z.object({ deletedArchiveRetentionDays: z.number().int().min(1).max(3650).nullable() });
+export type AccountsConfig = z.infer<typeof accountsConfigSchema>;
+export const DEFAULT_ACCOUNTS_CONFIG: AccountsConfig = { deletedArchiveRetentionDays: null };
+
 // ---------------------------------------------------------------- staked parties and guests
 
 /** A party with money in it: an entry fee, or a cash prize to win. Guests can't join these. */
