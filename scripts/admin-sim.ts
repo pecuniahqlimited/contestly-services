@@ -16,7 +16,7 @@
 import { randomBytes } from "node:crypto";
 import { EMBEDDING_DIM } from "@contestly/shared";
 import { Client, type Room } from "colyseus.js";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { bankQuestions, db, partyQuestions, sql } from "@contestly/db";
 import { closeQueues, partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, kobo, type QuestionFormat } from "@contestly/shared";
@@ -32,6 +32,12 @@ const partyJobs = partyQueue();
 const userId = async (handle: string) => (await api(handle, "GET", "/me")).id as string;
 const ids = new Map<string, string>();
 for (const p of [HOST, WINNER, P3, P4, HOST2, P5]) ids.set(p, await userId(p));
+
+// TEST-ONLY: a run stopped before its tidy-up leaves its own edited question active in the bank, where a
+// party could draw it. Retire any such leftover first (logged, like any retire), so no run depends on another.
+const leftovers = await db.select({ id: bankQuestions.id }).from(bankQuestions).where(and(eq(bankQuestions.origin, "sim"), isNull(bankQuestions.retiredReason)));
+for (const q of leftovers) await api(ADMIN, "POST", `/admin/questions/${q.id}/retire`, { reason: "sim: an earlier run's own question, left behind" });
+if (leftovers.length) console.log(`retired ${leftovers.length} question(s) an earlier run left in the bank`);
 
 async function createReadyParty(host: string, title: string) {
   const p = await api(host, "POST", "/parties", { title, brief: BRIEF, startsAt: inMinutes(30), questionCount: 3, secondsPerQuestion: 5, funding: "pooled", entryKobo: kobo(100), maxPlayers: 6, split: "winner" });
@@ -118,7 +124,10 @@ try {
   });
   ok(!!queued && queued.flags.wrong_answer >= 3 && queued.voids >= 1, `it's in the queue, pending review, with its flags (${JSON.stringify(queued?.flags)})`);
   const detail = await api(ADMIN, "GET", `/admin/questions/${bankId}`);
-  ok(detail.generation.length >= 1 && detail.generation[0].approvedBy.kind === "gate" && !!detail.generation[0].spec, "its generation record: brief, spec, checks, approved by the automated gate");
+  // A record carries the draft, so it's withheld while any unstarted party holds the question (bank reuse
+  // means another party may); otherwise it's there, approved by the automated gate.
+  if (detail.question.inUnstartedParty) ok(detail.generation.length === 0 && detail.question.payload === null, "held by an unstarted party: its content and generation record are withheld");
+  else ok(detail.generation.length >= 1 && detail.generation[0].approvedBy.kind === "gate" && !!detail.generation[0].spec, "its generation record: brief, spec, checks, approved by the automated gate");
   ok(detail.voidEvents[0]?.partyId === partyA, "and the room that voided it, with the tally");
   const restored = await api(ADMIN, "POST", `/admin/questions/${bankId}/restore`, { reason: "sim: the answer was right after all" });
   ok(restored.question.status === "active" && restored.question.flagCount === 0, "restored: back in retrieval, flags cleared");
