@@ -5,14 +5,16 @@
  *    who's winning. They're dropped from the room, can't rejoin or use the API, and settlement skips them
  *    for the prize.
  * 2. The voided question shows up in the queue with its flags; the admin restores it (back in retrieval,
- *    flags cleared), then edits it: one edit passes re-verification and replaces the bank row, one fails
- *    the safety check and changes nothing.
+ *    flags cleared). Edits run on a bank question the sim writes for itself (no party holds it, so no
+ *    other sim's leftovers can get in the way): one edit passes re-verification and replaces the bank
+ *    row, one fails the safety check and changes nothing; then it's retired for good.
  * 3. An admin cancels a live party: asked twice, cancelled once, everyone refunded through the worker.
  * Every action is in the admin log with its reason.
  *
  * TEST-ONLY: reads correct answers from Postgres to drive its players. Run with the stack up: npm run sim:admin
  */
 import { randomBytes } from "node:crypto";
+import { EMBEDDING_DIM } from "@contestly/shared";
 import { Client, type Room } from "colyseus.js";
 import { eq } from "drizzle-orm";
 import { bankQuestions, db, partyQuestions, sql } from "@contestly/db";
@@ -121,18 +123,28 @@ try {
   const restored = await api(ADMIN, "POST", `/admin/questions/${bankId}/restore`, { reason: "sim: the answer was right after all" });
   ok(restored.question.status === "active" && restored.question.flagCount === 0, "restored: back in retrieval, flags cleared");
 
-  const original = (await db.select().from(bankQuestions).where(eq(bankQuestions.id, bankId)))[0];
-  const editedPayload = { ...(original.payload as any), question: `${(original.payload as any).question} (checked ${tag})` };
-  const good = await api(ADMIN, "POST", `/admin/questions/${bankId}/edit`, { payload: editedPayload, claim: "the marked option is correct", reason: "sim: clearer wording" });
-  const judged = await waitFor(async () => (await api(ADMIN, "GET", `/admin/questions/${bankId}`)).reviews.find((r: any) => r.id === good.reviewId && r.status !== "pending"));
+  // TEST-ONLY: the sim's own bank question to edit. Random wording so it never reads as a near-duplicate of
+  // anything in the bank (the mock embedder compares character trigrams), retired at the end.
+  const code = randomBytes(24).toString("hex");
+  const [own] = await db.insert(bankQuestions).values({
+    format: "pick_one", categoryTag: "General knowledge", difficulty: 0.5, origin: "sim", status: "pending_review",
+    payload: { question: `Which answer is right for admin sim check ${code}?`, options: ["Abuja", "Lagos", "Kano", "Ibadan"], correctIndex: 0 },
+    embedding: new Array(EMBEDDING_DIM).fill(0).map((_, i) => (i === 0 ? 1 : 0)),
+  }).returning();
+  const editId = own.id;
+  const editedPayload = { ...(own.payload as any), question: `${(own.payload as any).question} (checked ${tag})` };
+  const good = await api(ADMIN, "POST", `/admin/questions/${editId}/edit`, { payload: editedPayload, claim: "the marked option is correct", reason: "sim: clearer wording" });
+  const judged = await waitFor(async () => (await api(ADMIN, "GET", `/admin/questions/${editId}`)).reviews.find((r: any) => r.id === good.reviewId && r.status !== "pending"));
   ok(judged?.status === "accepted", `an edit is re-verified and accepted (${judged?.status})`);
-  const afterGood = (await db.select().from(bankQuestions).where(eq(bankQuestions.id, bankId)))[0];
+  const afterGood = (await db.select().from(bankQuestions).where(eq(bankQuestions.id, editId)))[0];
   ok((afterGood.payload as any).question === editedPayload.question, "and replaced the bank question");
   const badPayload = { ...editedPayload, question: `${editedPayload.question} bet9ja odds` };
-  const bad = await api(ADMIN, "POST", `/admin/questions/${bankId}/edit`, { payload: badPayload, claim: "the marked option is correct", reason: "sim: an edit that shouldn't pass" });
-  const rejected = await waitFor(async () => (await api(ADMIN, "GET", `/admin/questions/${bankId}`)).reviews.find((r: any) => r.id === bad.reviewId && r.status !== "pending"));
+  const bad = await api(ADMIN, "POST", `/admin/questions/${editId}/edit`, { payload: badPayload, claim: "the marked option is correct", reason: "sim: an edit that shouldn't pass" });
+  const rejected = await waitFor(async () => (await api(ADMIN, "GET", `/admin/questions/${editId}`)).reviews.find((r: any) => r.id === bad.reviewId && r.status !== "pending"));
   ok(rejected?.status === "rejected_safety", `an edit that fails a check is rejected (${rejected?.status})`);
-  ok(((await db.select().from(bankQuestions).where(eq(bankQuestions.id, bankId)))[0].payload as any).question === editedPayload.question, "and the bank question is unchanged");
+  ok(((await db.select().from(bankQuestions).where(eq(bankQuestions.id, editId)))[0].payload as any).question === editedPayload.question, "and the bank question is unchanged");
+  const retired = await api(ADMIN, "POST", `/admin/questions/${editId}/retire`, { reason: "sim: tidy up its own question" });
+  ok(retired.question.status === "retired", "the sim's own question is retired for good");
 
   // ================================================================ 3. cancel a live party
   console.log("\n==== cancel a live party: refunds through the worker, once ====");
