@@ -27,5 +27,3 @@ export function shuffle<T>(rng: Rng, items: readonly T[]): T[] {
   }
   return out;
 }
-/** Linear step from `from` at level 0 to `to` at level 1, rounded. */
-export const scale = (level: number, from: number, to: number) => Math.round(from + (to - from) * Math.min(1, Math.max(0, level)));

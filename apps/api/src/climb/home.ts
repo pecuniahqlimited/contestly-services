@@ -1,7 +1,7 @@
 /** Everything the Climb home shows, from the record and the boards. */
 import { and, eq, sql } from "drizzle-orm";
 import { climbDays, climbRuns, currentLadder, db, prizesForWeek, type User } from "@contestly/db";
-import { currentStreak, lagosDay, weekDays, weekEndsAt, weekOf, type ClimbHome } from "@contestly/shared";
+import { currentStreak, lagosDay, stageMaxSeconds, weekDays, weekEndsAt, weekOf, type ClimbHome } from "@contestly/shared";
 import { everyoneRank, friendsBoard, prizeLine } from "./boards.js";
 import { todayChallenge } from "./challenge.js";
 import { activeRunId } from "./runs.js";
@@ -25,7 +25,7 @@ export async function climbHome(user: User): Promise<ClimbHome> {
   const todayRow = dayOf.get(today);
   const leader = friends.rows[0];
   return {
-    ladder: { version, stages: ladder.stages.map((s, i) => ({ stage: i + 1, types: s.types.filter((t) => ladder.enabledTypes.includes(t)), rounds: s.rounds, toClear: s.toClear, seconds: s.seconds, points: s.points })) },
+    ladder: { version, stages: ladder.stages.map((s, i) => ({ stage: i + 1, types: s.types.filter((t) => ladder.enabledTypes.includes(t)), rounds: s.rounds, toClear: s.toClear, seconds: stageMaxSeconds(ladder, s), points: s.points })) },
     today: { day: today, bestPoints: todayRow?.bestRunPoints ?? 0, bestStagesCleared: todayRow?.bestRunStages ?? 0, runs: todayRow?.runs ?? 0 },
     activeRunId: activeId,
     challenge,

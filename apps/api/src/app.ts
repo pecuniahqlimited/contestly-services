@@ -15,6 +15,7 @@ import { questionsRoutes } from "./routes/questions.js";
 import { adminRoutes } from "./routes/admin.js";
 import { climbRoutes } from "./routes/climb.js";
 import { adminClimbRoutes } from "./routes/adminClimb.js";
+import { adminClimbWordsRoutes } from "./routes/adminClimbWords.js";
 import { authRoutes } from "./routes/auth.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { adminUsersRoutes } from "./routes/adminUsers.js";
@@ -71,6 +72,7 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(adminRoutes);
   await app.register(climbRoutes);
   await app.register(adminClimbRoutes);
+  await app.register(adminClimbWordsRoutes);
   await app.register(authRoutes);
   await app.register(onboardingRoutes);
   await app.register(adminUsersRoutes);

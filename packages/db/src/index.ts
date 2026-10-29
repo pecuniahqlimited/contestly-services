@@ -9,6 +9,7 @@ export * from "./social.js";
 export * as ledger from "./ledger.js";
 export { InsufficientFunds } from "./ledger.js";
 export * from "./climb.js";
+export * from "./climbWords.js";
 export * from "./payable.js";
 export * from "./accounts.js";
 export * from "./email.js";

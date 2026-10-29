@@ -22,29 +22,40 @@ const stamped = (res: any) => typeof res.serverNow === "string" && Math.abs(Date
 async function play(handle: string, plan: (stage: number, round: number) => boolean) {
   let state = await api(handle, "POST", "/climb/runs");
   let last: any;
+  const types = new Set<string>();
   for (;;) {
     state = await nextClimbRound(handle, state);
-    if (state.run.status !== "active") return { run: state.run, last };
+    if (state.run.status !== "active") return { run: state.run, last, types };
     const { round } = state;
     const view = JSON.stringify(round.view);
     if (round.type === "pattern") ok(!view.includes("correctIndex"), "an open pattern round carries no answer");
     if (round.type === "quick_maths") ok(Object.keys(round.view).join() === "expression", "an open maths round carries only the sum");
+    if (round.type === "word_search") ok(!view.includes("placements") && round.seconds === round.view.words.length * 5, "an open word search lists its words, not where they are, timed per word");
+    types.add(round.type);
     const answer = plan(round.stage, round.round) ? await rightClimbAnswer(round.id) : wrongClimbAnswer;
     last = await api(handle, "POST", `/climb/runs/${state.run.id}/answer`, { roundId: round.id, answer });
-    if (last.nextOpensAt === null) return { run: last.run, last };
+    if (last.nextOpensAt === null) return { run: last.run, last, types };
     state = { run: last.run, round: null, nextOpensAt: last.nextOpensAt };
   }
 }
 
 console.log("==== admin: ladder, preview, settings ====");
 const before = await api(ADMIN, "GET", "/admin/climb/ladder");
-ok(before.gameTypes.length === 5 && before.summary.rounds > 0, "the ladder comes with the game-type catalogue and its summary");
+ok(before.gameTypes.length === 7 && before.summary.rounds > 0, "the ladder comes with the game-type catalogue and its summary");
 const badLadder = await call(ADMIN, "PUT", "/admin/climb/ladder", { ladder: { ...before.ladder, enabledTypes: ["scramble"] } });
 ok(badLadder.status === 400, "a ladder that leaves a stage with no game type is refused");
 const preview = await api(ADMIN, "POST", "/admin/climb/ladder/preview", { ladder: before.ladder });
 ok(preview.stages.length === before.ladder.stages.length && preview.stages.every((s: any) => s.answer && s.view), "preview: one sample round per stage, answers shown");
-// A quick ladder for the sim (restored at the end): the default's shape with short clocks.
-const testLadder = { ...before.ladder, stages: before.ladder.stages.map((s: any) => ({ ...s, seconds: 6 })), enabledTypes: before.ladder.enabledTypes };
+// A quick ladder for the sim (restored at the end): the default's shape with short clocks, then a pattern recall stage
+// and a word search stage, so a full clear plays both.
+const newTypeStages = [
+  { types: ["pattern_recall"], rounds: 2, toClear: 2, seconds: 6, points: 10, settings: { pattern_recall: { length: { first: 3, last: 4 }, msPerTile: 300 } } },
+  { types: ["word_search"], rounds: 2, toClear: 2, seconds: 6, points: 10, settings: { word_search: { gridSize: 8, words: 4, secondsPerWord: 5 } } },
+];
+const testLadder = {
+  stages: [...before.ladder.stages.map((s: any) => ({ ...s, seconds: 6 })), ...newTypeStages],
+  enabledTypes: [...new Set([...before.ladder.enabledTypes, "pattern_recall", "word_search"])],
+};
 const saved = await api(ADMIN, "PUT", "/admin/climb/ladder", { ladder: testLadder });
 ok(saved.version > before.version, "saving the ladder makes a new version");
 const settingsBefore = (await api(ADMIN, "GET", "/admin/climb/settings")).settings;
@@ -62,6 +73,7 @@ try {
   ok(full.run.status === "cleared" && full.run.stagesCleared === testLadder.stages.length, "every stage cleared ends the run as cleared");
   ok(full.run.points === maxPoints, `a full clear scores the sum of every stage (${full.run.points}/${maxPoints})`);
   ok(full.run.ladderVersion === saved.version, "the run used the ladder current when it started");
+  ok(full.types.has("pattern_recall") && full.types.has("word_search"), "a full clear played pattern recall and word search");
 
   console.log("\n==== a run that misses stage 2 ====");
   const missed = await play(KEMI, (stage) => stage === 1);

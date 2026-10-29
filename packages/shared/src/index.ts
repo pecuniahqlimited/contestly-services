@@ -5,6 +5,8 @@ import { DEFAULT_PARTY_LIMITS, goodsPlaceSchema, MAX_WINNERS, partyLimitsSchema,
 export * from "./stakes.js";
 export * from "./person.js";
 export * from "./climb.js";
+export * from "./climbSettings.js";
+export * from "./climbWords.js";
 export * from "./categories.js";
 export * from "./accounts.js";
 export * from "./about.js";

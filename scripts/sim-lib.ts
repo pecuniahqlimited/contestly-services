@@ -135,8 +135,10 @@ export async function rightClimbAnswer(roundId: string) {
     word_hunt: () => ({ words: p.placed }),
     quick_maths: () => ({ value: p.value }),
     memory: () => ({ sequence: p.sequence }),
+    pattern_recall: () => ({ sequence: p.sequence }),
+    word_search: () => ({ found: p.placements }),
   };
   return byType[r.gameType as ClimbGameType]();
 }
-export const wrongClimbAnswer = { index: -1, word: "zzzz", words: [], value: -999999, sequence: [] };
+export const wrongClimbAnswer = { index: -1, word: "zzzz", words: [], value: -999999, sequence: [], found: [] };
 

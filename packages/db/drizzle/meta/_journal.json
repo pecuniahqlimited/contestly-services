@@ -134,6 +134,13 @@
       "when": 1793304593312,
       "tag": "0018_host_cancel",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793314422756,
+      "tag": "0019_climb_words",
+      "breakpoints": true
     }
   ]
 }

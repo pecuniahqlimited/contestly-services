@@ -4,14 +4,15 @@
  * scheduled, so a run left alone is played forward (its unanswered rounds missed) the next time it's
  * touched. Rules come from @contestly/game; scores are persisted through @contestly/db.
  */
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import type { FastifyBaseLogger } from "fastify";
 import {
-  climbRounds, climbRuns, currentLadder, db, getClimbSettings, ladderAt, recordRunEnded, recordRunPoints, recordRunStarted, users,
+  activeWordsFor, climbRounds, climbRuns, currentLadder, db, getClimbSettings, ladderAt, recordRunEnded, recordRunPoints, recordRunStarted, users,
   type ClimbRoundRow, type ClimbRunRow, type Tx, type User,
 } from "@contestly/db";
 import {
-  afterRound, closesAt, expired, generateRound, gradeRound, nextOpensAt, onTime, pickRoundType, roundReveal, roundView, stageLevel,
-  type RunStep, type StageOutcome,
+  afterRound, closesAt, expired, generateRound, gradeRound, nextOpensAt, NoWordsFit, onTime, pickRoundType, roundReveal, roundView, roundWords, wordGameOf,
+  type RunStep, type StageOutcome, type WordHistory,
 } from "@contestly/game";
 import { lagosDay, weekOf, type ChatMessage, type ClimbAnswerResponse, type ClimbGameType, type ClimbLadder, type ClimbRound, type ClimbRun, type ClimbRunState, type ClimbSettings } from "@contestly/shared";
 import { setWeekPoints } from "./boards.js";
@@ -24,19 +25,62 @@ const fail = (message: string, statusCode: number) => Object.assign(new Error(me
 type BoardWrite = { week: string; userId: string; points: number };
 
 /** `lines`: crew "new record" lines written in the transaction, published after it commits. */
-interface Ctx { tx: Tx; ladder: ClimbLadder; settings: ClimbSettings; boards: BoardWrite[]; lines: ChatMessage[] }
+interface Ctx { tx: Tx; ladder: ClimbLadder; settings: ClimbSettings; boards: BoardWrite[]; lines: ChatMessage[]; log: FastifyBaseLogger }
 
 const position = (run: ClimbRunRow) => ({ stageIdx: run.stageIdx, stagesCleared: run.stagesCleared, points: run.points });
 
-async function openRound(c: Ctx, run: ClimbRunRow, seq: number, stageIdx: number, opensAtMs: number) {
+/** Runs whose words count as "recent": word games repeat these only when nothing else is left. This run is one of them. */
+const RECENT_RUNS = 3;
+/** Runs whose words count as already seen: word games prefer words from further back, or new ones. */
+const SEEN_RUNS = 20;
+
+/** Words the player was given in their latest runs (this one included), newest runs first. */
+async function wordHistory(tx: Tx, userId: string): Promise<WordHistory> {
+  const runs = await tx.select({ id: climbRuns.id }).from(climbRuns).where(eq(climbRuns.userId, userId)).orderBy(desc(climbRuns.startedAt)).limit(SEEN_RUNS);
+  if (!runs.length) return { seen: new Set(), recent: new Set() };
+  const rounds = await tx.select({ runId: climbRounds.runId, type: climbRounds.gameType, payload: climbRounds.payload }).from(climbRounds).where(inArray(climbRounds.runId, runs.map((r) => r.id)));
+  const recentRuns = new Set(runs.slice(0, RECENT_RUNS).map((r) => r.id));
+  const seen = new Set<string>(), recent = new Set<string>();
+  for (const r of rounds) for (const w of roundWords(r.type as ClimbGameType, r.payload)) {
+    seen.add(w);
+    if (recentRuns.has(r.runId)) recent.add(w);
+  }
+  return { seen, recent };
+}
+
+/**
+ * Open a stage's round (`roundIdx` 0-based within the stage) from the run's ladder settings; its clock comes from the round
+ * itself. A word game short of words uses other lengths or words met before (logged). Only when its list has no usable
+ * word at all is the run ended, as abandoned with its banked points kept (The Climb has no entry, so there's nothing to
+ * refund). The run as it now stands.
+ */
+async function openRound(c: Ctx, run: ClimbRunRow, seq: number, stageIdx: number, roundIdx: number, opensAtMs: number): Promise<ClimbRunRow> {
   const rng = freshRng();
-  const stage = c.ladder.stages[stageIdx];
   const type = pickRoundType(c.ladder, stageIdx, rng);
-  const payload = generateRound(type, { rng, level: stageLevel(stageIdx, c.ladder.stages.length), seconds: stage.seconds });
+  const wordGame = wordGameOf(type);
+  let made;
+  try {
+    made = generateRound(c.ladder.stages[stageIdx], type, roundIdx, {
+      rng, words: wordGame ? await activeWordsFor(c.tx, wordGame) : [], history: wordGame ? await wordHistory(c.tx, run.userId) : undefined,
+    });
+  } catch (err) {
+    if (!(err instanceof NoWordsFit)) throw err;
+    c.log.error({ runId: run.id, userId: run.userId, stage: stageIdx + 1, type }, "climb: no usable word on the list, run abandoned");
+    return abandon(c, run, opensAtMs);
+  }
+  if (made.words?.fallback) c.log.warn({ runId: run.id, stage: stageIdx + 1, round: roundIdx + 1, type, words: made.words }, "climb: word list short, round made from a fallback pool");
   await c.tx.insert(climbRounds).values({
-    runId: run.id, seq, stageIdx, gameType: type, payload,
-    opensAt: new Date(opensAtMs), closesAt: new Date(closesAt(opensAtMs, stage.seconds)),
+    runId: run.id, seq, stageIdx, gameType: type, payload: made.payload,
+    opensAt: new Date(opensAtMs), closesAt: new Date(closesAt(opensAtMs, made.seconds)),
   });
+  return run;
+}
+
+/** End a run early as abandoned: its banked points still count as a run. */
+async function abandon(c: Ctx, run: ClimbRunRow, atMs: number): Promise<ClimbRunRow> {
+  const [ended] = await c.tx.update(climbRuns).set({ status: "abandoned", endedAt: new Date(atMs) }).where(eq(climbRuns.id, run.id)).returning();
+  c.lines.push(...await recordRunEnded(c.tx, ended, c.ladder.stages.length));
+  return ended;
 }
 
 const stageRounds = (tx: Tx, runId: string, stageIdx: number) =>
@@ -56,8 +100,8 @@ async function advance(c: Ctx, run: ClimbRunRow, round: ClimbRoundRow, decidedAt
   const step = afterRound(c.ladder, position(run), played.map((x) => x.correct === true));
   if (step.outcome === "continue") {
     const at = nextOpensAt(decidedAtMs, step.outcome, c.settings);
-    await openRound(c, run, round.seq + 1, run.stageIdx, at);
-    return { run, step, nextOpensAtMs: at };
+    const after = await openRound(c, run, round.seq + 1, run.stageIdx, played.length, at);
+    return { run: after, step, nextOpensAtMs: after.status === "active" ? at : null };
   }
   const stageMs = step.outcome === "cleared" ? [...run.stageMs, decidedAtMs - played[0].opensAt.getTime()] : run.stageMs;
   const status = !step.ended ? "active" : step.outcome === "missed" ? "missed" : "cleared";
@@ -69,8 +113,8 @@ async function advance(c: Ctx, run: ClimbRunRow, round: ClimbRoundRow, decidedAt
     return { run: next, step, nextOpensAtMs: null };
   }
   const at = nextOpensAt(decidedAtMs, step.outcome, c.settings);
-  await openRound(c, next, round.seq + 1, next.stageIdx, at);
-  return { run: next, step, nextOpensAtMs: at };
+  const after = await openRound(c, next, round.seq + 1, next.stageIdx, 0, at);
+  return { run: after, step, nextOpensAtMs: after.status === "active" ? at : null };
 }
 
 /** Play an active run forward to now: every round whose clock (plus the allowance) ran out unanswered is a miss. */
@@ -101,13 +145,15 @@ async function runView(tx: Tx, ladder: ClimbLadder, run: ClimbRunRow): Promise<C
   };
 }
 
+const MS_PER_SECOND = 1000;
+
 async function roundPublic(tx: Tx, ladder: ClimbLadder, round: ClimbRoundRow): Promise<ClimbRound> {
   const stage = ladder.stages[round.stageIdx];
   const inStage = (await stageRounds(tx, round.runId, round.stageIdx)).findIndex((x) => x.id === round.id) + 1;
   const type = round.gameType as ClimbGameType;
   return {
     id: round.id, type, view: roundView(type, round.payload), stage: round.stageIdx + 1, round: inStage, rounds: stage.rounds, toClear: stage.toClear,
-    seconds: stage.seconds, opensAt: round.opensAt.toISOString(), closesAt: round.closesAt.toISOString(),
+    seconds: Math.round((round.closesAt.getTime() - round.opensAt.getTime()) / MS_PER_SECOND), opensAt: round.opensAt.toISOString(), closesAt: round.closesAt.toISOString(),
   } as ClimbRound;
 }
 
@@ -121,11 +167,11 @@ async function state(c: Ctx, run: ClimbRunRow, nowMs: number): Promise<ClimbRunS
   return { run: view, round: await roundPublic(c.tx, c.ladder, cur), nextOpensAt: null, serverNow };
 }
 
-async function inTx<T>(ladderOf: (tx: Tx) => Promise<ClimbLadder>, work: (c: Ctx) => Promise<T>): Promise<T> {
+async function inTx<T>(log: FastifyBaseLogger, ladderOf: (tx: Tx) => Promise<ClimbLadder>, work: (c: Ctx) => Promise<T>): Promise<T> {
   const settings = await getClimbSettings();
   const boards: BoardWrite[] = [];
   const lines: ChatMessage[] = [];
-  const result = await db.transaction(async (tx) => work({ tx, ladder: await ladderOf(tx), settings, boards, lines }));
+  const result = await db.transaction(async (tx) => work({ tx, ladder: await ladderOf(tx), settings, boards, lines, log }));
   // After commit, so the board never shows points the record doesn't have.
   for (const b of boards) await setWeekPoints(b.week, b.userId, b.points);
   for (const line of lines) await publishLine(line);
@@ -139,9 +185,9 @@ export async function activeRunId(user: User): Promise<string | null> {
 }
 
 /** Start a run on the current ladder. A run still going is ended first (abandoned, its banked points kept). */
-export async function startRun(user: User): Promise<ClimbRunState> {
+export async function startRun(user: User, log: FastifyBaseLogger): Promise<ClimbRunState> {
   let ladderVersion = 0;
-  return inTx(async (tx) => {
+  return inTx(log, async (tx) => {
     const { version, ladder } = await currentLadder(tx);
     ladderVersion = version;
     return ladder;
@@ -152,16 +198,12 @@ export async function startRun(user: User): Promise<ClimbRunState> {
     if (old) {
       const oldLadder = await ladderAt(old.ladderVersion, c.tx);
       const played = await catchUp({ ...c, ladder: oldLadder }, old, now);
-      if (played.status === "active") {
-        await c.tx.update(climbRuns).set({ status: "abandoned", endedAt: new Date(now) }).where(eq(climbRuns.id, old.id));
-        c.lines.push(...await recordRunEnded(c.tx, played, oldLadder.stages.length)); // its banked points still count as a run
-      }
+      if (played.status === "active") await abandon({ ...c, ladder: oldLadder }, played, now);
     }
     const day = lagosDay(new Date(now));
     const [run] = await c.tx.insert(climbRuns).values({ userId: user.id, ladderVersion, day }).returning();
     c.boards.push({ week: weekOf(day), userId: user.id, points: await recordRunStarted(c.tx, user, day) });
-    await openRound(c, run, 0, 0, now);
-    return state(c, run, now);
+    return state(c, await openRound(c, run, 0, 0, 0, now), now);
   });
 }
 
@@ -172,9 +214,9 @@ async function runLadderVersion(user: User, runId: string) {
   return found.v;
 }
 
-export async function getRun(user: User, runId: string): Promise<ClimbRunState> {
+export async function getRun(user: User, runId: string, log: FastifyBaseLogger): Promise<ClimbRunState> {
   const version = await runLadderVersion(user, runId);
-  return inTx((tx) => ladderAt(version, tx), async (c) => {
+  return inTx(log, (tx) => ladderAt(version, tx), async (c) => {
     const now = Date.now();
     const run = await catchUp(c, await lockRun(c.tx, user, runId), now);
     return state(c, run, now);
@@ -182,9 +224,9 @@ export async function getRun(user: User, runId: string): Promise<ClimbRunState> 
 }
 
 /** Grade the open round (first answer only; late is wrong) and decide its stage. */
-export async function answerRound(user: User, runId: string, roundId: string, answer: unknown): Promise<ClimbAnswerResponse> {
+export async function answerRound(user: User, runId: string, roundId: string, answer: unknown, log: FastifyBaseLogger): Promise<ClimbAnswerResponse> {
   const version = await runLadderVersion(user, runId);
-  return inTx((tx) => ladderAt(version, tx), async (c) => {
+  return inTx(log, (tx) => ladderAt(version, tx), async (c) => {
     const receivedAt = Date.now(); // stamped before anything else, so the work below never costs the player time
     const run = await catchUp(c, await lockRun(c.tx, user, runId), receivedAt);
     if (run.status !== "active") throw fail("run_over", 409);
