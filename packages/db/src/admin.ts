@@ -6,6 +6,7 @@
 import { and, desc, eq, type SQL } from "drizzle-orm";
 import { db, type Tx } from "./client.js";
 import { adminActions, users, type AdminActionRow, type User } from "./schema.js";
+import { treasuryUserId } from "./ledger.js";
 
 type Conn = Tx | typeof db;
 
@@ -18,6 +19,12 @@ export interface AdminActionInput {
   before?: unknown;
   after?: unknown;
 }
+
+/**
+ * Who an admin_actions row names when the system acted on its own (no admin involved, e.g. voiding a
+ * deleted account's unpaid prizes): the platform's system account, the one the ledger posts the rake to.
+ */
+export const systemActorId = (tx: Tx) => treasuryUserId(tx);
 
 export async function recordAdminAction(conn: Conn, a: AdminActionInput): Promise<AdminActionRow> {
   const [row] = await conn.insert(adminActions).values({ ...a, reason: a.reason ?? null, before: a.before ?? null, after: a.after ?? null }).returning();

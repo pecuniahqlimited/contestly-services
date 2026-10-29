@@ -1,14 +1,16 @@
 /**
  * Account deletion (ADR 0010) against the real database: each refusal; after a delete the account is
  * invisible everywhere people look but fully visible (and every look logged) to admins; the ledger is
- * untouched apart from the forfeit; the same email signs up again as a new account; the retention job
- * clears the archive and keeps the row.
+ * untouched apart from the forfeit; follows and crew invites move to their archive tables; unpaid Climb
+ * prizes are voided (logged) and a run in progress ends abandoned; week close never places a deleted
+ * account; the same email signs up again as a new account; the retention job clears the archive and keeps the row.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
-  adminActions, chatMessages, clearExpiredArchives, crewMembers, crews, db, dmPermissionBetween, feedEvents, feedFor, follows, joinThread, crewThreadId,
+  adminActions, archivedCrewInvites, archivedFollows, chatMessages, clearExpiredArchives, climbAwards, climbPrizeConfigs, climbRuns, climbWeekPrizes,
+  climbWeekResults, climbWeeks, crewInvites, crewMembers, crews, currentLadder, db, systemActorId, dmPermissionBetween, feedEvents, feedFor, follows, joinThread, crewThreadId,
   ledger, ledgerAccounts, ledgerEntries, messagesPage, openDm, parties, partyPlayers, postMessage, resolveMentions, sql, threadById, userIdentities, users, type User,
 } from "@contestly/db";
 import { DEFAULT_CHAT_CONFIG, DELETED_DISPLAY_NAME, climbBoardKey, kobo, lagosDay, phoneHash, weekOf } from "@contestly/shared";
@@ -17,6 +19,7 @@ import { signIn } from "../src/signin/account.js";
 import { setWeekPoints } from "../src/climb/boards.js";
 import { valkey } from "../src/redis.js";
 import { phoneHmac } from "../src/signin/secrets.js";
+import { closeWeeks } from "../../worker/src/climb.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
 let app: Awaited<ReturnType<typeof testApp>>["app"];
@@ -24,7 +27,7 @@ let admin: User, gone: User, friend: User, crewmate: User, guest: User;
 const goneEmail = `gone${tag}@example.com`;
 const gonePhone = `+23480${String(Math.floor(Math.random() * 1e8)).padStart(8, "0")}`;
 const googleSubject = `google-sub-${tag}`;
-let dmThreadId: string, crewId: string, ledgerBefore: (typeof ledgerEntries.$inferSelect)[];
+let dmThreadId: string, crewId: string, otherCrewId: string, runId: string, ledgerBefore: (typeof ledgerEntries.$inferSelect)[];
 
 const del = (u: User, reason?: string) => app.inject({ method: "DELETE", url: "/me", headers: as(u), payload: reason ? { reason } : {} });
 const status = async (u: User) => (await app.inject({ method: "GET", url: "/me/deletion", headers: as(u) })).json();
@@ -68,6 +71,19 @@ beforeAll(async () => {
   for (const u of [gone, crewmate]) await joinThread(db, await crewThreadId(db, crewId), u.id);
   await db.insert(feedEvents).values({ userId: gone.id, kind: "streak", data: { days: 3 } });
   await setWeekPoints(weekOf(lagosDay()), gone.id, 120);
+  // Crew invites both ways: one they sent (pending), one they sent that was accepted, one they received.
+  const [other] = await db.insert(crews).values({ name: "Other crew", emoji: "🎯", color: "#654321", createdByUserId: crewmate.id }).returning();
+  otherCrewId = other.id;
+  await db.insert(crewInvites).values([
+    { crewId, inviteeId: friend.id, inviterId: gone.id },
+    { crewId, inviteeId: crewmate.id, inviterId: gone.id, status: "accepted", respondedAt: new Date() },
+    { crewId: otherCrewId, inviteeId: gone.id, inviterId: crewmate.id },
+  ]);
+  // Climb: a prize in each state, and a run in progress.
+  await db.insert(climbAwards).values((["pending", "approved", "paid", "rejected"] as const).map((status, i) => ({
+    week: `2001-02-0${i + 1}`, scope: "everyone", place: 1, userId: gone.id, points: 100, amountKobo: kobo(500), status, paidAt: status === "paid" ? new Date() : null,
+  })));
+  [{ id: runId }] = await db.insert(climbRuns).values({ userId: gone.id, ladderVersion: (await currentLadder()).version, day: lagosDay() }).returning();
 });
 afterAll(async () => {
   await app.close();
@@ -156,6 +172,9 @@ describe("a deleted account", () => {
     expect((await app.inject({ method: "POST", url: `/users/${gone.id}/challenge`, headers: as(friend) })).statusCode).toBe(404);
     expect(await db.select().from(follows).where(inArray(follows.followerId, [gone.id]))).toEqual([]);
     expect(await db.select().from(follows).where(eq(follows.followeeId, gone.id))).toEqual([]);
+    expect(await db.select().from(crewInvites).where(eq(crewInvites.inviteeId, gone.id))).toEqual([]);
+    expect(await db.select().from(crewInvites).where(eq(crewInvites.inviterId, gone.id))).toEqual([]);
+    expect((await app.inject({ method: "GET", url: "/me/crew-invites", headers: as(friend) })).json()).toEqual([]);
     expect(await resolveMentions(`hey @${gone.handle} @${deletedHandle}`)).toEqual([]);
     const contacts = await app.inject({ method: "POST", url: "/me/contacts/match", headers: as(friend), payload: { hashes: [await phoneHash(gonePhone)] } });
     expect(contacts.json().matches).toEqual([]);
@@ -182,6 +201,48 @@ describe("a deleted account", () => {
     expect(lines.some((l) => l.text?.includes("left the crew") && l.text.includes("runs it now"))).toBe(true);
   });
 
+  it("moved its follows and crew invites, as they were, to the archive tables", async () => {
+    const f = await db.select().from(archivedFollows).where(eq(archivedFollows.followeeId, gone.id));
+    const g = await db.select().from(archivedFollows).where(eq(archivedFollows.followerId, gone.id));
+    expect([...f, ...g].map((r) => [r.followerId, r.followeeId, r.notify])).toEqual([[friend.id, gone.id, true], [gone.id, friend.id, true]]);
+    expect(f[0].archivedAt).toBeInstanceOf(Date);
+    const invites = await db.select().from(archivedCrewInvites).where(inArray(archivedCrewInvites.crewId, [crewId, otherCrewId]));
+    expect(invites.map((i) => [i.crewId, i.inviteeId, i.inviterId, i.status]).sort()).toEqual([
+      [crewId, friend.id, gone.id, "pending"], [crewId, crewmate.id, gone.id, "accepted"], [otherCrewId, gone.id, crewmate.id, "pending"],
+    ].sort());
+  });
+
+  it("voided its pending and approved-but-unpaid Climb prizes, each logged; paid and rejected ones stay", async () => {
+    const awards = await db.select().from(climbAwards).where(eq(climbAwards.userId, gone.id));
+    expect(awards.map((a) => [a.week, a.status]).sort()).toEqual([["2001-02-01", "void"], ["2001-02-02", "void"], ["2001-02-03", "paid"], ["2001-02-04", "rejected"]]);
+    const logged = await db.select().from(adminActions).where(and(eq(adminActions.action, "climb.award_void"), eq(adminActions.targetId, gone.id)));
+    const actor = await db.transaction((tx) => systemActorId(tx));
+    expect(logged.map((l) => [l.adminUserId, l.reason, (l.before as { status: string }).status]).sort()).toEqual([[actor, "account_deleted", "approved"], [actor, "account_deleted", "pending"]]);
+    const voidId = awards.find((a) => a.status === "void")!.id;
+    for (const op of ["approve", "reject"]) {
+      const res = await app.inject({ method: "POST", url: `/admin/climb/awards/${voidId}/${op}`, headers: as(admin), payload: { reason: "test" } });
+      expect.soft([op, res.statusCode, res.json().error]).toEqual([op, 409, "award_void"]);
+    }
+  });
+
+  it("ended its run in progress as abandoned", async () => {
+    const [run] = await db.select().from(climbRuns).where(eq(climbRuns.id, runId));
+    expect(run.status).toBe("abandoned");
+    expect(run.endedAt).toBeInstanceOf(Date);
+  });
+
+  it("week close never places it or awards it a prize", async () => {
+    const week = "2001-03-05";
+    const [prizes] = await db.insert(climbPrizeConfigs).values({ winners: 2, prizeKobo: [kobo(1000), kobo(500)] }).returning();
+    await db.insert(climbWeekPrizes).values({ week, prizeVersion: prizes.version });
+    await db.insert(climbWeeks).values([{ userId: gone.id, week, points: 500 }, { userId: friend.id, week, points: 100 }, { userId: crewmate.id, week, points: 50 }]);
+    await closeWeeks();
+    const placed = await db.select().from(climbWeekResults).where(and(eq(climbWeekResults.week, week), eq(climbWeekResults.scope, "everyone")));
+    expect(placed.map((p) => [p.userId, p.place]).sort()).toEqual([[friend.id, 1], [crewmate.id, 2]].sort());
+    const awards = await db.select().from(climbAwards).where(eq(climbAwards.week, week));
+    expect(awards.map((a) => [a.userId, a.place, a.amountKobo]).sort()).toEqual([[friend.id, 1, kobo(1000)], [crewmate.id, 2, kobo(500)]].sort());
+  });
+
   it("can't be deleted twice", async () => {
     await markReverified(gone.id);
     expect((await del(await fresh(gone))).json().error).toBe("already_deleted");
@@ -198,6 +259,10 @@ describe("a deleted account", () => {
     const detail = (await app.inject({ method: "GET", url: `/admin/users/${gone.id}`, headers: as(admin) })).json();
     expect(detail.deletion).toMatchObject({ reason: "privacy", archived: { email: goneEmail, handle: gone.handle, displayName: gone.displayName, phone: gonePhone }, archiveClearedAt: null });
     expect(detail.identities.every((i: { disabledAt: string | null }) => i.disabledAt)).toBe(true);
+    expect(detail.deletion.archivedFollows.map((f: { direction: string; user: { id: string } }) => [f.direction, f.user.id]).sort()).toEqual([["follower", friend.id], ["following", friend.id]]);
+    expect(detail.deletion.archivedCrewInvites.map((i: { direction: string; crew: { id: string }; user: { id: string }; status: string }) => [i.direction, i.crew.id, i.user.id, i.status]).sort()).toEqual([
+      ["received", otherCrewId, crewmate.id, "pending"], ["sent", crewId, crewmate.id, "accepted"], ["sent", crewId, friend.id, "pending"],
+    ].sort());
     await app.inject({ method: "GET", url: `/admin/users/${gone.id}`, headers: as(admin) });
     expect((await looks()).length).toBe(before + 2);
     expect((await looks())[0].adminUserId).toBe(admin.id);

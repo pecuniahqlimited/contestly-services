@@ -143,6 +143,7 @@ export async function approveAward(tx: Tx, awardId: string, adminId: string) {
   const [award] = await tx.select().from(climbAwards).where(eq(climbAwards.id, awardId)).for("update");
   if (!award) throw Object.assign(new Error("not_found"), { statusCode: 404 });
   if (award.status === "rejected") throw refused("award_rejected");
+  if (award.status === "void") throw refused("award_void");
   if (award.status === "paid") return award;
   const decided = award.status === "pending" ? { decidedByUserId: adminId, decidedAt: new Date() } : {};
   const [winner] = await tx.select().from(users).where(eq(users.id, award.userId));
@@ -160,6 +161,7 @@ export async function rejectAward(tx: Tx, awardId: string, adminId: string) {
   const [award] = await tx.select().from(climbAwards).where(eq(climbAwards.id, awardId)).for("update");
   if (!award) throw Object.assign(new Error("not_found"), { statusCode: 404 });
   if (award.status === "paid") throw refused("award_paid");
+  if (award.status === "void") throw refused("award_void");
   const [rejected] = await tx.update(climbAwards).set({ status: "rejected", decidedByUserId: adminId, decidedAt: new Date() }).where(eq(climbAwards.id, awardId)).returning();
   return rejected;
 }

@@ -411,8 +411,8 @@ export const adminPrizesResponseSchema = z.object({
 });
 export type AdminPrizesResponse = z.infer<typeof adminPrizesResponseSchema>;
 
-/** A weekly prize: pending until an admin decides; approved means paid, or waiting for the winner to sign in. */
-export const CLIMB_AWARD_STATUSES = ["pending", "approved", "paid", "rejected"] as const;
+/** A weekly prize: pending until an admin decides; approved means paid, or waiting for the winner to sign in; void when the winner deleted their account before it was paid. */
+export const CLIMB_AWARD_STATUSES = ["pending", "approved", "paid", "rejected", "void"] as const;
 export const climbAwardSchema = z.object({
   id: z.string().uuid(),
   week: z.string(),

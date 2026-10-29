@@ -28,9 +28,15 @@ know who was paid, and moderation needs to know who said what. So deleting can't
    Bonus coins are forfeited by one `ledger.post` (`account_deleted:<id>:bonus`); no entry is touched.
    Crews are left as on leave (hand-over, archive if last). Device tokens are deleted here once row 9
    adds them.
-4. **Relationships go, records stay.** Follows (both ways) are deleted and pending crew and party
-   invites to them dismissed: they exist only to show the person to others. Chat lines, voice notes,
-   party seats, Climb history and feed rows stay.
+4. **Relationships leave the live tables, records stay.** Follows (both ways) and crew invites (to or
+   from them, any status) move to `archived_follows` and `archived_crew_invites`: the same columns plus
+   `archived_at`, in the same transaction. No live query reads them; the admin detail does. Pending party
+   invites to them are dismissed. Chat lines, voice notes, party seats, Climb history and feed rows stay.
+   Weekly Climb prizes still pending, or approved and held unpaid, become `void` (approve and reject
+   then refuse them with `award_void`; `canBePaidCash()` refuses a deleted account too), each logged in
+   `admin_actions` as `climb.award_void` with reason `account_deleted` and the system account as the
+   actor, since no admin made the decision. Paid and rejected prizes are untouched. A Climb run in progress
+   ends as `abandoned`.
 5. **After it commits:** the user leaves the Everyone board, open rooms drop them (`user_deleted` on
    the admin events channel, `account_gone`), and the Firebase user is disabled, not deleted. A failure
    there is logged; the session is already refused because no live identity reaches the account.
@@ -39,7 +45,8 @@ know who was paid, and moderation needs to know who said what. So deleting can't
    DMs and Challenge (404), the DM rule (`dmPermission` refuses a deleted recipient), mentions, invites,
    contacts, the Everyone, friends and crew boards, Climb week close, the feed, "played with".
 7. **Admins see everything.** Search matches archived email, handle, name and phone (and id); rows show
-   what the account was and `deletedAt`; the detail shows the deletion and the archive. Every admin view
+   what the account was and `deletedAt`; the detail shows the deletion, the archive, and the archived
+   follows and crew invites with the person on the other side. Every admin view
    of a deleted account is logged (`user.view_deleted`). No restore for now.
 8. **Retention.** The worker's daily `purge_deleted_archives` clears the archive's personal fields
    (email, phone and hash, name, face, bio, About you answers) once `deletedArchiveRetentionDays` has
@@ -52,7 +59,9 @@ know who was paid, and moderation needs to know who said what. So deleting can't
 - **Keep identities unique and refuse re-sign-up.** People who delete and come back would be stuck, and
   stores expect a deleted account to free its sign-in.
 - **Keep follows and filter them everywhere.** A dozen follow queries would each need the rule, and
-  missing one shows a deleted person; the edges carry nothing worth tracing.
+  missing one shows a deleted person. Moving them to an archive table keeps the trace without that.
+- **Delete follows and invites outright.** The first version did; it lost who the account was connected
+  to, which support and disputes can need.
 - **Delete immediately, restore within a grace period.** Not needed yet; the archive keeps the option.
 
 ## Consequences

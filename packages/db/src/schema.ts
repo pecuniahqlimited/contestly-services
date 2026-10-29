@@ -162,6 +162,19 @@ export const follows = pgTable("follows", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.followerId, t.followeeId] }), index("follows_followee_idx").on(t.followeeId)]);
 
+/**
+ * Follows of or by a deleted account (ADR 0010), moved here from `follows` in the delete's transaction:
+ * out of every live query, kept so an admin can see who the account was connected to.
+ */
+export const archivedFollows = pgTable("archived_follows", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  followerId: uuid("follower_id").notNull().references(() => users.id),
+  followeeId: uuid("followee_id").notNull().references(() => users.id),
+  notify: boolean("notify").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("archived_follows_follower_idx").on(t.followerId), index("archived_follows_followee_idx").on(t.followeeId)]);
+
 export const parties = pgTable("parties", {
   id: uuid("id").primaryKey().defaultRandom(),
   /**
@@ -760,6 +773,18 @@ export const crewInvites = pgTable("crew_invites", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   respondedAt: timestamp("responded_at", { withTimezone: true }),
 }, (t) => [primaryKey({ columns: [t.crewId, t.inviteeId] }), index("crew_invites_invitee_idx").on(t.inviteeId, t.status)]);
+
+/** Crew invites to or from a deleted account (ADR 0010), moved here from `crew_invites` like archived_follows. */
+export const archivedCrewInvites = pgTable("archived_crew_invites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  crewId: uuid("crew_id").notNull().references(() => crews.id),
+  inviteeId: uuid("invitee_id").notNull().references(() => users.id),
+  inviterId: uuid("inviter_id").notNull().references(() => users.id),
+  status: inviteStatus("status").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+  archivedAt: timestamp("archived_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("archived_crew_invites_invitee_idx").on(t.inviteeId), index("archived_crew_invites_inviter_idx").on(t.inviterId)]);
 
 /**
  * A player's party points for one Lagos day (ADR 0008): written at settlement, bragging-rights parties only,

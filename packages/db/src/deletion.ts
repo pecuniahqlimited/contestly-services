@@ -2,14 +2,18 @@
  * Deleting an account (ADR 0010) is a soft delete: nothing is erased that could trace the account. The
  * row, its id, the ledger, chat lines, voice notes and results stay; what identified the person moves to
  * the archive columns, the live fields become the deleted placeholders, and the identities are disabled
- * so no session reaches it again. Relationships that would keep showing it to people (follows, pending
- * invites) are removed. Crew hand-over and the Firebase user are the API's part.
+ * so no session reaches it again. Follows and crew invites that would keep showing it to people move to
+ * their archive tables; pending party invites are dismissed; Climb prizes not yet paid are voided (each
+ * logged) and a run in progress ends as abandoned. Crew hand-over and the Firebase user are the API's part.
  */
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, userIdentities, users, type User } from "./schema.js";
+import {
+  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, userIdentities, users, type User,
+} from "./schema.js";
 import * as ledger from "./ledger.js";
+import { recordAdminAction, systemActorId } from "./admin.js";
 
 type Conn = Tx | typeof db;
 
@@ -38,6 +42,9 @@ export interface ArchiveResult {
   forfeitedBonusKobo: number;
 }
 
+/** Why the system voided something on a delete, in admin_actions. */
+const ACCOUNT_DELETED_REASON = "account_deleted";
+
 /**
  * The database side of a delete, in the caller's transaction (which has locked the user row and checked
  * deletionBlockers). Idempotent in effect: the ledger key makes the forfeit post once.
@@ -61,12 +68,41 @@ export async function archiveAccount(tx: Tx, user: User, reason: string | null, 
     await ledger.post(tx, { userId: user.id, kind: "bonus", amountKobo: -forfeitedBonusKobo, type: "account_deleted_forfeit", refType: "user", refId: user.id, idempotencyKey: `account_deleted:${user.id}:bonus` });
   }
 
-  await tx.delete(follows).where(or(eq(follows.followerId, user.id), eq(follows.followeeId, user.id)));
-  await tx.update(crewInvites).set({ status: "dismissed", respondedAt: now }).where(and(eq(crewInvites.inviteeId, user.id), eq(crewInvites.status, "pending")));
+  await archiveFollows(tx, user.id, now);
+  await archiveCrewInvites(tx, user.id, now);
   await tx.update(partyInvites).set({ status: "dismissed", respondedAt: now }).where(and(eq(partyInvites.inviteeId, user.id), eq(partyInvites.status, "pending")));
+  await voidUnpaidAwards(tx, user.id);
+  await tx.update(climbRuns).set({ status: "abandoned", endedAt: now }).where(and(eq(climbRuns.userId, user.id), eq(climbRuns.status, "active")));
   // Device tokens arrive with row 9 (nudges); they're deleted here then.
 
   return { firebaseUids: disabled.filter((i) => i.provider === "firebase").map((i) => i.externalId), forfeitedBonusKobo };
+}
+
+/** Follows of or by the account, moved (same columns, plus when) to archived_follows. */
+async function archiveFollows(tx: Tx, userId: string, now: Date) {
+  const moved = await tx.delete(follows).where(or(eq(follows.followerId, userId), eq(follows.followeeId, userId))).returning();
+  if (moved.length) await tx.insert(archivedFollows).values(moved.map((f) => ({ ...f, archivedAt: now })));
+}
+
+/** Crew invites to or from the account, any status, moved to archived_crew_invites. */
+async function archiveCrewInvites(tx: Tx, userId: string, now: Date) {
+  const moved = await tx.delete(crewInvites).where(or(eq(crewInvites.inviteeId, userId), eq(crewInvites.inviterId, userId))).returning();
+  if (moved.length) await tx.insert(archivedCrewInvites).values(moved.map((i) => ({ ...i, archivedAt: now })));
+}
+
+/** Weekly Climb prizes still pending, or approved and held unpaid, become void; each is logged as the system's action. */
+async function voidUnpaidAwards(tx: Tx, userId: string) {
+  const unpaid = await tx.select().from(climbAwards).where(and(eq(climbAwards.userId, userId), inArray(climbAwards.status, ["pending", "approved"]))).for("update");
+  if (!unpaid.length) return;
+  const ids = unpaid.map((a) => a.id);
+  await tx.update(climbAwards).set({ status: "void" }).where(inArray(climbAwards.id, ids));
+  const actor = await systemActorId(tx);
+  for (const a of unpaid) {
+    await recordAdminAction(tx, {
+      adminUserId: actor, action: "climb.award_void", targetType: "user", targetId: userId, reason: ACCOUNT_DELETED_REASON,
+      before: { awardId: a.id, status: a.status }, after: { awardId: a.id, status: "void" },
+    });
+  }
 }
 
 /**

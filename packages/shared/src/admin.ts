@@ -78,6 +78,12 @@ export const adminUserDetailSchema = z.object({
     /** What the account was, as archived; nulls once the retention job has cleared the archive. */
     archived: z.object({ email: z.string().nullable(), handle: z.string().nullable(), displayName: z.string().nullable(), avatarEmoji: z.string().nullable(), bio: z.string().nullable(), phone: z.string().nullable() }),
     archiveClearedAt: isoOrNull,
+    /** Moved out of the live tables on delete (archived_follows, archived_crew_invites): who the account was connected to. */
+    archivedFollows: z.array(z.object({ direction: z.enum(["following", "follower"]), user: adminUserRowSchema, followedAt: iso, archivedAt: iso })),
+    archivedCrewInvites: z.array(z.object({
+      direction: z.enum(["received", "sent"]), crew: z.object({ id: uuid, name: z.string() }), user: adminUserRowSchema,
+      status: z.enum(["pending", "accepted", "dismissed"]), invitedAt: iso, respondedAt: isoOrNull, archivedAt: iso,
+    })),
   }).nullable(),
   wallet: z.object({ cashKobo: z.number().int(), bonusKobo: z.number().int() }),
   partiesPlayed: z.array(z.object({ id: uuid, title: z.string(), status: z.string(), startsAt: iso, rank: z.number().int().nullable(), score: z.number().int().nullable(), prizeKobo: z.number().int().nullable() })),

@@ -40,13 +40,13 @@ const adminChallenge = (c: ClimbChallengeRow, attempts: number) => ({ id: c.id, 
 
 async function awardsView(rows: ClimbAwardRow[]): Promise<ClimbAward[]> {
   if (!rows.length) return [];
-  const people = await db.select({ ...personColumns, isSystem: users.isSystem, isGuest: users.isGuest, emailVerifiedAt: users.emailVerifiedAt }).from(users).where(inArray(users.id, rows.map((r) => r.userId)));
+  const people = await db.select({ ...personColumns, isSystem: users.isSystem, isGuest: users.isGuest, emailVerifiedAt: users.emailVerifiedAt, deletedAt: users.deletedAt }).from(users).where(inArray(users.id, rows.map((r) => r.userId)));
   const byId = new Map(people.map((p) => [p.id, p]));
   return rows.map((a) => {
-    const { isSystem, isGuest, emailVerifiedAt, ...person } = byId.get(a.userId)!;
+    const { isSystem, isGuest, emailVerifiedAt, deletedAt, ...person } = byId.get(a.userId)!;
     return {
       id: a.id, week: a.week, place: a.place, points: a.points, amountKobo: a.amountKobo, status: a.status, person,
-      canBePaid: canBePaidCash({ isSystem, isGuest, emailVerifiedAt }), decidedAt: a.decidedAt?.toISOString() ?? null, paidAt: a.paidAt?.toISOString() ?? null,
+      canBePaid: canBePaidCash({ isSystem, isGuest, emailVerifiedAt, deletedAt }), decidedAt: a.decidedAt?.toISOString() ?? null, paidAt: a.paidAt?.toISOString() ?? null,
     };
   });
 }

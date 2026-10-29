@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { and, desc, eq, ilike, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
 import {
-  banUser, climbAwards, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
+  archivedCrewInvites, archivedFollows, banUser, climbAwards, crews, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
 } from "@contestly/db";
 import {
   ADMIN_EVENTS_CHANNEL, adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema,
@@ -34,6 +34,27 @@ function searchWhere(q: string): SQL {
   return or(handleLike(q), ilike(users.displayName, like), ilike(users.archivedDisplayName, like))!;
 }
 
+/** A deleted account's archived follows and crew invites, each with the person on the other side. */
+async function archivedConnections(id: string) {
+  const [follows, invites] = await Promise.all([
+    db.select().from(archivedFollows).where(or(eq(archivedFollows.followerId, id), eq(archivedFollows.followeeId, id))).orderBy(desc(archivedFollows.createdAt)),
+    db.select({ i: archivedCrewInvites, crewName: crews.name }).from(archivedCrewInvites).innerJoin(crews, eq(crews.id, archivedCrewInvites.crewId))
+      .where(or(eq(archivedCrewInvites.inviteeId, id), eq(archivedCrewInvites.inviterId, id))).orderBy(desc(archivedCrewInvites.createdAt)),
+  ]);
+  const otherIds = [...follows.map((f) => (f.followerId === id ? f.followeeId : f.followerId)), ...invites.map(({ i }) => (i.inviteeId === id ? i.inviterId : i.inviteeId))];
+  const others = new Map((otherIds.length ? await db.select().from(users).where(inArray(users.id, otherIds)) : []).map((u) => [u.id, adminUserRow(u)]));
+  return {
+    archivedFollows: follows.map((f) => ({
+      direction: f.followerId === id ? "following" as const : "follower" as const, user: others.get(f.followerId === id ? f.followeeId : f.followerId)!,
+      followedAt: f.createdAt.toISOString(), archivedAt: f.archivedAt.toISOString(),
+    })),
+    archivedCrewInvites: invites.map(({ i, crewName }) => ({
+      direction: i.inviteeId === id ? "received" as const : "sent" as const, crew: { id: i.crewId, name: crewName }, user: others.get(i.inviteeId === id ? i.inviterId : i.inviteeId)!,
+      status: i.status, invitedAt: i.createdAt.toISOString(), respondedAt: i.respondedAt?.toISOString() ?? null, archivedAt: i.archivedAt.toISOString(),
+    })),
+  };
+}
+
 async function userDetail(id: string) {
   const [u] = await db.select().from(users).where(and(eq(users.id, id), eq(users.isSystem, false)));
   if (!u) throw httpError(404, "not_found");
@@ -47,6 +68,7 @@ async function userDetail(id: string) {
     db.select().from(climbWeeks).where(eq(climbWeeks.userId, id)).orderBy(desc(climbWeeks.week)).limit(CLIMB_WEEKS_SHOWN),
     db.select().from(climbAwards).where(eq(climbAwards.userId, id)).orderBy(desc(climbAwards.week)),
   ]);
+  const connections = u.deletedAt ? await archivedConnections(id) : null;
   return adminUserDetailSchema.parse({
     user: {
       ...adminUserRow(u), banReason: u.banReason, emailVerifiedAt: u.emailVerifiedAt?.toISOString() ?? null, phoneAdded: !!u.phoneVerifiedAt,
@@ -56,6 +78,7 @@ async function userDetail(id: string) {
     deletion: u.deletedAt ? {
       at: u.deletedAt.toISOString(), reason: u.deletedReason, archiveClearedAt: u.archiveClearedAt?.toISOString() ?? null,
       archived: { email: u.archivedEmail, handle: u.archivedHandle, displayName: u.archivedDisplayName, avatarEmoji: u.archivedAvatarEmoji, bio: u.archivedBio, phone: u.archivedPhone },
+      ...connections!,
     } : null,
     wallet,
     partiesPlayed: played.map((p) => ({ ...p, startsAt: p.startsAt.toISOString() })),
