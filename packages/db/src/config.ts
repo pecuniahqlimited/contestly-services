@@ -53,7 +53,7 @@ const accounts = configEntry("accounts", accountsConfigSchema, DEFAULT_ACCOUNTS_
 export const getAccountsConfig = accounts.get;
 export const setAccountsConfig = accounts.set;
 
-/** Payments: top-up and withdrawal limits, approval and maker-checker thresholds, the requery clock (ADR 0012). */
+/** Payments: top-up and withdrawal limits, approval and maker-checker thresholds, the requery clock (ADR 0013). */
 const payments = configEntry("payments", paymentsConfigSchema as unknown as z.ZodType<typeof DEFAULT_PAYMENTS_CONFIG>, DEFAULT_PAYMENTS_CONFIG);
 export const getPaymentsConfig = payments.get;
 export const setPaymentsConfig = payments.set;

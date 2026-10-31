@@ -1,5 +1,5 @@
 /**
- * The payments worker (ADR 0012): webhooks stored by the API, top-up checks, sending and checking withdrawals,
+ * The payments worker (ADR 0013): webhooks stored by the API, top-up checks, sending and checking withdrawals,
  * the minute sweep that finds whatever is due, the hourly invariants and the nightly reconciliation. Every job
  * is safe to run twice: the transitions lock the row and look at its state first.
  */

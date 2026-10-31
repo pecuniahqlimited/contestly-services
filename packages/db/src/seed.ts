@@ -61,7 +61,7 @@ await db.transaction(async (tx) => {
   const devAdmins = (process.env.DEV_ADMIN_HANDLES ?? "tunde").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
   if (devAdmins.length) {
     const admins = await tx.update(users).set({ isAdmin: true }).where(inArray(users.handle, devAdmins)).returning({ id: users.id });
-    // Dev admins hold every payment permission (ADR 0012); real admins are granted them one by one.
+    // Dev admins hold every payment permission (ADR 0013); real admins are granted them one by one.
     if (admins.length) await tx.insert(adminPermissions).values(admins.flatMap((a) => PAYMENT_PERMISSIONS.map((permission) => ({ userId: a.id, permission })))).onConflictDoNothing();
   }
 

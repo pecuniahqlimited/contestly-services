@@ -1,5 +1,5 @@
 /**
- * The provider interfaces (ADR 0012). Everything outside src/providers speaks these types; a provider maps
+ * The provider interfaces (ADR 0013). Everything outside src/providers speaks these types; a provider maps
  * its own codes into them, and anything it can't map is "unknown" — never success, never failure.
  */
 

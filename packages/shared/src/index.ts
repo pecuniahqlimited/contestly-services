@@ -306,7 +306,7 @@ export const PARTY_EVENTS_CHANNEL = "party:events";
 /** BullMQ queue names and job payloads. */
 export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb", housekeeping: "housekeeping", chat: "chat", payments: "payments" } as const;
 /**
- * Payments (ADR 0012). `webhook`: process a stored, authenticated provider event. `topup_check` /
+ * Payments (ADR 0013). `webhook`: process a stored, authenticated provider event. `topup_check` /
  * `payout_submit` / `payout_check`: one top-up or withdrawal, through the same locked transitions as every
  * other path. `sweep` (every minute) finds whatever is due, so a lost job only delays. `invariants`
  * (hourly) and `reconcile` (nightly, per provider) never fix anything: they alert, and a breach pauses payouts.

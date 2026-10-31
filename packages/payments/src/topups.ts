@@ -1,5 +1,5 @@
 /**
- * Top-ups (ADR 0012). Our server makes the reference and the pending row before the provider is asked. The
+ * Top-ups (ADR 0013). Our server makes the reference and the pending row before the provider is asked. The
  * wallet is credited only by confirmTopup(): a fresh verify with the provider that created it, matching our
  * row exactly (reference, amount, currency, user) and, when a webhook triggered it, the webhook too. The
  * credit happens with the row locked, under ledger key topup:<provider>:<reference>, so however many

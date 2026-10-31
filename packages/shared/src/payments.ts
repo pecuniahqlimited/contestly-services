@@ -1,5 +1,5 @@
 /**
- * Payments (row 10, ADR 0012): top-ups in, withdrawals out, through pluggable providers. Everything the
+ * Payments (row 10, ADR 0013): top-ups in, withdrawals out, through pluggable providers. Everything the
  * app and the admin console see is in our own types and statuses; provider codes never leave a provider.
  */
 import { z } from "zod";

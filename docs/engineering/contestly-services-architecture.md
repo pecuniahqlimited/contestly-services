@@ -87,7 +87,7 @@ Each flow names which service acts at each step, so ownership is unambiguous whe
 
 ### Wallet top-up and payout
 
-Providers are pluggable (`packages/payments`, ADR 0012); every transaction is finished by the provider that created it.
+Providers are pluggable (`packages/payments`, ADR 0013); every transaction is finished by the provider that created it.
 
 1. **Top-up** — `api` makes our reference and a pending row, then asks the provider for a checkout. The provider's webhook arrives at `POST /webhooks/:provider`; `api` authenticates it, stores it and acknowledges; `worker` runs a fresh verify with that provider and credits only if it matches our row (and the webhook) exactly, under ledger key `topup:<provider>:<ref>`. A missed webhook is credited by the worker's own checks; a mismatch waits for an admin.
 2. **Payout request** — `api` checks `canWithdraw`, limits and the pause, and debits cash into `payout_pending` in the same transaction that creates the payout (no provider call yet). Over a threshold it waits for an admin.

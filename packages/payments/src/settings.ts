@@ -1,7 +1,7 @@
 /**
  * Which provider takes top-ups and which sends payouts, and the kill switches: one immutable row per change,
  * the newest current. Changing it never touches a transaction already started: each finishes with the
- * provider that created it (ADR 0012).
+ * provider that created it (ADR 0013).
  */
 import { desc } from "drizzle-orm";
 import { db, paymentSettings, type Tx } from "@contestly/db";

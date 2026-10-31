@@ -1,5 +1,5 @@
 /**
- * Payments end to end against the running stack with the mock provider (row 10, ADR 0012):
+ * Payments end to end against the running stack with the mock provider (row 10, ADR 0013):
  *
  * 1. A top-up: POST /wallet/topups, "pay" on the mock checkout (its signed webhook goes through the real
  *    ingest), the worker verifies and credits; polling never credited anything itself. A doubled webhook

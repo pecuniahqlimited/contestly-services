@@ -55,7 +55,7 @@ declare module "fastify" {
 
 /** The API, routes and all, not yet listening. index.ts listens; tests use app.inject(). */
 export async function buildApp(opts: AppOptions = {}) {
-  // A live payment key outside production refuses to start (ADR 0012).
+  // A live payment key outside production refuses to start (ADR 0013).
   assertPaymentsEnv();
   // req.ip stays the socket peer; req.clientIp is the real client (clientIp.ts decides when proxies are trusted).
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });

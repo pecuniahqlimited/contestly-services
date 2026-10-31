@@ -1,4 +1,4 @@
-/** The API's side of the payments module: its job queue and its Valkey store, passed in (ADR 0012). */
+/** The API's side of the payments module: its job queue and its Valkey store, passed in (ADR 0013). */
 import { paymentsQueue } from "@contestly/queue";
 import type { KeyValue, PaymentsDeps } from "@contestly/payments";
 import { valkey } from "./redis.js";

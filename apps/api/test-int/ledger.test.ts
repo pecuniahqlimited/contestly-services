@@ -1,5 +1,5 @@
 /**
- * Double entry (ADR 0012): every journal sums to zero, a replay is a no-op, a replay with different legs is
+ * Double entry (ADR 0013): every journal sums to zero, a replay is a no-op, a replay with different legs is
  * refused, a person's money can't go below zero (the lock and the check constraint), and the flows the rest
  * of the suite runs leave the books balanced.
  */

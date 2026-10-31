@@ -1,5 +1,5 @@
 /**
- * The hourly invariant check (ADR 0012). It never fixes anything: any breach raises a critical alert and
+ * The hourly invariant check (ADR 0013). It never fixes anything: any breach raises a critical alert and
  * pauses payouts (queued ones stay debited and queued) until an admin clears the pause.
  *
  * 1. Every journal sums to zero, and nothing has been written outside a journal since double entry began.

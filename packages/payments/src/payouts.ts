@@ -1,5 +1,5 @@
 /**
- * Withdrawals (ADR 0012): debit first, reverse only on a definite failure.
+ * Withdrawals (ADR 0013): debit first, reverse only on a definite failure.
  *
  * requested ─ debit cash → payout_pending in the transaction that creates the row; no provider call before it commits.
  * awaiting_approval ─ over a threshold; an admin approves (→ requested) or rejects (reversed).

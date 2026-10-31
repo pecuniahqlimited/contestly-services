@@ -17,7 +17,7 @@ const limitQuery = z.object({ limit: z.coerce.number().int().min(1).max(200).def
 const reconRunSchema = z.object({ provider: z.string().min(1), day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 
 /**
- * The console's payments pages (ADR 0012). Each route names the permission it needs: payments.view (read),
+ * The console's payments pages (ADR 0013). Each route names the permission it needs: payments.view (read),
  * payments.approve (payouts over the threshold), payments.finalize (stuck transactions, alerts, reconciliation
  * notes), payments.config (providers, pauses, limits, who holds which permission). Every write is logged.
  */

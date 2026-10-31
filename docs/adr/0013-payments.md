@@ -1,4 +1,4 @@
-# ADR 0012: Payments: pluggable providers, verify-then-credit, debit-first withdrawals
+# ADR 0013: Payments: pluggable providers, verify-then-credit, debit-first withdrawals
 
 Status: accepted (2026-10-31). Roadmap row 10. Makes the ledger double entry.
 

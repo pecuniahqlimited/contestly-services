@@ -1,5 +1,5 @@
 /**
- * Payments (row 10, ADR 0012) against the real database and the mock provider. The rule under test: no
+ * Payments (row 10, ADR 0013) against the real database and the mock provider. The rule under test: no
  * glitch, retry, race or bad provider answer creates money or loses it. Top-ups credit once, only on a
  * verified confirmation; withdrawals debit first, reverse only on a definite failure, and settle once;
  * admins finalize through the same transitions; switching providers strands nothing; the invariant job and

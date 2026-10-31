@@ -5,7 +5,7 @@ import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESS
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
-/** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0012). */
+/** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0013). */
 export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
@@ -627,7 +627,7 @@ export const ledgerEntries = pgTable("ledger_entries", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("ledger_entries_account_idx").on(t.accountId, t.createdAt), index("ledger_entries_journal_idx").on(t.journalId), index("ledger_entries_ref_idx").on(t.refType, t.refId)]);
 
-// ---- Payments (row 10, ADR 0012) ----
+// ---- Payments (row 10, ADR 0013) ----
 
 /**
  * Which provider takes top-ups and which sends payouts, and whether either is paused: one immutable row per

@@ -26,7 +26,7 @@ export const USER_ACCOUNT_KINDS = ["cash", "bonus"] as const;
 type Kind = (typeof USER_ACCOUNT_KINDS)[number];
 
 /**
- * The platform's side of every movement (ADR 0012), owned by the treasury account. A scope splits one
+ * The platform's side of every movement (ADR 0013), owned by the treasury account. A scope splits one
  * kind where it needs splitting: a party's pot by party id, the payment accounts by provider.
  * - party_pot: entries in, prizes, rake, host cut and refunds out (scope: party id)
  * - bonus_issued: welcome coins out, forfeited coins back
