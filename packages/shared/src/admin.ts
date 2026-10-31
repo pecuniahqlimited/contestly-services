@@ -4,6 +4,7 @@
  * appears before its party starts, here or anywhere.
  */
 import { z } from "zod";
+import { PAYMENT_PERMISSIONS } from "./payments.js";
 import { personSchema } from "./person.js";
 import { accountsConfigSchema } from "./accounts.js";
 
@@ -53,7 +54,8 @@ export const adminActionsQuerySchema = z.object({ targetType: z.string().optiona
 
 // ---------------------------------------------------------------- responses
 
-export const adminSessionSchema = z.object({ admin: personSchema.extend({ email: z.string().nullable() }) });
+/** permissions: the payment permissions this admin holds (ADR 0012); dev sessions hold all of them. */
+export const adminSessionSchema = z.object({ admin: personSchema.extend({ email: z.string().nullable() }), permissions: z.array(z.enum(PAYMENT_PERMISSIONS)) });
 
 export const adminUserRowSchema = z.object({
   id: uuid, handle: z.string(), displayName: z.string(), avatarEmoji: z.string(),

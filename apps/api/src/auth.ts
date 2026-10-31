@@ -1,8 +1,9 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
 import { assertNotBanned, NoCredentials, resolveUser, Unauthorized, type Session } from "@contestly/auth";
-import { SIGN_UP_REQUIRED, TOO_MANY_GUESTS } from "@contestly/shared";
+import { SIGN_UP_REQUIRED, TOO_MANY_GUESTS, MISSING_PERMISSION, type PaymentPermission } from "@contestly/shared";
 import { limit } from "./redis.js";
+import { hasPermission } from "@contestly/payments";
 import type { User } from "@contestly/db";
 
 declare module "fastify" {
@@ -71,6 +72,16 @@ export function requireAdmin(req: FastifyRequest): User {
   const user = requireUser(req);
   if (user.isAdmin || req.auth!.via === "dev") return user;
   throw Object.assign(new Error("admin_only"), { statusCode: 403 });
+}
+
+/**
+ * An admin with a payment permission (granted per admin; dev sessions hold all of them). Checks the admin
+ * role first, so a non-admin gets admin_only like every other /admin route.
+ */
+export async function requirePermission(req: FastifyRequest, permission: PaymentPermission): Promise<User> {
+  const admin = requireAdmin(req);
+  if (req.auth!.via === "dev" || (await hasPermission(admin.id, permission))) return admin;
+  throw Object.assign(new Error(MISSING_PERMISSION), { statusCode: 403, details: { permission } });
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;

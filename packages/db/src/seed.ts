@@ -8,10 +8,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, inArray, sql as dsql } from "drizzle-orm";
-import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, lagosDay, addDays, DEFAULT_QUESTIONS_CONFIG, type SplitId } from "@contestly/shared";
+import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, lagosDay, addDays, DEFAULT_QUESTIONS_CONFIG, PAYMENT_PERMISSIONS, type SplitId } from "@contestly/shared";
 import { closeQueues, partyQueue, questionsQueue } from "@contestly/queue";
 import { db, sql, type Tx } from "./client.js";
-import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
+import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges, adminPermissions } from "./schema.js";
 import * as ledger from "./ledger.js";
 import { currentPrizes, savePrizes } from "./climb.js";
 import { seedAboutConfigs } from "./config.js";
@@ -59,7 +59,11 @@ await db.transaction(async (tx) => {
 
   // Dev admins: DEV_ADMIN_HANDLES (comma-separated, default tunde) pass requireAdmin with a real sign-in too.
   const devAdmins = (process.env.DEV_ADMIN_HANDLES ?? "tunde").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
-  if (devAdmins.length) await tx.update(users).set({ isAdmin: true }).where(inArray(users.handle, devAdmins));
+  if (devAdmins.length) {
+    const admins = await tx.update(users).set({ isAdmin: true }).where(inArray(users.handle, devAdmins)).returning({ id: users.id });
+    // Dev admins hold every payment permission (ADR 0012); real admins are granted them one by one.
+    if (admins.length) await tx.insert(adminPermissions).values(admins.flatMap((a) => PAYMENT_PERMISSIONS.map((permission) => ({ userId: a.id, permission })))).onConflictDoNothing();
+  }
 
   await tx.delete(follows).where(and(inArray(follows.followerId, demoUserIds), inArray(follows.followeeId, demoUserIds)));
   await tx.insert(follows).values([

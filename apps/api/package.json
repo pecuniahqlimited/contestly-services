@@ -27,6 +27,7 @@
     "mammoth": "^1.8.0",
     "@contestly/game": "*",
     "@contestly/email": "*",
+    "@contestly/payments": "*",
     "jose": "^5.9.6"
   },
   "devDependencies": {

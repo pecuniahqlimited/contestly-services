@@ -86,8 +86,11 @@ export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; 
   const [first] = await tx.insert(ledgerEntries).values({ journalId, accountId: ids[0], amountKobo: j.legs[0].amountKobo, type: j.type, refType: j.refType, refId: j.refId, idempotencyKey: keys[0] })
     .onConflictDoNothing().returning({ id: ledgerEntries.id });
   if (!first) {
-    const prior = await tx.select({ key: ledgerEntries.idempotencyKey, accountId: ledgerEntries.accountId, amountKobo: ledgerEntries.amountKobo }).from(ledgerEntries).where(inArray(ledgerEntries.idempotencyKey, keys));
-    const same = prior.length === keys.length && keys.every((k, i) => prior.some((p) => p.key === k && p.accountId === ids[i] && Number(p.amountKobo) === j.legs[i].amountKobo));
+    const prior = await tx.select({ key: ledgerEntries.idempotencyKey, journalId: ledgerEntries.journalId, accountId: ledgerEntries.accountId, amountKobo: ledgerEntries.amountKobo }).from(ledgerEntries).where(inArray(ledgerEntries.idempotencyKey, keys));
+    const matches = (i: number) => prior.some((p) => p.key === keys[i] && p.accountId === ids[i] && Number(p.amountKobo) === j.legs[i].amountKobo);
+    // A key first written before double entry (no journal) has only the person's leg: that leg matching is the replay.
+    const legacy = prior.find((p) => p.key === keys[0])?.journalId === null;
+    const same = legacy ? prior.length === 1 && matches(0) : prior.length === keys.length && keys.every((_, i) => matches(i));
     if (!same) throw new IdempotencyConflict(j.idempotencyKey);
     return { replayed: true, balances: new Map(locked.map((a) => [a.id, a.balanceKobo])) };
   }

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { currentAboutConfig, currentEmailConfig, db, getAccountsConfig, getPartyConfig, recentEmailSends, recordAdminAction, saveAboutConfig, saveEmailConfig, setAccountsConfig, setPartyConfig } from "@contestly/db";
 import {
-  EMAIL_PROVIDERS, aboutAudienceSchema, adminAccountsConfigBodySchema, aboutConfigSchemaFor, adminAboutBodySchema, adminAboutPreviewResponseSchema, adminAboutPreviewSchema, adminActionsQuerySchema,
+  EMAIL_PROVIDERS, PAYMENT_PERMISSIONS, aboutAudienceSchema, adminAccountsConfigBodySchema, aboutConfigSchemaFor, adminAboutBodySchema, adminAboutPreviewResponseSchema, adminAboutPreviewSchema, adminActionsQuerySchema,
   adminActionsResponseSchema, adminEmailSchema, adminPartyLimitsSchema, adminSessionSchema, answerProblems, backupOf, deriveAbout,
 } from "@contestly/shared";
 import { z } from "zod";
@@ -10,6 +10,7 @@ import { actionsView } from "../adminViews.js";
 import { toPerson } from "../people.js";
 import { senders } from "../email.js";
 import { aboutView } from "../about.js";
+import { permissionsOf } from "@contestly/payments";
 
 /** The email page: which provider sends first, which are configured (keys are env, never shown or set here), and the last sends. */
 async function emailView() {
@@ -27,7 +28,8 @@ export async function adminRoutes(app: FastifyInstance) {
   /** The console's gate: 200 for an admin, 403 for anyone else (it signs in with the same email code / Google flow as the app). */
   app.get("/admin/session", async (req) => {
     const admin = requireAdmin(req);
-    return adminSessionSchema.parse({ admin: { ...toPerson(admin), email: admin.email } });
+    const permissions = req.auth!.via === "dev" ? [...PAYMENT_PERMISSIONS] : await permissionsOf(admin.id);
+    return adminSessionSchema.parse({ admin: { ...toPerson(admin), email: admin.email }, permissions });
   });
 
   /** The admin log, newest first; ?targetType=&targetId= for one user, party, question or config. */

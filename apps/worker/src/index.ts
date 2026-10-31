@@ -12,6 +12,7 @@ import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { selectTranscriber } from "./transcribe/index.js";
 import { sendersFromEnv } from "@contestly/email";
 import { ALERT_DELIVERY_EVERY_MS, alertChannelsFromEnv, alertDeliveryConfigFromEnv, deliverAlerts } from "./alertDelivery.js";
+import "./payments.js";
 
 const connection = makeRedis();
 const pub = makeRedis();

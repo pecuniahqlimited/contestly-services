@@ -28,6 +28,9 @@ import { adminQuestionsRoutes } from "./routes/adminQuestions.js";
 import { chatsRoutes } from "./routes/chats.js";
 import { crewsRoutes } from "./routes/crews.js";
 import { socialRoutes } from "./routes/social.js";
+import { adminPaymentsRoutes } from "./routes/adminPayments.js";
+import { mockCheckoutRoutes, paymentWebhookRoutes } from "./routes/paymentWebhooks.js";
+import { assertPaymentsEnv } from "@contestly/payments";
 
 export interface AppOptions {
   /** Tests inject how a request becomes a session; the server uses resolveUser (Firebase token or dev header). */
@@ -52,6 +55,8 @@ declare module "fastify" {
 
 /** The API, routes and all, not yet listening. index.ts listens; tests use app.inject(). */
 export async function buildApp(opts: AppOptions = {}) {
+  // A live payment key outside production refuses to start (ADR 0012).
+  assertPaymentsEnv();
   // req.ip stays the socket peer; req.clientIp is the real client (clientIp.ts decides when proxies are trusted).
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
   if (opts.onRoute) app.addHook("onRoute", opts.onRoute);
@@ -118,5 +123,8 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(chatsRoutes);
   await app.register(crewsRoutes);
   await app.register(socialRoutes);
+  await app.register(paymentWebhookRoutes);
+  await app.register(mockCheckoutRoutes);
+  await app.register(adminPaymentsRoutes);
   return app;
 }
