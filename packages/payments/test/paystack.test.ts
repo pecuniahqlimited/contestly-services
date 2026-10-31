@@ -5,6 +5,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { paystackProvider, paystackTransferFeeKobo, type Fetch } from "../src/providers/paystack.js";
+import { ProviderRefusal } from "../src/types.js";
 
 const SECRET = "sk_test_unit";
 type Call = { method: string; url: string; body: any; auth: string };
@@ -33,9 +34,31 @@ describe("collections", () => {
     expect(calls[0].body).toEqual({ email: "a@b.c", amount: 50_000, currency: "NGN", reference: "tp-1", callback_url: "contestly://wallet", metadata: { userId: "u1", reference: "tp-1" } });
   });
 
-  it("a refused initialize throws (the top-up never reaches checkout)", async () => {
-    const { p } = fake(() => err(400, "Invalid email"));
-    await expect(p.collection!.createTopup({ reference: "tp-1", amountKobo: 1, currency: "NGN", userId: "u", email: "x", returnUrl: null })).rejects.toThrow(/Invalid email/);
+  const start = (p: ReturnType<typeof fake>["p"], email: string) => p.collection!.createTopup({ reference: "tp-1", amountKobo: 50_000, currency: "NGN", userId: "u", email, returnUrl: null });
+
+  it("a 4xx at initialize is a refusal with Paystack's message (no transaction exists)", async () => {
+    const { p } = fake(() => err(400, '"email" must be a valid email'));
+    const e = await start(p, "ada@gmail.com").catch((x) => x);
+    expect(e).toBeInstanceOf(ProviderRefusal);
+    expect([e.message, e.httpStatus]).toEqual(['"email" must be a valid email', 400]);
+  });
+
+  it("a 5xx or no answer at initialize is not a refusal: we can't be sure what Paystack did", async () => {
+    for (const answer of [err(500, "Internal error"), new Error("ETIMEDOUT")]) {
+      const e = await start(fake(() => answer).p, "ada@gmail.com").catch((x) => x);
+      expect(e).toBeInstanceOf(Error);
+      expect(e).not.toBeInstanceOf(ProviderRefusal);
+    }
+  });
+
+  it("never sends a reserved test domain to Paystack: refused before any call", async () => {
+    for (const email of ["tunde@dev.contestly.invalid", "a@b.test", "x@example.com", "y@mail.example.org", "z@host.localhost"]) {
+      const { p, calls } = fake(() => ok({ authorization_url: "https://x" }));
+      const e = await start(p, email).catch((x) => x);
+      expect(e, email).toBeInstanceOf(ProviderRefusal);
+      expect(e.message, email).toMatch(/reserved domain .* paystack can't send to/);
+      expect(calls, email).toHaveLength(0);
+    }
   });
 
   it("maps verify answers", async () => {

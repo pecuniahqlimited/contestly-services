@@ -103,6 +103,29 @@ export interface PaymentProvider {
   webhookIps: string[];
 }
 
+/**
+ * The provider (or its adapter, before calling it) refused to start something, so nothing exists at the
+ * provider and no money moved. Any other error from a start means we don't know what the provider did.
+ */
+export class ProviderRefusal extends Error {
+  constructor(message: string, readonly httpStatus: number | null = null) { super(message); this.name = "ProviderRefusal"; }
+}
+
+/** Reserved names that can never receive mail (RFC 2606, RFC 6761): our dev and test accounts use them. */
+const RESERVED_TLDS = ["invalid", "test", "example", "localhost"];
+const RESERVED_DOMAINS = ["example.com", "example.net", "example.org"];
+export function reservedEmailDomain(email: string): string | null {
+  const domain = email.trim().toLowerCase().split("@")[1] ?? "";
+  const tld = domain.split(".").pop() ?? "";
+  if (RESERVED_TLDS.includes(tld)) return `.${tld}`;
+  return RESERVED_DOMAINS.find((d) => domain === d || domain.endsWith(`.${d}`)) ?? null;
+}
+/** A real provider is never sent a reserved address: refused here, before any call, with a message that says why. */
+export function assertDeliverableEmail(email: string, provider: string) {
+  const reserved = reservedEmailDomain(email);
+  if (reserved) throw new ProviderRefusal(`"${email}" uses the reserved domain ${reserved}, which ${provider} can't send to; use a real address`);
+}
+
 /** A check that never reached a definite answer. */
 export const unknownCheck = (reference: string | null, error: string, providerStatus = "error"): ProviderCheck =>
   ({ status: "unknown", providerStatus, reference, amountKobo: null, currency: null, userId: null, feeKobo: null, error });

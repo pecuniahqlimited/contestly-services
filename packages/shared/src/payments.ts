@@ -46,6 +46,10 @@ export const MISSING_PERMISSION = "missing_permission";
 /** An admin acting on their own top-up or withdrawal. */
 export const OWN_TRANSACTION = "own_transaction";
 export const NOT_FINALIZABLE = "not_finalizable";
+/** 409: topping up sends the account's verified email to the provider; there isn't one. The app asks them to add one. */
+export const EMAIL_REQUIRED = "email_required";
+/** 422: the provider refused to start the payment (details.message says why). Nothing was charged. */
+export const TOPUP_REFUSED = "topup_refused";
 
 /** Why a withdrawal is refused (details.reason with withdraw_not_allowed). */
 export const WITHDRAW_BLOCK_REASONS = ["guest", "email_unverified", "phone_unverified", "deleted", "frozen", "system"] as const;

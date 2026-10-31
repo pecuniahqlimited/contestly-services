@@ -9,7 +9,7 @@
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Bank, CheckStatus, DateRange, Headers, PaymentProvider, ProviderCheck, ProviderRecord, WebhookEvent } from "../types.js";
-import { unknownCheck } from "../types.js";
+import { ProviderRefusal, assertDeliverableEmail, unknownCheck } from "../types.js";
 
 export const PAYSTACK = "paystack";
 const BASE_URL = "https://api.paystack.co";
@@ -118,10 +118,13 @@ export function paystackProvider(opts: PaystackOptions): PaymentProvider {
     webhookIps: WEBHOOK_IPS,
     collection: {
       async createTopup(input) {
+        assertDeliverableEmail(input.email, PAYSTACK);
         const a = await call("POST", "/transaction/initialize", {
           email: input.email, amount: input.amountKobo, currency: input.currency, reference: input.reference,
           ...(input.returnUrl ? { callback_url: input.returnUrl } : {}), metadata: { userId: input.userId, reference: input.reference },
         });
+        // A 4xx: Paystack refused it (bad email, amount, key…), so no transaction exists. Anything else: we can't be sure.
+        if (a.http >= 400 && a.http < 500) throw new ProviderRefusal(a.message, a.http);
         if (!a.ok || typeof a.data?.authorization_url !== "string") throw new Error(`paystack initialize: ${a.http} ${a.message}`);
         return { checkoutUrl: a.data.authorization_url };
       },

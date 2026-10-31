@@ -70,6 +70,10 @@ async function processWebhooks(reference: string) {
 const alertsFor = (refId: string) => db.select().from(paymentAlerts).where(eq(paymentAlerts.refId, refId));
 
 beforeAll(async () => {
+  // Never a real provider here, whatever .env holds (a Paystack test key for paystack:check, say).
+  delete process.env.PAYSTACK_SECRET_KEY;
+  delete process.env.PAYMENTS_PROVIDER;
+  resetProviders();
   ({ app } = await testApp());
   mock = mockControlsOrNull()!;
   admin = await makeUser("payadmin", { isAdmin: true });
@@ -204,6 +208,38 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
     await postWebhook(d);
     expect(await processWebhooks(s.reference)).toEqual(["topup:credited"]);
     expect(await cash(v)).toBe(kobo(500));
+  });
+
+  it("the provider gets the account's verified email; without one: email_required, never a placeholder", async () => {
+    for (const extra of [{ emailVerifiedAt: null }, { email: null, emailVerifiedAt: null }]) {
+      const u = await makeUser(nextName("tpnomail"), extra);
+      const res = await app.inject({ method: "POST", url: "/wallet/topups", headers: as(u), payload: { amountKobo: kobo(500) } });
+      expect([res.statusCode, res.json().error]).toEqual([409, "email_required"]);
+      expect(await db.select().from(topups).where(eq(topups.userId, u.id))).toHaveLength(0);
+    }
+  });
+
+  it("a refused start fails the top-up with the provider's message and leaves nothing to verify", async () => {
+    // The mock refuses a malformed email the way Paystack does, so dev catches it.
+    const u = await makeUser(nextName("tpbadmail"), { email: "not-an-email" });
+    const res = await app.inject({ method: "POST", url: "/wallet/topups", headers: as(u), payload: { amountKobo: kobo(500) } });
+    expect([res.statusCode, res.json().error, res.json().details.message]).toEqual([422, "topup_refused", '"email" must be a valid email']);
+    const row = await topupRow(res.json().details.reference);
+    expect([row.status, row.nextCheckAt, row.checkoutUrl]).toEqual(["failed", null, null]);
+    expect(row.problem).toMatchObject({ stage: "start", refused: true, httpStatus: 400 });
+    queued.length = 0;
+    await sweepDue(deps, later(DEFAULT_PAYMENTS_CONFIG.checks.topupCutoffMinutes * MIN));
+    expect(queued.filter((j) => j.kind === "topup_check" && j.topupId === row.id)).toHaveLength(0);
+    expect(await cash(u)).toBe(0);
+  });
+
+  it("a start that never finished (no checkout) is failed by the sweep, never verified", async () => {
+    const u = await makeUser(nextName("tpcrash"));
+    const [stuck] = await db.insert(topups).values({ userId: u.id, amountKobo: kobo(500), provider: "mock", reference: `tp-crash${tag}${n}`, status: "pending", createdAt: new Date(Date.now() - 6 * MIN) }).returning();
+    queued.length = 0;
+    expect((await sweepDue(deps)).unstarted).toBeGreaterThanOrEqual(1);
+    expect(queued.some((j) => j.kind === "topup_check" && j.topupId === stuck.id)).toBe(false);
+    expect((await db.select().from(topups).where(eq(topups.id, stuck.id)))[0].status).toBe("failed");
   });
 
   it("a definite failure is final; limits and the pause are enforced", async () => {

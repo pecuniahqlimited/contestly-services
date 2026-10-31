@@ -6,11 +6,13 @@
 import { and, eq, inArray, isNotNull, lte, or } from "drizzle-orm";
 import { db, payouts, topups } from "@contestly/db";
 import { currentSettings } from "./settings.js";
+import { failUnstartedTopups } from "./topups.js";
 import type { PaymentsDeps } from "./common.js";
 
 const BATCH = 200;
 
 export async function sweepDue(deps: PaymentsDeps, now = new Date()) {
+  const unstarted = await failUnstartedTopups(now);
   const dueTopups = await db.select({ id: topups.id, checks: topups.checks }).from(topups)
     .where(and(eq(topups.status, "pending"), isNotNull(topups.nextCheckAt), lte(topups.nextCheckAt, now))).limit(BATCH);
   for (const t of dueTopups) await deps.enqueue({ kind: "topup_check", topupId: t.id }, { jobId: `topup-check-${t.id}-${t.checks}` });
@@ -26,5 +28,5 @@ export async function sweepDue(deps: PaymentsDeps, now = new Date()) {
     if (p.status === "requested") await deps.enqueue({ kind: "payout_submit", payoutId: p.id }, { jobId: `payout-submit-${p.id}-${p.sends}` });
     else await deps.enqueue({ kind: "payout_check", payoutId: p.id }, { jobId: `payout-check-${p.id}-${p.checks}` });
   }
-  return { topups: dueTopups.length, payouts: duePayouts.length };
+  return { topups: dueTopups.length, unstarted, payouts: duePayouts.length };
 }

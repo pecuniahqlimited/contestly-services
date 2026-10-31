@@ -1,6 +1,6 @@
 /**
  * OPT-IN: the Paystack adapter against Paystack's real TEST API (npm run paystack:check). Needs
- * PAYSTACK_SECRET_KEY=sk_test_… in .env; refuses anything else. Touches no database: it drives the provider
+ * PAYSTACK_SECRET_KEY=sk_test_… and PAYSTACK_TEST_EMAIL (a real address) in .env; refuses anything else. Touches no database: it drives the provider
  * the way the payments module does and checks every answer maps the way the module expects.
  *
  * 1. Banks and account resolution.
@@ -11,7 +11,7 @@
  *    reported as such, and the module would keep such a payout unknown (debited, alerting) rather than guess.
  */
 import { randomBytes, randomUUID } from "node:crypto";
-import { paystackProvider } from "@contestly/payments";
+import { paystackProvider, reservedEmailDomain } from "@contestly/payments";
 
 const key = process.env.PAYSTACK_SECRET_KEY ?? "";
 if (!key.startsWith("sk_test_")) {
@@ -20,7 +20,16 @@ if (!key.startsWith("sk_test_")) {
 }
 const bankCode = process.env.PAYSTACK_TEST_BANK_CODE || "057";
 const accountNumber = process.env.PAYSTACK_TEST_ACCOUNT_NUMBER || "0000000000";
-const email = process.env.PAYSTACK_TEST_EMAIL || "paystack-check@contestly.invalid";
+// The customer email Paystack gets for the test top-up: a real inbox you own (Paystack validates it). Never invented here.
+const email = (process.env.PAYSTACK_TEST_EMAIL ?? "").trim();
+if (!email) {
+  console.error("Set PAYSTACK_TEST_EMAIL in .env to a real email address you own (the test top-up's customer).");
+  process.exit(1);
+}
+if (reservedEmailDomain(email)) {
+  console.error(`PAYSTACK_TEST_EMAIL "${email}" uses a reserved domain (${reservedEmailDomain(email)}) that can't receive mail; use a real address.`);
+  process.exit(1);
+}
 const p = paystackProvider({ secretKey: key });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let problems = 0;

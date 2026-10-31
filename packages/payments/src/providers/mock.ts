@@ -18,7 +18,7 @@
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { Redis } from "ioredis";
-import type { Bank, CheckStatus, DateRange, Headers, PaymentProvider, ProviderCheck, ProviderRecord, WebhookEvent } from "../types.js";
+import { ProviderRefusal, type Bank, type CheckStatus, type DateRange, type Headers, type PaymentProvider, type ProviderCheck, type ProviderRecord, type WebhookEvent } from "../types.js";
 
 export const MOCK = "mock";
 const PENDING_CHECKS = 2;
@@ -34,6 +34,7 @@ export interface MockTransfer { amountKobo: number; recipientCode: string; state
 export interface MockDelivery { rawBody: Buffer; headers: Record<string, string> }
 
 const scenario = (amountKobo: number) => amountKobo % 100;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const key = { topup: (r: string) => `mockpay:topup:${r}`, transfer: (r: string) => `mockpay:transfer:${r}`, sends: (r: string) => `mockpay:sends:${r}`, topups: "mockpay:topups", transfers: "mockpay:transfers" };
 
 export interface MockOptions { redis: () => Redis; webhookSecret: string; checkoutBaseUrl: string }
@@ -86,6 +87,9 @@ export function mockProvider(opts: MockOptions) {
     webhookIps: ["127.0.0.1", "::1"],
     collection: {
       async createTopup(input) {
+        // Like a real provider, a payment needs the customer's email; refused (400) without a well-formed one.
+        // Reserved test domains are allowed here only: dev and test accounts use them and the mock sends no mail.
+        if (!EMAIL.test(input.email ?? "")) throw new ProviderRefusal(`"email" must be a valid email`, 400);
         await setTopup(input.reference, { amountKobo: input.amountKobo, userId: input.userId, state: "created", createdAt: Date.now(), verifies: 0 });
         return { checkoutUrl: `${opts.checkoutBaseUrl}/payments/mock/checkout/${input.reference}` };
       },

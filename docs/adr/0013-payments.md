@@ -36,7 +36,12 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    `topup:<provider>:<reference>` (unique per provider and reference too), so concurrent and repeated
    webhooks, checks and admin replays credit at most once. A pending top-up is verified by the worker on a
    backoff until a cutoff (a final verify, then `expired`); a later confirmation still credits through the
-   same checks. `GET /wallet/topups/:reference` reads our row only.
+   same checks. `GET /wallet/topups/:reference` reads our row only. The provider is sent the account's verified email and nothing else: no
+   verified email is 409 `email_required` (never a placeholder). If the provider refuses to start
+   (`ProviderRefusal`: any 4xx at initialize, or the adapter's own refusal of a reserved test domain such as
+   `.invalid` for a real provider) or doesn't answer, nobody got a checkout, so the row is failed at once with
+   the reason (422 `topup_refused` with the provider's message, or 502); a row is only scheduled for checks once
+   a checkout exists, and the sweep fails any start that never finished.
 4. **Withdrawals: debit first, reverse only on a definite failure.** Checks (`canWithdraw`: verified email
    and phone, not frozen; cash only; minimum; daily count and amount; pause) and the debit (cash →
    `payout_pending:<provider>`) happen in the transaction that creates the payout, with the person's row

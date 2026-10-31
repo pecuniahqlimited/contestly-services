@@ -6,14 +6,13 @@
  * webhooks, checks or admin replays arrive, at most one credits.
  */
 import { randomBytes } from "node:crypto";
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
 import { db, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User } from "@contestly/db";
-import { BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, type TopupView } from "@contestly/shared";
-import { canBePaidCash } from "@contestly/db";
+import { BELOW_MINIMUM, CURRENCY, EMAIL_REQUIRED, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, TOPUP_REFUSED, type TopupView } from "@contestly/shared";
 import { backoffMs, lagosDayStart, paymentsError, raiseAlert } from "./common.js";
 import { currentSettings } from "./settings.js";
 import { providerNamed } from "./providers/index.js";
-import { unknownCheck, type ProviderCheck, type WebhookEvent } from "./types.js";
+import { ProviderRefusal, unknownCheck, type ProviderCheck, type WebhookEvent } from "./types.js";
 
 /** Paystack allows letters, digits, "-", "." and "=" in a reference; ours is tp- and 24 hex digits. */
 const newReference = () => `tp-${randomBytes(12).toString("hex")}`;
@@ -25,9 +24,26 @@ export const topupView = (t: Topup): TopupView => ({
 
 export interface CreateTopupOptions { returnUrl: string | null; now?: Date }
 
-/** Start a top-up: limits, the pending row (committed first), then the provider's checkout. */
+/**
+ * Who can top up: a signed-up, live account (else sign_up_required) with a verified email, which is what the
+ * provider is sent (else email_required, so the app can ask them to add one). Never a placeholder address.
+ */
+export function topupEmail(user: Pick<User, "isGuest" | "isSystem" | "deletedAt" | "email" | "emailVerifiedAt">): string {
+  if (user.isGuest || user.isSystem || user.deletedAt) throw paymentsError(403, SIGN_UP_REQUIRED);
+  if (!user.email || !user.emailVerifiedAt) throw paymentsError(409, EMAIL_REQUIRED);
+  return user.email;
+}
+
+/** A top-up still pending with no checkout after this long never reached the person (a crash mid-start): it's failed by the sweep. */
+export const START_GRACE_MS = 5 * 60_000;
+
+/**
+ * Start a top-up: limits, the pending row (committed first), then the provider's checkout. The row is only
+ * scheduled for checks once a checkout exists; if the provider refuses (or doesn't answer), no money can
+ * have moved, so the row is failed at once with the reason and nothing keeps verifying it.
+ */
 export async function createTopup(user: User, amountKobo: number, opts: CreateTopupOptions): Promise<Topup> {
-  if (!canBePaidCash(user) || !user.email) throw paymentsError(403, SIGN_UP_REQUIRED);
+  const email = topupEmail(user);
   const now = opts.now ?? new Date();
   const [settings, cfg] = await Promise.all([currentSettings(), getPaymentsConfig()]);
   if (settings.topupsPaused) throw paymentsError(503, PAYMENTS_PAUSED, { what: "topups" });
@@ -43,20 +59,30 @@ export async function createTopup(user: User, amountKobo: number, opts: CreateTo
     if (Number(total) + amountKobo > cfg.topup.dailyCapKobo) throw paymentsError(409, LIMIT_REACHED, { limit: "topup_daily", dailyCapKobo: cfg.topup.dailyCapKobo, usedKobo: Number(total) });
     const [t] = await tx.insert(topups).values({
       userId: user.id, amountKobo, currency: CURRENCY, provider: provider.name, reference: newReference(), status: "pending",
-      nextCheckAt: new Date(now.getTime() + cfg.checks.topupFirstCheckSeconds * 1000), createdAt: now, updatedAt: now,
+      nextCheckAt: null, createdAt: now, updatedAt: now,
     }).returning();
     return t;
   });
 
+  let checkoutUrl: string;
   try {
-    const { checkoutUrl } = await provider.collection.createTopup({ reference: row.reference, amountKobo, currency: CURRENCY, userId: user.id, email: user.email, returnUrl: opts.returnUrl });
-    const [t] = await db.update(topups).set({ checkoutUrl, updatedAt: new Date() }).where(eq(topups.id, row.id)).returning();
-    return t;
+    ({ checkoutUrl } = await provider.collection.createTopup({ reference: row.reference, amountKobo, currency: CURRENCY, userId: user.id, email, returnUrl: opts.returnUrl }));
   } catch (e) {
-    // The person never got a checkout, so nothing can have been paid. Marked failed; reconciliation would still see a stray payment.
-    await db.update(topups).set({ status: "failed", nextCheckAt: null, problem: { stage: "start", error: (e as Error).message }, updatedAt: new Date() }).where(eq(topups.id, row.id));
-    throw paymentsError(502, PROVIDER_UNAVAILABLE);
+    // No checkout reached the person, so nothing can have been paid. Failed now; reconciliation would still see a stray payment.
+    const refused = e instanceof ProviderRefusal;
+    await db.update(topups).set({ status: "failed", nextCheckAt: null, problem: { stage: "start", refused, httpStatus: refused ? e.httpStatus : null, message: (e as Error).message }, updatedAt: new Date() }).where(eq(topups.id, row.id));
+    if (refused) throw paymentsError(422, TOPUP_REFUSED, { message: e.message, reference: row.reference });
+    throw Object.assign(paymentsError(502, PROVIDER_UNAVAILABLE, { reference: row.reference }), { cause: e });
   }
+  const [t] = await db.update(topups).set({ checkoutUrl, nextCheckAt: new Date(Date.now() + cfg.checks.topupFirstCheckSeconds * 1000), updatedAt: new Date() }).where(eq(topups.id, row.id)).returning();
+  return t;
+}
+
+/** Top-ups whose start never finished (no checkout after START_GRACE_MS): failed, since nobody could have paid. */
+export async function failUnstartedTopups(now = new Date()) {
+  const gone = await db.update(topups).set({ status: "failed", problem: { stage: "start", message: "no checkout was created" }, updatedAt: now })
+    .where(and(eq(topups.status, "pending"), isNull(topups.checkoutUrl), lt(topups.createdAt, new Date(now.getTime() - START_GRACE_MS)))).returning({ id: topups.id });
+  return gone.length;
 }
 
 /** The app polls this after checkout: our record only; it never asks the provider and never credits. */

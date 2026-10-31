@@ -3,6 +3,15 @@ import { describe, expect, it } from "vitest";
 import { assertPaymentsEnv } from "../src/providers/index.js";
 import { compare } from "../src/reconcile.js";
 import { backoffMs } from "../src/common.js";
+import { reservedEmailDomain } from "../src/types.js";
+
+describe("reserved email domains", () => {
+  it("are the ones that can never receive mail, and nothing else", () => {
+    expect(["a@dev.contestly.invalid", "a@x.test", "a@x.example", "a@localhost", "a@example.com", "a@sub.example.net", "A@EXAMPLE.ORG"].map(reservedEmailDomain))
+      .toEqual([".invalid", ".test", ".example", ".localhost", "example.com", "example.net", "example.org"]);
+    expect(["a@gmail.com", "a@contestly.ng", "a@notexample.com", "a@example.com.ng", "a@invalid.com"].map(reservedEmailDomain)).toEqual([null, null, null, null, null]);
+  });
+});
 
 describe("live keys", () => {
   it("refuse to run outside production, from any variable", () => {
