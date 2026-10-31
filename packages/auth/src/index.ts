@@ -46,11 +46,12 @@ async function devUser(raw: string): Promise<User> {
  *   a custom token (we only mint those for accounts, so its account was deleted), or an anonymous one
  *   whose uid was a deleted account's or whose Firebase user is gone (a cleaned-up guest) or disabled
  *   (a deleted account). Any other anonymous session is a first
- *   sight and gets a guest row.
+ *   sight and gets a guest row, after `beforeNewGuest` (the API limits guest creation per client IP; the
+ *   rooms refuse, since a room only admits seats the API gave out).
  * - `x-dev-user: <handle>`: only with AUTH_MODE=dev, ignored entirely otherwise. Creates the user on
  *   first sight with the dev welcome coins.
  */
-export async function resolveUser(h: { authorization?: string; devUser?: string }): Promise<Session> {
+export async function resolveUser(h: { authorization?: string; devUser?: string; beforeNewGuest?: () => Promise<void> }): Promise<Session> {
   const token = h.authorization?.replace(/^Bearer\s+/i, "").trim();
   if (!token) {
     if (authMode() === "dev" && h.devUser?.trim()) return { user: await devUser(h.devUser), via: "dev" };
@@ -65,5 +66,9 @@ export async function resolveUser(h: { authorization?: string; devUser?: string 
   if (!isAnonymousToken(decoded)) throw new AccountGone();
   // Only on first sight (one lookup per new guest): a deleted account's uid, or a cleaned-up guest's, is gone.
   if ((await identityWasDisabled("firebase", decoded.uid)) || !(await firebaseUserActive(decoded.uid))) throw new AccountGone();
+  await h.beforeNewGuest?.();
   return { user: await guestForFirebaseUid(decoded.uid), via: "token" };
 }
+
+/** For rooms: a session the API has never seen can't be seated, so no guest is created from a socket. */
+export const refuseNewGuests = async (): Promise<void> => { throw new Unauthorized("sign_in_first"); };

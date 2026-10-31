@@ -7,13 +7,17 @@
  */
 import colyseus from "colyseus";
 import type { Client, Delayed } from "colyseus";
-import { ADMIN_EVENTS_CHANNEL, ACCOUNT_BANNED, ACCOUNT_GONE, MSG, type AdminEvent } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL, ACCOUNT_BANNED, ACCOUNT_GONE, MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES, type AdminEvent } from "@contestly/shared";
+import { MessageCap, messageCapFromEnv, type MessageCapConfig } from "./messageCap.js";
 const { Room } = colyseus;
 
 /** What a client is told when its message failed on the server. Never the error itself. */
 export const SERVER_ERROR = "server_error";
 /** WebSocket close code for a client removed because its account was banned. */
 export const BANNED_CLOSE_CODE = 4403;
+
+/** Read once per process (ROOM_MESSAGES_PER_SECOND, ROOM_FLOOD_DISCONNECT_SECONDS). */
+const MESSAGE_CAP = messageCapFromEnv();
 
 export abstract class SafeRoom extends Room {
   /** Names the room in logs, e.g. "party 3f…". */
@@ -46,9 +50,38 @@ export abstract class SafeRoom extends Room {
   /** Users removed from this room (banned or deleted): never let back in by reconnection. */
   protected readonly removed = new Set<string>();
 
-  /** A message handler, sync or async. */
+  /** A message handler, sync or async. Every message counts against its connection's cap first (admit). */
   protected handle<T = unknown>(type: string, fn: (client: Client, data: T) => unknown) {
-    this.onMessage(type, (client: Client, data: T) => this.run(`message ${type}`, () => fn(client, data), client));
+    this.onMessage(type, (client: Client, data: T) => {
+      if (this.admit(client)) this.run(`message ${type}`, () => fn(client, data), client);
+    });
+  }
+
+  /** Per-connection message cap (messageCap.ts); a test room may set a smaller one. */
+  protected readonly messageCap: MessageCapConfig = MESSAGE_CAP;
+  private readonly caps = new WeakMap<Client, MessageCap>();
+  private readonly flooded = new WeakSet<Client>();
+
+  /**
+   * Over the cap: drop the message (one log line per burst). Still over after the disconnect period: tell
+   * the client and close it. Answers stay last-one-wins: a dropped change just never arrives.
+   */
+  private admit(client: Client): boolean {
+    if (this.flooded.has(client)) return false;
+    let cap = this.caps.get(client);
+    if (!cap) this.caps.set(client, (cap = new MessageCap(this.messageCap)));
+    const v = cap.check(Date.now());
+    if (v.kind === "ok") return true;
+    const who = this.userIdOf(client) ?? client.sessionId;
+    if (v.kind === "drop") {
+      if (v.firstInBurst) console.warn(`[${this.label}] ${who} is over ${this.messageCap.perSecond} messages a second; dropping until it slows`);
+      return false;
+    }
+    console.warn(`[${this.label}] ${who} stayed over ${this.messageCap.perSecond} messages a second for ${Math.round(v.overForMs / 1000)}s; disconnecting`);
+    this.flooded.add(client);
+    client.send(MSG.error, { error: TOO_MANY_MESSAGES });
+    client.leave(ROOM_FLOOD_CLOSE_CODE);
+    return false;
   }
 
   /** Run work now without awaiting it. A throw or rejection is reported, never unhandled. */

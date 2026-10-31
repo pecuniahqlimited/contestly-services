@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import colyseus from "colyseus";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { Client, type Room as ClientRoom } from "colyseus.js";
-import { MSG } from "@contestly/shared";
+import { MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES } from "@contestly/shared";
 import { SERVER_ERROR, SafeRoom } from "../src/SafeRoom.js";
 
 const { Server } = colyseus;
@@ -43,6 +43,19 @@ class BoomRoom extends SafeRoom {
   }
 }
 
+/** A room with a small per-connection cap: 5 messages a second, disconnected after 1 second over. */
+class CappedRoom extends SafeRoom {
+  protected readonly messageCap = { perSecond: 5, disconnectAfterSeconds: 1 };
+  private handled = 0;
+  protected get label() {
+    return "capped";
+  }
+  onCreate() {
+    this.handle("tick", () => void this.handled++);
+    this.handle("count", (client) => client.send("count", this.handled));
+  }
+}
+
 /** The next message of this type; the listener goes once it has fired, so it can't catch a later test's message. */
 const next = <T>(room: ClientRoom, type: string) => new Promise<T>((resolve) => {
   const off = room.onMessage(type, (m: T) => {
@@ -53,11 +66,14 @@ const next = <T>(room: ClientRoom, type: string) => new Promise<T>((resolve) => 
 
 let server: InstanceType<typeof Server>;
 let a: ClientRoom, b: ClientRoom;
+let warn: ReturnType<typeof vi.spyOn>;
 
 beforeAll(async () => {
   vi.spyOn(console, "error").mockImplementation(() => {}); // the failures are expected; keep the output clean
+  warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   server = new Server({ transport: new WebSocketTransport() });
   server.define("boom", BoomRoom);
+  server.define("capped", CappedRoom);
   await server.listen(PORT);
   const client = new Client(`ws://localhost:${PORT}`);
   a = await client.create("boom");
@@ -105,5 +121,39 @@ describe("SafeRoom", () => {
     const echo = next(b, "echo");
     b.send("echo", "still here");
     expect(await echo).toBe("still here");
+  });
+});
+
+describe("the per-connection message cap", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("drops what's over the cap in a second, logs once for the burst, and keeps the connection", async () => {
+    const room = await new Client(`ws://localhost:${PORT}`).create("capped");
+    room.onMessage(MSG.error, () => {});
+    warn.mockClear();
+    for (let i = 0; i < 20; i++) room.send("tick");
+    await sleep(1100); // the next second: the count question itself is allowed
+    const count = next<number>(room, "count");
+    room.send("count");
+    expect(await count).toBe(5);
+    expect(warn.mock.calls.filter(([m]) => String(m).includes("dropping until it slows"))).toHaveLength(1);
+    await room.leave();
+  });
+
+  it("disconnects a connection that stays over, and leaves the others alone", async () => {
+    const flooder = await new Client(`ws://localhost:${PORT}`).create("capped");
+    const calm = await new Client(`ws://localhost:${PORT}`).joinById(flooder.roomId);
+    let error: string | undefined;
+    flooder.onMessage(MSG.error, (m: { error: string }) => { error = m.error; });
+    const closed = new Promise<number>((resolve) => flooder.onLeave((code) => resolve(code)));
+    calm.onMessage("count", () => {});
+    const flood = setInterval(() => { for (let i = 0; i < 10; i++) flooder.send("tick"); }, 100);
+    const code = await closed;
+    clearInterval(flood);
+    expect([code, error]).toEqual([ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES]);
+    const count = next<number>(calm, "count");
+    calm.send("count");
+    expect(typeof (await count)).toBe("number"); // still served
+    await calm.leave();
   });
 });

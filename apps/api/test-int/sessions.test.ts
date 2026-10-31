@@ -9,6 +9,7 @@ import { createCustomToken, deleteFirebaseUser } from "@contestly/auth";
 import { db, sql, userIdentities, users } from "@contestly/db";
 import { ACCOUNT_BANNED, ACCOUNT_GONE, UNAUTHORIZED } from "@contestly/shared";
 import { buildApp } from "../src/app.js";
+import { limitsFromEnv } from "../src/limits.js";
 import { markReverified } from "../src/reverify.js";
 import { makeUser, tag } from "./harness.js";
 
@@ -137,5 +138,24 @@ describe("403 account_banned", () => {
     await db.insert(userIdentities).values({ provider: "firebase", externalId: uid, userId: u.id });
     const res = await me(await sessionFor(uid));
     expect([res.statusCode, res.json().error]).toEqual([403, ACCOUNT_BANNED]);
+  });
+});
+
+describe("new guests per client IP", () => {
+  it("a network gets so many first anonymous sessions an hour; known guests and other networks are unaffected", async () => {
+    const limited = await buildApp({ limits: { ...limitsFromEnv(), guestsPerIpPerHour: 2 } });
+    await limited.ready();
+    const from = `198.18.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250)}`;
+    const hello = (token: string, ip = from) => limited.inject({ method: "GET", url: "/me", headers: { authorization: `Bearer ${token}` }, remoteAddress: ip });
+    const [a, b, c] = [await anonymous(), await anonymous(), await anonymous()];
+    expect((await hello(a.idToken)).statusCode).toBe(200);
+    expect((await hello(b.idToken)).statusCode).toBe(200);
+    const third = await hello(c.idToken);
+    expect([third.statusCode, third.json().error]).toEqual([429, "too_many_guests"]);
+    expect(Number(third.headers["retry-after"])).toBeGreaterThan(0);
+    expect(await db.select().from(userIdentities).where(eq(userIdentities.externalId, c.localId))).toEqual([]); // no row made
+    expect((await hello(a.idToken)).statusCode).toBe(200); // an existing guest isn't a new one
+    expect((await hello(c.idToken, "198.19.1.1")).statusCode).toBe(200); // another network
+    await limited.close();
   });
 });

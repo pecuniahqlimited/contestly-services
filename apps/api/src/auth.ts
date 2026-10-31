@@ -1,7 +1,8 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
 import { assertNotBanned, resolveUser, Unauthorized, type Session } from "@contestly/auth";
-import { SIGN_UP_REQUIRED } from "@contestly/shared";
+import { SIGN_UP_REQUIRED, TOO_MANY_GUESTS } from "@contestly/shared";
+import { limit } from "./redis.js";
 import type { User } from "@contestly/db";
 
 declare module "fastify" {
@@ -15,8 +16,12 @@ declare module "fastify" {
 /** How a request becomes a session. Throws Unauthorized when it carries none that's valid. */
 export type SessionResolver = (req: FastifyRequest) => Promise<Session>;
 
+/** A brand-new anonymous session becomes a guest row at most guestsPerIpPerHour times per client IP. */
 const fromCredentials: SessionResolver = (req) =>
-  resolveUser({ authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined });
+  resolveUser({
+    authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined,
+    beforeNewGuest: () => limit(`guest-create:ip:${req.clientIp}`, req.server.limits.guestsPerIpPerHour, 3600, TOO_MANY_GUESTS),
+  });
 
 export const authPlugin = fp<{ resolve?: SessionResolver }>(async (app, opts) => {
   const resolve = opts.resolve ?? fromCredentials;

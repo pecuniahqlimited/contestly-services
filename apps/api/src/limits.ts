@@ -25,6 +25,8 @@ export interface Limits {
   codeChecksPerEmailPer10Min: number;
   /** Google/Apple starts and one-time-code exchanges, per client IP per 10 minutes. */
   oauthPerIpPer10Min: number;
+  /** New guest rows (a first anonymous session) per client IP per hour: guests are users, so each new one would get a fresh per-user limit. */
+  guestsPerIpPerHour: number;
 }
 
 /**
@@ -39,6 +41,10 @@ export interface Limits {
  * - Sign-in sends: 5 per email an hour stops mail bombing one inbox; 100 per IP an hour allows a busy
  *   CGNAT address while stopping one machine spraying addresses. Checks: 15 per email and 200 per IP
  *   per 10 minutes, on top of a code's 5 tries.
+ * - 300 new guests per IP an hour. Every new anonymous session would otherwise start a fresh per-user
+ *   budget; 300 is generous for one CGNAT address (Firebase itself allows 100 new accounts per IP an hour
+ *   by default, and that quota can be raised in its console, so ours mostly stops tokens minted
+ *   elsewhere and brought to one address).
  */
 export const limitsFromEnv = (env = process.env): Limits => ({
   userPerMinute: int("RATE_LIMIT_USER_PER_MINUTE", 600, env),
@@ -48,4 +54,5 @@ export const limitsFromEnv = (env = process.env): Limits => ({
   codeChecksPerIpPer10Min: int("RATE_LIMIT_CODE_CHECKS_PER_IP_PER_10_MIN", 200, env),
   codeChecksPerEmailPer10Min: int("RATE_LIMIT_CODE_CHECKS_PER_EMAIL_PER_10_MIN", 15, env),
   oauthPerIpPer10Min: int("RATE_LIMIT_OAUTH_PER_IP_PER_10_MIN", 120, env),
+  guestsPerIpPerHour: int("RATE_LIMIT_GUESTS_PER_IP_PER_HOUR", 300, env),
 });

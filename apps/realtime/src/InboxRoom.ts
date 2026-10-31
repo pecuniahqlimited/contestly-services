@@ -8,7 +8,7 @@
 import type { Client } from "colyseus";
 import { eq } from "drizzle-orm";
 import { canReadThread, db, getChatConfig, parties, threadById, type ChatSender, type ChatThread } from "@contestly/db";
-import { assertNotBanned, resolveUser } from "@contestly/auth";
+import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
 import { MSG, SIGN_UP_REQUIRED, chatThreadChannel, chatUserChannel, inboxSendSchema, partyChatFromOutside, watchThreadSchema } from "@contestly/shared";
 import { SafeRoom } from "./SafeRoom.js";
 import { parsePublished, sendLine } from "./chat.js";
@@ -65,7 +65,7 @@ export class InboxRoom extends SafeRoom {
 
   /** Only the user whose inbox this is, signed up, not banned. */
   async onAuth(_client: Client, options: { token?: string; devUser?: string }) {
-    const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser });
+    const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser, beforeNewGuest: refuseNewGuests });
     assertNotBanned(user);
     if (user.isGuest) throw new Error(SIGN_UP_REQUIRED);
     if (user.id !== this.userId) throw new Error("not_your_inbox");
