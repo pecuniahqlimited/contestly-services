@@ -8,7 +8,8 @@ import { and, eq, inArray, like } from "drizzle-orm";
 import {
   adminCancelParty, chatMembers, db, ledger, ledgerAccounts, ledgerEntries, parties, partyLeaves, partyPlayers, partyThreadId, sql, takeSeat, type User,
 } from "@contestly/db";
-import { PARTY_EVENTS_CHANNEL, kobo, leavePartyResponseSchema } from "@contestly/shared";
+import { PARTY_EVENTS_CHANNEL } from "@contestly/queue";
+import { kobo, leavePartyResponseSchema } from "@contestly/shared";
 import { markReverified } from "../src/reverify.js";
 import { valkey } from "../src/redis.js";
 import { as, makeUser, testApp } from "./harness.js";

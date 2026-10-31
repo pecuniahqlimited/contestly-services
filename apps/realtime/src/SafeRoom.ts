@@ -7,7 +7,8 @@
  */
 import colyseus from "colyseus";
 import type { Client, Delayed } from "colyseus";
-import { ADMIN_EVENTS_CHANNEL, ACCOUNT_BANNED, ACCOUNT_GONE, MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES, type AdminEvent } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
+import { ACCOUNT_BANNED, ACCOUNT_GONE, MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES, type AdminEvent } from "@contestly/shared";
 import { MessageCap, messageCapFromEnv, type MessageCapConfig } from "./messageCap.js";
 const { Room } = colyseus;
 

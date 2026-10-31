@@ -172,6 +172,7 @@ export type AdminQuestionDetail = z.infer<typeof adminQuestionDetailSchema>;
 export const adminQuestionReviewResponseSchema = z.object({ reviewId: uuid, status: z.literal("pending") });
 
 /** Valkey channel for admin events the rooms act on (a ban removes that user from any room). */
+/** The base name; publish and subscribe with @contestly/queue's ADMIN_EVENTS_CHANNEL, which carries PUBSUB_PREFIX. */
 export const ADMIN_EVENTS_CHANNEL = "admin:events";
 /** Rooms drop the user at once: a ban (account_banned) or the owner deleting the account (account_gone). */
 export type AdminEvent = { kind: "user_banned" | "user_deleted"; userId: string };

@@ -301,6 +301,7 @@ export const MSG = {
 export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 
 /** Redis pub/sub channel the worker publishes party lifecycle events on; realtime fans them out. */
+/** The base name; publish and subscribe with @contestly/queue's PARTY_EVENTS_CHANNEL, which carries PUBSUB_PREFIX. */
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */

@@ -3,9 +3,9 @@ import { and, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
 import {
   archivedCrewInvites, archivedFollows, banUser, climbAwards, crews, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
 } from "@contestly/db";
+import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
 import {
-  ADMIN_EVENTS_CHANNEL, adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema,
-  adminUserSearchSchema, normalisePhone, type AdminEvent,
+  adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema, adminUserSearchSchema, normalisePhone, type AdminEvent,
 } from "@contestly/shared";
 import { sql } from "drizzle-orm";
 import { requireAdmin, uuidParam } from "../auth.js";

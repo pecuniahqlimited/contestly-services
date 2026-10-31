@@ -7,9 +7,9 @@
 import { eq } from "drizzle-orm";
 import { archiveAccount, blockingParties, db, deletionBlockers, users, type Tx, type User } from "@contestly/db";
 import { disableFirebaseUser } from "@contestly/auth";
+import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
 import {
-  ACTIVE_PARTY, ACTIVE_PARTY_STARTS_SOON_MESSAGE, ADMIN_EVENTS_CHANNEL, DELETION_BLOCKER_MESSAGES, DELETION_REASONS, REVERIFY_REQUIRED, climbBoardKey, lagosDay, weekOf,
-  type AdminEvent, type ChatMessage, type DeletionBlocker, type DeletionBlockerView, type DeletionReason, type DeletionStatus,
+  ACTIVE_PARTY, ACTIVE_PARTY_STARTS_SOON_MESSAGE, DELETION_BLOCKER_MESSAGES, DELETION_REASONS, REVERIFY_REQUIRED, climbBoardKey, lagosDay, weekOf, type AdminEvent, type ChatMessage, type DeletionBlocker, type DeletionBlockerView, type DeletionReason, type DeletionStatus,
 } from "@contestly/shared";
 import type { FastifyBaseLogger } from "fastify";
 import { httpError } from "./httpError.js";

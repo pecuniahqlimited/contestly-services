@@ -13,8 +13,8 @@ import { parsePublished, sendLine } from "./chat.js";
 import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
-import { partyQueue, questionsQueue } from "@contestly/queue";
-import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_EVENTS_CHANNEL, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue } from "@contestly/queue";
+import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member extends ChatSender {

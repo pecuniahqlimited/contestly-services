@@ -1,12 +1,22 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
-import { QUEUES, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL as ADMIN_EVENTS, PARTY_EVENTS_CHANNEL as PARTY_EVENTS, QUEUES, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
 
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 /** BullMQ's key prefix. Every Queue and Worker passes it, so two stacks on one Valkey never share jobs. */
 export const QUEUE_PREFIX = process.env.BULLMQ_PREFIX || "bull";
 /** BullMQ needs maxRetriesPerRequest: null. Make one connection per purpose, not per call. */
 export const makeRedis = () => new Redis(REDIS_URL, { maxRetriesPerRequest: null });
+
+/**
+ * Valkey pub/sub ignores the db index, so two stacks on one Valkey (a worktree beside main, or staging beside
+ * production) hear each other's channels. PUBSUB_PREFIX (default empty: unchanged) namespaces them.
+ * Every publisher and subscriber takes the channel names from here, never from @contestly/shared directly.
+ */
+export const PUBSUB_PREFIX = process.env.PUBSUB_PREFIX ?? "";
+export const pubsubChannel = (name: string) => (PUBSUB_PREFIX ? `${PUBSUB_PREFIX}:${name}` : name);
+export const PARTY_EVENTS_CHANNEL = pubsubChannel(PARTY_EVENTS);
+export const ADMIN_EVENTS_CHANNEL = pubsubChannel(ADMIN_EVENTS);
 
 let connection: Redis | undefined;
 const conn = () => (connection ??= makeRedis());
