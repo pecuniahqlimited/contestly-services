@@ -7,13 +7,15 @@ import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { Unauthorized, type Session } from "@contestly/auth";
 import { db, users, type User } from "@contestly/db";
-import { buildApp } from "../src/app.js";
+import { buildApp, type AppOptions } from "../src/app.js";
 
 export const tag = randomBytes(3).toString("hex");
 
-export async function testApp() {
+/** `opts`: a test's own rate limits or trusted proxies (the rest of the suite uses .env's, set high for dev). */
+export async function testApp(opts: Pick<AppOptions, "limits" | "trust"> = {}) {
   const routes: { method: string; url: string }[] = [];
   const app = await buildApp({
+    ...opts,
     resolveSession: async (req): Promise<Session> => {
       const id = req.headers["x-test-user"];
       if (typeof id !== "string") throw new Unauthorized();

@@ -228,6 +228,7 @@ Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev only; refused in
 - Route handlers stay thin; anything touching money or game state lives in `packages/db`, `packages/game` or a service module so API, realtime and worker share it.
 - Errors: throw `Unauthorized`, `InsufficientFunds`, or an Error with `statusCode`; the API error handler maps them. Validate `:id` params with `uuidParam()`.
 - Colyseus rooms extend `SafeRoom` (apps/realtime): handlers via `handle()`, timers via `after()`/`every()`, fire-and-forget via `run()`, so a room's error is logged and contained and never takes down the process. Never raw `onMessage`, `clock.setTimeout` or `void promise` in a room.
+- **Rate limits** (`apps/api/src/limits.ts`, every one an env var with production defaults in code): per user when signed in, per real client IP when not; sign-in codes have their own per-IP and per-email limits. The client IP is `req.clientIp` (`clientIp.ts`): CF-Connecting-IP only through a trusted proxy from Cloudflare (`TRUSTED_PROXY_IPS`, `CLOUDFLARE_IPS`), else the socket address. Never key a limit on `req.ip`. A 429 is `{ error, details: { retryAfterSeconds } }` with Retry-After (`rateLimited()`).
 - Heartbeats on sockets stay under 30s (Cloudflare drops idle WebSockets at ~100s). Clients reconnect and rejoin their room automatically.
 - Decisions that could have gone either way get a one-page ADR in `docs/adr/`.
 

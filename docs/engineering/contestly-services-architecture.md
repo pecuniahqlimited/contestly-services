@@ -119,6 +119,7 @@ These hold in every service and belong in `CLAUDE.md` so the coding agent never 
 
 - **Money is integer kobo**, cash and bonus coins are separate accounts, and the ledger is append-only with an idempotency key on every entry. Balances are materialised in `ledger_accounts` and change only inside `ledger.post()` in the same transaction as the entry.
 - **Server authority**: timing, scoring, graders, tie-breaks and payouts run in `packages/game` on the server. Clients render; they never decide. Services never call each other over HTTP: `api` enqueues jobs, `worker` and `questions` consume them, `realtime` and `recsys` share state through Valkey.
+- **Rate limits**: per user for signed-in requests (Nigerian carriers use CGNAT, so one IP is many people), per real client IP otherwise, read from CF-Connecting-IP only when the request came through Caddy from Cloudflare. Sign-in codes have their own per-IP and per-email limits. Limits live in Valkey, so every API instance shares them.
 - **Idempotency everywhere money moves**: join, leave, webhook, settle, payout. Replaying any of them is a no-op.
 - **Fail closed**: unverifiable questions are rejected, sets that fail the gate cannot be scheduled, payouts that breach caps or budget do not post.
 - **Never leak**: correct answers stay server-side until the question closes; sealed sets are visible to nobody, including the host's team, until start; curated drafts are visible only to the host's team, and anyone who has seen a draft is barred from playing that party.

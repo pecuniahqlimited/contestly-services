@@ -24,21 +24,21 @@ export async function authRoutes(app: FastifyInstance) {
   app.post("/auth/email/start", async (req) => {
     const session = requireSession(req);
     const { email } = emailStartSchema.parse(req.body);
-    return startEmailCode(session, email, req.ip);
+    return startEmailCode(session, email, req.clientIp, app.limits);
   });
 
   /** Check the code and sign in: the guest signs up (same account), or lands on the account that has this email. */
   app.post("/auth/email/verify", async (req) => {
     const session = requireSession(req);
     const { email, code } = emailVerifySchema.parse(req.body);
-    await checkEmailCode(session, email, code, req.ip);
+    await checkEmailCode(session, email, code, req.clientIp, app.limits);
     return withSessionToken(await signIn(session, { email }));
   });
 
   /** Google or Apple: where to open the system browser. */
   app.post("/auth/oauth/start", async (req) => {
     const session = requireSession(req);
-    await limit(`oauth-start:ip:${req.ip}`, 30, 600);
+    await limit(`oauth-start:ip:${req.clientIp}`, app.limits.oauthPerIpPer10Min, 600);
     return startOAuth(session, oauthStartSchema.parse(req.body));
   });
 
@@ -50,7 +50,7 @@ export async function authRoutes(app: FastifyInstance) {
   /** The deep link's one-time code → a Firebase custom token. Same session that started, with its PKCE verifier. */
   app.post("/auth/exchange", async (req) => {
     const session = requireSession(req);
-    await limit(`exchange:ip:${req.ip}`, 30, 600);
+    await limit(`exchange:ip:${req.clientIp}`, app.limits.oauthPerIpPer10Min, 600);
     return exchangeCode(session, authExchangeSchema.parse(req.body));
   });
 

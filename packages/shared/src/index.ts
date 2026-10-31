@@ -14,6 +14,7 @@ export * from "./admin.js";
 export * from "./chat.js";
 export * from "./social.js";
 export * from "./partyLeave.js";
+export * from "./rateLimits.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
