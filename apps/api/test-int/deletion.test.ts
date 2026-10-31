@@ -114,9 +114,9 @@ describe("refusals", () => {
     const rich = await makeUser("delrich");
     await db.transaction((tx) => ledger.post(tx, { userId: rich.id, kind: "cash", amountKobo: kobo(10), type: "topup", idempotencyKey: `t:${tag}:rich` }));
     await markReverified(rich.id);
-    expect((await status(rich)).blockers).toEqual([{ code: "cash_balance", message: "Contact support to withdraw first" }]);
+    expect((await status(rich)).blockers).toEqual([{ code: "cash_balance", message: "Withdraw your cash first" }]);
     const res = await del(rich);
-    expect([res.statusCode, res.json().error, res.json().details.message]).toEqual([409, "cash_balance", "Contact support to withdraw first"]);
+    expect([res.statusCode, res.json().error, res.json().details.message]).toEqual([409, "cash_balance", "Withdraw your cash first"]);
     expect((await fresh(rich)).deletedAt).toBeNull();
   });
 

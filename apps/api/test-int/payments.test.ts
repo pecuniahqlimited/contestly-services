@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, desc, eq, like } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, db, ledger, ledgerAccounts, ledgerEntries, paymentAlerts, paymentReconItems, paymentSettings, paymentWebhookEvents, payoutAccounts, payouts, setPaymentsConfig, sql, topups,
+  adminActions, adminPermissions, db, deletionBlockers, ledger, ledgerAccounts, ledgerEntries, paymentAlerts, paymentReconItems, paymentSettings, paymentWebhookEvents, payoutAccounts, payouts, setPaymentsConfig, sql, topups,
   users, type Payout, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -466,6 +466,14 @@ describe("limits, approval and who can withdraw", () => {
     const self = await app.inject({ method: "POST", url: `/admin/payments/payouts/${mine.id}/approve`, headers: as(own.u) });
     expect([self.statusCode, self.json().error]).toEqual([403, "own_transaction"]);
     await config(() => {});
+  });
+
+  it("an account can't be deleted while a withdrawal is open (a failure would bring the money back to it)", async () => {
+    const { u, account } = await withdrawer("podelete", kobo(1500));
+    const { payout } = await request(u, account.id, kobo(1500));
+    expect(await deletionBlockers(db, u.id)).toEqual(["withdrawal_in_progress"]);
+    expect(await submitPayout(payout.id)).toBe("succeeded");
+    expect(await deletionBlockers(db, u.id)).toEqual([]);
   });
 
   it("pausing payouts refuses new requests and leaves queued ones debited and queued", async () => {

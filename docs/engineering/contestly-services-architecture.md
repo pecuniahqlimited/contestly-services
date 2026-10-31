@@ -87,10 +87,12 @@ Each flow names which service acts at each step, so ownership is unambiguous whe
 
 ### Wallet top-up and payout
 
-1. **Top-up** — `api` creates a Paystack transaction reference and returns the checkout URL. Paystack calls the webhook on `api`, which verifies the signature and posts a credit with the reference as idempotency key. A duplicate webhook is a no-op.
-2. **Payout request** — `api` validates balance, KYC state and caps, posts a hold entry, enqueues `payout.send`.
-3. **Send** — `worker` calls the `PayoutRail` (Paystack transfer, voucher, or manual fulfilment) with retry and backoff; success converts the hold to a debit, failure releases it and notifies the user.
-4. **Reconcile** — nightly `worker` job compares Paystack settlement records against the ledger and opens cases for any mismatch.
+Providers are pluggable (`packages/payments`, ADR 0012); every transaction is finished by the provider that created it.
+
+1. **Top-up** — `api` makes our reference and a pending row, then asks the provider for a checkout. The provider's webhook arrives at `POST /webhooks/:provider`; `api` authenticates it, stores it and acknowledges; `worker` runs a fresh verify with that provider and credits only if it matches our row (and the webhook) exactly, under ledger key `topup:<provider>:<ref>`. A missed webhook is credited by the worker's own checks; a mismatch waits for an admin.
+2. **Payout request** — `api` checks `canWithdraw`, limits and the pause, and debits cash into `payout_pending` in the same transaction that creates the payout (no provider call yet). Over a threshold it waits for an admin.
+3. **Send** — `worker` marks it submitted, then sends with our reference as the provider's idempotency key. Definite success settles (and records the fee), definite failure reverses, anything else is unknown and requeried with backoff (never resent without asking first, never reversed on a timeout).
+4. **Reconcile** — nightly `worker` job compares each provider's lists with our top-ups and payouts and records every difference for an admin (never fixed automatically); an hourly job checks the ledger's invariants and pauses payouts on a breach.
 
 ### Question generation
 

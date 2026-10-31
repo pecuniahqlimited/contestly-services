@@ -35,4 +35,12 @@ echo "climb:    $(curl "${H[@]}" $API/climb | j "d['ladder']['version'], len(d['
 RUN=$(curl "${H[@]}" -X POST $API/climb/runs | j "d['run']['id'], d['round']['type']")
 echo "run:      $RUN"
 echo "board:    $(curl "${H[@]}" "$API/climb/leaderboard?board=friends" | j "d['board'], len(d['rows'])")"
+# Payments with the mock provider: a top-up paid on the mock checkout is credited by the worker, never by polling.
+TREF=$(curl "${H[@]}" -X POST $API/wallet/topups -d '{"amountKobo":50000}' | j "d['reference']")
+echo "topup:    $TREF $(curl "${H[@]}" $API/wallet/topups/$TREF | j "d['status']")"
+echo "checkout: $(curl -s -H 'content-type: application/json' -X POST $API/payments/mock/checkout/$TREF -d '{"action":"pay"}' | j "d['deliveries']")"
+sleep 3
+echo "credited: $(curl "${H[@]}" $API/wallet/topups/$TREF | j "d['status'], d['creditedAt'] is not None")"
+echo "bad sig:  $(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -H 'x-mock-signature: 00' -X POST $API/webhooks/mock -d '{"event":"topup.paid","data":{}}')"
+echo "payments: $(curl "${H[@]}" $API/admin/payments | j "d['settings']['collections'], d['topups']")"
 echo "In ~3 min the worker will flip this party to 'live'. Watch the worker log, then: curl -H 'x-dev-user: tunde' $API/parties/$PID"

@@ -7,10 +7,10 @@
  * logged) and a run in progress ends as abandoned. Crew hand-over and the Firebase user are the API's part.
  */
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
-import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, leaveWindow, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
+import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, PAYOUT_OPEN_STATUSES, leaveWindow, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import {
-  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, userIdentities, users, type User,
+  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
 } from "./schema.js";
 import * as ledger from "./ledger.js";
 import { recordAdminAction, systemActorId } from "./admin.js";
@@ -20,15 +20,17 @@ type Conn = Tx | typeof db;
 /** A party that hasn't finished or been cancelled. */
 const unfinished = inArray(parties.status, ["open", "live"]);
 
-/** What stops a delete right now: cash in the wallet (support pays it out until row 10), or an unfinished party. */
+/** What stops a delete right now: cash in the wallet, a withdrawal not yet final, or an unfinished party. */
 export async function deletionBlockers(conn: Conn, userId: string): Promise<DeletionBlocker[]> {
-  const [[cash], [seated], [hosting]] = await Promise.all([
+  const [[cash], [withdrawing], [seated], [hosting]] = await Promise.all([
     conn.select({ balance: ledgerAccounts.balanceKobo }).from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, "cash"))),
+    conn.select({ id: payouts.id }).from(payouts).where(and(eq(payouts.userId, userId), inArray(payouts.status, [...PAYOUT_OPEN_STATUSES]))).limit(1),
     conn.select({ id: parties.id }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).where(and(eq(partyPlayers.userId, userId), unfinished)).limit(1),
     conn.select({ id: parties.id }).from(parties).where(and(eq(parties.createdByUserId, userId), unfinished)).limit(1),
   ]);
   const blockers: DeletionBlocker[] = [];
   if ((cash?.balance ?? 0) > 0) blockers.push("cash_balance");
+  if (withdrawing) blockers.push("withdrawal_in_progress");
   if (seated || hosting) blockers.push("active_party");
   return blockers;
 }

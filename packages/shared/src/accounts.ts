@@ -143,13 +143,16 @@ export type DeletionReason = (typeof DELETION_REASONS)[number];
 
 /** 403: sign in again (email code, Google or Apple) first; then DELETE /me within REVERIFY_WINDOW_SECONDS. */
 export const REVERIFY_REQUIRED = "reverify_required";
-/** 409: there's cash in the wallet. Until withdrawals exist (row 10), support pays it out. */
+/** 409: there's cash in the wallet: withdraw it first. */
 export const CASH_BALANCE = "cash_balance";
+/** 409: a withdrawal hasn't finished (if it fails, the money comes back to this wallet). */
+export const WITHDRAWAL_IN_PROGRESS = "withdrawal_in_progress";
 /** 409: seated in or hosting a party that hasn't finished or been cancelled. */
 export const ACTIVE_PARTY = "active_party";
 /** What the app shows for each blocker. */
 export const DELETION_BLOCKER_MESSAGES = {
-  [CASH_BALANCE]: "Contact support to withdraw first",
+  [CASH_BALANCE]: "Withdraw your cash first",
+  [WITHDRAWAL_IN_PROGRESS]: "Wait for your withdrawal to finish",
   [ACTIVE_PARTY]: "Leave or cancel your open parties first",
 } as const;
 export type DeletionBlocker = keyof typeof DELETION_BLOCKER_MESSAGES;
@@ -168,7 +171,7 @@ export const blockingPartySchema = z.object({
 export type BlockingParty = z.infer<typeof blockingPartySchema>;
 /** A blocker as GET /me/deletion lists it and DELETE /me's 409 carries it in `details`. */
 export const deletionBlockerViewSchema = z.object({
-  code: z.enum([CASH_BALANCE, ACTIVE_PARTY]), message: z.string(),
+  code: z.enum([CASH_BALANCE, WITHDRAWAL_IN_PROGRESS, ACTIVE_PARTY]), message: z.string(),
   /** active_party only. */
   parties: z.array(blockingPartySchema).optional(),
 });
