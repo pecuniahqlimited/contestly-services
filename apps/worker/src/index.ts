@@ -7,7 +7,8 @@ import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, P
 import { computeSettlement, goodsAwards } from "@contestly/game";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
-import { GENERATION_FAILED_MESSAGE, refundParty as refundPartyWith, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
+import { GENERATION_FAILED_MESSAGE, allQuestionsPlayed, refundParty as refundPartyWith, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
+import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { selectTranscriber } from "./transcribe/index.js";
 
 const connection = makeRedis();
@@ -47,57 +48,6 @@ async function adminCancel(partyId: string) {
   console.log(`[party] ${partyId}: cancelled by an admin, ${out.refunded} refunded`);
 }
 
-/**
- * Settle a finished round: rake taken once, pot split via the ledger with idempotency keys,
- * goods become one fulfilment record per winning place, party → finished with ranks. A replayed job is a no-op.
- */
-async function settle(partyId: string) {
-  const cfg = await getPartyConfig();
-  let line: ChatMessage | undefined;
-  const settled = await db.transaction(async (tx) => {
-    const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "live") return false; // already settled or cancelled
-    const players = await tx.select({ userId: partyPlayers.userId, rank: partyPlayers.rank, isGuest: users.isGuest, bannedAt: users.bannedAt }).from(partyPlayers)
-      .innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, partyId)).orderBy(asc(partyPlayers.rank));
-    if (!players.some((x) => x.rank !== null)) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
-    // Prizes go by place among signed-up players in good standing: a guest (only free parties have them) or a
-    // player banned mid-party keeps their rank on the board but can't win.
-    const ranked = players.filter((x) => x.rank !== null && !x.isGuest && !x.bannedAt).map((x) => x.userId);
-
-    if (isGoods(p.prizeKind)) {
-      const prizes = await tx.select().from(partyPrizes).where(eq(partyPrizes.partyId, p.id));
-      const prizeAt = new Map(prizes.map((g) => [g.place, g]));
-      const awards = goodsAwards(ranked, prizes.length);
-      for (const a of awards) {
-        const g = prizeAt.get(a.place)!;
-        await tx.insert(prizeFulfilments).values({ partyId: p.id, place: a.place, winnerUserId: a.userId, hostUserId: p.createdByUserId, prizeText: g.text, prizeValueKobo: g.valueKobo }).onConflictDoNothing();
-      }
-      console.log(`[party] ${p.title}: ${awards.length} goods prize(s) awarded (one fulfilment record per place)`);
-    } else if (!ranked.length) {
-      console.log(`[party] ${p.title}: only guests played, nothing to pay`);
-    } else {
-      const s = computeSettlement({ funding: p.funding, entryKobo: p.entryKobo, playerCount: players.length, hostPoolKobo: p.hostPoolKobo, split: p.split, ranked }, cfg);
-      if (s.rakeKobo > 0) await ledger.post(tx, { userId: await ledger.treasuryUserId(tx), kind: "cash", amountKobo: s.rakeKobo, type: "party_rake", refType: "party", refId: p.id, idempotencyKey: `party_rake:${p.id}` });
-      if (s.hostCutKobo > 0) await ledger.post(tx, { userId: p.createdByUserId, kind: "cash", amountKobo: s.hostCutKobo, type: "party_host_cut", refType: "party", refId: p.id, idempotencyKey: `party_host_cut:${p.id}` });
-      for (const prize of s.prizes) {
-        if (prize.amountKobo <= 0) continue;
-        await ledger.post(tx, { userId: prize.userId, kind: "cash", amountKobo: prize.amountKobo, type: "party_prize", refType: "party", refId: p.id, idempotencyKey: `party_prize:${p.id}:${prize.userId}` });
-        await tx.update(partyPlayers).set({ prizeKobo: prize.amountKobo }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, prize.userId)));
-      }
-      console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)`);
-    }
-
-    await tx.update(parties).set({ status: "finished", endedAt: new Date() }).where(eq(parties.id, partyId));
-    // The feed hears every finish; a bragging-rights party also earns party points (ADR 0008).
-    await recordPartyFinish(tx, p, players);
-    line = await systemLine(tx, partyId, "That's a wrap! Results are in.");
-    await emit({ partyId, status: "finished" });
-    return true;
-  });
-  if (line) await publishLine(line);
-  // Fold this party's answer stats back into the question bank (idempotent via play_stats_recorded_at).
-  if (settled) await questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId: `record-play-${partyId}` });
-}
 
 /**
  * A live party's set couldn't be made playable (the start-time re-check, or a build that was still
@@ -134,6 +84,13 @@ async function watchdog(partyId: string) {
       return;
     }
   }
+  // The room is gone (or its heartbeat stopped when the match finished) after every question was played:
+  // settle by the recorded scores, never refund a finished party.
+  if (!generationStalled && (await allQuestionsPlayed(partyId))) {
+    const out = await settleFromRecords({ emit, publishLine, settle }, partyId);
+    console.log(`[party] ${p.title}: room gone after the last question → ${out ?? "already ended"} from the recorded scores`);
+    return;
+  }
   await db.transaction(async (tx) => {
     const [locked] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!locked || locked.status !== "live") return;
@@ -152,6 +109,11 @@ const startDeps: StartDeps = {
   queueWatchdog: (partyId) => partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 }),
 };
 const refundParty = (tx: Tx, p: Party, message: string) => refundPartyWith(startDeps, tx, p, message);
+const settleDeps: SettleDeps = {
+  emit, publishLine,
+  queueRecordPlay: (partyId) => questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId: `record-play-${partyId}` }),
+};
+const settle = (partyId: string) => settleWith(settleDeps, partyId);
 
 /** Every minute, the sweep for any open party whose start job never ran. */
 const SWEEP_EVERY_MS = 60_000;
@@ -160,7 +122,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   const d = job.data;
   if (d.kind === "sweep") {
     // Both run every minute even if one fails; the job fails (and shows in BullMQ) if either did.
-    const results = await Promise.allSettled([sweepOverdue(startDeps), sweepStalled(startDeps)]);
+    const results = await Promise.allSettled([sweepOverdue(startDeps), sweepStalled({ ...startDeps, settle })]);
     const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
     if (failed.length) throw new AggregateError(failed, "party sweep failed");
     return;

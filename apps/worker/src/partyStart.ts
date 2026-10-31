@@ -4,8 +4,9 @@
  * what it tells the outside world (room events, chat lines, follow-up jobs) is passed in.
  */
 import { and, asc, count, eq, lte } from "drizzle-orm";
-import { db, getPartyConfig, getQuestionsConfig, parties, partyPlayers, partyQuestions, refundAndCancel, seenInSet, systemLine, type Party, type Tx } from "@contestly/db";
+import { db, getPartyConfig, getQuestionsConfig, parties, partyAnswers, partyPlayers, partyQuestions, refundAndCancel, seenInSet, systemLine, type Party, type Tx } from "@contestly/db";
 import { stallThresholdSeconds, type ChatMessage } from "@contestly/shared";
+import { standingsFromRecords } from "@contestly/game";
 
 export interface StartDeps {
   /** Tell the party's room (the `party:events` channel). */
@@ -132,17 +133,27 @@ export async function sweepOverdue(deps: StartDeps, now = new Date()): Promise<S
 /** What the room and chat are told when a stalled live party is ended. */
 export const STALLED_MESSAGE = "Something went wrong and this party couldn't continue. Every entry has been refunded.";
 
-export interface StalledParty { id: string; title: string; stalledMs: number; outcome: "rekicked" | "cancelled" }
+export interface StalledParty { id: string; title: string; stalledMs: number; outcome: "rekicked" | "cancelled" | "settled" }
+
+/** What the stall check needs: the room events and lines, and the one settle path (partySettle.ts). */
+export type StallDeps = Pick<StartDeps, "emit" | "publishLine"> & { settle(partyId: string): Promise<boolean> };
 
 /**
  * Every minute: a live party whose room isn't moving. A healthy room opens a question at least every
  * stallThresholdSeconds (one whole question cycle plus a grace; while its set is still being sealed, the
- * generation timeout plus the grace). Past that with no progress, the start is republished once (a lost
- * event, a room that missed it); still nothing a threshold later, and it's cancelled by the system:
- * every seat refunded the way it was paid through refundAndCancel, never settled, room and chat told.
- * Each intervention is logged with how long the party had been stalled.
+ * generation timeout plus the grace). Past that with no progress:
+ *
+ * - Every question of the play order played (replacements included) and its scores recorded: the room
+ *   died, or its settle is late, after the last question. It's settled from the recorded scores through
+ *   the one settle path (ranks rebuilt by standingsFromRecords if the room never wrote them); a late
+ *   settle from the room is then a no-op. Never refunded.
+ * - Questions still unplayed: the start is republished once (a lost event, a room that missed it); still
+ *   nothing a threshold later, and it's cancelled by the system with every seat refunded the way it was
+ *   paid (refundAndCancel), never settled, room and chat told.
+ *
+ * Each intervention is logged with the path it took and how long the party had been stalled.
  */
-export async function sweepStalled(deps: Pick<StartDeps, "emit" | "publishLine">, now = new Date()): Promise<StalledParty[]> {
+export async function sweepStalled(deps: StallDeps, now = new Date()): Promise<StalledParty[]> {
   const [cfg, qcfg] = await Promise.all([getPartyConfig(), getQuestionsConfig()]);
   const live = await db.select().from(parties).where(eq(parties.status, "live")).orderBy(asc(parties.liveAt)).limit(SWEEP_BATCH);
   const out: StalledParty[] = [];
@@ -153,9 +164,10 @@ export async function sweepStalled(deps: Pick<StartDeps, "emit" | "publishLine">
     const stalledMs = now.getTime() - since.getTime();
     if (stalledMs < thresholdMs) continue;
     const rekickedSinceProgress = p.stallRekickedAt !== null && p.stallRekickedAt > since;
-    if (rekickedSinceProgress && now.getTime() - p.stallRekickedAt!.getTime() < thresholdMs) continue; // give the re-kick its chance
     try {
-      const outcome = rekickedSinceProgress ? await endStalled(deps, p.id) : await rekick(deps, p.id, now);
+      const complete = p.questionsStatus === "ready" && (await allQuestionsPlayed(p.id));
+      if (!complete && rekickedSinceProgress && now.getTime() - p.stallRekickedAt!.getTime() < thresholdMs) continue; // give the re-kick its chance
+      const outcome = complete ? await settleFromRecords(deps, p.id) : rekickedSinceProgress ? await endStalled(deps, p.id) : await rekick(deps, p.id, now);
       if (!outcome) continue; // it moved, or ended, in the meantime
       console.log(`[party] stall: ${p.title} (${p.id}) live with no round progress for ${Math.round(stalledMs / 1000)}s (threshold ${thresholdMs / 1000}s) → ${outcome}`);
       out.push({ id: p.id, title: p.title, stalledMs, outcome });
@@ -168,6 +180,37 @@ export async function sweepStalled(deps: Pick<StartDeps, "emit" | "publishLine">
   return out;
 }
 
+/** Every question of the play order (reserves promoted as replacements included) has been played or voided, and at least one played. */
+export async function allQuestionsPlayed(partyId: string): Promise<boolean> {
+  const order = await db.select({ status: partyQuestions.status }).from(partyQuestions).where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.reserve, false)));
+  return order.some((q) => q.status === "played") && order.every((q) => q.status === "played" || q.status === "voided");
+}
+
+/**
+ * The whole set was played: write the final ranks from the recorded answers if the room never did (the
+ * same standings Match keeps), then the one settle path. "settled" whether this call or a concurrent room
+ * settle got there (settle pays once either way); null if it ended some other way meanwhile.
+ */
+export async function settleFromRecords(deps: StallDeps, partyId: string): Promise<"settled" | null> {
+  const ready = await db.transaction(async (tx) => {
+    const p = await stillStalled(tx, partyId);
+    if (!p) return false;
+    const seats = await tx.select({ userId: partyPlayers.userId, rank: partyPlayers.rank }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
+    if (seats.length && seats.every((s) => s.rank !== null)) return true; // the room wrote them before it stopped
+    const questions = await tx.select({ id: partyQuestions.id, seconds: partyQuestions.seconds, status: partyQuestions.status }).from(partyQuestions)
+      .where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.reserve, false))).orderBy(asc(partyQuestions.idx));
+    const answers = await tx.select({ questionId: partyAnswers.questionId, userId: partyAnswers.userId, points: partyAnswers.points, answeredMs: partyAnswers.answeredMs })
+      .from(partyAnswers).where(eq(partyAnswers.partyId, partyId));
+    const rows = standingsFromRecords(seats.map((s) => s.userId), questions.map((q) => ({ id: q.id, seconds: q.seconds, voided: q.status === "voided" })), answers);
+    for (const r of rows) await tx.update(partyPlayers).set({ score: r.score, rank: r.rank }).where(and(eq(partyPlayers.partyId, partyId), eq(partyPlayers.userId, r.userId)));
+    return true;
+  });
+  if (!ready) return null;
+  await deps.settle(partyId);
+  const [after] = await db.select({ status: parties.status }).from(parties).where(eq(parties.id, partyId));
+  return after?.status === "finished" ? "settled" : null;
+}
+
 /** The last sign of life: a question opening, else going live. */
 const progressSince = (p: Pick<Party, "roundProgressAt" | "liveAt" | "startsAt">) => p.roundProgressAt ?? p.liveAt ?? p.startsAt;
 
@@ -178,7 +221,7 @@ async function stillStalled(tx: Tx, partyId: string) {
 }
 
 /** Republish the start once: a room that missed it (or the set's readiness) picks the round up. */
-async function rekick(deps: Pick<StartDeps, "emit">, partyId: string, now: Date): Promise<"rekicked" | null> {
+async function rekick(deps: Pick<StallDeps, "emit">, partyId: string, now: Date): Promise<"rekicked" | null> {
   const marked = await db.transaction(async (tx) => {
     const p = await stillStalled(tx, partyId);
     if (!p) return false;
@@ -191,7 +234,7 @@ async function rekick(deps: Pick<StartDeps, "emit">, partyId: string, now: Date)
 }
 
 /** Still stalled after the re-kick: cancel by the system with every seat refunded. A finished party is never touched. */
-async function endStalled(deps: Pick<StartDeps, "emit" | "publishLine">, partyId: string): Promise<"cancelled" | null> {
+async function endStalled(deps: Pick<StallDeps, "emit" | "publishLine">, partyId: string): Promise<"cancelled" | null> {
   const line = await db.transaction(async (tx) => {
     const p = await stillStalled(tx, partyId);
     if (!p || (p.roundProgressAt && p.stallRekickedAt && p.roundProgressAt > p.stallRekickedAt)) return null; // it came back

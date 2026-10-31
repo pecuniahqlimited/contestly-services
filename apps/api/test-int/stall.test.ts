@@ -1,18 +1,20 @@
 /**
  * The worker's stall check (apps/worker/src/partyStart.ts sweepStalled) against the real database: a live
- * party whose room isn't moving is re-kicked once, then cancelled by the system with every seat refunded
- * the way it was paid, and never settled; a healthy one, or one that comes back after the re-kick, is left
- * alone. Also: Colyseus's Redis presence resubscribes after its Valkey connection drops, so the room hears
+ * party whose room isn't moving with questions still unplayed is re-kicked once, then cancelled by the
+ * system with every seat refunded the way it was paid; one that stalled after its last question is settled
+ * from the recorded scores instead (and a room settling at the same time pays once); a healthy one, or one
+ * that comes back after the re-kick, is left alone. Also: Colyseus's Redis presence resubscribes after its Valkey connection drops, so the room hears
  * party:events again.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { RedisPresence } from "colyseus";
-import { db, getPartyConfig, ledger, markRoundProgress, parties, sql, takeSeat, type User } from "@contestly/db";
+import { db, getPartyConfig, ledger, ledgerAccounts, ledgerEntries, markRoundProgress, parties, partyAnswers, partyPlayers, partyQuestions, sql, takeSeat, type User } from "@contestly/db";
 import { REDIS_URL } from "@contestly/queue";
 import { DEFAULT_PARTY_CONFIG, kobo, stallThresholdSeconds, type ChatMessage } from "@contestly/shared";
-import { STALLED_MESSAGE, sweepStalled } from "../../worker/src/partyStart.js";
+import { STALLED_MESSAGE, settleFromRecords, sweepStalled } from "../../worker/src/partyStart.js";
+import { settle } from "../../worker/src/partySettle.js";
 import { valkey } from "../src/redis.js";
 import { makeUser } from "./harness.js";
 
@@ -20,7 +22,10 @@ const ENTRY = kobo(100);
 const QUESTION_SECONDS = 10;
 const events: { partyId: string; status: string }[] = [];
 const lines: ChatMessage[] = [];
-const deps = { emit: async (ev: { partyId: string; status: string }) => events.push(ev), publishLine: async (l: ChatMessage) => lines.push(l) };
+const base = { emit: async (ev: { partyId: string; status: string }) => events.push(ev), publishLine: async (l: ChatMessage) => lines.push(l) };
+const settleDeps = { ...base, queueRecordPlay: async () => undefined };
+/** The worker's real settle path; the room's settle job runs exactly this. */
+const deps = { ...base, settle: (partyId: string) => settle(settleDeps, partyId) };
 const at = (base: Date, seconds: number) => new Date(base.getTime() + seconds * 1000);
 
 /** A live party with seats paid from bonus and cash; liveAt is when it went live. */
@@ -39,17 +44,33 @@ async function liveParty(liveAt: Date, players: User[]) {
   return p;
 }
 const row = async (id: string) => (await db.select().from(parties).where(eq(parties.id, id)))[0];
+
+/**
+ * Its play order as the room leaves it: `played` questions with every seat's recorded verdict (points per
+ * player, in seat order), and `pending` ones never opened. A voided question is recorded with 0 points.
+ */
+async function playOrder(partyId: string, players: User[], qs: ({ status: "played" | "voided"; points: number[] } | { status: "pending" })[]) {
+  for (const [idx, q] of qs.entries()) {
+    const [pq] = await db.insert(partyQuestions).values({ partyId, idx, format: "pick_one", payload: { question: `q${idx}`, options: ["a", "b"], correctIndex: 0 }, seconds: QUESTION_SECONDS, status: q.status }).returning();
+    if (q.status === "pending") continue;
+    await db.insert(partyAnswers).values(players.map((u, i) => ({ partyId, questionId: pq.id, userId: u.id, answeredMs: 1000 + i, correctness: q.points[i] ? 100 : 0, points: q.status === "voided" ? 0 : q.points[i] })));
+  }
+}
+const prizesIn = (partyId: string) => db.select({ userId: ledgerAccounts.userId, type: ledgerEntries.type, amountKobo: ledgerEntries.amountKobo }).from(ledgerEntries)
+  .innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
+  .where(and(eq(ledgerEntries.refId, partyId), inArray(ledgerEntries.type, ["party_prize", "party_rake", "party_refund"])));
 const mine = (out: { id: string }[], id: string) => out.filter((o) => o.id === id);
 
 afterAll(async () => { await sql.end(); });
 
 describe("stalled live parties", () => {
-  it("re-kicked once, then cancelled with every seat refunded the way it was paid", async () => {
+  it("mid-set: re-kicked once, then cancelled with every seat refunded the way it was paid", async () => {
     const cfg = await getPartyConfig();
     const thresholdS = stallThresholdSeconds(QUESTION_SECONDS, cfg);
     const players = await Promise.all(["stA", "stB", "stC"].map((n) => makeUser(n)));
     const liveAt = new Date(Date.now() - 60_000);
     const p = await liveParty(liveAt, players);
+    await playOrder(p.id, players, [{ status: "played", points: [150, 0, 90] }, { status: "pending" }]); // stalled mid-set
     const before = await Promise.all(players.map((u) => ledger.balances(u.id)));
 
     // Inside the threshold: nothing.
@@ -76,6 +97,43 @@ describe("stalled live parties", () => {
     expect(lines.some((l) => l.text === STALLED_MESSAGE)).toBe(true);
     // Done: later sweeps leave it alone.
     expect(mine(await sweepStalled(deps, at(endAt, 600)), p.id)).toEqual([]);
+  });
+
+  it("after the last question: settled from the recorded scores, paying the right ranks, never refunded", async () => {
+    const players = await Promise.all(["stJ", "stK", "stL"].map((n) => makeUser(n)));
+    const liveAt = new Date(Date.now() - 60 * 60_000);
+    const p = await liveParty(liveAt, players);
+    // stK wins on points; the voided question (where stJ scored big) counts for nobody. No ranks written: the room died.
+    await playOrder(p.id, players, [{ status: "played", points: [100, 180, 0] }, { status: "voided", points: [500, 0, 0] }, { status: "played", points: [90, 100, 150] }]);
+    const out = mine(await sweepStalled(deps, at(liveAt, 3600)), p.id);
+    expect(out).toMatchObject([{ id: p.id, outcome: "settled" }]);
+    expect((await row(p.id)).status).toBe("finished");
+    const seats = await db.select().from(partyPlayers).where(eq(partyPlayers.partyId, p.id));
+    const rankOf = (u: User) => seats.find((s) => s.userId === u.id)!.rank;
+    // stK 180 + 100 = 280, stJ 100 + 90 = 190, stL 0 + 150 = 150.
+    expect([rankOf(players[1]), rankOf(players[0]), rankOf(players[2])]).toEqual([1, 2, 3]);
+    // Winner takes all: the ₦300 pot less the 10% rake to stK; nobody refunded.
+    expect((await prizesIn(p.id)).map((e) => [e.type, e.userId === players[1].id ? "stK" : e.userId, Number(e.amountKobo)]).sort()).toEqual([
+      ["party_prize", "stK", kobo(270)],
+      ["party_rake", expect.any(String), kobo(30)],
+    ].sort());
+    expect(mine(await sweepStalled(deps, at(liveAt, 7200)), p.id)).toEqual([]); // finished: left alone from here
+  });
+
+  it("the room's settle and the watchdog's at the same moment pay once", async () => {
+    const players = await Promise.all(["stM", "stN"].map((n) => makeUser(n)));
+    const liveAt = new Date(Date.now() - 60 * 60_000);
+    const p = await liveParty(liveAt, players);
+    await playOrder(p.id, players, [{ status: "played", points: [10, 200] }]);
+    // The room wrote its ranks and queued its settle; the watchdog arrives at the same moment.
+    await db.update(partyPlayers).set({ rank: 1, score: 200 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, players[1].id)));
+    await db.update(partyPlayers).set({ rank: 2, score: 10 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, players[0].id)));
+    await Promise.all([settle(settleDeps, p.id), settleFromRecords(deps, p.id), sweepStalled(deps, at(liveAt, 3600))]);
+    expect((await row(p.id)).status).toBe("finished");
+    const paid = await prizesIn(p.id);
+    expect(paid.filter((e) => e.type === "party_prize")).toEqual([{ userId: players[1].id, type: "party_prize", amountKobo: kobo(180) }]);
+    expect(paid.filter((e) => e.type === "party_rake")).toHaveLength(1);
+    expect(paid.filter((e) => e.type === "party_refund")).toEqual([]);
   });
 
   it("a healthy party, opening questions, is left alone", async () => {
