@@ -17,15 +17,15 @@ export async function climbRoutes(app: FastifyInstance) {
   app.get("/climb", async (req) => climbHome(requireSession(req)));
 
   /** Start a run (free, unlimited). Any run still going is ended first, keeping what it banked. */
-  app.post("/climb/runs", async (req, reply) => reply.code(201).send(await startRun(requireSession(req))));
+  app.post("/climb/runs", async (req, reply) => reply.code(201).send(await startRun(requireSession(req), req.log)));
 
   /** The run now: the open round, or when the next one opens. */
-  app.get("/climb/runs/:id", async (req) => getRun(requireSession(req), uuidParam(req)));
+  app.get("/climb/runs/:id", async (req) => getRun(requireSession(req), uuidParam(req), req.log));
 
   /** Answer the open round. One answer per round; it decides the round and maybe the stage. */
   app.post("/climb/runs/:id/answer", async (req) => {
     const { roundId, answer } = climbAnswerBodySchema.parse(req.body);
-    return answerRound(requireSession(req), uuidParam(req), roundId, answer);
+    return answerRound(requireSession(req), uuidParam(req), roundId, answer, req.log);
   });
 
   /** This week's board: friends (the people you follow, and you) or everyone. */

@@ -1,14 +1,14 @@
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import { and, asc, count, desc, eq, gte, inArray } from "drizzle-orm";
 import {
-  approveAward, canBePaidCash, recordAdminAction, climbAwards, climbChallengeAttempts, climbChallenges, currentLadder, currentPrizes, db, getClimbSettings, prizesForWeek, rejectAward, saveLadder, savePrizes, setClimbSettings, users,
+  activeWordEntries, activeWordsFor, approveAward, canBePaidCash, recordAdminAction, climbAwards, climbChallengeAttempts, climbChallenges, currentLadder, currentPrizes, db, getClimbSettings, prizesForWeek, rejectAward, saveLadder, savePrizes, setClimbSettings, users,
   type ClimbAwardRow, type ClimbChallengeRow,
 } from "@contestly/db";
-import { generateRound, pickRoundType, roundReveal, roundView, stageLevel } from "@contestly/game";
+import { generateRound, pickRoundType, roundReveal, roundView, wordGameOf, wordSupplyIssues, wordWarnings, type Rng } from "@contestly/game";
 import {
-  CLIMB_AWARD_STATUSES, CLIMB_GAME_LABELS, CLIMB_GAME_TYPES, adminClimbSettingsSchema, adminReasonBodySchema, adminLadderBodySchema, adminPrizesBodySchema, addDays, ladderSummary, lagosDay, upsertChallengeSchema, weekOf, weeklyPrizeTotalKobo,
-  type AdminLadderResponse, type AdminPrizesResponse, type ClimbAward, type ClimbLadder,
+  CLIMB_AWARD_STATUSES, CLIMB_GAME_LABELS, CLIMB_GAME_TYPES, adminClimbSettingsSchema, adminReasonBodySchema, adminLadderBodySchema, adminLadderPreviewBodySchema, adminPrizesBodySchema, addDays, ladderSummary, lagosDay, upsertChallengeSchema, weekOf, weeklyPrizeTotalKobo,
+  type AdminLadderResponse, type AdminPrizesResponse, type ClimbAward, type ClimbGameType, type ClimbLadder,
 } from "@contestly/shared";
 import { dayParam, requireAdmin, uuidParam } from "../auth.js";
 import { personColumns } from "../people.js";
@@ -18,7 +18,15 @@ import { freshRng } from "../climb/rng.js";
 const CHALLENGE_LIST_PAST_DAYS = 7;
 
 const gameTypes = CLIMB_GAME_TYPES.map((type) => ({ type, ...CLIMB_GAME_LABELS[type] }));
-const ladderResponse = (version: number, ladder: ClimbLadder): AdminLadderResponse => ({ version, ladder, summary: ladderSummary(ladder), gameTypes });
+const ladderResponse = async (version: number, ladder: ClimbLadder): Promise<AdminLadderResponse> =>
+  ({ version, ladder, summary: ladderSummary(ladder), gameTypes, warnings: wordWarnings(ladder, await activeWordEntries()) });
+
+/** One round of a draft ladder's stage (0-based) and round, made with its settings and the active word list. Nothing is stored. */
+async function sampleRound(ladder: ClimbLadder, stageIdx: number, type: ClimbGameType, roundIdx: number, rng: Rng) {
+  const wordGame = wordGameOf(type);
+  const { payload, seconds } = generateRound(ladder.stages[stageIdx], type, roundIdx, { rng, words: wordGame ? await activeWordsFor(db, wordGame) : [] });
+  return { stage: stageIdx + 1, round: roundIdx + 1, type, seconds, view: roundView(type, payload), answer: roundReveal(type, payload) };
+}
 
 async function prizesResponse(): Promise<AdminPrizesResponse> {
   const week = weekOf(lagosDay());
@@ -66,23 +74,37 @@ export async function adminClimbRoutes(app: FastifyInstance) {
   app.put("/admin/climb/ladder", async (req) => {
     const admin = requireAdmin(req);
     const { ladder } = adminLadderBodySchema.parse(req.body);
+    // Thin supply is a warning; a stage the list can't supply at any length is refused at that stage's path.
+    const blocked = wordSupplyIssues(wordWarnings(ladder, await activeWordEntries()), ["ladder"]);
+    if (blocked.length) throw new ZodError(blocked);
     const before = await currentLadder();
     const saved = await saveLadder(ladder, admin.id);
     await recordAdminAction(db, { adminUserId: admin.id, action: "config.climb_ladder", targetType: "config", targetId: "climb_ladder", before: { version: before.version }, after: { version: saved.version, ladder: saved.ladder } });
     return ladderResponse(saved.version, saved.ladder);
   });
 
-  /** "Preview a run": one sample round per stage of a ladder (saved or not), answers shown. */
+  /**
+   * "Preview a run" for a ladder (saved or not): its summary and word warnings, one sample round (the first) per stage, and
+   * with `sample` one round of that stage, type and round number. Answers shown.
+   */
   app.post("/admin/climb/ladder/preview", async (req) => {
     requireAdmin(req);
-    const { ladder } = adminLadderBodySchema.parse(req.body);
+    const { ladder, sample } = adminLadderPreviewBodySchema.parse(req.body);
+    if (sample) {
+      const stage = ladder.stages[sample.stage - 1];
+      if (!stage) throw refused("no_such_stage", 422);
+      if (!stage.types.includes(sample.type)) throw refused("type_not_in_stage", 422);
+      if (sample.round > stage.rounds) throw refused("no_such_round", 422);
+    }
     const rng = freshRng();
-    const stages = ladder.stages.map((s, i) => {
-      const type = pickRoundType(ladder, i, rng);
-      const payload = generateRound(type, { rng, level: stageLevel(i, ladder.stages.length), seconds: s.seconds });
-      return { stage: i + 1, type, view: roundView(type, payload), answer: roundReveal(type, payload) };
-    });
-    return { summary: ladderSummary(ladder), stages };
+    const stages = [];
+    for (let i = 0; i < ladder.stages.length; i++) stages.push(await sampleRound(ladder, i, pickRoundType(ladder, i, rng), 0, rng));
+    return {
+      summary: ladderSummary(ladder),
+      warnings: wordWarnings(ladder, await activeWordEntries()),
+      stages,
+      sample: sample ? await sampleRound(ladder, sample.stage - 1, sample.type, sample.round - 1, rng) : null,
+    };
   });
 
   /** Weekly winners and the cash per place: the newest version, and the one this week closes with. */

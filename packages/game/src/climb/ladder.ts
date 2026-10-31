@@ -39,9 +39,6 @@ export function afterRound(ladder: ClimbLadder, at: RunPosition, stageResults: r
   return { outcome, ended: last, position: last ? cleared : { ...cleared, stageIdx: at.stageIdx + 1 } };
 }
 
-/** 0 at the first stage, 1 at the last: what generators scale difficulty by. */
-export const stageLevel = (stageIdx: number, stageCount: number) => (stageCount <= 1 ? 0 : stageIdx / (stageCount - 1));
-
 /** The type a new round in this stage plays: one of the stage's types that's switched on. */
 export function pickRoundType(ladder: ClimbLadder, stageIdx: number, rng: Rng): ClimbGameType {
   const types = stageTypes(ladder, ladder.stages[stageIdx]);

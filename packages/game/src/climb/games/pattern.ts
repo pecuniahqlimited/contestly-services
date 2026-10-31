@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PATTERN_DIFFICULTY } from "@contestly/shared";
 import type { ClimbGame } from "../types.js";
 import { int, pick, shuffle, type Rng } from "../rng.js";
 
@@ -8,7 +9,10 @@ const OPTIONS = 4;
 const payloadSchema = z.object({ sequence: z.array(z.number().int()), options: z.array(z.number().int()).length(OPTIONS), correctIndex: z.number().int().min(0).max(OPTIONS - 1) });
 type Payload = z.infer<typeof payloadSchema>;
 
-/** A rule makes the first n+1 terms of a sequence; the last one is the answer. Harder rules unlock with the level. */
+/**
+ * A rule makes the first n+1 terms of a sequence; the last one is the answer. Harder rules unlock with the difficulty
+ * setting, read here as a level from 0 (difficulty 1) to 1 (difficulty 5).
+ */
 type Rule = { minLevel: number; terms(rng: Rng, n: number, level: number): number[] };
 const RULES: Rule[] = [
   { minLevel: 0, terms: (rng, n, level) => { const a = int(rng, 1, 20), d = int(rng, 2, 4 + Math.round(level * 8)); return seq(n, (i) => a + i * d); } },
@@ -32,13 +36,15 @@ function distractors(rng: Rng, terms: number[]): number[] {
 export const pattern: ClimbGame<"pattern", Payload> = {
   type: "pattern",
   payloadSchema,
-  generate({ rng, level }) {
+  generate({ rng, settings }) {
+    const level = (settings.difficulty - PATTERN_DIFFICULTY.min) / (PATTERN_DIFFICULTY.max - PATTERN_DIFFICULTY.min);
     const rule = pick(rng, RULES.filter((r) => r.minLevel <= level));
     const terms = rule.terms(rng, TERMS_SHOWN + 1, level);
     const answer = terms[TERMS_SHOWN];
     const options = shuffle(rng, [answer, ...distractors(rng, terms)]);
     return { sequence: terms.slice(0, TERMS_SHOWN), options, correctIndex: options.indexOf(answer) };
   },
+  seconds: (_p, settings, stageSeconds) => settings.seconds ?? stageSeconds,
   view: ({ sequence, options }) => ({ sequence, options }),
   reveal: ({ correctIndex }) => ({ correctIndex }),
   grade: (p, a) => a.index === p.correctIndex,

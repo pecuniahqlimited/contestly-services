@@ -3,5 +3,6 @@ export * from "./types.js";
 export * from "./registry.js";
 export * from "./ladder.js";
 export * from "./boards.js";
-export { inGrid } from "./games/wordHunt.js";
-export { WORDS } from "./words.js";
+export * from "./wordSupply.js";
+export { inGrid } from "./grid.js";
+export { NoWordsFit, WORD_FRESHNESS, type WordFreshness, type WordHistory } from "./wordPool.js";

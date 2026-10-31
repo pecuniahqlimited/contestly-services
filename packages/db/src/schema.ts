@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
+import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -630,6 +630,24 @@ export const climbWeekPrizes = pgTable("climb_week_prizes", {
   pinnedAt: timestamp("pinned_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * The Climb's word list: scramble, word search and word hunt draw from the active words allowed for them. Normalised
+ * (lowercase letters, 3–12 long, past the safety filter) by checkClimbWord in @contestly/shared before it's written.
+ * Words are switched off, never deleted, so rounds already played still read.
+ */
+export const climbWords = pgTable("climb_words", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  word: text("word").notNull().unique(),
+  active: boolean("active").notNull().default(true),
+  games: text("games").array().$type<ClimbWordGame[]>().notNull(),
+  /** Optional tag for finding words ("food", "places"); not used by the games yet. */
+  theme: text("theme"),
+  /** Null for the starter list. */
+  addedByUserId: uuid("added_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("climb_words_active_idx").on(t.active)]);
+
 /** One climb up the ladder. At most one active run per player; starting another ends it (abandoned, its points kept). */
 export const climbRuns = pgTable("climb_runs", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -857,3 +875,4 @@ export type ClimbRoundRow = typeof climbRounds.$inferSelect;
 export type ClimbChallengeRow = typeof climbChallenges.$inferSelect;
 export type ClimbAttemptRow = typeof climbChallengeAttempts.$inferSelect;
 export type ClimbAwardRow = typeof climbAwards.$inferSelect;
+export type ClimbWordRow = typeof climbWords.$inferSelect;
