@@ -7,7 +7,7 @@ import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, P
 import { computeSettlement, goodsAwards } from "@contestly/game";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
-import { GENERATION_FAILED_MESSAGE, refundParty as refundPartyWith, startOrCancel, sweepOverdue, type StartDeps } from "./partyStart.js";
+import { GENERATION_FAILED_MESSAGE, refundParty as refundPartyWith, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
 import { selectTranscriber } from "./transcribe/index.js";
 
 const connection = makeRedis();
@@ -158,7 +158,13 @@ const SWEEP_EVERY_MS = 60_000;
 
 const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   const d = job.data;
-  if (d.kind === "sweep") return sweepOverdue(startDeps);
+  if (d.kind === "sweep") {
+    // Both run every minute even if one fails; the job fails (and shows in BullMQ) if either did.
+    const results = await Promise.allSettled([sweepOverdue(startDeps), sweepStalled(startDeps)]);
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
+    if (failed.length) throw new AggregateError(failed, "party sweep failed");
+    return;
+  }
   if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(startDeps, d.partyId);
   if (d.kind === "settle") return settle(d.partyId);
   if (d.kind === "watchdog") return watchdog(d.partyId);

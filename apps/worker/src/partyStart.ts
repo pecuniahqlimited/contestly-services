@@ -4,8 +4,8 @@
  * what it tells the outside world (room events, chat lines, follow-up jobs) is passed in.
  */
 import { and, asc, count, eq, lte } from "drizzle-orm";
-import { db, getPartyConfig, parties, partyPlayers, partyQuestions, refundAndCancel, seenInSet, systemLine, type Party, type Tx } from "@contestly/db";
-import type { ChatMessage } from "@contestly/shared";
+import { db, getPartyConfig, getQuestionsConfig, parties, partyPlayers, partyQuestions, refundAndCancel, seenInSet, systemLine, type Party, type Tx } from "@contestly/db";
+import { stallThresholdSeconds, type ChatMessage } from "@contestly/shared";
 
 export interface StartDeps {
   /** Tell the party's room (the `party:events` channel). */
@@ -127,4 +127,78 @@ export async function sweepOverdue(deps: StartDeps, now = new Date()): Promise<S
   // The job still fails (and shows in BullMQ) when any party did; the next sweep tries those again.
   if (failures.length) throw new AggregateError(failures, `sweep: ${failures.length} overdue party(s) failed`);
   return swept;
+}
+
+/** What the room and chat are told when a stalled live party is ended. */
+export const STALLED_MESSAGE = "Something went wrong and this party couldn't continue. Every entry has been refunded.";
+
+export interface StalledParty { id: string; title: string; stalledMs: number; outcome: "rekicked" | "cancelled" }
+
+/**
+ * Every minute: a live party whose room isn't moving. A healthy room opens a question at least every
+ * stallThresholdSeconds (one whole question cycle plus a grace; while its set is still being sealed, the
+ * generation timeout plus the grace). Past that with no progress, the start is republished once (a lost
+ * event, a room that missed it); still nothing a threshold later, and it's cancelled by the system:
+ * every seat refunded the way it was paid through refundAndCancel, never settled, room and chat told.
+ * Each intervention is logged with how long the party had been stalled.
+ */
+export async function sweepStalled(deps: Pick<StartDeps, "emit" | "publishLine">, now = new Date()): Promise<StalledParty[]> {
+  const [cfg, qcfg] = await Promise.all([getPartyConfig(), getQuestionsConfig()]);
+  const live = await db.select().from(parties).where(eq(parties.status, "live")).orderBy(asc(parties.liveAt)).limit(SWEEP_BATCH);
+  const out: StalledParty[] = [];
+  const failures: unknown[] = [];
+  for (const p of live) {
+    const thresholdMs = 1000 * (p.questionsStatus === "ready" ? stallThresholdSeconds(p.questionSeconds, cfg) : qcfg.generationTimeoutSeconds + cfg.stallGraceSeconds);
+    const since = progressSince(p);
+    const stalledMs = now.getTime() - since.getTime();
+    if (stalledMs < thresholdMs) continue;
+    const rekickedSinceProgress = p.stallRekickedAt !== null && p.stallRekickedAt > since;
+    if (rekickedSinceProgress && now.getTime() - p.stallRekickedAt!.getTime() < thresholdMs) continue; // give the re-kick its chance
+    try {
+      const outcome = rekickedSinceProgress ? await endStalled(deps, p.id) : await rekick(deps, p.id, now);
+      if (!outcome) continue; // it moved, or ended, in the meantime
+      console.log(`[party] stall: ${p.title} (${p.id}) live with no round progress for ${Math.round(stalledMs / 1000)}s (threshold ${thresholdMs / 1000}s) → ${outcome}`);
+      out.push({ id: p.id, title: p.title, stalledMs, outcome });
+    } catch (err) {
+      console.error(`[party] stall: ${p.title} (${p.id}) stalled for ${Math.round(stalledMs / 1000)}s and the intervention failed`, err);
+      failures.push(err);
+    }
+  }
+  if (failures.length) throw new AggregateError(failures, `stall sweep: ${failures.length} live party(s) failed`);
+  return out;
+}
+
+/** The last sign of life: a question opening, else going live. */
+const progressSince = (p: Pick<Party, "roundProgressAt" | "liveAt" | "startsAt">) => p.roundProgressAt ?? p.liveAt ?? p.startsAt;
+
+/** Locked re-check: still live and still no progress since `seen`? */
+async function stillStalled(tx: Tx, partyId: string) {
+  const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+  return p && p.status === "live" ? p : null;
+}
+
+/** Republish the start once: a room that missed it (or the set's readiness) picks the round up. */
+async function rekick(deps: Pick<StartDeps, "emit">, partyId: string, now: Date): Promise<"rekicked" | null> {
+  const marked = await db.transaction(async (tx) => {
+    const p = await stillStalled(tx, partyId);
+    if (!p) return false;
+    await tx.update(parties).set({ stallRekickedAt: now }).where(eq(parties.id, partyId));
+    return true;
+  });
+  if (!marked) return null;
+  await deps.emit({ partyId, status: "live" });
+  return "rekicked";
+}
+
+/** Still stalled after the re-kick: cancel by the system with every seat refunded. A finished party is never touched. */
+async function endStalled(deps: Pick<StartDeps, "emit" | "publishLine">, partyId: string): Promise<"cancelled" | null> {
+  const line = await db.transaction(async (tx) => {
+    const p = await stillStalled(tx, partyId);
+    if (!p || (p.roundProgressAt && p.stallRekickedAt && p.roundProgressAt > p.stallRekickedAt)) return null; // it came back
+    return (await refundAndCancel(tx, p, STALLED_MESSAGE, { by: "system" })).line;
+  });
+  if (!line) return null;
+  await deps.publishLine(line);
+  await deps.emit({ partyId, status: "cancelled" });
+  return "cancelled";
 }

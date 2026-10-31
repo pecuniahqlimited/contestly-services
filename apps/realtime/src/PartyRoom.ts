@@ -11,7 +11,7 @@ import type { Client } from "colyseus";
 import { SafeRoom } from "./SafeRoom.js";
 import { parsePublished, sendLine } from "./chat.js";
 import { and, asc, eq, notInArray } from "drizzle-orm";
-import { db, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
+import { db, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, resolveUser } from "@contestly/auth";
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_EVENTS_CHANNEL, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
@@ -26,6 +26,8 @@ const toMatchQuestion = (q: typeof partyQuestions.$inferSelect): MatchQuestion =
   ({ id: q.id, format: q.format as QuestionFormat, payload: q.payload, seconds: q.seconds, explanation: q.explanation ?? undefined });
 
 const QUESTIONS_PROGRESS = "questions_progress";
+/** How often a lobby past its start time checks the database for the party having gone live. */
+const LOBBY_START_CHECK_MS = 5_000;
 
 type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "finished" | "cancelled";
 
@@ -132,7 +134,8 @@ export class PartyRoom extends SafeRoom {
     // Worker → realtime: party lifecycle events over Valkey, never HTTP.
     // RedisPresence JSON-parses published messages before invoking callbacks (LocalPresence doesn't),
     // so accept both shapes and never throw here: a throw would break delivery to every other room.
-    this.presence.subscribe(PARTY_EVENTS_CHANNEL, (raw: unknown) => {
+    // Awaited, so the re-read below can't miss an event published while this room was being set up.
+    await this.presence.subscribe(PARTY_EVENTS_CHANNEL, (raw: unknown) => {
       let ev: { partyId: string; status: string };
       try {
         ev = typeof raw === "string" ? JSON.parse(raw) : (raw as { partyId: string; status: string });
@@ -150,8 +153,30 @@ export class PartyRoom extends SafeRoom {
       if (ev.status === "cancelled") this.run("cancelled", () => this.onCancelled(ev as PartyCancelledEvent));
     });
 
-    // Room created after the party already went live (e.g. everyone reconnecting): pick the round up.
-    if (party.status === "live") this.run("round: start", () => this.startMatch());
+    // Read again now that the events are subscribed: a party that went live (or was cancelled) while this
+    // room was being created is picked up here; anything later arrives as an event. Then, past startsAt, the
+    // lobby also checks the database itself, so a start event lost in transit (pub/sub isn't durable, e.g. a
+    // Valkey reconnect) can't leave the room waiting while the party is live.
+    await this.refreshParty();
+    if (this.party.status === "live") this.run("round: start", () => this.startMatch());
+    if (this.party.status === "cancelled") this.run("cancelled", () => this.onCancelled({ partyId: this.partyId, status: "cancelled" }));
+    this.every(LOBBY_START_CHECK_MS, "lobby: start check", () => this.checkStarted());
+  }
+
+  /** While nothing is playing and the start time has passed: is the party live (or cancelled) in the database? */
+  private async checkStarted() {
+    if (this.match || this.starting || (this.phase !== "lobby" && this.phase !== "generating")) return;
+    if (Date.now() < this.party.startsAt.getTime()) return;
+    await this.refreshParty();
+    if (this.party.status === "live") {
+      // Still in the lobby: the start never arrived. Generating with the set ready: questions_ready never arrived.
+      const missed = this.phase === "lobby" ? "the start event" : this.party.questionsStatus === "ready" ? "questions_ready" : null;
+      if (!missed) return;
+      console.log(`[${this.label}] start check: the party is live in the database but ${missed} never arrived; starting the round`);
+      await this.startMatch();
+    } else if (this.party.status === "cancelled") {
+      await this.onCancelled({ partyId: this.partyId, status: "cancelled" });
+    }
   }
 
   private onLine = (raw: unknown) => this.run("chat line", () => this.broadcast(MSG.chatMessage, parsePublished(raw)));
@@ -265,6 +290,8 @@ export class PartyRoom extends SafeRoom {
 
   private nextQuestion() {
     const view = this.match!.openQuestion(Date.now());
+    // The round is moving: the worker's stall check reads this.
+    this.run("round: progress", () => markRoundProgress(this.partyId));
     this.setPhase("question");
     this.remember(MSG.question, view);
     this.broadcast(MSG.question, view);

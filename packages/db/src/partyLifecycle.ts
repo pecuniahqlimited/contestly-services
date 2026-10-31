@@ -6,7 +6,7 @@
  */
 import { and, count, eq, not } from "drizzle-orm";
 import { NOT_HOST, PARTY_CLOSED, PARTY_LIVE, hostCancelMessage, type CancelledBy, type ChatMessage, type HostCancelResponse } from "@contestly/shared";
-import type { Tx } from "./client.js";
+import { db, type Tx } from "./client.js";
 import { ledgerAccounts, ledgerEntries, parties, partyPlayers, type Party } from "./schema.js";
 import { systemLine } from "./chat.js";
 import { isHostTeam } from "./host.js";
@@ -83,4 +83,9 @@ export async function hostCancelParty(tx: Tx, partyId: string, userId: string, r
   const seated = await tx.select({ userId: partyPlayers.userId }).from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), not(eq(partyPlayers.userId, userId))));
   const { line } = await refundAndCancel(tx, p, hostCancelMessage(p), { by: "host", userId, reason });
   return { ok: true, result: { cancelled: true, replayed: false, refunded: await cancelRefunds(tx, p.id) }, party: p, line, seatedUserIds: seated.map((s) => s.userId) };
+}
+
+/** The room opened a question: the stall check measures from here (packages/db so the room and tests share it). */
+export async function markRoundProgress(partyId: string, at = new Date()) {
+  await db.update(parties).set({ roundProgressAt: at }).where(eq(parties.id, partyId));
 }

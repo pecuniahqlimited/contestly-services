@@ -47,6 +47,11 @@ export const partyConfigSchema = z.object({
   standingsSeconds: z.number().int().min(1).max(30),
   standingsFloorSeconds: z.number().int().min(0).max(30),
   reconnectGraceSeconds: z.number().int().min(5).max(300),
+  /**
+   * Slack on top of one full question cycle (question + reveal + standings) before a live party with no
+   * round progress counts as stalled; the worker re-kicks it once, then cancels and refunds (stallThresholdSeconds).
+   */
+  stallGraceSeconds: z.number().int().min(10).max(600),
   /** Platform rake on pooled pots, in basis points. Host-funded pots are never raked. */
   rakeBps: z.number().int().min(0).max(5000),
   /** Host's cut of pooled pots, in basis points. 0 today; a planned product lever. */
@@ -55,6 +60,14 @@ export const partyConfigSchema = z.object({
   limits: partyLimitsSchema,
 });
 export type PartyConfig = z.infer<typeof partyConfigSchema>;
+
+/**
+ * How long a live party may go without a question opening before it counts as stalled: one whole cycle
+ * (the question's seconds, the reveal and the standings) plus the grace. A healthy room opens a question at
+ * least that often. (A 20-second question with the defaults: 20 + 6 + 7 + 30 = 63 seconds.)
+ */
+export const stallThresholdSeconds = (questionSeconds: number, cfg: Pick<PartyConfig, "revealSeconds" | "standingsSeconds" | "stallGraceSeconds">) =>
+  questionSeconds + cfg.revealSeconds + cfg.standingsSeconds + cfg.stallGraceSeconds;
 export const DEFAULT_PARTY_CONFIG: PartyConfig = {
   minPlayers: 2,
   basePoints: 100,
@@ -64,6 +77,7 @@ export const DEFAULT_PARTY_CONFIG: PartyConfig = {
   standingsSeconds: 7,
   standingsFloorSeconds: 2,
   reconnectGraceSeconds: 60,
+  stallGraceSeconds: 30,
   rakeBps: 1000,
   hostCutBps: 0,
   limits: DEFAULT_PARTY_LIMITS,

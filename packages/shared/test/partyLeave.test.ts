@@ -20,3 +20,11 @@ describe("leaveWindow", () => {
     expect(leaveWindow({ status: "cancelled", startsAt: at(3600) }, now)).toBe("closed");
   });
 });
+
+describe("stallThresholdSeconds", () => {
+  it("is one whole question cycle plus the grace", async () => {
+    const { DEFAULT_PARTY_CONFIG, stallThresholdSeconds } = await import("../src/index.js");
+    expect(stallThresholdSeconds(20, DEFAULT_PARTY_CONFIG)).toBe(20 + 6 + 7 + 30);
+    expect(stallThresholdSeconds(5, { revealSeconds: 3, standingsSeconds: 2, stallGraceSeconds: 10 })).toBe(20);
+  });
+});

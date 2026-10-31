@@ -240,6 +240,10 @@ export const parties = pgTable("parties", {
   cancelledByUserId: uuid("cancelled_by_user_id").references(() => users.id),
   /** The host's optional reason; never shown publicly. */
   cancelReason: text("cancel_reason"),
+  /** Written by the room each time a question opens: the worker's stall check reads how long since (from liveAt before the first). */
+  roundProgressAt: timestamp("round_progress_at", { withTimezone: true }),
+  /** When the worker last republished the start of a stalled live party; a second stall after it cancels and refunds. */
+  stallRekickedAt: timestamp("stall_rekicked_at", { withTimezone: true }),
   /** Set when record_play has folded this party's answer stats into the bank (job idempotency). */
   playStatsRecordedAt: timestamp("play_stats_recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

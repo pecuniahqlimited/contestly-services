@@ -141,6 +141,13 @@
       "when": 1793314422756,
       "tag": "0019_climb_words",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1793472980544,
+      "tag": "0020_round_progress",
+      "breakpoints": true
     }
   ]
 }
