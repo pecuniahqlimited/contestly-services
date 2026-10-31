@@ -1,9 +1,14 @@
-import { and, eq, inArray, sql as dsql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, asc, eq, inArray, sql as dsql } from "drizzle-orm";
 import { WELCOME_BONUS_KOBO } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { ledgerAccounts, ledgerEntries, users } from "./schema.js";
 
 export class InsufficientFunds extends Error { constructor() { super("insufficient_funds"); } }
+/** A journal whose legs don't sum to zero, or a leg that isn't a whole, non-zero number of kobo. Never caught: it's a bug. */
+export class LedgerImbalance extends Error { constructor(detail: string) { super(`ledger_imbalance: ${detail}`); } }
+/** The same idempotency key replayed with different legs: a bug or a tampered retry. Never treated as a replay. */
+export class IdempotencyConflict extends Error { constructor(key: string) { super(`idempotency_conflict: ${key}`); } }
 
 /** The platform's internal account the rake is posted to. Created on first use; never plays, never shown. */
 export const TREASURY_HANDLE = "contestly.treasury";
@@ -16,37 +21,136 @@ export async function treasuryUserId(tx: Tx): Promise<string> {
   return again.id;
 }
 
-type Kind = "cash" | "bonus";
+/** A person's own money: these can never go below zero (the lock here, and a check constraint behind it). */
+export const USER_ACCOUNT_KINDS = ["cash", "bonus"] as const;
+type Kind = (typeof USER_ACCOUNT_KINDS)[number];
 
-async function accountFor(tx: Tx, userId: string, kind: Kind) {
-  const [existing] = await tx.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, kind))).for("update");
-  if (existing) return existing;
-  const [created] = await tx.insert(ledgerAccounts).values({ userId, kind }).onConflictDoNothing().returning();
-  if (created) return created;
-  const [again] = await tx.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, kind))).for("update");
-  return again;
+/**
+ * The platform's side of every movement (ADR 0012), owned by the treasury account. A scope splits one
+ * kind where it needs splitting: a party's pot by party id, the payment accounts by provider.
+ * - party_pot: entries in, prizes, rake, host cut and refunds out (scope: party id)
+ * - bonus_issued: welcome coins out, forfeited coins back
+ * - prize_funding: Climb weekly prizes paid by the platform
+ * - dev_mint: dev and test top-ups only (never in production)
+ * - topup_in: money that came in through a provider (scope: provider)
+ * - payout_pending: withdrawals debited and not yet final (scope: provider)
+ * - payout_settled: withdrawals the provider confirmed sent (scope: provider)
+ * - payout_fees: what the provider charged to send them (scope: provider)
+ * - platform_funds: the platform paying a fee it chose to bear
+ */
+export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds"] as const;
+export type SystemKind = (typeof SYSTEM_ACCOUNT_KINDS)[number];
+
+export type AccountRef = { userId: string; kind: Kind } | { system: SystemKind; scope?: string };
+export interface Leg { account: AccountRef; amountKobo: number }
+export interface Journal { legs: Leg[]; type: string; refType?: string; refId?: string; idempotencyKey: string }
+
+const isUserRef = (a: AccountRef): a is { userId: string; kind: Kind } => "userId" in a;
+/** Leg 0 carries the journal's key itself (so existing keys keep meaning what they meant); leg i carries key#i. */
+export const legKey = (key: string, i: number) => (i === 0 ? key : `${key}#${i}`);
+
+async function accountId(tx: Tx, a: AccountRef): Promise<string> {
+  const { userId, kind, scope } = isUserRef(a) ? { ...a, scope: "" } : { userId: await treasuryUserId(tx), kind: a.system, scope: a.scope ?? "" };
+  const where = and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, kind), eq(ledgerAccounts.scope, scope));
+  const [existing] = await tx.select({ id: ledgerAccounts.id }).from(ledgerAccounts).where(where);
+  if (existing) return existing.id;
+  const [created] = await tx.insert(ledgerAccounts).values({ userId, kind, scope }).onConflictDoNothing().returning({ id: ledgerAccounts.id });
+  if (created) return created.id;
+  const [again] = await tx.select({ id: ledgerAccounts.id }).from(ledgerAccounts).where(where);
+  return again.id;
 }
 
-/** Post one signed movement to an account. Idempotent on idempotencyKey (a replay is a no-op). */
+function assertBalanced(j: Journal) {
+  if (j.legs.length < 2) throw new LedgerImbalance(`${j.idempotencyKey} has ${j.legs.length} leg(s)`);
+  for (const l of j.legs) if (!Number.isSafeInteger(l.amountKobo) || l.amountKobo === 0) throw new LedgerImbalance(`${j.idempotencyKey} has a leg of ${l.amountKobo}`);
+  const sum = j.legs.reduce((a, l) => a + l.amountKobo, 0);
+  if (sum !== 0) throw new LedgerImbalance(`${j.idempotencyKey} sums to ${sum}`);
+}
+
+/**
+ * The one way money moves: a journal of legs that sum to zero, written in the caller's transaction. Every
+ * account it touches is locked (in id order, so two journals can't deadlock each other), then each leg is
+ * appended and its balance moved. Idempotent on idempotencyKey: a replay with the same legs is a no-op; a
+ * replay with different legs throws IdempotencyConflict. A person's cash or bonus going below zero throws
+ * InsufficientFunds (and rolls the transaction back).
+ */
+export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; balances: Map<string, number> }> {
+  assertBalanced(j);
+  const ids = [] as string[];
+  for (const l of j.legs) ids.push(await accountId(tx, l.account));
+  const locked = await tx.select().from(ledgerAccounts).where(inArray(ledgerAccounts.id, [...new Set(ids)])).orderBy(asc(ledgerAccounts.id)).for("update");
+  const byId = new Map(locked.map((a) => [a.id, a]));
+  const keys = j.legs.map((_, i) => legKey(j.idempotencyKey, i));
+
+  const journalId = randomUUID();
+  const [first] = await tx.insert(ledgerEntries).values({ journalId, accountId: ids[0], amountKobo: j.legs[0].amountKobo, type: j.type, refType: j.refType, refId: j.refId, idempotencyKey: keys[0] })
+    .onConflictDoNothing().returning({ id: ledgerEntries.id });
+  if (!first) {
+    const prior = await tx.select({ key: ledgerEntries.idempotencyKey, accountId: ledgerEntries.accountId, amountKobo: ledgerEntries.amountKobo }).from(ledgerEntries).where(inArray(ledgerEntries.idempotencyKey, keys));
+    const same = prior.length === keys.length && keys.every((k, i) => prior.some((p) => p.key === k && p.accountId === ids[i] && Number(p.amountKobo) === j.legs[i].amountKobo));
+    if (!same) throw new IdempotencyConflict(j.idempotencyKey);
+    return { replayed: true, balances: new Map(locked.map((a) => [a.id, a.balanceKobo])) };
+  }
+  if (j.legs.length > 1) {
+    await tx.insert(ledgerEntries).values(j.legs.slice(1).map((l, i) => ({ journalId, accountId: ids[i + 1], amountKobo: l.amountKobo, type: j.type, refType: j.refType, refId: j.refId, idempotencyKey: keys[i + 1] })));
+  }
+  const next = new Map(locked.map((a) => [a.id, a.balanceKobo]));
+  j.legs.forEach((l, i) => next.set(ids[i], next.get(ids[i])! + l.amountKobo));
+  for (const [id, balance] of next) {
+    const acct = byId.get(id)!;
+    if (balance === acct.balanceKobo) continue;
+    if ((USER_ACCOUNT_KINDS as readonly string[]).includes(acct.kind) && balance < 0) throw new InsufficientFunds();
+    await tx.update(ledgerAccounts).set({ balanceKobo: balance }).where(eq(ledgerAccounts.id, id));
+  }
+  return { replayed: false, balances: next };
+}
+
+/**
+ * Which platform account is the other side of a movement to or from a person, by its type. post() uses it so
+ * every call is a balanced journal without each caller naming the platform's side. A type that isn't here
+ * throws: new kinds of movement are added here on purpose (payments use journal() with their own legs).
+ */
+const CONTRA: Record<string, (p: { refType?: string; refId?: string }) => AccountRef> = {
+  party_entry: partyPot, party_leave_refund: partyPot, party_refund: partyPot, party_fund: partyPot,
+  party_prize: partyPot, party_rake: partyPot, party_host_cut: partyPot,
+  welcome_bonus: () => ({ system: "bonus_issued" }), account_deleted_forfeit: () => ({ system: "bonus_issued" }),
+  climb_prize: () => ({ system: "prize_funding" }),
+  /** Dev and test top-ups (/wallet/dev-topup, the seed, tests). Real top-ups are payments journals from topup_in. */
+  topup: () => ({ system: "dev_mint" }),
+};
+function partyPot(p: { refType?: string; refId?: string }): AccountRef {
+  if (p.refType !== "party" || !p.refId) throw new LedgerImbalance(`a party movement needs refType "party" and the party id (got ${p.refType}:${p.refId})`);
+  return { system: "party_pot", scope: p.refId };
+}
+
+/**
+ * Post one signed movement to a person's account, balanced by the platform account for its type (CONTRA).
+ * Idempotent on idempotencyKey (a replay is a no-op).
+ */
 export async function post(tx: Tx, p: { userId: string; kind: Kind; amountKobo: number; type: string; refType?: string; refId?: string; idempotencyKey: string }) {
-  const acct = await accountFor(tx, p.userId, p.kind);
-  const inserted = await tx.insert(ledgerEntries).values({ accountId: acct.id, amountKobo: p.amountKobo, type: p.type, refType: p.refType, refId: p.refId, idempotencyKey: p.idempotencyKey }).onConflictDoNothing().returning({ id: ledgerEntries.id });
-  if (!inserted.length) return { replayed: true, balanceKobo: acct.balanceKobo };
-  const next = acct.balanceKobo + p.amountKobo;
-  if (next < 0) throw new InsufficientFunds();
-  await tx.update(ledgerAccounts).set({ balanceKobo: next }).where(eq(ledgerAccounts.id, acct.id));
-  return { replayed: false, balanceKobo: next };
+  const contra = CONTRA[p.type];
+  if (!contra) throw new LedgerImbalance(`no platform account for movement type "${p.type}"`);
+  const user: AccountRef = { userId: p.userId, kind: p.kind };
+  const out = await journal(tx, { type: p.type, refType: p.refType, refId: p.refId, idempotencyKey: p.idempotencyKey, legs: [{ account: user, amountKobo: p.amountKobo }, { account: contra(p), amountKobo: -p.amountKobo }] });
+  const id = await accountId(tx, user);
+  return { replayed: out.replayed, balanceKobo: out.balances.get(id)! };
 }
 
 /** The welcome bonus coins, granted exactly once per user however many times it's asked for. */
 export const grantWelcome = (tx: Tx, userId: string) =>
   post(tx, { userId, kind: "bonus", amountKobo: WELCOME_BONUS_KOBO, type: "welcome_bonus", idempotencyKey: `welcome:${userId}` });
 
+/** A person's cash and bonus accounts, created if new and locked for this transaction. */
+export async function lockUserAccounts(tx: Tx, userId: string) {
+  const ids = [await accountId(tx, { userId, kind: "bonus" }), await accountId(tx, { userId, kind: "cash" })];
+  const rows = await tx.select().from(ledgerAccounts).where(inArray(ledgerAccounts.id, ids)).orderBy(asc(ledgerAccounts.id)).for("update");
+  return { bonus: rows.find((r) => r.kind === "bonus")!, cash: rows.find((r) => r.kind === "cash")! };
+}
+
 /** Charge an entry fee: bonus coins first, then cash. Throws InsufficientFunds if both together can't cover it. */
 export async function charge(tx: Tx, p: { userId: string; amountKobo: number; type: string; refType: string; refId: string; idempotencyKey: string }) {
   if (p.amountKobo === 0) return { fromBonus: 0, fromCash: 0 };
-  const bonus = await accountFor(tx, p.userId, "bonus");
-  const cash = await accountFor(tx, p.userId, "cash");
+  const { bonus, cash } = await lockUserAccounts(tx, p.userId);
   const fromBonus = Math.min(bonus.balanceKobo, p.amountKobo);
   const fromCash = p.amountKobo - fromBonus;
   if (fromCash > cash.balanceKobo) throw new InsufficientFunds();
@@ -59,7 +163,7 @@ export async function charge(tx: Tx, p: { userId: string; amountKobo: number; ty
 export async function refund(tx: Tx, p: { chargeKey: string; type: string; refType: string; refId: string; idempotencyKey: string }) {
   const legs = await tx.select({ userId: ledgerAccounts.userId, kind: ledgerAccounts.kind, amountKobo: ledgerEntries.amountKobo })
     .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerEntries.accountId, ledgerAccounts.id))
-    .where(inArray(ledgerEntries.idempotencyKey, [p.chargeKey + ":bonus", p.chargeKey + ":cash"]));
+    .where(inArray(ledgerEntries.idempotencyKey, [p.chargeKey + ":bonus", p.chargeKey + ":cash"])) as { userId: string; kind: Kind; amountKobo: number }[];
   for (const l of legs) await post(tx, { userId: l.userId, kind: l.kind, amountKobo: -l.amountKobo, type: p.type, refType: p.refType, refId: p.refId, idempotencyKey: `${p.idempotencyKey}:${l.kind}` });
   return { toBonus: -(legs.find((l) => l.kind === "bonus")?.amountKobo ?? 0), toCash: -(legs.find((l) => l.kind === "cash")?.amountKobo ?? 0) };
 }

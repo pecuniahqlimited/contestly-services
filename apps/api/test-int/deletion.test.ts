@@ -59,7 +59,7 @@ beforeAll(async () => {
   await db.transaction(async (tx) => {
     await ledger.post(tx, { userId: gone.id, kind: "bonus", amountKobo: kobo(300), type: "welcome_bonus", idempotencyKey: `t:${tag}:bonus` });
     await ledger.post(tx, { userId: gone.id, kind: "cash", amountKobo: kobo(50), type: "topup", idempotencyKey: `t:${tag}:cash` });
-    await ledger.post(tx, { userId: gone.id, kind: "cash", amountKobo: -kobo(50), type: "party_entry", idempotencyKey: `t:${tag}:spend` });
+    await ledger.post(tx, { userId: gone.id, kind: "cash", amountKobo: -kobo(50), type: "party_entry", refType: "party", refId: `t-${tag}`, idempotencyKey: `t:${tag}:spend` });
   });
   // People: follows both ways, a DM with a line, a crew they created, a feed event, the Everyone board.
   await db.insert(follows).values([{ followerId: friend.id, followeeId: gone.id }, { followerId: gone.id, followeeId: friend.id }]);

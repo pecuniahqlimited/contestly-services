@@ -200,7 +200,9 @@ describe("seats from before leaving existed", () => {
     });
     expect((await leave(old, p.id)).json()).toMatchObject({ refund: { toCashKobo: ENTRY } });
     expect(await ledger.balances(old.id)).toEqual({ bonusKobo: 0, cashKobo: ENTRY });
-    const keys = await db.select({ k: ledgerEntries.idempotencyKey }).from(ledgerEntries).where(and(like(ledgerEntries.idempotencyKey, `%${p.id}%`), inArray(ledgerEntries.type, ["party_entry"])));
+    // The person's legs (the party pot carries the mirror of each, ADR 0012).
+    const keys = await db.select({ k: ledgerEntries.idempotencyKey }).from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
+      .where(and(like(ledgerEntries.idempotencyKey, `%${p.id}%`), inArray(ledgerEntries.type, ["party_entry"]), eq(ledgerAccounts.userId, old.id)));
     expect(keys.map((k) => k.k)).toEqual([`party_entry:${p.id}:${old.id}:cash`]);
   });
 });

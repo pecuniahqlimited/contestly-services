@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, asc, count, desc, eq, gte, ilike, inArray, or, sql, type SQL } from "drizzle-orm";
 import {
-  adminActions, db, ledgerAccounts, ledgerEntries, parties, partyPlayers, partyQuestionEvents, partyQuestions, prizeFulfilments, publicHosts, recordAdminAction, users, type Party,
+  adminActions, db, ledger, ledgerAccounts, ledgerEntries, parties, partyPlayers, partyQuestionEvents, partyQuestions, prizeFulfilments, publicHosts, recordAdminAction, users, type Party,
 } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import {
@@ -58,7 +58,9 @@ async function partyDetail(id: string) {
     db.select({ status: partyQuestions.status, reserve: partyQuestions.reserve }).from(partyQuestions).where(eq(partyQuestions.partyId, id)),
     db.select({ n: count() }).from(partyQuestionEvents).where(and(eq(partyQuestionEvents.partyId, id), eq(partyQuestionEvents.kind, "flag"))),
     db.select({ type: ledgerEntries.type, totalKobo: sql<number>`sum(${ledgerEntries.amountKobo})::bigint`, entries: count() })
-      .from(ledgerEntries).where(and(eq(ledgerEntries.refType, "party"), eq(ledgerEntries.refId, id))).groupBy(ledgerEntries.type),
+      .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
+      // People's side only: the party pot's legs mirror these (ADR 0012) and would net every type to zero.
+      .where(and(eq(ledgerEntries.refType, "party"), eq(ledgerEntries.refId, id), inArray(ledgerAccounts.kind, [...ledger.USER_ACCOUNT_KINDS]))).groupBy(ledgerEntries.type),
     db.select({ f: prizeFulfilments, u: users }).from(prizeFulfilments).innerJoin(users, eq(users.id, prizeFulfilments.winnerUserId)).where(eq(prizeFulfilments.partyId, id)).orderBy(asc(prizeFulfilments.place)),
     actionsView({ targetType: "party", targetId: id }),
   ]);

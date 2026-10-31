@@ -4,7 +4,7 @@
  * locked; the caller tells the room. Idempotent: every refund is keyed per seat, the host's fund release
  * per party, so running it twice moves nothing the second time.
  */
-import { and, count, eq, not } from "drizzle-orm";
+import { and, count, eq, inArray, not } from "drizzle-orm";
 import { NOT_HOST, PARTY_CLOSED, PARTY_LIVE, hostCancelMessage, type CancelledBy, type ChatMessage, type HostCancelResponse } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { ledgerAccounts, ledgerEntries, parties, partyPlayers, type Party } from "./schema.js";
@@ -51,7 +51,7 @@ async function cancelRefunds(tx: Tx, partyId: string): Promise<HostCancelRespons
   const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
   const rows = await tx.select({ kind: ledgerAccounts.kind, amountKobo: ledgerEntries.amountKobo, key: ledgerEntries.idempotencyKey })
     .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
-    .where(and(eq(ledgerEntries.type, "party_refund"), eq(ledgerEntries.refType, "party"), eq(ledgerEntries.refId, partyId)));
+    .where(and(eq(ledgerEntries.type, "party_refund"), eq(ledgerEntries.refType, "party"), eq(ledgerEntries.refId, partyId), inArray(ledgerAccounts.kind, [...ledger.USER_ACCOUNT_KINDS])));
   const seats = rows.filter((r) => !r.key.startsWith("party_fund_refund:"));
   const sum = (xs: typeof rows) => xs.reduce((a, r) => a + Number(r.amountKobo), 0);
   return {

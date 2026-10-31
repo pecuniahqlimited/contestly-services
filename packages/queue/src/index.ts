@@ -1,6 +1,6 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
-import { QUEUES, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob, type QuestionsJob } from "@contestly/shared";
+import { QUEUES, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
 
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 /** BullMQ's key prefix. Every Queue and Worker passes it, so two stacks on one Valkey never share jobs. */
@@ -20,6 +20,9 @@ export const climbQueue = () => new Queue<ClimbJob>(QUEUES.climb, { connection: 
 export const housekeepingQueue = () => new Queue<HousekeepingJob>(QUEUES.housekeeping, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 60_000 }, removeOnComplete: 50, removeOnFail: 200 } });
 
 export const chatQueue = () => new Queue<ChatJob>(QUEUES.chat, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 10_000 }, removeOnComplete: 500, removeOnFail: 1000 } });
+
+/** Payments jobs retry with backoff; every one is safe to run twice (the transitions lock and check state). */
+export const paymentsQueue = () => new Queue<PaymentsJob>(QUEUES.payments, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 5_000 }, removeOnComplete: 1000, removeOnFail: 5000 } });
 
 /** For one-off scripts: close these queues and the shared connection so the process can exit. */
 export async function closeQueues(...queues: Queue[]) {

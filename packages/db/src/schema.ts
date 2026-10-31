@@ -1,11 +1,12 @@
-import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
-export const accountKind = pgEnum("account_kind", ["cash", "bonus"]);
+/** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0012). */
+export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
@@ -596,17 +597,27 @@ export const moderationItems = pgTable("moderation_items", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex("moderation_items_ref").on(t.kind, t.refId), index("moderation_items_status_idx").on(t.status, t.createdAt)]);
 
-/** One account per (user, kind). balance is materialised and only ever changed inside the ledger transaction. */
+/**
+ * One account per (user, kind, scope). balance is materialised and only ever changed inside ledger.journal().
+ * A person's cash and bonus can't go below zero; platform accounts (owned by the treasury) can.
+ */
 export const ledgerAccounts = pgTable("ledger_accounts", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
   kind: accountKind("kind").notNull(),
+  /** Splits a platform account: a party's pot by party id, the payment accounts by provider. '' for a person's. */
+  scope: text("scope").notNull().default(""),
   balanceKobo: bigint("balance_kobo", { mode: "number" }).notNull().default(0),
-}, (t) => [uniqueIndex("ledger_accounts_user_kind").on(t.userId, t.kind)]);
+}, (t) => [
+  uniqueIndex("ledger_accounts_user_kind_scope").on(t.userId, t.kind, t.scope),
+  check("ledger_accounts_person_not_negative", sql`${t.kind} not in ('cash', 'bonus') or ${t.balanceKobo} >= 0`),
+]);
 
-/** Append-only. Never update or delete rows here. */
+/** Append-only. Never update or delete rows here. Every journal's legs sum to zero (ledger.journal()). */
 export const ledgerEntries = pgTable("ledger_entries", {
   id: uuid("id").primaryKey().defaultRandom(),
+  /** The legs written together. Null only on entries from before double entry (migration 0021). */
+  journalId: uuid("journal_id"),
   accountId: uuid("account_id").notNull().references(() => ledgerAccounts.id),
   amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(), // signed
   type: text("type").notNull(), // welcome_bonus | party_entry | party_prize | party_refund | climb_prize | topup | withdrawal
@@ -614,7 +625,210 @@ export const ledgerEntries = pgTable("ledger_entries", {
   refId: text("ref_id"),
   idempotencyKey: text("idempotency_key").notNull().unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("ledger_entries_account_idx").on(t.accountId, t.createdAt)]);
+}, (t) => [index("ledger_entries_account_idx").on(t.accountId, t.createdAt), index("ledger_entries_journal_idx").on(t.journalId), index("ledger_entries_ref_idx").on(t.refType, t.refId)]);
+
+// ---- Payments (row 10, ADR 0012) ----
+
+/**
+ * Which provider takes top-ups and which sends payouts, and whether either is paused: one immutable row per
+ * change (an admin's, or the system's when an invariant breaks); the newest is current. Secrets are env only.
+ */
+export const paymentSettings = pgTable("payment_settings", {
+  version: serial("version").primaryKey(),
+  collections: text("collections").notNull(),
+  payouts: text("payouts").notNull(),
+  topupsPaused: boolean("topups_paused").notNull().default(false),
+  payoutsPaused: boolean("payouts_paused").notNull().default(false),
+  /** "admin" (who and why are also in admin_actions), or "system": the invariant job paused payouts. */
+  changedBy: text("changed_by", { enum: ["admin", "system"] }).notNull().default("admin"),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  reason: text("reason").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Admin permissions beyond the admin role (payments.*). Grants and revokes are logged in admin_actions. */
+export const adminPermissions = pgTable("admin_permissions", {
+  userId: uuid("user_id").notNull().references(() => users.id),
+  permission: text("permission", { enum: PAYMENT_PERMISSIONS }).notNull(),
+  grantedByUserId: uuid("granted_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.userId, t.permission] })]);
+
+/**
+ * A top-up. Our reference, made by the server; credited once, only from a verified provider confirmation
+ * that matches this row (ledger key topup:<provider>:<reference>). Finished by the provider that created it.
+ */
+export const topups = pgTable("topups", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
+  currency: text("currency").notNull().default("NGN"),
+  provider: text("provider").notNull(),
+  reference: text("reference").notNull(),
+  status: text("status", { enum: TOPUP_STATUSES }).notNull().default("pending"),
+  checkoutUrl: text("checkout_url"),
+  /** What the last verify said, in our terms and the provider's own words. */
+  lastCheck: jsonb("last_check"),
+  checks: integer("checks").notNull().default(0),
+  nextCheckAt: timestamp("next_check_at", { withTimezone: true }),
+  /** Why it's a mismatch (or failed): what disagreed with our record. */
+  problem: jsonb("problem"),
+  creditedAt: timestamp("credited_at", { withTimezone: true }),
+  /** What credited it: webhook, check (the worker), admin_verify, admin_finalize. */
+  creditedVia: text("credited_via"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("topups_provider_reference").on(t.provider, t.reference),
+  uniqueIndex("topups_reference").on(t.reference),
+  index("topups_user_created_idx").on(t.userId, t.createdAt),
+  index("topups_due_idx").on(t.nextCheckAt).where(sql`status = 'pending'`),
+  check("topups_amount_positive", sql`${t.amountKobo} > 0`),
+]);
+
+/** A bank account a person confirmed, resolved by (and so usable with) one payout provider. */
+export const payoutAccounts = pgTable("payout_accounts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  provider: text("provider").notNull(),
+  bankCode: text("bank_code").notNull(),
+  bankName: text("bank_name").notNull(),
+  accountNumber: text("account_number").notNull(),
+  /** As the bank resolved it and the person confirmed it. */
+  accountName: text("account_name").notNull(),
+  /** The provider's id for this recipient (Paystack's recipient_code). */
+  recipientCode: text("recipient_code").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  removedAt: timestamp("removed_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("payout_accounts_live").on(t.userId, t.provider, t.bankCode, t.accountNumber).where(sql`removed_at is null`),
+  index("payout_accounts_user_idx").on(t.userId),
+]);
+
+/**
+ * A withdrawal. Debited into payout_pending when requested, before any provider call; then settled once on
+ * a definite success, or reversed once on a definite failure (both under ledger key payout_final:<id>, so at
+ * most one of them can ever exist). Anything else is unknown and requeried. Pinned to its provider.
+ */
+export const payouts = pgTable("payouts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  clientRequestId: uuid("client_request_id").notNull(),
+  payoutAccountId: uuid("payout_account_id").notNull().references(() => payoutAccounts.id),
+  amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
+  /** What the provider is asked to send: the amount, less the fee when the user bears it. */
+  sentKobo: bigint("sent_kobo", { mode: "number" }).notNull(),
+  /** The fee: estimated at request, the provider's figure once it succeeds. */
+  feeKobo: bigint("fee_kobo", { mode: "number" }).notNull(),
+  feeBearer: text("fee_bearer", { enum: FEE_BEARERS }).notNull(),
+  currency: text("currency").notNull().default("NGN"),
+  provider: text("provider").notNull(),
+  /** Ours, and the provider's idempotency reference for the transfer. */
+  reference: text("reference").notNull(),
+  status: text("status", { enum: PAYOUT_STATUSES }).notNull(),
+  /** Why it waits for an admin (threshold, daily ceiling, velocity, frozen). */
+  holdReason: text("hold_reason"),
+  sendAttempts: integer("send_attempts").notNull().default(0),
+  lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  checks: integer("checks").notNull().default(0),
+  nextCheckAt: timestamp("next_check_at", { withTimezone: true }),
+  lastCheck: jsonb("last_check"),
+  decidedByUserId: uuid("decided_by_user_id").references(() => users.id),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  /** What made it final: send, check, webhook, admin_reject, admin_finalize. */
+  finalVia: text("final_via"),
+  finalAt: timestamp("final_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("payouts_provider_reference").on(t.provider, t.reference),
+  uniqueIndex("payouts_reference").on(t.reference),
+  uniqueIndex("payouts_user_request").on(t.userId, t.clientRequestId),
+  index("payouts_user_created_idx").on(t.userId, t.createdAt),
+  index("payouts_status_due_idx").on(t.status, t.nextCheckAt),
+  check("payouts_amounts", sql`${t.amountKobo} > 0 and ${t.sentKobo} > 0 and ${t.feeKobo} >= 0 and ${t.sentKobo} <= ${t.amountKobo}`),
+]);
+
+/**
+ * Every authenticated provider webhook, stored before it's acknowledged and processed by the worker. One row
+ * per distinct event (a redelivery of the same body is the same row). Raw body kept for disputes.
+ */
+export const paymentWebhookEvents = pgTable("payment_webhook_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  provider: text("provider").notNull(),
+  eventId: text("event_id").notNull(),
+  type: text("type").notNull(),
+  reference: text("reference"),
+  body: text("body").notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  deliveries: integer("deliveries").notNull().default(1),
+  processedAt: timestamp("processed_at", { withTimezone: true }),
+  outcome: text("outcome"),
+}, (t) => [uniqueIndex("payment_webhook_events_provider_event").on(t.provider, t.eventId), index("payment_webhook_events_reference_idx").on(t.reference)]);
+
+/**
+ * An admin's manual finalize of a stuck payout or top-up: the provider's answer when they asked, their
+ * choice and reason, and (over the threshold) the second admin who confirmed it. Applied through the same
+ * transitions as the automatic path.
+ */
+export const paymentFinalizations = pgTable("payment_finalizations", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  targetType: text("target_type", { enum: ["topup", "payout"] }).notNull(),
+  targetId: uuid("target_id").notNull(),
+  outcome: text("outcome", { enum: ["success", "failed"] }).notNull(),
+  reason: text("reason").notNull(),
+  providerCheck: jsonb("provider_check").notNull(),
+  status: text("status", { enum: ["awaiting_second_admin", "applied", "superseded"] }).notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+}, (t) => [
+  index("payment_finalizations_target_idx").on(t.targetType, t.targetId),
+  uniqueIndex("payment_finalizations_one_open").on(t.targetType, t.targetId).where(sql`status = 'awaiting_second_admin'`),
+]);
+
+/** Something an admin must look at (critical: money may be wrong). Deduped by key; acknowledged, never deleted. */
+export const paymentAlerts = pgTable("payment_alerts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  severity: text("severity", { enum: ["warning", "critical"] }).notNull(),
+  kind: text("kind").notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  refType: text("ref_type"),
+  refId: text("ref_id"),
+  detail: jsonb("detail").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  acknowledgedByUserId: uuid("acknowledged_by_user_id").references(() => users.id),
+  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+}, (t) => [uniqueIndex("payment_alerts_dedupe").on(t.dedupeKey), index("payment_alerts_open_idx").on(t.createdAt).where(sql`acknowledged_at is null`)]);
+
+/** A nightly comparison of our records with one provider's for one Lagos day. */
+export const paymentReconRuns = pgTable("payment_recon_runs", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  provider: text("provider").notNull(),
+  day: text("day").notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  error: text("error"),
+  counts: jsonb("counts"),
+}, (t) => [index("payment_recon_runs_day_idx").on(t.provider, t.day)]);
+
+/** One difference a reconciliation found. Never fixed automatically; an admin notes what they did. */
+export const paymentReconItems = pgTable("payment_recon_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  runId: uuid("run_id").notNull().references(() => paymentReconRuns.id),
+  provider: text("provider").notNull(),
+  object: text("object", { enum: ["topup", "payout"] }).notNull(),
+  kind: text("kind", { enum: ["missing_ours", "missing_theirs", "amount_differs", "status_differs"] }).notNull(),
+  reference: text("reference").notNull(),
+  ours: jsonb("ours"),
+  theirs: jsonb("theirs"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  note: text("note"),
+}, (t) => [index("payment_recon_items_run_idx").on(t.runId), index("payment_recon_items_open_idx").on(t.createdAt).where(sql`resolved_at is null`)]);
 
 /** A goods party's prize for one winning place: what it is and, optionally, roughly what it's worth (no money moves on it). */
 export const partyPrizes = pgTable("party_prizes", {
@@ -914,6 +1128,11 @@ export type CrewMember = typeof crewMembers.$inferSelect;
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type AdminActionRow = typeof adminActions.$inferSelect;
+export type Topup = typeof topups.$inferSelect;
+export type Payout = typeof payouts.$inferSelect;
+export type PayoutAccount = typeof payoutAccounts.$inferSelect;
+export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
+export type PaymentFinalization = typeof paymentFinalizations.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;

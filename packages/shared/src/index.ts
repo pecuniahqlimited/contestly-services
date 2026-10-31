@@ -15,6 +15,7 @@ export * from "./chat.js";
 export * from "./social.js";
 export * from "./partyLeave.js";
 export * from "./rateLimits.js";
+export * from "./payments.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
@@ -303,7 +304,19 @@ export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */
-export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb", housekeeping: "housekeeping", chat: "chat" } as const;
+export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb", housekeeping: "housekeeping", chat: "chat", payments: "payments" } as const;
+/**
+ * Payments (ADR 0012). `webhook`: process a stored, authenticated provider event. `topup_check` /
+ * `payout_submit` / `payout_check`: one top-up or withdrawal, through the same locked transitions as every
+ * other path. `sweep` (every minute) finds whatever is due, so a lost job only delays. `invariants`
+ * (hourly) and `reconcile` (nightly, per provider) never fix anything: they alert, and a breach pauses payouts.
+ */
+export type PaymentsJob =
+  | { kind: "webhook"; eventId: string }
+  | { kind: "topup_check"; topupId: string }
+  | { kind: "payout_submit" | "payout_check"; payoutId: string }
+  | { kind: "sweep" } | { kind: "invariants" }
+  | { kind: "reconcile"; provider?: string; day?: string };
 /**
  * The Climb's scheduled jobs, both repeatable on the Lagos clock. `day_start`: pin this week's prize
  * version and snapshot its Everyone board for ▲/▼ since yesterday. `week_close`: rank every finished week that hasn't been
