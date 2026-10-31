@@ -8,7 +8,7 @@
 import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { db, parties } from "@contestly/db";
-import { makeRedis, notifyQueue, partyQueue, questionsQueue } from "@contestly/queue";
+import { QUEUE_PREFIX, makeRedis, notifyQueue, partyQueue, questionsQueue } from "@contestly/queue";
 import { PARTY_EVENTS_CHANNEL, QUEUES, type QuestionsJob } from "@contestly/shared";
 import { selectProviders } from "./providers/index.js";
 import { generateSet } from "./pipeline/generateSet.js";
@@ -52,7 +52,7 @@ const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
   }
-}, { connection });
+}, { connection, prefix: QUEUE_PREFIX });
 
 worker.on("failed", async (job, err) => {
   console.error(`[questions] job ${job?.id} failed:`, err.message);

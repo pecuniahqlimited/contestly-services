@@ -1,7 +1,7 @@
 import { Worker } from "bullmq";
 import { and, asc, eq } from "drizzle-orm";
 import { db, parties, partyPlayers, partyPrizes, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig, type Party, type Tx } from "@contestly/db";
-import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
+import { QUEUE_PREFIX, climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
@@ -40,7 +40,7 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   } else if (d.kind === "chat_mention") {
     console.log(`[notify] @mention in thread ${d.threadId} → ${d.toUserIds.length} user(s) (batched per thread from row 9)`);
   }
-}, { connection });
+}, { connection, prefix: QUEUE_PREFIX });
 
 /** An admin cancelled a scheduled or live party. Idempotent: a party already over is left alone. */
 async function adminCancel(partyId: string) {
@@ -134,7 +134,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   if (d.kind === "watchdog") return watchdog(d.partyId);
   if (d.kind === "cancel_generation_failed") return cancelGenerationFailed(d.partyId);
   if (d.kind === "admin_cancel") return adminCancel(d.partyId);
-}, { connection });
+}, { connection, prefix: QUEUE_PREFIX });
 await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "sweep", data: { kind: "sweep" } });
 
 const climbJobs = climbQueue();
@@ -144,7 +144,7 @@ const climbWorker = new Worker<ClimbJob>(QUEUES.climb, async (job) => {
     await closeWeeks();
     return closeCrewWeeks();
   }
-}, { connection });
+}, { connection, prefix: QUEUE_PREFIX });
 /** Each Lagos day at 00:00, and each Monday at 00:15: a run can't outlast its ladder's clock, so by then last week is final (ADR 0005). */
 const CLIMB_DAY_START = "0 0 * * *";
 const CLIMB_WEEK_CLOSE = "15 0 * * 1";
@@ -155,7 +155,7 @@ const store = objectStoreFromEnv();
 const transcriber = selectTranscriber();
 const chatWorker = new Worker<ChatJob>(QUEUES.chat, async (job) => {
   if (job.data.kind === "transcribe_voice") return transcribeVoice(store, transcriber, job.data.voiceNoteId);
-}, { connection });
+}, { connection, prefix: QUEUE_PREFIX });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const alertChannels = alertChannelsFromEnv(process.env, { senders: sendersFromEnv(process.env), primary: async () => (await currentEmailConfig()).primary });
@@ -178,7 +178,7 @@ const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, asyn
     const n = await clearExpiredArchives(new Date(Date.now() - days * DAY_MS));
     if (n) console.log(`[housekeeping] cleared the archive of ${n} account(s) deleted more than ${days} days ago`);
   }
-}, { connection });
+}, { connection, prefix: QUEUE_PREFIX });
 await housekeepingJobs.upsertJobScheduler("deliver_alerts", { every: ALERT_DELIVERY_EVERY_MS }, { name: "deliver_alerts", data: { kind: "deliver_alerts" } });
 
 /** Every day at 03:00 Lagos, when nobody's playing. */

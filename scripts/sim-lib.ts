@@ -8,8 +8,8 @@ import { climbRounds, db, ledgerAccounts, ledgerEntries } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
 import { SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
 
-export const API = process.env.API_URL ?? "http://localhost:4000";
-export const RT = process.env.RT_URL ?? "ws://localhost:4001";
+export const API = process.env.API_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
+export const RT = process.env.RT_URL ?? `ws://localhost:${process.env.REALTIME_PORT ?? 4001}`;
 
 let failures = 0;
 export const ok = (cond: boolean, label: string) => {
