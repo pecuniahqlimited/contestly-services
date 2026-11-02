@@ -192,5 +192,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   top-up credit locks the same row and they run one at a time. This is speed, not money, and fine at
   launch volumes. If it bites, bucket the platform accounts (`scope` = `<provider>:<n>`, n from a hash of
   the transaction id; the invariants sum the buckets), with no change to the rules.
+- A withdrawal request locks the person's row `FOR NO KEY UPDATE`, not `FOR UPDATE`: the worker settling
+  their earlier payout holds `payout_pending` and updates that payout row twice in one transaction, and the
+  second update's foreign-key check needs a key-share lock on the person's row. `FOR UPDATE` blocks that
+  and deadlocked with the request waiting for `payout_pending` (found by `sim:payments`; a test reproduces
+  the interleaving).
 - **Still open:** owed amounts after a contradiction are recorded, not collected; whether future credits
   repay them first, and whether someone who owes can withdraw new winnings, is a product decision.

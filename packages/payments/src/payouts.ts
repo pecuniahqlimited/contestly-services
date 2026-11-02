@@ -58,7 +58,9 @@ export async function requestPayout(user: User, req: WithdrawalRequest, deps: Pa
   if (!provider.payout) throw paymentsError(409, "provider_not_configured", { provider: provider.name });
 
   const out = await db.transaction(async (tx) => {
-    const [fresh] = await tx.select().from(users).where(eq(users.id, user.id)).for("update");
+    // NO KEY UPDATE: serialises this person's requests without blocking the foreign-key checks of a worker
+    // settling their earlier payout (which holds payout_pending and touches a payouts row): FOR UPDATE deadlocked.
+    const [fresh] = await tx.select().from(users).where(eq(users.id, user.id)).for("no key update");
     const [prior] = await tx.select().from(payouts).where(and(eq(payouts.userId, user.id), eq(payouts.clientRequestId, req.clientRequestId)));
     if (prior) return { payout: prior, replayed: true, hold: null as string | null, userHourCount: 0 };
     const blockedNow = withdrawBlockReason(fresh);

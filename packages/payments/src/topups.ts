@@ -58,7 +58,7 @@ export async function createTopup(user: User, amountKobo: number, opts: CreateTo
   if (!provider.collection) throw paymentsError(409, "provider_not_configured", { provider: provider.name });
 
   const row = await db.transaction(async (tx) => {
-    await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for("update"); // one top-up start at a time per person: the daily cap holds
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for("no key update"); // one top-up start at a time per person (the daily cap holds), without blocking FK checks
     const [{ total }] = await tx.select({ total: sql<number>`coalesce(sum(${topups.amountKobo}), 0)::bigint` }).from(topups)
       .where(and(eq(topups.userId, user.id), gte(topups.createdAt, lagosDayStart(now)), inArray(topups.status, ["pending", "succeeded"])));
     if (Number(total) + amountKobo > cfg.topup.dailyCapKobo) throw paymentsError(409, LIMIT_REACHED, { limit: "topup_daily", dailyCapKobo: cfg.topup.dailyCapKobo, usedKobo: Number(total) });

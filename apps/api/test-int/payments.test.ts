@@ -15,7 +15,7 @@ import {
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  requestPayout, resetProviders, resolveAccount, runInvariants, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -529,6 +529,26 @@ describe("limits, approval and who can withdraw", () => {
     expect(taps[0].payout.id).toBe(taps[1].payout.id);
     expect(taps.filter((t) => t.replayed)).toHaveLength(1);
     expect(await cash(v.u)).toBe(kobo(8500));
+  });
+
+  it("a request while the worker settles the person's earlier withdrawal doesn't deadlock (FK checks vs. the person's row lock)", async () => {
+    const { u, account } = await withdrawer("podeadlock");
+    const first = (await request(u, account.id, kobo(1500))).payout;
+    await db.update(payouts).set({ status: "submitted", submittedAt: new Date(), lastSentAt: new Date(), sendAttempts: 1 }).where(eq(payouts.id, first.id));
+    const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    let second: Promise<unknown> | undefined;
+    // The worker's settle, slowed down: payout row, then payout_pending held while a request starts, then the final update.
+    await db.transaction(async (tx) => {
+      const [p] = await tx.select().from(payouts).where(eq(payouts.id, first.id)).for("update");
+      await tx.update(payouts).set({ lastCheck: { via: "test" } }).where(eq(payouts.id, p.id));
+      await tx.execute(sqlRaw`select id from ledger_accounts where kind = 'payout_pending' and scope = 'mock' for update`);
+      second = request(u, account.id, kobo(1500)); // locks the person's row, then waits for payout_pending
+      await pause(300);
+      await settleLocked(tx, p, "check", null, new Date()); // updates the payouts row again: an FK check on the person's row
+    });
+    await expect(second!).resolves.toMatchObject({ replayed: false });
+    expect((await reload(first.id)).status).toBe("succeeded");
+    expect(await cash(u)).toBe(kobo(10_000) - 2 * kobo(1500));
   });
 
   it("bonus is never withdrawable", async () => {
