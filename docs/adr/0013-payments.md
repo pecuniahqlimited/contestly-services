@@ -1,6 +1,7 @@
 # ADR 0013: Payments: pluggable providers, verify-then-credit, debit-first withdrawals
 
-Status: accepted (2026-10-31). Roadmap row 10. Makes the ledger double entry.
+Status: accepted (2026-10-31; revised 2026-11-02 after an independent review). Roadmap row 10. Makes the
+ledger double entry. Migrations 0021 (double entry, the payment tables) and 0022 (the review's fixes).
 
 ## Context
 
@@ -19,24 +20,37 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    `unknown`, never success or failure. Amounts are converted and checked (whole kobo) inside the provider.
    **Adding a provider is one file implementing `PaymentProvider`, one line in the registry, and its env.**
    Nothing else names a provider. A voucher/airtime rail adds a destination kind and a `PayoutProvider`
-   without a bank directory. `mock` (dev and tests, never production) is controlled per transaction by
-   the kobo part of the amount and keeps its "provider side" in Valkey. `paystack` is the first real one.
+   without a bank directory. `mock` is controlled per transaction by the kobo part of the amount and keeps
+   its "provider side" in Valkey. `paystack` is the first real one. **The mock, its checkout page and
+   `/wallet/dev-topup` exist only with `PAYMENTS_DEV_TOOLS=true`, and never when `NODE_ENV=production`
+   whatever the flag says**, so a staging box that forgets `NODE_ENV` has none of them. Every provider's
+   webhook secret is required, with no default (Paystack signs with its secret key; the mock needs
+   `MOCK_PAYMENTS_WEBHOOK_SECRET` or the process refuses to start).
 2. **Switching** is an admin setting (`payment_settings`, versioned like the email switch; collections and
    payouts apart; `payments.config`; logged with who and why). Secrets stay in env. **Every top-up and
    withdrawal records the provider that created it and is finished by that provider** whatever the
    setting, so a switch strands nothing. Bank accounts are tied to the provider that resolved them; after
-   a payouts switch they're resolved again (`account_unresolved`). A live secret key (`sk_live_…`, in any
-   variable) outside `NODE_ENV=production` refuses to start.
+   a payouts switch they're resolved again (`account_unresolved`). Outside `NODE_ENV=production` a live
+   secret key (`sk_live_…`, in any variable), or a `PAYSTACK_SECRET_KEY` that isn't `sk_test_…`, refuses
+   to start.
 3. **Top-ups: credit only on a verified confirmation.** The server makes the reference and the pending row
    before the provider is asked; the app never supplies one. The wallet is credited only by
    `confirmTopup()`: a fresh, server-to-server verify with the creating provider, matching our row exactly
    (reference, amount, currency, user in the metadata) and, when a webhook triggered it, the webhook too.
-   Any disagreement is `mismatch` (critical alert, an admin decides). Never from the client's redirect,
-   never from a webhook body alone. The row is locked while crediting and the ledger key is
+   Any disagreement is `mismatch` (critical alert, an admin decides). **That verify is the provider's
+   confirmation, whoever asks for it:** the webhook's processing, the worker's scheduled check (so a
+   missed webhook still credits, with exactly the same matching), or an admin's replay. **The client never
+   triggers a credit:** its redirect is ignored and its polling (`GET /wallet/topups/:reference`) reads our
+   row only. Never from a webhook body alone. A webhook whose verify still says pending (a provider's
+   verify can lag its own webhook) is not marked processed: it's tried again on a backoff by the minute
+   sweep until its top-up is credited, failed or expired. The row is locked while crediting and the ledger key is
    `topup:<provider>:<reference>` (unique per provider and reference too), so concurrent and repeated
    webhooks, checks and admin replays credit at most once. A pending top-up is verified by the worker on a
-   backoff until a cutoff (a final verify, then `expired`); a later confirmation still credits through the
-   same checks. `GET /wallet/topups/:reference` reads our row only. The provider is sent the account's verified email and nothing else: no
+   backoff until a cutoff (24 hours by default, about a Paystack checkout's life); the check at the cutoff
+   is the final one (then `expired`, or `failed`); a later confirmation of an expired one still credits
+   through the same checks. **A failed attempt isn't final:** a declined card leaves the checkout payable
+   (another card, another channel, same reference), so a verify that says `failed` keeps the top-up
+   pending, marked `attemptFailed` for the app, until the cutoff. `GET /wallet/topups/:reference` reads our row only. The provider is sent the account's verified email and nothing else: no
    verified email is 409 `email_required` (never a placeholder). If the provider refuses to start
    (`ProviderRefusal`: any 4xx at initialize, or the adapter's own refusal of a reserved test domain such as
    `.invalid` for a real provider) or doesn't answer, nobody got a checkout, so the row is failed at once with
@@ -49,22 +63,46 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    rate, it waits for an admin (`payments.approve`; rejecting reverses). The worker marks it `submitted`
    *before* sending; anything `submitted` or `unknown` is queried by our reference before any resend, and
    a resend (same reference, the provider's idempotency key) happens only after the provider says it has
-   no such transfer and a quiet period has passed. Definite success → `payout_pending` to
+   no such transfer and a long quiet period has passed (`resendAfterNotFoundSeconds`, default 30 minutes:
+   a provider's lookup can lag its send), and only to the account the first send used if the person still
+   has it (if they removed it: no resend, it stays unknown, critical alert). **Only a first send can be
+   definitely refused:** on any send after the first, every refusal (insufficient balance, invalid
+   recipient, anything) is `unknown` and queried, because the first send may have gone out and be the
+   reason for the refusal (it emptied the balance). Definite success → `payout_pending` to
    `payout_settled`, the fee to `payout_fees` (the platform's share from `platform_funds`; who bears it is
    config, default the platform). Definite failure → back to the person's cash. Settling and reversing
    share the ledger key `payout_final:<id>`, so at most one of them can ever exist. Everything else
    (timeout, network error, 5xx, unmapped, the provider's "pending") is `unknown`: requeried with backoff,
    never reversed, never timed out into either outcome; past a cutoff it raises a critical alert. A
    webhook is a hint that triggers a query; a webhook and a query racing make one transition under the row
-   lock. A late answer that contradicts a final state (success after we reversed) is a critical alert and
-   is never auto-fixed. Pausing payouts refuses new requests and leaves queued ones debited and queued.
+   lock. Pausing payouts refuses new requests and leaves queued ones debited and queued.
+   **A success after we reversed** (the person has the money twice) freezes that person's withdrawals at
+   once, in the same transaction as its critical alert (`users.withdrawals_frozen_at`,
+   `payout_contradictions`; `withdraw_not_allowed` with reason `payment_review`; queued ones are held
+   before sending). Reconciliation asks the provider about any reversed withdrawal it lists as paid, so
+   this happens the same night at the latest. Resolving it is maker-checker (`payments.finalize`, then a
+   different admin): in one transaction the debit is re-applied from their cash up to what's there, the
+   rest is recorded as owed (`payout_owed`, per provider), the transfer is booked as sent and its fee as
+   paid, and withdrawals unfreeze once nothing else is open for them. A failure after a success is a
+   critical alert, never auto-fixed.
 5. **Manual finalize and maker-checker.** For a stuck payout (`submitted`, `unknown`) or top-up
    (`pending`, `mismatch`, `expired`) an admin with `payments.finalize` sees a fresh provider check, then
    chooses success or failed with a required reason. The server asks the provider again at that moment and
    keeps its answer with the decision; it applies through the same locked transitions (a manual failed
-   reverses once, a manual success settles or credits once). At or above a threshold a second admin
-   confirms (and gets their own fresh check). Nobody approves, finalizes or confirms their own
-   transaction. All logged in `admin_actions` and `payment_finalizations`.
+   reverses once, a manual success settles or credits once). The answer is enforced, not just recorded:
+   - a sent payout can't be finalized inside the resend window or the quiet period after its last send
+     (`finalize.quietAfterSendMinutes`, default 30; 409 `finalize_too_soon`): a transfer still on its way
+     looks "not found" or "pending";
+   - one admin is enough only when the fresh answer is definite and agrees with the outcome and the amount
+     is under the threshold; otherwise a second admin confirms whatever the amount, and both see why
+     (`secondAdminBecause`: `check_not_definite`, `check_disagrees`, `amount_differs`, `over_threshold`);
+   - a manual top-up credit uses the amount the provider verified as paid, never our requested amount; a
+     different amount needs the second admin; with no verified amount there is nothing to credit (409
+     `no_verified_amount`);
+   - the second admin's confirm asks the provider again; if the answer has turned definite against the
+     outcome (a "failed" payout now paid, a top-up's amount changed), the request is superseded, not applied.
+   Nobody approves, finalizes or confirms their own transaction. All logged in `admin_actions` and
+   `payment_finalizations`.
 6. **Permissions.** The admin role stays one flag (`users.is_admin`); payments add four permissions per
    admin (`admin_permissions`): `payments.view`, `.approve`, `.finalize`, `.config`. A `.config` holder
    grants them, never to themselves; dev sessions and seeded dev admins hold all four.
@@ -81,7 +119,13 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    went out); every balance is the sum of its entries; per provider, `topup_in` equals credited top-ups,
    `payout_pending` the open withdrawals, `payout_settled` and `payout_fees` the succeeded ones; and each
    withdrawal was debited once, reversed at most once and only if failed or rejected, settled only if
-   succeeded. Any breach alerts and pauses payouts until an admin clears it.
+   succeeded, and recovered (a contradiction resolved) once and only then; a finished or cancelled party's
+   pot is zero; and every platform account points its way (money in: `topup_in`, `dev_mint`,
+   `bonus_issued`, `prize_funding`, `platform_funds`, `payout_owed` at or below zero; held or out: pots,
+   `payout_pending`, `payout_settled`, `payout_fees` at or above). All reads run in one REPEATABLE READ,
+   read-only snapshot. A breach is checked again in a fresh snapshot: only one that repeats raises its
+   critical alert and pauses payouts until admins clear it (un-pausing takes two, see 10); one that
+   doesn't repeat is a warning.
 8. **Reconciliation and alerts.** Nightly per provider: our day's top-ups and withdrawals against the
    provider's lists; differences (missing ours, missing theirs, amount, status) go to a table and the
    console; nothing is fixed automatically (a confirmed missed top-up is replayed by an admin through the
@@ -91,6 +135,14 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    in `x-paystack-signature`), store the raw event (one row per event; redeliveries counted), acknowledge,
    process in the worker. Exempt from the per-IP rate limit only. An optional allow-list of the provider's
    addresses (`PAYMENTS_WEBHOOK_IP_ALLOWLIST=true`).
+10. **Loosening a control takes two admins.** A change to payments config or settings that loosens a
+   control waits for a second `payments.config` holder (`payment_config_changes`, 202 from the PUT):
+   raising a limit or threshold (including both maker-checker thresholds), lowering a minimum or a safety
+   delay, switching either provider, un-pausing (the system's pause too), and any change to a field not
+   listed as tightening in one direction. Tightening applies at once with one admin: pausing, lowering a
+   limit or threshold. The config (or settings) row and its admin log entry are written in one
+   transaction under one lock; a confirm whose "before" no longer matches the current config is
+   superseded, never applied over a newer change.
 
 ## Consequences
 
@@ -98,7 +150,8 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   only (the pot mirrors them).
 - Paystack refusals we can't be sure of (an unverified business, a duplicate reference, a bad key) are
   `unknown`, so such a withdrawal stays debited and alerts rather than being reversed by a guess; an admin
-  finalizes it. Only an insufficient provider balance and a rejected recipient are definite failures.
+  finalizes it. Only an insufficient provider balance and a rejected recipient are definite failures, and
+  only on a first send.
 - Deleting an account now also waits for an open withdrawal (`withdrawal_in_progress`); `cash_balance`'s
   copy no longer says "contact support".
 - The minimum withdrawal defaults to ₦1,000 (admin config). Paystack charged ₦10 to send ₦100 in test mode and
@@ -109,4 +162,35 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   reference refused as a duplicate (mapped to unknown, so it is checked, not resent or reversed). Test mode
   did not refuse transfers before business verification; live mode may still require a verified business
   before it allows transfers (Paystack's "starter business" refusal), which the module treats as unknown.
-- `/wallet/dev-topup` stays for local work and sims (minted against `dev_mint`, 404 in production).
+- `/wallet/dev-topup` stays for local work and sims (minted against `dev_mint`; 404 unless
+  `PAYMENTS_DEV_TOOLS=true`, and always in production).
+- **Can a failed Paystack reference still be paid?** Yes, by Paystack's support docs: after a decline "the
+  transaction can be completed using any of the other channels on the Paystack checkout form" and "the
+  customer can retry the transaction at a later time"
+  ([Bank errors](https://support.paystack.com/en/articles/2123650)). Reusing a reference for a *new*
+  transaction is refused ("Duplicate Transaction Reference"), which is about starting, not paying. A
+  third-party guide puts a checkout session's life at about 24 hours
+  ([mctaba](https://www.mctaba.com/learn/paystack/paystack-transaction-status-values-and-what-each-means)),
+  which our default cutoff matches. paystack.com/docs was behind a bot check when this was written, so this
+  rests on the support article; `npm run paystack:check` now keeps verifying after a decline and reports
+  whether "failed" then "success" came back for the same reference, to confirm it on the real test API.
+- **Deploy hazard: 0021 needs every API and worker instance on the new code before it runs.** An old
+  instance still running after it writes single-leg entries, which the invariants (rightly) flag as
+  `entry_outside_journal` and pause payouts. Stop all API and worker instances, migrate, start them on the
+  new code: no rolling deploy for this one (`docs/engineering/deploy-notes.md`). 0022 is additive, but ship
+  it the same way since it lands with 0021.
+- **Parties that straddle 0021** (a seat charged before double entry, refunded after) leave a pot that
+  never received the entry, so it ends negative. No money was created. The pot invariants leave out any
+  party with an entry from before double entry. In production there are none (0021 ships before launch).
+  In the dev database (`contestly_pay`) they are the three seeded parties, all cancelled:
+  `2f7c9040-42c6-48e8-9901-59812bbb5cdd` (Afrobeats 2010s throwback),
+  `41d45f15-c722-41e6-8ed9-a40b8de4abc0` (Jollof Republic lunch break) and
+  `2fec056f-82a3-4f73-a510-d691ec791d21` (Friday night football). Any other database migrated with
+  pre-0021 parties has its own (`select distinct ref_id from ledger_entries where ref_type = 'party' and
+  journal_id is null`).
+- **Throughput.** `payout_pending` and `topup_in` are one row per provider, so every withdrawal and every
+  top-up credit locks the same row and they run one at a time. This is speed, not money, and fine at
+  launch volumes. If it bites, bucket the platform accounts (`scope` = `<provider>:<n>`, n from a hash of
+  the transaction id; the invariants sum the buckets), with no change to the rules.
+- **Still open:** owed amounts after a contradiction are recorded, not collected; whether future credits
+  repay them first, and whether someone who owes can withdraw new winnings, is a product decision.
