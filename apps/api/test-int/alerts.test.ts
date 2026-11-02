@@ -258,3 +258,32 @@ describe("the console", () => {
     expect((await app.inject({ method: "GET", url: "/admin/alerts", headers: as(notAdmin) })).statusCode).toBe(403);
   });
 });
+
+describe("test alerts", () => {
+  it("each severity: a fresh alert of that severity, logged, delivered like any other; anyone not an admin is refused", async () => {
+    const send = (u: User, payload: unknown) => app.inject({ method: "POST", url: "/admin/alerts/test", headers: as(u), payload });
+    const ids: Record<string, string> = {};
+    for (const severity of ["info", "warning", "critical"] as const) {
+      const res = await send(admin, { severity });
+      expect(res.statusCode).toBe(200);
+      const { alert, delivery } = res.json();
+      expect(alert).toMatchObject({ kind: "test_alert", severity, count: 1, refType: "user", refId: admin.id, details: { test: true, by: admin.handle } });
+      expect(delivery).toMatch({ info: /console/, warning: /digest/, critical: /within 15 seconds/ }[severity]);
+      ids[severity] = alert.id;
+      const logged = await db.select().from(adminActions).where(and(eq(adminActions.targetType, "alert"), eq(adminActions.targetId, alert.id)));
+      expect(logged.map((l) => [l.action, l.adminUserId, (l.after as { severity: string }).severity])).toEqual([["alert.test", admin.id, severity]]);
+    }
+    const again = (await send(admin, { severity: "critical" })).json().alert;
+    expect(again.id).not.toBe(ids.critical); // never deduped into an earlier test
+
+    // The normal delivery path picks them up (scoped to test_alert, this test's rows among them).
+    const f = fakes();
+    await deliverAlerts([f.email], CFG, { now: new Date(), kindPrefix: "test_alert" });
+    expect(f.mail.some((m) => m.text.includes(`Test alert (critical) sent by @${admin.handle}`))).toBe(true);
+    expect(f.mail.some((m) => m.text.includes("Test alert (warning)") || m.text.includes("Test alert (info)"))).toBe(false); // warning waits for the digest; info never goes
+
+    const notAdmin = await makeUser("alerttestno");
+    expect((await send(notAdmin, { severity: "critical" })).statusCode).toBe(403);
+    expect((await send(admin, { severity: "urgent" })).statusCode).toBe(400);
+  });
+});

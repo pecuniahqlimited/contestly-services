@@ -198,6 +198,9 @@ export const adminAlertsQuerySchema = z.object({
 });
 /** Acknowledging says what was found or done; kept on the alert and in admin_actions. */
 export const adminAlertAckSchema = z.object({ note: reasonSchema });
+/** POST /admin/alerts/test: a test alert of this severity, delivered like any other (checks each channel). */
+export const adminAlertTestSchema = z.object({ severity: z.enum(ALERT_SEVERITIES) });
+export const ALERT_TEST_KIND = "test_alert";
 
 export const adminAlertSchema = z.object({
   id: uuid, kind: z.string(), severity: z.enum(ALERT_SEVERITIES), subject: z.string(), details: z.record(z.unknown()),
@@ -208,5 +211,7 @@ export const adminAlertSchema = z.object({
 export type AdminAlert = z.infer<typeof adminAlertSchema>;
 export const adminAlertsResponseSchema = z.object({ alerts: z.array(adminAlertSchema) });
 /** The admin home's badge: open alerts by severity (the console shows the critical count). */
+/** Where it will go: "email and webhook within 15 s", "the next email digest", "the console list only". */
+export const adminAlertTestResponseSchema = z.object({ alert: adminAlertSchema, delivery: z.string() });
 export const adminAlertAckResponseSchema = z.object({ alert: adminAlertSchema, replayed: z.boolean() });
 export const adminAlertsSummarySchema = z.object({ open: z.object({ info: z.number().int(), warning: z.number().int(), critical: z.number().int() }) });

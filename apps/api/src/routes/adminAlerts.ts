@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { acknowledgeAdminAlert, listAdminAlerts, openAlertCounts, type AdminAlertRow, type User } from "@contestly/db";
-import { adminAlertAckResponseSchema, adminAlertAckSchema, adminAlertSchema, adminAlertsQuerySchema, adminAlertsResponseSchema, adminAlertsSummarySchema, type AdminAlert } from "@contestly/shared";
+import { acknowledgeAdminAlert, listAdminAlerts, openAlertCounts, raiseTestAlert, type AdminAlertRow, type User } from "@contestly/db";
+import { adminAlertAckResponseSchema, adminAlertAckSchema, adminAlertSchema, adminAlertTestResponseSchema, adminAlertTestSchema, type AlertSeverity, adminAlertsQuerySchema, adminAlertsResponseSchema, adminAlertsSummarySchema, type AdminAlert } from "@contestly/shared";
 import { requireAdmin, uuidParam } from "../auth.js";
 import { toPerson } from "../people.js";
 import { httpError } from "../httpError.js";
@@ -10,6 +10,13 @@ const alertView = (a: AdminAlertRow, ackedBy: User | null): AdminAlert => adminA
   firstSeenAt: a.firstSeenAt.toISOString(), lastSeenAt: a.lastSeenAt.toISOString(), count: a.count,
   acknowledgedBy: ackedBy ? toPerson(ackedBy) : null, acknowledgedAt: a.acknowledgedAt?.toISOString() ?? null, ackNote: a.ackNote,
 });
+
+/** What the worker will do with an alert of this severity (alertDelivery.ts), for the test endpoint's answer. */
+const DELIVERY: Record<AlertSeverity, string> = {
+  critical: "email (ADMIN_ALERT_EMAILS) and the webhook, if set, within 15 seconds",
+  warning: "the next email digest (ADMIN_ALERT_DIGEST_MINUTES), and the webhook only if it takes warnings",
+  info: "the console's alert list only",
+};
 
 /** Admin alerts (raised with adminAlert() in packages/db, delivered by the worker): the list, the home badge, acknowledging. */
 export async function adminAlertsRoutes(app: FastifyInstance) {
@@ -24,6 +31,14 @@ export async function adminAlertsRoutes(app: FastifyInstance) {
   app.get("/admin/alerts/summary", async (req) => {
     requireAdmin(req);
     return adminAlertsSummarySchema.parse({ open: await openAlertCounts() });
+  });
+
+  /** A test alert of this severity through the normal delivery path, to check each channel. Logged. */
+  app.post("/admin/alerts/test", async (req) => {
+    const admin = requireAdmin(req);
+    const { severity } = adminAlertTestSchema.parse(req.body);
+    const alert = await raiseTestAlert(admin, severity);
+    return adminAlertTestResponseSchema.parse({ alert: alertView(alert, null), delivery: DELIVERY[severity] });
   });
 
   /** Acknowledge with a note (what was found or done), logged. A second acknowledge answers the first (replayed). */

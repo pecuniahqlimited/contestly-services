@@ -5,8 +5,9 @@
  * Severity decides where it goes: critical by email at once (and the webhook), warning in the email
  * digest, info only in the console's list. Every alert is also a console line when raised.
  */
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
-import { ALERT_SEVERITIES, type AlertSeverity } from "@contestly/shared";
+import { ALERT_SEVERITIES, ALERT_TEST_KIND, type AlertSeverity } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { adminAlertDeliveries, adminAlerts, users, type User } from "./schema.js";
 import { recordAdminAction } from "./admin.js";
@@ -121,6 +122,23 @@ export async function acknowledgeAdminAlert(adminUserId: string, id: string, not
       before: { acknowledgedAt: null }, after: { kind: a.kind, severity: a.severity, count: a.count },
     });
     return { alert: after, ackedBy: await acker(adminUserId), replayed: false };
+  });
+}
+
+/**
+ * An admin's test alert, to check each channel in dev and production: a fresh key every time (never
+ * deduped into an earlier one), delivered by the worker like any other, logged in admin_actions.
+ */
+export async function raiseTestAlert(admin: User, severity: AlertSeverity): Promise<AdminAlertRow> {
+  return db.transaction(async (tx) => {
+    const at = new Date().toISOString();
+    const { id } = await adminAlert({
+      kind: ALERT_TEST_KIND, severity, subject: `Test alert (${severity}) sent by @${admin.handle}`,
+      details: { test: true, by: admin.handle, at }, dedupeKey: `${ALERT_TEST_KIND}:${randomUUID()}`, refType: "user", refId: admin.id,
+    }, tx);
+    await recordAdminAction(tx, { adminUserId: admin.id, action: "alert.test", targetType: "alert", targetId: id, after: { severity } });
+    const [row] = await tx.select().from(adminAlerts).where(eq(adminAlerts.id, id));
+    return row;
   });
 }
 
