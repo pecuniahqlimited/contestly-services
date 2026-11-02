@@ -129,17 +129,21 @@ export async function settleLocked(tx: Tx, p: Payout, via: string, reportedFeeKo
 }
 
 /**
- * The rest of a sent payout's fee, once it's known to have gone out (a settle, or a contradiction resolved):
- * what the user didn't already pay is the platform's, under payout_fee:<id>. Returns the fee booked.
+ * The rest of a sent payout's fee, once it's known to have gone out (a settle, or a contradiction resolved),
+ * under payout_fee:<id>. Returns the fee booked (the provider's, else our estimate).
+ * - The platform bears it: the whole fee from platform_funds.
+ * - The user bears it: they paid our estimate already; the difference from what the provider actually
+ *   charged goes to fee_variance, which may go either way (a lower real fee must not push platform_funds up).
  */
 export async function bookFee(tx: Tx, p: Payout, reportedFeeKobo: number | null): Promise<number> {
   const userPaidFee = p.amountKobo - p.sentKobo;
   const feeKobo = reportedFeeKobo ?? p.feeKobo;
-  const platformPart = feeKobo - userPaidFee;
-  if (platformPart !== 0) {
+  const rest = feeKobo - userPaidFee;
+  if (rest !== 0) {
+    const from: ledger.AccountRef = userPaidFee > 0 ? { system: "fee_variance", scope: p.provider } : { system: "platform_funds" };
     await ledger.journal(tx, {
       type: "withdrawal_fee", refType: "payout", refId: p.id, idempotencyKey: `payout_fee:${p.id}`,
-      legs: [{ account: { system: "payout_fees", scope: p.provider }, amountKobo: platformPart }, { account: { system: "platform_funds" }, amountKobo: -platformPart }],
+      legs: [{ account: { system: "payout_fees", scope: p.provider }, amountKobo: rest }, { account: from, amountKobo: -rest }],
     });
   }
   return feeKobo;

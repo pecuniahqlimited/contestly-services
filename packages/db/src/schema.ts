@@ -6,7 +6,7 @@ export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 /** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0013). */
-export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold"]);
+export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "entry_forfeited", "fee_variance"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
@@ -832,6 +832,40 @@ export const payoutContradictions = pgTable("payout_contradictions", {
 }, (t) => [uniqueIndex("payout_contradictions_payout").on(t.payoutId), index("payout_contradictions_user_idx").on(t.userId)]);
 
 /**
+ * A banned player's entry kept by the platform when a party nobody can be ranked in is cancelled (ADR 0013):
+ * recorded with the ban as it stood. The money is in entry_forfeited under party_forfeit:<seat id>.
+ */
+export const entryForfeits = pgTable("entry_forfeits", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partyId: uuid("party_id").notNull().references(() => parties.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  seatId: uuid("seat_id").notNull(),
+  amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
+  bannedAt: timestamp("banned_at", { withTimezone: true }).notNull(),
+  banReason: text("ban_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("entry_forfeits_seat").on(t.seatId)]);
+
+/**
+ * An invariant breach admins have acknowledged (ADR 0013): payments.config asks with a reason, a second
+ * admin confirms. A breach of the same kind on the same items, no larger, doesn't pause payouts again; a new
+ * or growing one does. Never edited after (except its status).
+ */
+export const invariantAcknowledgments = pgTable("invariant_acknowledgments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: text("kind").notNull(),
+  /** What it covers: item (account, party, provider…) → magnitude when acknowledged. */
+  items: jsonb("items").notNull(),
+  detail: jsonb("detail").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["awaiting_second_admin", "applied"] }).notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+}, (t) => [index("invariant_acknowledgments_kind_idx").on(t.kind)]);
+
+/**
  * Granting payments permissions is loosening (ADR 0013): a payments.config holder asks, a different one
  * confirms; never the grantee, never for themselves. Revoking applies at once. Never edited after.
  */
@@ -1233,6 +1267,7 @@ export type PayoutContradiction = typeof payoutContradictions.$inferSelect;
 export type PaymentConfigChange = typeof paymentConfigChanges.$inferSelect;
 export type OwedWaiver = typeof owedWaivers.$inferSelect;
 export type PaymentPermissionGrant = typeof paymentPermissionGrants.$inferSelect;
+export type InvariantAcknowledgment = typeof invariantAcknowledgments.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;

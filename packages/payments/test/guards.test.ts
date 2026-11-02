@@ -9,7 +9,7 @@ import { assertPaymentsEnv, defaultProviderName, paymentsDevTools } from "../src
 import { onResend } from "../src/payouts.js";
 import { assertQuietSinceSend, judge } from "../src/finalize.js";
 import { configLoosens, settingsLoosens } from "../src/controls.js";
-import { repeatedBreaches } from "../src/invariants.js";
+import { isAcknowledged, repeatedBreaches } from "../src/invariants.js";
 import type { ProviderCheck } from "../src/types.js";
 import { compare } from "../src/reconcile.js";
 import { backoffMs } from "../src/common.js";
@@ -163,9 +163,21 @@ describe("backoff", () => {
 
 describe("invariant breaches", () => {
   it("only ones the second snapshot finds again count; the rest are transient; a new one in the second read waits for the next run", () => {
-    const b = (kind: string) => ({ kind, detail: {} });
+    const b = (kind: string) => ({ kind, detail: {}, items: {} });
     expect(repeatedBreaches([b("provider_topup_in"), b("balance_drift")], [b("balance_drift"), b("closed_party_pot")]))
       .toEqual({ breaches: [b("balance_drift")], transient: ["provider_topup_in"] });
     expect(repeatedBreaches([b("x")], [])).toEqual({ breaches: [], transient: ["x"] });
+  });
+});
+
+describe("acknowledged breaches", () => {
+  const b = (items: Record<string, number>) => ({ kind: "closed_party_pot", detail: {}, items });
+  it("cover the same items at no larger magnitude; a new item or a bigger one isn't covered", () => {
+    const acks = [{ p1: 500, p2: 100 }, { p3: 50 }];
+    expect(isAcknowledged(b({ p1: 500 }), acks)).toBe(true);
+    expect(isAcknowledged(b({ p1: 400, p3: 50 }), acks)).toBe(true);
+    expect(isAcknowledged(b({ p1: 501 }), acks)).toBe(false);
+    expect(isAcknowledged(b({ p1: 500, p4: 1 }), acks)).toBe(false);
+    expect(isAcknowledged(b({ p1: 1 }), [])).toBe(false);
   });
 });

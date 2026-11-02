@@ -3,13 +3,13 @@ import { z } from "zod";
 import { getPaymentsConfig } from "@contestly/db";
 import {
   adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
-  adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
+  adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, invariantAcknowledgmentSchema, acknowledgeBreachBodySchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
   acknowledgeAlert, adminVerifyTopup, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
   listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
-  confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
+  confirmAcknowledgment, listAcknowledgments, requestAcknowledgment, confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
 } from "@contestly/payments";
 import { requirePermission, uuidParam } from "../auth.js";
 import { paymentsDeps } from "../payments.js";
@@ -142,6 +142,21 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.post("/admin/payments/invariants/run", async (req) => {
     await requirePermission(req, "payments.finalize");
     return runInvariants();
+  });
+
+  /** Acknowledge a breach as it stands now (payments.config, then a second admin): the same, no larger, won't pause payouts again. */
+  app.post("/admin/payments/invariants/acknowledge", async (req) => {
+    const admin = await requirePermission(req, "payments.config");
+    const { kind, reason } = acknowledgeBreachBodySchema.parse(req.body);
+    return { acknowledgment: invariantAcknowledgmentSchema.parse(await requestAcknowledgment(admin.id, kind, reason)) };
+  });
+  app.post("/admin/payments/invariant-acknowledgments/:id/confirm", async (req) => {
+    const admin = await requirePermission(req, "payments.config");
+    return { acknowledgment: invariantAcknowledgmentSchema.parse(await confirmAcknowledgment(admin.id, uuidParam(req))) };
+  });
+  app.get("/admin/payments/invariant-acknowledgments", async (req) => {
+    await requirePermission(req, "payments.view");
+    return { acknowledgments: (await listAcknowledgments(limitQuery.parse(req.query).limit)).map((a) => invariantAcknowledgmentSchema.parse(a)) };
   });
 
   // ---- Config ----

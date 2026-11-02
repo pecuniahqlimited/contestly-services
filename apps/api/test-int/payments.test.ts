@@ -7,9 +7,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, desc, eq, like, sql as sqlRaw } from "drizzle-orm";
+import { and, desc, eq, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, db, deletionBlockers, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents,
+  adminActions, adminPermissions, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -1306,12 +1306,91 @@ describe("guardrails", () => {
     })).toEqual(["platform_direction"]);
   });
 
+  it("a party with every signed-up player banned mid-game ends with an empty pot and no breach: refunds as paid, banned entries forfeited", async () => {
+    const host = await makeUser(nextName("bnhost"));
+    const [a, b, c] = [await makeUser(nextName("bna")), await makeUser(nextName("bnb")), await makeUser(nextName("bnc"))];
+    for (const u of [a, b, c]) await fund(u, kobo(1000));
+    await db.transaction((tx) => ledger.post(tx, { userId: c.id, kind: "bonus", amountKobo: kobo(200), type: "welcome_bonus", idempotencyKey: `t:bn:bonus:${c.id}` }));
+    const [party] = await db.insert(parties).values({ createdByUserId: host.id, title: `bans ${tag}`, category: "General knowledge", maxPlayers: 6, funding: "pooled", entryKobo: kobo(500), split: [100], startsAt: new Date(), status: "live" }).returning();
+    await db.transaction(async (tx) => { for (const u of [a, b, c]) await takeSeat(tx, party, u.id, kobo(500)); });
+    // a and b played and were ranked; c sat there unranked. Then a and b are banned mid-game.
+    await db.update(partyPlayers).set({ rank: 1 }).where(and(eq(partyPlayers.partyId, party.id), eq(partyPlayers.userId, a.id)));
+    await db.update(partyPlayers).set({ rank: 2 }).where(and(eq(partyPlayers.partyId, party.id), eq(partyPlayers.userId, b.id)));
+    await db.update(users).set({ bannedAt: new Date(), banReason: "cheating" }).where(inArray(users.id, [a.id, b.id]));
+    const out = await db.transaction(async (tx) => {
+      const [p] = await tx.select().from(parties).where(eq(parties.id, party.id)).for("update");
+      return cancelIfUnplaceable(tx, p);
+    });
+    expect(out).toMatchObject({ players: 3, forfeited: 2 });
+    const [after] = await db.select().from(parties).where(eq(parties.id, party.id));
+    expect([after.status, after.cancelledBy]).toEqual(["cancelled", "system"]);
+    expect(await db.transaction((tx) => potBalance(tx, party.id))).toBe(0);
+    expect(await ledger.balances(c.id)).toEqual({ cashKobo: kobo(1000), bonusKobo: kobo(200) }); // refunded as paid: bonus to bonus, cash to cash
+    expect((await ledger.balances(a.id)).cashKobo).toBe(kobo(500)); // the banned entry is kept
+    const forfeits = await db.select().from(entryForfeits).where(eq(entryForfeits.partyId, party.id));
+    expect(forfeits.map((f) => [f.userId, f.amountKobo, f.banReason]).sort()).toEqual([[a.id, kobo(500), "cheating"], [b.id, kobo(500), "cheating"]].sort());
+    expect(await findBreaches(db)).toEqual([]);
+    // Settling twice moves nothing.
+    expect(await db.transaction(async (tx) => cancelIfUnplaceable(tx, (await tx.select().from(parties).where(eq(parties.id, party.id)))[0]))).toBeNull();
+  });
+
+  it("a user-borne fee that comes in lower than estimated goes to fee_variance, not platform_funds: no breach", async () => {
+    await config((c) => { c.payout.feeBearer = "user"; });
+    try {
+      const { u, account } = await withdrawer("feelow");
+      const { payout } = await request(u, account.id, kobo(1500));
+      expect([payout.feeKobo, payout.sentKobo]).toEqual([1_000, kobo(1500) - 1_000]);
+      await db.update(payouts).set({ status: "submitted", submittedAt: new Date(), lastSentAt: new Date(), sendAttempts: 1 }).where(eq(payouts.id, payout.id));
+      const paid = { status: "success" as const, providerStatus: "success", reference: payout.reference, amountKobo: payout.sentKobo, currency: "NGN", userId: null, feeKobo: 400, error: null };
+      expect(await applyOutcome(payout.id, paid, "check")).toBe("succeeded");
+      const [variance] = await db.select().from(ledgerEntries).where(eq(ledgerEntries.idempotencyKey, `payout_fee:${payout.id}#1`));
+      const [acct] = await db.select().from(ledgerAccounts).where(eq(ledgerAccounts.id, variance.accountId));
+      expect([acct.kind, variance.amountKobo]).toEqual(["fee_variance", 600]);
+      expect((await reload(payout.id)).feeKobo).toBe(400);
+      expect(await findBreaches(db)).toEqual([]);
+    } finally {
+      await config(() => {});
+    }
+  });
+
+  it("an acknowledged breach doesn't pause payouts again; a growing one does; acknowledging takes two admins and a reason", async () => {
+    const u = await makeUser(nextName("invack"));
+    const t = await createTopup(u, kobo(500), { returnUrl: null });
+    await mock.completeCheckout(t.reference, "pay");
+    expect(await confirmTopup(t.id, "check")).toBe("credited");
+    await db.update(topups).set({ creditedKobo: kobo(499) }).where(eq(topups.id, t.id)); // a known, explained difference
+    const currentPause = async () => (await db.select().from(paymentSettings).orderBy(desc(paymentSettings.version)).limit(1))[0];
+    try {
+      expect((await runInvariants()).paused).toBe(true);
+      await settings({});
+      const ask = await app.inject({ method: "POST", url: "/admin/payments/invariants/acknowledge", headers: as(admin), payload: { kind: "provider_topup_in", reason: "ticket 7: record corrected upstream" } });
+      expect(ask.json().acknowledgment).toMatchObject({ status: "awaiting_second_admin", items: { mock: kobo(1) } });
+      expect((await app.inject({ method: "POST", url: `/admin/payments/invariant-acknowledgments/${ask.json().acknowledgment.id}/confirm`, headers: as(admin) })).json().error).toBe("second_admin_required");
+      expect((await runInvariants()).paused).toBe(true); // asked, not yet confirmed: still pauses
+      await settings({});
+      expect((await app.inject({ method: "POST", url: `/admin/payments/invariant-acknowledgments/${ask.json().acknowledgment.id}/confirm`, headers: as(admin2) })).json().acknowledgment.status).toBe("applied");
+      const quiet = await runInvariants();
+      expect([quiet.paused, quiet.breaches, quiet.acknowledged.map((b) => b.kind)]).toEqual([false, [], ["provider_topup_in"]]);
+      expect((await currentPause()).payoutsPaused).toBe(false);
+      const page = (await app.inject({ method: "GET", url: "/admin/payments", headers: as(viewer) })).json();
+      expect(page.acknowledgedBreaches.some((a: { id: string }) => a.id === ask.json().acknowledgment.id)).toBe(true);
+      // It grows: payouts pause again.
+      await db.update(topups).set({ creditedKobo: kobo(490) }).where(eq(topups.id, t.id));
+      const grown = await runInvariants();
+      expect([grown.paused, grown.breaches.map((b) => b.kind)]).toEqual([true, ["provider_topup_in"]]);
+    } finally {
+      await db.update(topups).set({ creditedKobo: kobo(500) }).where(eq(topups.id, t.id));
+      await settings({});
+    }
+    expect((await runInvariants()).breaches).toEqual([]);
+  });
+
   it("for real: one REPEATABLE READ snapshot, a breach that repeats pauses payouts; clearing it takes two admins", async () => {
     const u = await makeUser(nextName("invreal"));
     const t = await createTopup(u, kobo(500), { returnUrl: null });
     await mock.completeCheckout(t.reference, "pay");
     expect(await confirmTopup(t.id, "check")).toBe("credited");
-    await db.update(topups).set({ creditedKobo: kobo(499) }).where(eq(topups.id, t.id)); // the record no longer matches the books
+    await db.update(topups).set({ creditedKobo: kobo(400) }).where(eq(topups.id, t.id)); // the record no longer matches the books (by more than anything acknowledged)
     try {
       const out = await runInvariants();
       expect(out.breaches.map((b) => b.kind)).toEqual(["provider_topup_in"]);

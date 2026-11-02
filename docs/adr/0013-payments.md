@@ -154,6 +154,19 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    read-only snapshot. A breach is checked again in a fresh snapshot: only one that repeats raises its
    critical alert and pauses payouts until admins clear it (un-pausing takes two, see 10); one that
    doesn't repeat is a warning.
+   **The invariants must never cause an endless outage:**
+   - *Nobody can be placed.* When settlement finds nobody it can rank for prizes (every signed-up player
+     banned mid-game, say) and the pot has money in it, the party is cancelled by the system and every seat
+     refunded as it was paid; a banned player's entry goes to `entry_forfeited` instead, recorded with the
+     ban (`entry_forfeits`). The pot is always empty when a party closes.
+   - *Fees.* When the user bears the fee, they paid our estimate; the difference from what the provider
+     actually charged goes to `fee_variance`, which may go either way (no direction rule). A platform-borne
+     fee comes from `platform_funds`. Settles and resolved contradictions book fees through one function.
+   - *Acknowledging.* An admin with `payments.config` can acknowledge a breach as it stands, with a reason; a
+     second admin confirms (`invariant_acknowledgments`, logged). Each breach lists the items it's about
+     (accounts, parties, providers, payouts) and how far off each is; one of the same kind whose items were
+     all acknowledged at no smaller magnitude doesn't alert or pause again; a new item or a larger one
+     does. Acknowledged breaches show on the payments page.
 8. **Reconciliation and alerts.** Nightly per provider: our day's top-ups and withdrawals against the
    provider's lists; differences (missing ours, missing theirs, amount, status) go to a table and the
    console; nothing is fixed automatically (a confirmed missed top-up is replayed by an admin through the

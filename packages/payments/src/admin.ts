@@ -7,21 +7,25 @@ import { paymentsError } from "./common.js";
 import { configuredProviderNames, knownProviderNames } from "./providers/index.js";
 import { currentSettings } from "./settings.js";
 import { confirmTopup } from "./topups.js";
+import { listAcknowledgments } from "./invariants.js";
 
 const iso = (d: Date | null) => d?.toISOString() ?? null;
 
 export async function paymentsOverview() {
-  const [settings, config, topupCounts, payoutCounts, [alerts]] = await Promise.all([
+  const [settings, config, topupCounts, payoutCounts, [alerts], acknowledged] = await Promise.all([
     currentSettings(), getPaymentsConfig(),
     db.select({ status: topups.status, n: count() }).from(topups).groupBy(topups.status),
     db.select({ status: payouts.status, n: count() }).from(payouts).groupBy(payouts.status),
     db.select({ n: count() }).from(paymentAlerts).where(isNull(paymentAlerts.acknowledgedAt)),
+    listAcknowledgments(50),
   ]);
   return {
     settings, config, providers: { known: knownProviderNames(), configured: configuredProviderNames() },
     topups: Object.fromEntries(topupCounts.map((r) => [r.status, Number(r.n)])),
     payouts: Object.fromEntries(payoutCounts.map((r) => [r.status, Number(r.n)])),
     openAlerts: Number(alerts.n),
+    /** Breaches admins acknowledged (and ones waiting for a second admin): shown on the payments page. */
+    acknowledgedBreaches: acknowledged,
   };
 }
 

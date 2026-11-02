@@ -217,6 +217,14 @@ export const paymentConfigChangeSchema = z.object({
 });
 export type PaymentConfigChangeView = z.infer<typeof paymentConfigChangeSchema>;
 
+/** An invariant breach admins acknowledged: the same kind on the same items, no larger, doesn't pause payouts again. */
+export const invariantAcknowledgmentSchema = z.object({
+  id: z.string().uuid(), kind: z.string(), items: z.record(z.number()), detail: z.unknown(), reason: z.string(),
+  status: z.enum(["awaiting_second_admin", "applied"]), requestedBy: z.string().uuid(), confirmedBy: z.string().uuid().nullable(),
+  createdAt: z.string(), appliedAt: z.string().nullable(),
+});
+export const acknowledgeBreachBodySchema = z.object({ kind: z.string().min(1).max(100), reason: z.string().trim().min(3).max(500) });
+
 /** A grant of payments permissions waiting for (or confirmed by) a second payments.config holder. */
 export const permissionGrantSchema = z.object({
   id: z.string().uuid(), userId: z.string().uuid(), permissions: z.array(z.enum(PAYMENT_PERMISSIONS)), reason: z.string(),

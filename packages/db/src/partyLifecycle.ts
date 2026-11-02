@@ -7,7 +7,7 @@
 import { and, count, eq, inArray, not } from "drizzle-orm";
 import { NOT_HOST, PARTY_CLOSED, PARTY_LIVE, hostCancelMessage, type CancelledBy, type ChatMessage, type HostCancelResponse } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { ledgerAccounts, ledgerEntries, parties, partyPlayers, type Party } from "./schema.js";
+import { entryForfeits, ledgerAccounts, ledgerEntries, parties, partyPlayers, users, type Party } from "./schema.js";
 import { systemLine } from "./chat.js";
 import { isHostTeam } from "./host.js";
 import * as ledger from "./ledger.js";
@@ -21,10 +21,14 @@ export type CancelledByInput = { by: Exclude<CancelledBy, "host"> } | { by: "hos
  * (and by whom), and write `message` in the party chat. Returns the seats refunded and that line, which
  * the caller publishes once the transaction commits.
  */
-export async function refundAndCancel(tx: Tx, p: Party, message: string, cancelledBy: CancelledByInput = { by: "system" }): Promise<{ players: number; line: ChatMessage }> {
+export async function refundAndCancel(tx: Tx, p: Party, message: string, cancelledBy: CancelledByInput = { by: "system" }, opts: CancelOptions = {}): Promise<{ players: number; line: ChatMessage }> {
   const players = await tx.select().from(partyPlayers).where(eq(partyPlayers.partyId, p.id));
   // A seat charged under its own key (one per seat since leaving exists) is refunded under its own key too.
-  for (const pl of players) await ledger.refund(tx, { chargeKey: entryChargeKey(pl), type: "party_refund", refType: "party", refId: p.id, idempotencyKey: pl.entryKey ? `party_refund:${pl.id}` : `party_refund:${p.id}:${pl.userId}` });
+  for (const pl of players) {
+    const ban = opts.forfeit?.get(pl.userId);
+    if (ban) await forfeitSeat(tx, p, pl, ban);
+    else await ledger.refund(tx, { chargeKey: entryChargeKey(pl), type: "party_refund", refType: "party", refId: p.id, idempotencyKey: pl.entryKey ? `party_refund:${pl.id}` : `party_refund:${p.id}:${pl.userId}` });
+  }
   await ledger.release(tx, { holdKey: `party_fund:${p.id}`, type: "party_refund", refType: "party", refId: p.id, idempotencyKey: `party_fund_refund:${p.id}` });
   await tx.update(parties).set({
     status: "cancelled", endedAt: new Date(), cancelledBy: cancelledBy.by,
@@ -32,6 +36,54 @@ export async function refundAndCancel(tx: Tx, p: Party, message: string, cancell
   }).where(eq(parties.id, p.id));
   const line = await systemLine(tx, p.id, message);
   return { players: players.length, line };
+}
+
+export interface Ban { bannedAt: Date; banReason: string | null }
+/** forfeit: seats whose entry the platform keeps instead of refunding (banned players), with their ban. */
+export interface CancelOptions { forfeit?: ReadonlyMap<string, Ban> }
+
+/** A banned player's entry: from the pot to entry_forfeited (bonus and cash alike), recorded with the ban. Idempotent per seat. */
+async function forfeitSeat(tx: Tx, p: Party, pl: typeof partyPlayers.$inferSelect, ban: Ban) {
+  const key = entryChargeKey(pl);
+  const charged = await tx.select({ amountKobo: ledgerEntries.amountKobo }).from(ledgerEntries).where(inArray(ledgerEntries.idempotencyKey, [`${key}:bonus`, `${key}:cash`]));
+  const total = -charged.reduce((a, r) => a + Number(r.amountKobo), 0);
+  if (total <= 0) return;
+  await ledger.journal(tx, {
+    type: "entry_forfeited", refType: "party", refId: p.id, idempotencyKey: `party_forfeit:${pl.id}`,
+    legs: [{ account: { system: "party_pot", scope: p.id }, amountKobo: -total }, { account: { system: "entry_forfeited" }, amountKobo: total }],
+  });
+  await tx.insert(entryForfeits).values({ partyId: p.id, userId: pl.userId, seatId: pl.id, amountKobo: total, bannedAt: ban.bannedAt, banReason: ban.banReason }).onConflictDoNothing();
+}
+
+export const UNRANKABLE_MESSAGE = "Nobody in this party could be placed, so it was cancelled. Entries have been refunded.";
+
+/**
+ * A finished round in which nobody can be ranked for prizes (everyone signed up was banned mid-game, say)
+ * still has money in its pot: settlement must never leave it there (ADR 0013). Cancel it as the system,
+ * refunding every seat the way it was paid, except a banned player's entry, which the platform keeps.
+ * Caller holds the party row.
+ */
+export async function cancelUnrankable(tx: Tx, p: Party) {
+  const banned = await tx.select({ userId: partyPlayers.userId, bannedAt: users.bannedAt, banReason: users.banReason }).from(partyPlayers)
+    .innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, p.id));
+  const forfeit = new Map(banned.filter((b) => b.bannedAt).map((b) => [b.userId, { bannedAt: b.bannedAt!, banReason: b.banReason }]));
+  const out = await refundAndCancel(tx, p, UNRANKABLE_MESSAGE, { by: "system" }, { forfeit });
+  return { ...out, forfeited: forfeit.size };
+}
+
+/** What's in a party's pot right now (0 if it never had one). */
+export async function potBalance(tx: Tx, partyId: string) {
+  const [row] = await tx.select({ b: ledgerAccounts.balanceKobo }).from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "party_pot"), eq(ledgerAccounts.scope, partyId)));
+  return row?.b ?? 0;
+}
+
+/**
+ * Settlement found nobody it can place: if the pot has money in it, cancel (cancelUnrankable) and return
+ * what happened; with an empty pot (a free party only guests played) there's nothing to do: null.
+ */
+export async function cancelIfUnplaceable(tx: Tx, p: Party) {
+  if ((await potBalance(tx, p.id)) === 0) return null;
+  return cancelUnrankable(tx, p);
 }
 
 export const ADMIN_CANCEL_MESSAGE = "This party was cancelled by Contestly. Everyone has been refunded.";

@@ -6,7 +6,7 @@
  * What it tells the outside world is passed in.
  */
 import { and, asc, eq } from "drizzle-orm";
-import { db, getPartyConfig, ledger, parties, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, systemLine, users } from "@contestly/db";
+import { cancelIfUnplaceable, db, getPartyConfig, ledger, parties, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, systemLine, users } from "@contestly/db";
 import { isGoods, type ChatMessage } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 
@@ -44,6 +44,15 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
       }
       console.log(`[party] ${p.title}: ${awards.length} goods prize(s) awarded (one fulfilment record per place)`);
     } else if (!ranked.length) {
+      // Nobody can be placed. A pot with money in it is never left there (ADR 0013): cancel as the system,
+      // refund every seat as paid, banned players' entries to entry_forfeited.
+      const out = await cancelIfUnplaceable(tx, p);
+      if (out) {
+        line = out.line;
+        await deps.emit({ partyId, status: "cancelled" });
+        console.log(`[party] ${p.title}: nobody could be placed; cancelled, ${out.players - out.forfeited} refunded, ${out.forfeited} banned entr${out.forfeited === 1 ? "y" : "ies"} forfeited`);
+        return false;
+      }
       console.log(`[party] ${p.title}: only guests played, nothing to pay`);
     } else {
       const s = computeSettlement({ funding: p.funding, entryKobo: p.entryKobo, playerCount: players.length, hostPoolKobo: p.hostPoolKobo, split: p.split, ranked }, cfg);
