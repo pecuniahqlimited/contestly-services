@@ -101,4 +101,12 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   finalizes it. Only an insufficient provider balance and a rejected recipient are definite failures.
 - Deleting an account now also waits for an open withdrawal (`withdrawal_in_progress`); `cash_balance`'s
   copy no longer says "contact support".
+- The minimum withdrawal defaults to ₦1,000 (admin config). Paystack charged ₦10 to send ₦100 in test mode and
+  the platform bears the fee by default, so below that the fee is too large a share of what moves.
+- Checked against Paystack's test API (`npm run paystack:check`, 2026-11-02): checkout, verify (pending as
+  "abandoned" before paying, then success with our reference, amount, currency and user id), not_found for
+  an unknown reference, a ₦100 transfer that succeeded with `fee_charged` ₦10, and a resend of the same
+  reference refused as a duplicate (mapped to unknown, so it is checked, not resent or reversed). Test mode
+  did not refuse transfers before business verification; live mode may still require a verified business
+  before it allows transfers (Paystack's "starter business" refusal), which the module treats as unknown.
 - `/wallet/dev-topup` stays for local work and sims (minted against `dev_mint`, 404 in production).

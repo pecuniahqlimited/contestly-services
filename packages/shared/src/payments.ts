@@ -92,6 +92,10 @@ export const paymentsConfigSchema = z.object({
 }).refine((c) => c.topup.minKobo <= c.topup.maxKobo && c.payout.minKobo <= c.payout.maxKobo, { message: "min must not exceed max" });
 export type PaymentsConfig = z.infer<typeof paymentsConfigSchema>;
 
+/**
+ * Defaults. The minimum withdrawal is ₦1,000: Paystack charged ₦10 to send ₦100 in test (platform-paid by
+ * default), so smaller withdrawals would cost the platform a tenth of what they move. ADR 0013.
+ */
 export const DEFAULT_PAYMENTS_CONFIG: PaymentsConfig = {
   topup: { minKobo: 10_000, maxKobo: 50_000_000, dailyCapKobo: 100_000_000 },
   payout: { minKobo: 100_000, maxKobo: 50_000_000, dailyAmountKobo: 50_000_000, dailyCount: 5, approvalThresholdKobo: 10_000_000, userDailyApprovalCeilingKobo: 20_000_000, feeBearer: "platform" },
