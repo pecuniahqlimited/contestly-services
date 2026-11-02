@@ -1,8 +1,19 @@
 /** Small pieces every payments module uses: typed HTTP errors, the Lagos day, alerts, and the job hook. */
 import { lagosDay, type PaymentsJob } from "@contestly/shared";
-import { db, paymentAlerts, type Tx } from "@contestly/db";
+import { eq } from "drizzle-orm";
+import { db, paymentAlerts, users, type Tx } from "@contestly/db";
 
 export type Conn = Tx | typeof db;
+
+/**
+ * Lock a person's row for a money path, first (the lock order, ADR 0013: the person, then transaction rows,
+ * then ledger accounts). NO KEY UPDATE: it serialises their money paths without blocking the foreign-key
+ * checks other transactions make against the row.
+ */
+export async function lockPerson(tx: Tx, userId: string) {
+  const [u] = await tx.select().from(users).where(eq(users.id, userId)).for("no key update");
+  return u;
+}
 
 /** An error the API maps to its status and code (with details for the app). */
 export const paymentsError = (statusCode: number, code: string, details?: Record<string, unknown>) =>

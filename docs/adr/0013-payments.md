@@ -77,15 +77,24 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    never reversed, never timed out into either outcome; past a cutoff it raises a critical alert. A
    webhook is a hint that triggers a query; a webhook and a query racing make one transition under the row
    lock. Pausing payouts refuses new requests and leaves queued ones debited and queued.
-   **A success after we reversed** (the person has the money twice) freezes that person's withdrawals at
-   once, in the same transaction as its critical alert (`users.withdrawals_frozen_at`,
-   `payout_contradictions`; `withdraw_not_allowed` with reason `payment_review`; queued ones are held
-   before sending). Reconciliation asks the provider about any reversed withdrawal it lists as paid, so
-   this happens the same night at the latest. Resolving it is maker-checker (`payments.finalize`, then a
-   different admin): in one transaction the debit is re-applied from their cash up to what's there, the
-   rest is recorded as owed (`payout_owed`, one per person, scoped by their user id), the transfer is
-   booked as sent and its fee as paid, and the freeze lifts once nothing else is open for them. A failure
-   after a success is a critical alert, never auto-fixed.
+   **A success after we reversed** (the person has the money twice) is handled at once, in the same
+   transaction as its critical alert, with the person's row locked: their withdrawals freeze
+   (`users.withdrawals_frozen_at`, `payout_contradictions`; `withdraw_not_allowed` with reason
+   `payment_review`); every withdrawal of theirs not yet sent (requested, awaiting approval, queued while
+   paused) is reversed to their cash (`rejected`, marked `contradiction`); then the disputed amount is
+   secured in their `contradiction_hold`: what their cash covers is moved out of cash (so it can't be spent
+   on entries either), and the rest is booked as owed at once. A withdrawal already sent (submitted,
+   unknown) is left to finish and counted in the alert; if it comes back, the money repays what's owed. A
+   send locks the person's row before the payout's and checks the freeze there, so a freeze committing at
+   the same moment is never followed by a send. Reconciliation asks the provider about any reversed
+   withdrawal it lists as paid, so this happens the same night at the latest. Resolving it is
+   maker-checker (`payments.finalize`, then a different admin), and the confirm asks the provider again:
+   still paid, the hold becomes the recovery (hold → `payout_settled`, the fee booked as for a settle),
+   never back to cash; reversed or failed since, the contradiction dissolves (the hold is released: what's
+   still owed for it is cleared, the rest returns to cash; logged with why); anything else, nothing changes
+   (409 `provider_not_definite`). Either way the freeze lifts once nothing else is open for them;
+   withdrawals stay blocked by `amount_owed` while anything is owed. A failure after a success is a critical
+   alert, never auto-fixed.
    **What's owed** (decided 2026-11-02): every new cash credit to that person (winnings, refunds, top-ups,
    anything `ledger.journal()` puts in their cash) repays it first, up to the credit, as its own journal
    (`owed_repaid`, key `owed_repay:<the credit's key>`, the owed account locked so two credits can't repay
@@ -96,7 +105,8 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    it: `payments.finalize`, a second admin, a reason (`owed_waivers`); the platform bears it
    (`payout_owed` ← `platform_funds`), never more than is still owed when it's confirmed, never by or for
    the admin themselves, all logged. The invariants check that what was booked as owed equals what the
-   resolved contradictions recorded, and that no owed account goes above zero.
+   contradictions recorded at their freezes, that each person's hold equals the disputed amount of their
+   contradictions still open, and that no owed account goes above zero and no hold below.
 5. **Manual finalize and maker-checker.** For a stuck payout (`submitted`, `unknown`) or top-up
    (`pending`, `mismatch`, `expired`) an admin with `payments.finalize` sees a fresh provider check, then
    chooses success or failed with a required reason. The server asks the provider again at that moment and

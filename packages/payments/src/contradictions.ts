@@ -1,15 +1,16 @@
 /**
  * A payout we reversed that the provider later said was paid (ADR 0013). The person has the money twice, so
- * the moment it's heard their withdrawals freeze, in the same transaction as the alert (payouts.ts). Resolving
- * it is maker-checker: one admin with payments.finalize asks, a different one confirms. On confirm, in one
- * transaction: the debit is re-applied from their cash, up to what's there; the rest is recorded as owed
- * (their payout_owed account: later cash credits repay it first, and withdrawals wait until it's clear; owed.ts); the transfer is booked as settled (and its fee as paid); withdrawals unfreeze once nothing
- * else is open for them. Every step logged. Nobody acts on their own payout.
+ * the moment it's heard (payouts.ts, freezeForContradiction), in the same transaction as the alert: their
+ * withdrawals freeze, their unsent withdrawals are reversed, and the disputed amount is held (from their cash,
+ * and the rest booked as owed). Resolving it is maker-checker: one admin with payments.finalize asks, a
+ * different one confirms, and the provider is asked again at the confirm (confirmContradictionResolution).
+ * Every step logged. Nobody acts on their own payout.
  */
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { db, ledger, payoutContradictions, payouts, recordAdminAction, users, type PayoutContradiction, type Tx } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED } from "@contestly/shared";
-import { paymentsError } from "./common.js";
+import { lockPerson, paymentsError } from "./common.js";
+import { bookFee, queryProvider } from "./payouts.js";
 
 const iso = (d: Date | null) => d?.toISOString() ?? null;
 export const contradictionView = (c: PayoutContradiction) => ({
@@ -42,46 +43,68 @@ export async function requestContradictionResolution(adminUserId: string, id: st
   });
 }
 
+/** Withdrawals unfreeze once none of the person's contradictions is still open (what's owed keeps blocking them). */
+async function unfreezeIfClear(tx: Tx, userId: string) {
+  const [stillOpen] = await tx.select({ id: payoutContradictions.id }).from(payoutContradictions)
+    .where(and(eq(payoutContradictions.userId, userId), inArray(payoutContradictions.status, ["open", "awaiting_second_admin"])));
+  if (!stillOpen) await tx.update(users).set({ withdrawalsFrozenAt: null }).where(eq(users.id, userId));
+  return !stillOpen;
+}
+
 /**
- * A second admin confirms: recover what the person's cash covers, record the rest as owed, book the transfer
- * as sent, and unfreeze them if this was their last open contradiction. Idempotent on payout_recovery:<payout id>.
+ * A second admin confirms, and the server asks the provider again first:
+ * - still paid: the hold becomes the recovery (never back to cash): hold → payout_settled (and the fee as
+ *   paid). What was booked as owed at the freeze stays owed. Withdrawals unfreeze if nothing else is open,
+ *   and stay blocked by amount_owed while anything is owed.
+ * - reversed or failed since: the contradiction dissolves. The hold goes back: what's still owed for it is
+ *   cleared, the rest returns to their cash; withdrawals unfreeze. Logged with why.
+ * - anything else: nothing changes (409 provider_not_definite); ask again later.
+ * Idempotent on payout_recovery:<payout id> / contradiction_release:<payout id>.
  */
 export async function confirmContradictionResolution(adminUserId: string, id: string, now = new Date()) {
+  const [pre] = await db.select().from(payoutContradictions).where(eq(payoutContradictions.id, id));
+  if (!pre) throw paymentsError(404, "not_found");
+  const [payout] = await db.select().from(payouts).where(eq(payouts.id, pre.payoutId));
+  const check = await queryProvider(payout);
   return db.transaction(async (tx) => {
+    await lockPerson(tx, pre.userId); // the lock order: the person, then transaction rows, then accounts
     const c = await lockContradiction(tx, id);
     if (c.status !== "awaiting_second_admin") throw paymentsError(409, "contradiction_not_pending", { status: c.status });
     if (c.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);
     if (c.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
     const [p] = await tx.select().from(payouts).where(eq(payouts.id, c.payoutId)).for("update");
-    const { cash } = await ledger.lockUserAccounts(tx, c.userId);
-    const recovered = Math.min(cash.balanceKobo, p.amountKobo);
-    const owed = p.amountKobo - recovered;
-    const check = c.providerCheck as { feeKobo?: number | null };
-    const feeKobo = typeof check.feeKobo === "number" ? check.feeKobo : p.feeKobo;
-    const userPaidFee = p.amountKobo - p.sentKobo;
+    const hold = ledger.contradictionHoldAccount(c.userId);
+    const checkSeen = { status: check.status, providerStatus: check.providerStatus, amountKobo: check.amountKobo, feeKobo: check.feeKobo, at: now.toISOString() };
 
-    // Mirrors a settle: what the person had back leaves again, the transfer is booked as sent, the fee as paid.
-    const legs: ledger.Leg[] = [{ account: { system: "payout_settled", scope: p.provider }, amountKobo: p.sentKobo }];
-    if (recovered > 0) legs.push({ account: { userId: c.userId, kind: "cash" }, amountKobo: -recovered });
-    if (owed > 0) legs.push({ account: ledger.owedAccount(c.userId), amountKobo: -owed });
+    if (check.status === "failed") {
+      const owedNow = await ledger.owedKobo(tx, c.userId);
+      const clear = Math.min(owedNow, c.owedKobo ?? 0);
+      const legs: ledger.Leg[] = [{ account: hold, amountKobo: -c.amountKobo }];
+      if (clear > 0) legs.push({ account: ledger.owedAccount(c.userId), amountKobo: clear });
+      if (c.amountKobo - clear > 0) legs.push({ account: { userId: c.userId, kind: "cash" }, amountKobo: c.amountKobo - clear });
+      await ledger.journal(tx, { type: "contradiction_released", refType: "contradiction", refId: c.id, idempotencyKey: `contradiction_release:${p.id}`, legs });
+      const [after] = await tx.update(payoutContradictions).set({ status: "dissolved", confirmedByUserId: adminUserId, resolvedAt: now }).where(eq(payoutContradictions.id, id)).returning();
+      const unfrozen = await unfreezeIfClear(tx, c.userId);
+      await recordAdminAction(tx, {
+        adminUserId, action: "payments.contradiction_dissolved", targetType: "payout", targetId: p.id, reason: c.requestReason,
+        before: { status: c.status }, after: { contradictionId: id, why: "the provider now says the transfer failed or was reversed", providerCheck: checkSeen, owedClearedKobo: clear, toCashKobo: c.amountKobo - clear, unfrozen },
+      });
+      return contradictionView(after);
+    }
+    if (check.status !== "success") throw paymentsError(409, "provider_not_definite", { check: checkSeen });
+
+    // Still paid: the hold becomes the recovery, mirroring a settle. The fee as paid, by the same journal as a settle.
+    const userPaidFee = p.amountKobo - p.sentKobo;
+    const legs: ledger.Leg[] = [{ account: hold, amountKobo: -c.amountKobo }, { account: { system: "payout_settled", scope: p.provider }, amountKobo: p.sentKobo }];
     if (userPaidFee > 0) legs.push({ account: { system: "payout_fees", scope: p.provider }, amountKobo: userPaidFee });
     await ledger.journal(tx, { type: "withdrawal_recovered", refType: "payout", refId: p.id, idempotencyKey: `payout_recovery:${p.id}`, legs });
-    const platformPart = feeKobo - userPaidFee;
-    if (platformPart !== 0) {
-      await ledger.journal(tx, {
-        type: "withdrawal_fee", refType: "payout", refId: p.id, idempotencyKey: `payout_fee:${p.id}`,
-        legs: [{ account: { system: "payout_fees", scope: p.provider }, amountKobo: platformPart }, { account: { system: "platform_funds" }, amountKobo: -platformPart }],
-      });
-    }
+    const feeKobo = await bookFee(tx, p, check.feeKobo);
     await tx.update(payouts).set({ feeKobo, updatedAt: now }).where(eq(payouts.id, p.id));
-    const [after] = await tx.update(payoutContradictions).set({ status: "resolved", confirmedByUserId: adminUserId, resolvedAt: now, recoveredKobo: recovered, owedKobo: owed })
-      .where(eq(payoutContradictions.id, id)).returning();
-    const [stillOpen] = await tx.select({ id: payoutContradictions.id }).from(payoutContradictions)
-      .where(and(eq(payoutContradictions.userId, c.userId), ne(payoutContradictions.status, "resolved")));
-    if (!stillOpen) await tx.update(users).set({ withdrawalsFrozenAt: null }).where(eq(users.id, c.userId));
+    const [after] = await tx.update(payoutContradictions).set({ status: "resolved", confirmedByUserId: adminUserId, resolvedAt: now }).where(eq(payoutContradictions.id, id)).returning();
+    const unfrozen = await unfreezeIfClear(tx, c.userId);
     await recordAdminAction(tx, {
       adminUserId, action: "payments.contradiction_resolved", targetType: "payout", targetId: p.id, reason: c.requestReason,
-      before: { status: c.status, cashKobo: cash.balanceKobo }, after: { contradictionId: id, requestedBy: c.requestedByUserId, recoveredKobo: recovered, owedKobo: owed, feeKobo, unfrozen: !stillOpen },
+      before: { status: c.status }, after: { contradictionId: id, requestedBy: c.requestedByUserId, providerCheck: checkSeen, heldFromCashKobo: c.recoveredKobo, owedKobo: c.owedKobo, feeKobo, unfrozen },
     });
     return contradictionView(after);
   });

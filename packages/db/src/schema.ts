@@ -6,7 +6,7 @@ export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 /** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0013). */
-export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed"]);
+export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
@@ -816,7 +816,8 @@ export const payoutContradictions = pgTable("payout_contradictions", {
   payoutId: uuid("payout_id").notNull().references(() => payouts.id),
   userId: uuid("user_id").notNull().references(() => users.id),
   amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
-  status: text("status", { enum: ["open", "awaiting_second_admin", "resolved"] }).notNull().default("open"),
+  /** resolved: the transfer was confirmed paid, the hold became the recovery. dissolved: the provider later said it failed or was reversed. */
+  status: text("status", { enum: ["open", "awaiting_second_admin", "resolved", "dissolved"] }).notNull().default("open"),
   /** The provider's answer that contradicted the reversal. */
   providerCheck: jsonb("provider_check").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -825,7 +826,7 @@ export const payoutContradictions = pgTable("payout_contradictions", {
   requestedAt: timestamp("requested_at", { withTimezone: true }),
   confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
   resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-  /** Taken back from the person's cash, and what they still owe. */
+  /** At the freeze: what was held from the person's cash, and what their cash didn't cover (booked as owed then). */
   recoveredKobo: bigint("recovered_kobo", { mode: "number" }),
   owedKobo: bigint("owed_kobo", { mode: "number" }),
 }, (t) => [uniqueIndex("payout_contradictions_payout").on(t.payoutId), index("payout_contradictions_user_idx").on(t.userId)]);

@@ -176,6 +176,13 @@
       "when": 1793665815589,
       "tag": "0024_owed_waivers",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793665816224,
+      "tag": "0025_contradiction_hold",
+      "breakpoints": true
     }
   ]
 }

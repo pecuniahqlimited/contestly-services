@@ -229,7 +229,7 @@ export const owedListSchema = z.object({ owed: z.array(z.object({ userId: z.stri
 /** A reversed payout the provider says was paid, and how it was resolved. */
 export const payoutContradictionSchema = z.object({
   id: z.string().uuid(), payoutId: z.string().uuid(), userId: z.string().uuid(), amountKobo: z.number().int(),
-  status: z.enum(["open", "awaiting_second_admin", "resolved"]), providerCheck: z.unknown(),
+  status: z.enum(["open", "awaiting_second_admin", "resolved", "dissolved"]), providerCheck: z.unknown(),
   requestedBy: z.string().uuid().nullable(), requestReason: z.string().nullable(), confirmedBy: z.string().uuid().nullable(),
   recoveredKobo: z.number().int().nullable(), owedKobo: z.number().int().nullable(), createdAt: z.string(), resolvedAt: z.string().nullable(),
 });

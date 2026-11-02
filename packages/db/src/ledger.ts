@@ -39,8 +39,10 @@ type Kind = (typeof USER_ACCOUNT_KINDS)[number];
  * - platform_funds: the platform paying a fee it chose to bear
  * - payout_owed: what one person owes after a payout we reversed was paid after all and their cash didn't
  *   cover it (scope: their user id). Every later cash credit to them repays it first (repayOwed).
+ * - contradiction_hold: the disputed amount of a duplicate payout, secured at the freeze from the person's
+ *   cash and what they owe (scope: their user id); the recovery when it's confirmed, released if it dissolves
  */
-export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed"] as const;
+export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold"] as const;
 export type SystemKind = (typeof SYSTEM_ACCOUNT_KINDS)[number];
 
 export type AccountRef = { userId: string; kind: Kind } | { system: SystemKind; scope?: string };
@@ -124,6 +126,8 @@ export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; 
 
 /** What a person owes (after a duplicate payout their cash didn't cover): the platform's payout_owed account for them. */
 export const owedAccount = (userId: string): AccountRef => ({ system: "payout_owed", scope: userId });
+/** The disputed amount of this person's open duplicate payouts, held out of their cash (ADR 0013). */
+export const contradictionHoldAccount = (userId: string): AccountRef => ({ system: "contradiction_hold", scope: userId });
 
 /** How much this person owes, in kobo (0 when nothing). */
 export async function owedKobo(conn: Tx | typeof db, userId: string): Promise<number> {

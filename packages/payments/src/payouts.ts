@@ -19,12 +19,12 @@
  * person's withdrawals in the same transaction as its alert (payout_contradictions; contradictions.ts).
  */
 import { randomUUID } from "node:crypto";
-import { and, count, eq, gte, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { db, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
 import {
   ACCOUNT_UNRESOLVED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
-import { backoffMs, lagosDayStart, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
+import { backoffMs, lagosDayStart, lockPerson, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
 import { currentSettings } from "./settings.js";
 import { providerNamed } from "./providers/index.js";
 import { unknownCheck, type ProviderCheck, type WebhookEvent } from "./types.js";
@@ -58,9 +58,8 @@ export async function requestPayout(user: User, req: WithdrawalRequest, deps: Pa
   if (!provider.payout) throw paymentsError(409, "provider_not_configured", { provider: provider.name });
 
   const out = await db.transaction(async (tx) => {
-    // NO KEY UPDATE: serialises this person's requests without blocking the foreign-key checks of a worker
-    // settling their earlier payout (which holds payout_pending and touches a payouts row): FOR UPDATE deadlocked.
-    const [fresh] = await tx.select().from(users).where(eq(users.id, user.id)).for("no key update");
+    // The person first (NO KEY UPDATE: FOR UPDATE deadlocked with a worker settling their earlier payout).
+    const fresh = await lockPerson(tx, user.id);
     const [prior] = await tx.select().from(payouts).where(and(eq(payouts.userId, user.id), eq(payouts.clientRequestId, req.clientRequestId)));
     if (prior) return { payout: prior, replayed: true, hold: null as string | null, userHourCount: 0 };
     const blockedNow = withdrawBlockReason(fresh, { owedKobo: await ledger.owedKobo(tx, user.id) });
@@ -125,6 +124,16 @@ export async function settleLocked(tx: Tx, p: Payout, via: string, reportedFeeKo
   const legs: ledger.Leg[] = [{ account: { system: "payout_pending", scope: p.provider }, amountKobo: -p.amountKobo }, { account: { system: "payout_settled", scope: p.provider }, amountKobo: p.sentKobo }];
   if (userPaidFee > 0) legs.push({ account: { system: "payout_fees", scope: p.provider }, amountKobo: userPaidFee });
   await ledger.journal(tx, { type: "withdrawal_settled", refType: "payout", refId: p.id, idempotencyKey: `payout_final:${p.id}`, legs });
+  const feeKobo = await bookFee(tx, p, reportedFeeKobo);
+  await tx.update(payouts).set({ status: "succeeded", feeKobo, finalVia: via, finalAt: now, nextCheckAt: null, updatedAt: now }).where(eq(payouts.id, p.id));
+}
+
+/**
+ * The rest of a sent payout's fee, once it's known to have gone out (a settle, or a contradiction resolved):
+ * what the user didn't already pay is the platform's, under payout_fee:<id>. Returns the fee booked.
+ */
+export async function bookFee(tx: Tx, p: Payout, reportedFeeKobo: number | null): Promise<number> {
+  const userPaidFee = p.amountKobo - p.sentKobo;
   const feeKobo = reportedFeeKobo ?? p.feeKobo;
   const platformPart = feeKobo - userPaidFee;
   if (platformPart !== 0) {
@@ -133,7 +142,7 @@ export async function settleLocked(tx: Tx, p: Payout, via: string, reportedFeeKo
       legs: [{ account: { system: "payout_fees", scope: p.provider }, amountKobo: platformPart }, { account: { system: "platform_funds" }, amountKobo: -platformPart }],
     });
   }
-  await tx.update(payouts).set({ status: "succeeded", feeKobo, finalVia: via, finalAt: now, nextCheckAt: null, updatedAt: now }).where(eq(payouts.id, p.id));
+  return feeKobo;
 }
 
 /** Definite failure (or an admin's rejection): payout_pending → the user's cash, under payout_final:<id>. */
@@ -149,10 +158,15 @@ const checkRecord = (c: ProviderCheck, via: string, at: Date) => ({ ...c, via, a
 
 export type PayoutOutcome = "succeeded" | "failed" | "unknown" | "unchanged";
 
-/** Apply a provider's answer to a payout, with its row locked. A webhook and a query racing make one transition. */
+/**
+ * Apply a provider's answer to a payout, with the person's row and then the payout's locked (the lock order).
+ * A webhook and a query racing make one transition.
+ */
 export async function applyOutcome(payoutId: string, check: ProviderCheck, via: string, now = new Date()): Promise<PayoutOutcome> {
   const cfg = await getPaymentsConfig();
+  const [owner] = await db.select({ userId: payouts.userId }).from(payouts).where(eq(payouts.id, payoutId));
   return db.transaction(async (tx) => {
+    await lockPerson(tx, owner.userId);
     const p = await lockPayout(tx, payoutId);
     const record = checkRecord(check, via, now);
     if (isFinal(p)) {
@@ -183,13 +197,39 @@ export async function applyOutcome(payoutId: string, check: ProviderCheck, via: 
 }
 
 /**
- * We gave the money back and the provider says it went out: the person has it twice. Their withdrawals stop
- * now, in this transaction, with the alert; an admin and a second admin resolve it (contradictions.ts).
+ * We gave the money back and the provider says it went out: the person has it twice. In this transaction (the
+ * person's row is already locked), with the alert:
+ * - their withdrawals freeze;
+ * - every withdrawal of theirs not yet sent (requested, awaiting approval, queued while paused) is reversed to
+ *   their cash, marked "contradiction";
+ * - the disputed amount is secured in their contradiction_hold: what their cash covers is moved out of cash
+ *   (so it can't be spent on entries either), the rest is booked as owed at once (repaid first from any cash
+ *   that reaches them later, including a withdrawal in flight that comes back).
+ * A withdrawal already sent (submitted, unknown) is left to finish; it's counted in the alert.
+ * An admin and a second admin resolve it, after asking the provider again (contradictions.ts).
  */
 async function freezeForContradiction(tx: Tx, p: Payout, record: Record<string, unknown>, now: Date) {
-  await tx.insert(payoutContradictions).values({ payoutId: p.id, userId: p.userId, amountKobo: p.amountKobo, providerCheck: record, createdAt: now }).onConflictDoNothing();
+  const [c] = await tx.insert(payoutContradictions).values({ payoutId: p.id, userId: p.userId, amountKobo: p.amountKobo, providerCheck: record, createdAt: now }).onConflictDoNothing().returning();
+  if (!c) return; // heard before: already frozen and held
   await tx.update(users).set({ withdrawalsFrozenAt: now }).where(and(eq(users.id, p.userId), isNull(users.withdrawalsFrozenAt)));
-  await raiseAlert(tx, { severity: "critical", kind: "payout_success_after_reversal", dedupeKey: `payout_contradiction:${p.id}:success`, refType: "payout", refId: p.id, detail: { status: p.status, check: record, withdrawalsFrozen: true } });
+  const unsent = await tx.select().from(payouts).where(and(eq(payouts.userId, p.userId), inArray(payouts.status, ["requested", "awaiting_approval"]))).orderBy(asc(payouts.id)).for("update");
+  for (const q of unsent) {
+    await tx.update(payouts).set({ holdReason: "contradiction" }).where(eq(payouts.id, q.id));
+    await reverseLocked(tx, q, "rejected", "contradiction", now);
+  }
+  const inFlight = await tx.select({ id: payouts.id, status: payouts.status, amountKobo: payouts.amountKobo }).from(payouts).where(and(eq(payouts.userId, p.userId), inArray(payouts.status, ["submitted", "unknown"])));
+  const { cash } = await ledger.lockUserAccounts(tx, p.userId);
+  const held = Math.min(cash.balanceKobo, p.amountKobo);
+  const owed = p.amountKobo - held;
+  const legs: ledger.Leg[] = [{ account: ledger.contradictionHoldAccount(p.userId), amountKobo: p.amountKobo }];
+  if (held > 0) legs.push({ account: { userId: p.userId, kind: "cash" }, amountKobo: -held });
+  if (owed > 0) legs.push({ account: ledger.owedAccount(p.userId), amountKobo: -owed });
+  await ledger.journal(tx, { type: "contradiction_held", refType: "contradiction", refId: c.id, idempotencyKey: `contradiction_hold:${p.id}`, legs });
+  await tx.update(payoutContradictions).set({ recoveredKobo: held, owedKobo: owed }).where(eq(payoutContradictions.id, c.id));
+  await raiseAlert(tx, {
+    severity: "critical", kind: "payout_success_after_reversal", dedupeKey: `payout_contradiction:${p.id}:success`, refType: "payout", refId: p.id,
+    detail: { status: p.status, check: record, withdrawalsFrozen: true, heldFromCashKobo: held, owedKobo: owed, reversedUnsent: unsent.map((q) => q.id), inFlight },
+  });
 }
 
 /** Only a first send can be definitely refused: a refusal of a resend says nothing about the first send, so it's unknown. */
@@ -226,9 +266,11 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
   if (p.status === "submitted" || p.status === "unknown") return checkPayout(payoutId, "check", now);
   if (p.status !== "requested") return "unchanged";
   if ((await currentSettings()).payoutsPaused) return "unchanged";
-  const [[u], [account]] = await Promise.all([db.select().from(users).where(eq(users.id, p.userId)), db.select().from(payoutAccounts).where(eq(payoutAccounts.id, p.payoutAccountId))]);
+  const [account] = await db.select().from(payoutAccounts).where(eq(payoutAccounts.id, p.payoutAccountId));
 
   const go = await db.transaction(async (tx): Promise<number | false> => {
+    // The person, then the payout: a freeze committing meanwhile is seen here, never after the send.
+    const u = await lockPerson(tx, p.userId);
     const row = await lockPayout(tx, payoutId);
     if (row.status !== "requested") return false;
     const blocked = withdrawBlockReason(u, { owedKobo: await ledger.owedKobo(tx, p.userId) });

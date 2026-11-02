@@ -414,7 +414,7 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 12));
   });
 
-  it("a success after a reversal freezes the person's withdrawals in the same transaction as the critical alert, and moves no money", async () => {
+  it("a success after a reversal freezes the person's withdrawals and holds the disputed amount, in the same transaction as the critical alert", async () => {
     const { u, account } = await withdrawer("porevsucc");
     const { payout } = await request(u, account.id, kobo(1500) + 11);
     const queuedOne = (await request(u, account.id, kobo(1500))).payout; // asked before anyone knew
@@ -432,17 +432,34 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     const [c] = await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id));
     expect([c.status, c.amountKobo, c.userId]).toEqual(["open", payout.amountKobo, u.id]);
     expect((await reload(payout.id)).status).toBe("failed");
-    expect(await cash(u)).toBe(kobo(10_000) - kobo(1500));
+    // The queued one is reversed; the disputed amount is out of cash, in the hold.
+    expect([(await reload(queuedOne.id)).status, await mock.getTransfer(queuedOne.reference)]).toEqual(["rejected", null]);
+    expect(await cash(u)).toBe(kobo(10_000) - payout.amountKobo);
     expect(await entriesFor(`payout_final:${payout.id}`)).toHaveLength(2);
-    // The refunded cash can't leave: new requests refused, a queued one held before sending.
+    expect(await entriesFor(`contradiction_hold:${payout.id}`)).toHaveLength(2);
+    // Nothing else can leave: new requests refused.
     await expect(request(frozen, account.id, kobo(1500))).rejects.toMatchObject({ message: "withdraw_not_allowed", details: { reason: "payment_review" } });
-    expect(await submitPayout(queuedOne.id)).toBe("unchanged");
-    expect((await reload(queuedOne.id)).holdReason).toBe("blocked:payment_review");
-    expect(await mock.getTransfer(queuedOne.reference)).toBeNull();
     // Heard again: still one contradiction, one alert.
     await checkPayout(payout.id, "check");
     expect(await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id))).toHaveLength(1);
     expect((await alertsFor(payout.id)).filter((a) => a.kind === "payout_success_after_reversal")).toHaveLength(1);
+  });
+
+  it("a send sees a freeze committing at the same moment: the person's row is locked first, so it's held, never sent", async () => {
+    const { u, account } = await withdrawer("pofreezerace");
+    const { payout } = await request(u, account.id, kobo(1500));
+    let sent: Promise<unknown> | undefined;
+    await db.transaction(async (tx) => {
+      await tx.select().from(users).where(eq(users.id, u.id)).for("no key update"); // a freeze in progress
+      await tx.update(users).set({ withdrawalsFrozenAt: new Date() }).where(eq(users.id, u.id));
+      sent = submitPayout(payout.id);
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    expect(await sent).toBe("unchanged");
+    const p = await reload(payout.id);
+    expect([p.status, p.holdReason]).toEqual(["awaiting_approval", "blocked:payment_review"]);
+    expect(await mock.getTransfer(payout.reference)).toBeNull();
+    await db.update(users).set({ withdrawalsFrozenAt: null }).where(eq(users.id, u.id));
   });
 
   it("double payout path 1: a timed-out send, a lagging lookup, then a balance refusal on the resend is unknown, never reversed", async () => {
@@ -770,56 +787,132 @@ describe("admins finalize stuck transactions through the same transitions", () =
 });
 
 describe("contradictions: resolved by two admins", () => {
-  /** A withdrawal reversed, then paid after all, with the person's cash at `cashAfter`. */
-  async function contradicted(name: string, cashAfter: number) {
+  /**
+   * A withdrawal reversed, then paid after all, with the person's cash at `cashAtFreeze` when the provider's
+   * success is heard (spent down through the ledger first, as if they'd joined parties). `beforeFreeze` runs
+   * just before the success is heard.
+   */
+  async function contradicted(name: string, cashAtFreeze: number, beforeFreeze?: (u: User) => Promise<unknown>) {
     const { u, account } = await withdrawer(name);
     const { payout } = await request(u, account.id, kobo(1500) + 11);
     expect(await submitPayout(payout.id)).toBe("failed");
+    if (beforeFreeze) await beforeFreeze(u);
+    const spend = (await cash(u)) - cashAtFreeze;
+    if (spend > 0) await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: -spend, type: "topup", idempotencyKey: `t:spend:${payout.id}` }));
     const t = (await mock.getTransfer(payout.reference))!;
     await mock.setTransfer(payout.reference, { ...t, state: "success" });
     await checkPayout(payout.id, "check");
     const [c] = await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id));
-    // Spend down to cashAfter (as if they'd joined parties), through the ledger.
-    const spend = (await cash(u)) - cashAfter;
-    if (spend > 0) await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: -spend, type: "topup", idempotencyKey: `t:spend:${payout.id}` }));
     return { u, account, payout, c };
   }
+  const held = async (u: User) => (await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "contradiction_hold"), eq(ledgerAccounts.scope, u.id))))[0]?.balanceKobo ?? 0;
   const resolve = (who: User, id: string, reason = "provider confirmed the transfer was paid") => app.inject({ method: "POST", url: `/admin/payments/contradictions/${id}/resolve`, headers: as(who), payload: { reason } });
   const confirmIt = (who: User, id: string) => app.inject({ method: "POST", url: `/admin/payments/contradictions/${id}/confirm`, headers: as(who) });
 
-  it("enough cash: the debit is re-applied in full, the transfer booked as sent, withdrawals unfrozen; all logged", async () => {
-    const { u, payout, c } = await contradicted("crfull", kobo(10_000));
+  it("enough cash: held in full at the freeze; the confirm (provider still says paid) turns the hold into the recovery, unfreezes; all logged", async () => {
+    const { u, account, payout, c } = await contradicted("crfull", kobo(10_000));
+    expect([await cash(u), await held(u), await ledger.owedKobo(db, u.id)]).toEqual([kobo(10_000) - payout.amountKobo, payout.amountKobo, 0]);
+    expect(c).toMatchObject({ recoveredKobo: payout.amountKobo, owedKobo: 0 });
     const listed = await app.inject({ method: "GET", url: "/admin/payments/contradictions", headers: as(viewer) });
     expect(listed.json().contradictions.some((x: { id: string }) => x.id === c.id)).toBe(true);
     expect((await resolve(viewer, c.id)).statusCode).toBe(403);
     expect((await resolve(admin, c.id)).json().contradiction.status).toBe("awaiting_second_admin");
-    expect(await cash(u)).toBe(kobo(10_000)); // nothing moves on the request
+    expect(await cash(u)).toBe(kobo(10_000) - payout.amountKobo); // nothing moves on the request
     const self = await confirmIt(admin, c.id);
     expect([self.statusCode, self.json().error]).toEqual([403, "second_admin_required"]);
     const done = (await confirmIt(admin2, c.id)).json().contradiction;
     expect(done).toMatchObject({ status: "resolved", recoveredKobo: payout.amountKobo, owedKobo: 0, confirmedBy: admin2.id });
-    expect(await cash(u)).toBe(kobo(10_000) - payout.amountKobo);
+    expect([await cash(u), await held(u)]).toEqual([kobo(10_000) - payout.amountKobo, 0]); // the hold went to the recovery, not back to cash
     expect(await entriesFor(`payout_recovery:${payout.id}`)).toHaveLength(2);
-    expect((await db.select().from(users).where(eq(users.id, u.id)))[0].withdrawalsFrozenAt).toBeNull();
+    const [after] = await db.select().from(users).where(eq(users.id, u.id));
+    expect(after.withdrawalsFrozenAt).toBeNull();
+    expect((await request(after, account.id, kobo(1500))).payout.status).toBe("requested"); // nothing owed: free to withdraw
     expect((await confirmIt(admin2, c.id)).json().error).toBe("contradiction_not_pending");
     const log = await db.select().from(adminActions).where(eq(adminActions.targetId, payout.id));
     expect(log.map((l) => l.action)).toEqual(expect.arrayContaining(["payments.contradiction_requested", "payments.contradiction_resolved"]));
     expect(await findBreaches(db)).toEqual([]);
   });
 
-  it("not enough cash: takes what's there, records the rest as owed", async () => {
-    const { u, payout, c } = await contradicted("crowed", kobo(400));
+  it("not enough cash: holds what's there, owes the rest at once; resolved, it stays owed and withdrawals stay blocked by it", async () => {
+    const { u, account, payout, c } = await contradicted("crowed", kobo(400));
+    expect(c).toMatchObject({ recoveredKobo: kobo(400), owedKobo: payout.amountKobo - kobo(400) });
+    expect([await cash(u), await held(u), await ledger.owedKobo(db, u.id)]).toEqual([0, payout.amountKobo, payout.amountKobo - kobo(400)]);
     await resolve(admin, c.id);
-    const done = (await confirmIt(admin2, c.id)).json().contradiction;
-    expect(done).toMatchObject({ recoveredKobo: kobo(400), owedKobo: payout.amountKobo - kobo(400) });
+    expect((await confirmIt(admin2, c.id)).json().contradiction.status).toBe("resolved");
+    expect([await cash(u), await held(u), await ledger.owedKobo(db, u.id)]).toEqual([0, 0, payout.amountKobo - kobo(400)]);
+    const [after] = await db.select().from(users).where(eq(users.id, u.id));
+    expect(after.withdrawalsFrozenAt).toBeNull(); // unfrozen, but…
+    await expect(request(after, account.id, kobo(1500))).rejects.toMatchObject({ details: { reason: "amount_owed" } });
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("an open withdrawal at the freeze is reversed (\"contradiction\") and its money lands in the hold", async () => {
+    const { u, account } = await withdrawer("crunsent");
+    const { payout } = await request(u, account.id, kobo(1500) + 11);
+    expect(await submitPayout(payout.id)).toBe("failed");
+    const queued = (await request(u, account.id, kobo(10_000))).payout; // every naira they have, debited and waiting
     expect(await cash(u)).toBe(0);
-    expect(await ledger.owedKobo(db, u.id)).toBe(payout.amountKobo - kobo(400));
+    const t = (await mock.getTransfer(payout.reference))!;
+    await mock.setTransfer(payout.reference, { ...t, state: "success" });
+    await checkPayout(payout.id, "check");
+    const q = await reload(queued.id);
+    expect([q.status, q.finalVia, q.holdReason]).toEqual(["rejected", "contradiction", "contradiction"]);
+    expect(await mock.getTransfer(queued.reference)).toBeNull(); // never sent
+    expect([await held(u), await ledger.owedKobo(db, u.id), await cash(u)]).toEqual([payout.amountKobo, 0, kobo(10_000) - payout.amountKobo]);
+    const alert = (await alertsFor(payout.id)).find((a) => a.kind === "payout_success_after_reversal")!;
+    expect(alert.detail).toMatchObject({ reversedUnsent: [queued.id], heldFromCashKobo: payout.amountKobo });
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("held money can't be spent on entries", async () => {
+    const { u } = await contradicted("crspend", kobo(1500) + 11); // exactly the disputed amount: all of it held
+    expect(await cash(u)).toBe(0);
+    const party = await partyWithPot(kobo(100));
+    await expect(db.transaction((tx) => ledger.charge(tx, { userId: u.id, amountKobo: kobo(500), type: "party_entry", refType: "party", refId: party.id, idempotencyKey: `t:cr:entry:${u.id}` }))).rejects.toThrow("insufficient_funds");
+    expect(await held(u)).toBe(kobo(1500) + 11);
+  });
+
+  it("a withdrawal in flight at the freeze is left to finish; when it fails, what comes back repays what's owed", async () => {
+    let inFlight: Payout | undefined;
+    const { u, payout, c } = await contradicted("crflight", 0, async (u) => {
+      const w = (await db.select().from(payoutAccounts).where(eq(payoutAccounts.userId, u.id)))[0];
+      inFlight = (await request(u, w.id, kobo(2000) + 13)).payout; // pending twice, then fails
+      expect(await submitPayout(inFlight.id)).toBe("unknown");
+    });
+    expect((await reload(inFlight!.id)).status).toBe("unknown"); // untouched by the freeze
+    expect(c.owedKobo).toBe(payout.amountKobo);
+    const alert = (await alertsFor(payout.id)).find((a) => a.kind === "payout_success_after_reversal")!;
+    expect((alert.detail as { inFlight: { id: string }[] }).inFlight.map((x) => x.id)).toEqual([inFlight!.id]);
+    let out = await checkPayout(inFlight!.id, "check");
+    while (out === "unknown") out = await checkPayout(inFlight!.id, "check");
+    expect(out).toBe("failed");
+    expect([await ledger.owedKobo(db, u.id), await held(u), await cash(u)]).toEqual([0, payout.amountKobo, kobo(2000) + 13 - payout.amountKobo]);
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("asked again at the confirm: a transfer since reversed dissolves it (hold released, owed cleared, unfrozen); one not definite changes nothing", async () => {
+    const { u, payout, c } = await contradicted("crdissolve", kobo(400));
+    await resolve(admin, c.id);
+    const t = (await mock.getTransfer(payout.reference))!;
+    await mock.setTransfer(payout.reference, { ...t, state: "pending", queries: -100 });
+    const unsure = await confirmIt(admin2, c.id);
+    expect([unsure.statusCode, unsure.json().error]).toEqual([409, "provider_not_definite"]);
+    expect(await held(u)).toBe(payout.amountKobo);
+    await mock.setTransfer(payout.reference, { ...t, state: "failed" }); // Paystack: reversed
+    const done = (await confirmIt(admin2, c.id)).json().contradiction;
+    expect(done.status).toBe("dissolved");
+    expect([await held(u), await ledger.owedKobo(db, u.id), await cash(u)]).toEqual([0, 0, kobo(400)]); // back as it was before the freeze
+    expect((await db.select().from(users).where(eq(users.id, u.id)))[0].withdrawalsFrozenAt).toBeNull();
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, payout.id), eq(adminActions.action, "payments.contradiction_dissolved")));
+    expect(log.after).toMatchObject({ why: "the provider now says the transfer failed or was reversed", owedClearedKobo: payout.amountKobo - kobo(400), toCashKobo: kobo(400) });
+    expect(await entriesFor(`payout_recovery:${payout.id}`)).toHaveLength(0);
     expect(await findBreaches(db)).toEqual([]);
   });
 
   /** Someone who owes the whole duplicate payout (their cash was spent first). */
   async function owing(name: string) {
     const x = await contradicted(name, 0);
+    expect(await ledger.owedKobo(db, x.u.id)).toBe(x.payout.amountKobo); // owed from the freeze
     await resolve(admin, x.c.id);
     await confirmIt(admin2, x.c.id);
     expect(await ledger.owedKobo(db, x.u.id)).toBe(x.payout.amountKobo);
@@ -861,10 +954,9 @@ describe("contradictions: resolved by two admins", () => {
   });
 
   it("a refund repays it", async () => {
-    const x = await contradicted("owrefund", kobo(500));
     const party = await partyWithPot(kobo(100));
-    // Cash held for a host prize before the contradiction is resolved, so none of it is recovered then.
-    await db.transaction((tx) => ledger.hold(tx, { userId: x.u.id, amountKobo: kobo(500), type: "party_fund", refType: "party", refId: party.id, idempotencyKey: `t:owed:hold:${party.id}` }));
+    // Cash held for a host prize before the freeze, so none of it is held for the contradiction.
+    const x = await contradicted("owrefund", 0, (u) => db.transaction((tx) => ledger.hold(tx, { userId: u.id, amountKobo: kobo(500), type: "party_fund", refType: "party", refId: party.id, idempotencyKey: `t:owed:hold:${party.id}` })));
     await resolve(admin, x.c.id);
     expect((await confirmIt(admin2, x.c.id)).json().contradiction.recoveredKobo).toBe(0);
     await db.transaction((tx) => ledger.release(tx, { holdKey: `t:owed:hold:${party.id}`, type: "party_refund", refType: "party", refId: party.id, idempotencyKey: `t:owed:release:${party.id}` }));

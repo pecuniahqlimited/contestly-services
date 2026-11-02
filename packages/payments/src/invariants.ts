@@ -90,11 +90,18 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
   });
   if (bad.length) out.push({ kind: "payout_entries", detail: { payouts: bad.slice(0, 20).map((r) => ({ id: r.id, status: r.status, cashLegs: num(r.cash_legs), cashSum: num(r.cash_sum), debits: num(r.debits), finals: num(r.finals), settledLegs: num(r.settled_legs), recoveries: num(r.recoveries) })) } });
 
-  // 3b. What people were recorded as owing is exactly what resolved contradictions said (repayments and waivers move it on from there).
+  // 3b. What people were booked as owing at their freezes is exactly what the contradictions recorded
+  // (repayments, releases and waivers move it on from there); each person's hold is exactly the disputed
+  // amount of their contradictions still open.
   const [owed] = await rows(conn, sql`select
-      coalesce((select sum(e.amount_kobo) from ledger_entries e join ledger_accounts a on a.id = e.account_id where a.kind = 'payout_owed' and e.type = 'withdrawal_recovered'), 0)::bigint as booked,
-      coalesce((select sum(owed_kobo) from payout_contradictions where status = 'resolved'), 0)::bigint as resolved`);
-  if (num(owed.booked) !== -num(owed.resolved)) out.push({ kind: "owed_recorded", detail: { ledger: num(owed.booked), contradictions: -num(owed.resolved) } });
+      coalesce((select sum(e.amount_kobo) from ledger_entries e join ledger_accounts a on a.id = e.account_id where a.kind = 'payout_owed' and e.type = 'contradiction_held'), 0)::bigint as booked,
+      coalesce((select sum(owed_kobo) from payout_contradictions), 0)::bigint as recorded`);
+  if (num(owed.booked) !== -num(owed.recorded)) out.push({ kind: "owed_recorded", detail: { ledger: num(owed.booked), contradictions: -num(owed.recorded) } });
+  const holds = await rows(conn, sql`select coalesce(a.scope, c.user_id::text) as user_id, coalesce(a.balance_kobo, 0)::bigint as held, coalesce(c.open, 0)::bigint as open
+    from (select scope, balance_kobo from ledger_accounts where kind = 'contradiction_hold') a
+    full join (select user_id, sum(amount_kobo) as open from payout_contradictions where status in ('open', 'awaiting_second_admin') group by user_id) c on c.user_id::text = a.scope
+    where coalesce(a.balance_kobo, 0) <> coalesce(c.open, 0) limit 20`);
+  if (holds.length) out.push({ kind: "contradiction_hold", detail: { people: holds.map((r) => ({ userId: r.user_id, held: num(r.held), open: num(r.open) })) } });
 
   // 5. Closed parties' pots are empty (parties with pre-double-entry entries left out; ADR 0013 lists them).
   const pots = await rows(conn, sql`select a.scope as party_id, pa.status, a.balance_kobo::bigint as balance
@@ -116,7 +123,7 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
 
 /** Platform accounts money comes in through (they only go negative) and ones that hold or pay it out (only positive). */
 export const PLATFORM_AT_MOST_ZERO = ["topup_in", "dev_mint", "bonus_issued", "prize_funding", "platform_funds", "payout_owed"] as const;
-export const PLATFORM_AT_LEAST_ZERO = ["party_pot", "payout_pending", "payout_settled", "payout_fees"] as const;
+export const PLATFORM_AT_LEAST_ZERO = ["party_pot", "payout_pending", "payout_settled", "payout_fees", "contradiction_hold"] as const;
 const inList = (kinds: readonly string[]) => sql.raw(kinds.map((k) => `'${k}'`).join(", "));
 
 /** Of a first read's breaches, the ones a second read found again (as it saw them) and the ones it didn't. */
