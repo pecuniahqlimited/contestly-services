@@ -79,7 +79,7 @@ export async function chatsRoutes(app: FastifyInstance) {
       const [other] = await db.select({ state: chatMembers.state }).from(chatMembers).where(and(eq(chatMembers.threadId, thread.id), ne(chatMembers.userId, me.id)));
       if (other?.state !== "active") throw httpError(403, "voice_after_accept");
     }
-    await limit(`voice:${me.id}`, cfg.voiceUploadsPerHour, 3600);
+    await limit("voice", me.id, cfg.voiceUploadsPerHour, 3600);
     const id = randomUUID();
     const objectKey = voiceKey(thread.id, id);
     await db.insert(voiceNotes).values({ id, threadId: thread.id, userId: me.id, objectKey, contentType: body.contentType, bytes: body.bytes, durationMs: body.durationMs });

@@ -34,7 +34,7 @@ export async function socialRoutes(app: FastifyInstance) {
     if (!them) throw httpError(404, "not_found");
     if ((await dmPermissionBetween(db, me, them)) === "refused") throw httpError(403, "cannot_challenge");
     const [{ challengesPerDay }, { limits }] = await Promise.all([getSocialConfig(), getPartyConfig()]);
-    await limit(`challenge:${me.id}:${lagosDay()}`, challengesPerDay, DAY_SECONDS, "too_many_challenges");
+    await limit("challenge", `${me.id}:${lagosDay()}`, challengesPerDay, DAY_SECONDS, "too_many_challenges");
     const { brief, lanes } = challengeBrief(me.interests, them.interests);
     const category = lanes.find((l): l is Category => (CATEGORIES as readonly string[]).includes(l));
     const body = createPartySchema.parse({

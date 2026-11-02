@@ -20,7 +20,7 @@ export type SessionResolver = (req: FastifyRequest) => Promise<Session>;
 const fromCredentials: SessionResolver = (req) =>
   resolveUser({
     authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined,
-    beforeNewGuest: () => limit(`guest-create:ip:${req.clientIp}`, req.server.limits.guestsPerIpPerHour, 3600, TOO_MANY_GUESTS),
+    beforeNewGuest: () => limit("guest-create:ip", req.clientIp, req.server.limits.guestsPerIpPerHour, 3600, TOO_MANY_GUESTS),
   });
 
 export const authPlugin = fp<{ resolve?: SessionResolver }>(async (app, opts) => {

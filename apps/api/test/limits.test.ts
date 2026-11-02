@@ -4,8 +4,9 @@ import { limitsFromEnv } from "../src/limits.js";
 describe("limitsFromEnv", () => {
   it("uses the production defaults when nothing is set", () => {
     expect(limitsFromEnv({})).toEqual({
-      userPerMinute: 600, ipPerMinute: 300, codeSendsPerIpPerHour: 100, codeSendsPerEmailPerHour: 5,
+      userPerMinute: 600, ipPerMinute: 300, codeSendsPerIpPerHour: 500, codeSendsPerEmailPerHour: 5,
       codeChecksPerIpPer10Min: 200, codeChecksPerEmailPer10Min: 15, oauthPerIpPer10Min: 120, guestsPerIpPerHour: 300,
+      codeSendsAlertPerHour: 2000,
     });
   });
   it("reads each from the environment, and refuses nonsense", () => {

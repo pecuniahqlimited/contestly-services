@@ -70,7 +70,7 @@ export async function buildApp(opts: AppOptions = {}) {
     nameSpace: "limit:http:",
     keyGenerator: (req) => (req.auth ? `user:${req.auth.user.id}` : `ip:${req.clientIp}`),
     max: (req) => (req.auth ? cfg.userPerMinute : cfg.ipPerMinute),
-    errorResponseBuilder: (_req, ctx) => rateLimited(RATE_LIMITED, ctx.ttl / 1000),
+    errorResponseBuilder: (req, ctx) => rateLimited(RATE_LIMITED, ctx.ttl / 1000, req.auth ? "http:user" : "http:ip"),
   });
   // Source files only (PUT /parties/:id/files): one file, no other fields. The route sets the size cap.
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES + 1, files: 1, fields: 0 } });
@@ -85,11 +85,14 @@ export async function buildApp(opts: AppOptions = {}) {
   app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_req, body, done) => done(null, Object.fromEntries(new URLSearchParams(body as string))));
 
   // Registered before the route plugins so every encapsulated context inherits it.
-  app.setErrorHandler((err: any, _req, reply) => {
+  app.setErrorHandler((err: any, req, reply) => {
     if (err instanceof ZodError) return reply.code(400).send({ error: "validation", issues: err.issues });
     if (err instanceof Unauthorized) return reply.code(401).send({ error: err.message });
     if (err instanceof InsufficientFunds) return reply.code(402).send({ error: "insufficient_funds" });
-    if (err.statusCode === 429 && err.details?.retryAfterSeconds) reply.header("retry-after", String(err.details.retryAfterSeconds));
+    if (err.statusCode === 429 && err.details?.retryAfterSeconds) {
+      reply.header("retry-after", String(err.details.retryAfterSeconds));
+      req.log.warn({ limit: err.limit, error: err.message, retryAfterSeconds: err.details.retryAfterSeconds, route: `${req.method} ${req.routeOptions.url}` }, "rate limited");
+    }
     if (err.statusCode) return reply.code(err.statusCode).send({ error: err.message, ...(err.details === undefined ? {} : { details: err.details }) });
     app.log.error(err);
     return reply.code(500).send({ error: "internal" });

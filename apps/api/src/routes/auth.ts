@@ -4,7 +4,7 @@ import { authMode } from "@contestly/auth";
 import { OAUTH_PROVIDERS, authExchangeSchema, emailStartSchema, emailVerifySchema, oauthStartSchema, type OAuthProvider } from "@contestly/shared";
 import { optionalSession, requireSession } from "../auth.js";
 import { limit } from "../redis.js";
-import { checkEmailCode, startEmailCode } from "../signin/emailCode.js";
+import { checkEmailCode, startEmailCode, watchCodeSends } from "../signin/emailCode.js";
 import { signIn, withSessionToken } from "../signin/account.js";
 import { exchangeCode, oauthCallback, startOAuth, type CallbackResult } from "../signin/oauthFlow.js";
 import { STUB_AUTHORIZE_PATH, stubCode } from "../signin/oauth/index.js";
@@ -27,7 +27,9 @@ export async function authRoutes(app: FastifyInstance) {
   app.post("/auth/email/start", async (req) => {
     const session = optionalSession(req);
     const { email } = emailStartSchema.parse(req.body);
-    return startEmailCode(session, email, req.clientIp, app.limits);
+    const sent = await startEmailCode(session, email, req.clientIp, app.limits);
+    await watchCodeSends(app.limits.codeSendsAlertPerHour, req.log);
+    return sent;
   });
 
   /**
@@ -45,7 +47,7 @@ export async function authRoutes(app: FastifyInstance) {
   /** Google or Apple: where to open the system browser. */
   app.post("/auth/oauth/start", async (req) => {
     const session = requireSession(req);
-    await limit(`oauth-start:ip:${req.clientIp}`, app.limits.oauthPerIpPer10Min, 600);
+    await limit("oauth-start:ip", req.clientIp, app.limits.oauthPerIpPer10Min, 600);
     return startOAuth(session, oauthStartSchema.parse(req.body));
   });
 
@@ -57,7 +59,7 @@ export async function authRoutes(app: FastifyInstance) {
   /** The deep link's one-time code → a Firebase custom token. Same session that started, with its PKCE verifier. */
   app.post("/auth/exchange", async (req) => {
     const session = requireSession(req);
-    await limit(`exchange:ip:${req.clientIp}`, app.limits.oauthPerIpPer10Min, 600);
+    await limit("exchange:ip", req.clientIp, app.limits.oauthPerIpPer10Min, 600);
     return exchangeCode(session, authExchangeSchema.parse(req.body));
   });
 

@@ -36,8 +36,8 @@ export async function addPhone(me: User, idToken: string) {
 /** People among the viewer's contacts who added a number. Capped per request (schema) and per Lagos day. */
 export async function matchContacts(me: User, hashes: string[]) {
   const day = lagosDay();
-  await limit(`contacts:syncs:${me.id}:${day}`, CONTACT_SYNCS_PER_DAY, DAY_SECONDS, "contacts_limit");
-  await limit(`contacts:hashes:${me.id}:${day}`, CONTACT_HASHES_PER_DAY, DAY_SECONDS, "contacts_limit", hashes.length);
+  await limit("contacts:syncs", `${me.id}:${day}`, CONTACT_SYNCS_PER_DAY, DAY_SECONDS, "contacts_limit");
+  await limit("contacts:hashes", `${me.id}:${day}`, CONTACT_HASHES_PER_DAY, DAY_SECONDS, "contacts_limit", hashes.length);
   const hmacs = [...new Set(hashes)].map(phoneHmac);
   const rows = await db.select(personColumns).from(users)
     .where(and(inArray(users.phoneHmac, hmacs), eq(users.isGuest, false), eq(users.isSystem, false), ne(users.id, me.id), liveUser));

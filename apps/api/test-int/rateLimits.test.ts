@@ -4,24 +4,22 @@
  * the sign-in code routes have their own per-IP and per-email limits; every 429 says which limit and
  * when to retry (body and Retry-After).
  */
-import { randomInt } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { sql, type User } from "@contestly/db";
 import { CLOUDFLARE_RANGES } from "../src/clientIp.js";
 import type { Limits } from "../src/limits.js";
-import { valkey } from "../src/redis.js";
-import { as, makeUser, tag, testApp } from "./harness.js";
+import { limit, valkey } from "../src/redis.js";
+import { watchCodeSends } from "../src/signin/emailCode.js";
+import { as, clientAddress as ip, makeUser, tag, testApp } from "./harness.js";
 
 const HIGH = 100_000;
 const base: Limits = {
   userPerMinute: HIGH, ipPerMinute: HIGH, codeSendsPerIpPerHour: HIGH, codeSendsPerEmailPerHour: HIGH,
-  codeChecksPerIpPer10Min: HIGH, codeChecksPerEmailPer10Min: HIGH, oauthPerIpPer10Min: HIGH, guestsPerIpPerHour: HIGH,
+  codeChecksPerIpPer10Min: HIGH, codeChecksPerEmailPer10Min: HIGH, oauthPerIpPer10Min: HIGH, guestsPerIpPerHour: HIGH, codeSendsAlertPerHour: HIGH,
 };
 const CADDY = "10.9.9.9";
 let general: Awaited<ReturnType<typeof testApp>>["app"];
 let codes: Awaited<ReturnType<typeof testApp>>["app"];
-/** A fresh address per test, so buckets never carry over between tests. */
-const ip = (prefix = "198.51.100") => `${prefix}.${randomInt(1, 255)}`;
 
 beforeAll(async () => {
   general = (await testApp({ limits: { ...base, userPerMinute: 3, ipPerMinute: 2 }, trust: { trustedProxies: [CADDY], cloudflare: CLOUDFLARE_RANGES } })).app;
@@ -56,7 +54,7 @@ describe("the general limit", () => {
   });
 
   it("counts per client IP when signed out", async () => {
-    const one = ip(), two = ip("192.0.2");
+    const one = ip(), two = ip();
     const about = (from: string) => general.inject({ method: "GET", url: "/onboarding/about", remoteAddress: from });
     for (let i = 0; i < 2; i++) expect((await about(one)).statusCode).toBe(200);
     expect429(await about(one), "rate_limited");
@@ -64,20 +62,20 @@ describe("the general limit", () => {
   });
 
   it("through a trusted proxy from Cloudflare, the client is CF-Connecting-IP", async () => {
-    const client = ip("41.58.1");
+    const client = ip();
     const via = (edge: string, cf: string) => general.inject({ method: "GET", url: "/onboarding/about", remoteAddress: CADDY, headers: { "x-forwarded-for": edge, "cf-connecting-ip": cf } });
     expect((await via("162.158.1.1", client)).statusCode).toBe(200);
     expect((await via("172.64.9.9", client)).statusCode).toBe(200); // another Cloudflare edge, same person
     expect429(await via("162.158.1.1", client), "rate_limited");
-    expect((await via("162.158.1.1", ip("41.58.2"))).statusCode).toBe(200); // someone else behind the same edge and proxy
+    expect((await via("162.158.1.1", ip())).statusCode).toBe(200); // someone else behind the same edge and proxy
   });
 
   it("from anyone else, the header is ignored: the socket address counts", async () => {
-    const attacker = ip("203.0.113");
+    const attacker = ip();
     const spoof = (cf: string) => general.inject({ method: "GET", url: "/onboarding/about", remoteAddress: attacker, headers: { "cf-connecting-ip": cf, "x-forwarded-for": "162.158.1.1" } });
-    expect((await spoof(ip("41.58.3"))).statusCode).toBe(200);
-    expect((await spoof(ip("41.58.4"))).statusCode).toBe(200);
-    expect429(await spoof(ip("41.58.5")), "rate_limited"); // a new header each time doesn't buy a new bucket
+    expect((await spoof(ip())).statusCode).toBe(200);
+    expect((await spoof(ip())).statusCode).toBe(200);
+    expect429(await spoof(ip()), "rate_limited"); // a new header each time doesn't buy a new bucket
   });
 });
 
@@ -123,5 +121,25 @@ describe("the sign-in code routes", () => {
     const from = ip();
     for (const n of ["c1", "c2", "c3"]) expect((await verify(u, email(n), from)).json().error).toBe("invalid_code");
     expect429(await verify(u, email("c4"), from), "too_many_attempts");
+  });
+});
+
+describe("naming and watching", () => {
+  it("a 429 carries the name of the limit that refused it (for the log; the body is unchanged)", async () => {
+    const subject = `name-${tag}`;
+    await limit("test-named", subject, 1, 60);
+    await expect(limit("test-named", subject, 1, 60, "too_many_codes")).rejects.toMatchObject({ statusCode: 429, message: "too_many_codes", limit: "test-named" });
+  });
+
+  it("code sends across everyone: one admin alert the moment an hour passes the threshold, never again that hour", async () => {
+    const log = { error: vi.fn() } as unknown as Parameters<typeof watchCodeSends>[1];
+    const hour = `test-${tag}`; // TEST-ONLY: its own bucket, so other sends this hour don't count
+    for (let i = 0; i < 3; i++) await watchCodeSends(3, log, hour);
+    expect(log.error).not.toHaveBeenCalled();
+    await watchCodeSends(3, log, hour);
+    expect(log.error).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledWith({ adminAlert: "code_sends_spike", hour, sent: 4, threshold: 3 }, "admin alert: code_sends_spike");
+    for (let i = 0; i < 5; i++) await watchCodeSends(3, log, hour);
+    expect(log.error).toHaveBeenCalledOnce();
   });
 });

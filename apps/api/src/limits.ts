@@ -17,7 +17,7 @@ export interface Limits {
   userPerMinute: number;
   /** Per client IP for requests with no session, per minute. */
   ipPerMinute: number;
-  /** Sign-in codes sent: per client IP and per email, per hour. */
+  /** Sign-in codes sent: per client IP and per email, per hour (the per-email limit is what protects inboxes). */
   codeSendsPerIpPerHour: number;
   codeSendsPerEmailPerHour: number;
   /** Sign-in codes checked: per client IP and per email, per 10 minutes (each code also dies after 5 wrong tries). */
@@ -27,6 +27,8 @@ export interface Limits {
   oauthPerIpPer10Min: number;
   /** New guest rows (a first anonymous session) per client IP per hour: guests are users, so each new one would get a fresh per-user limit. */
   guestsPerIpPerHour: number;
+  /** Not a limit: an admin alert when the codes sent in one clock hour, everyone together, pass this. */
+  codeSendsAlertPerHour: number;
 }
 
 /**
@@ -38,21 +40,25 @@ export interface Limits {
  * - 300 a minute per IP with no session. Signed-out traffic is only the first screens and share pages
  *   (the app gets an anonymous session at once, and from then on it's per user), but one CGNAT address can
  *   carry thousands of people opening the app, so this stays generous.
- * - Sign-in sends: 5 per email an hour stops mail bombing one inbox; 100 per IP an hour allows a busy
- *   CGNAT address while stopping one machine spraying addresses. Checks: 15 per email and 200 per IP
- *   per 10 minutes, on top of a code's 5 tries.
+ * - Sign-in sends: 5 per email an hour is what protects an inbox from mail bombing. 500 per IP an hour,
+ *   because one carrier CGNAT address can carry a city signing in at once, and when Firebase won't give
+ *   the app an anonymous session the email code is the way in; spraying from many addresses is caught by
+ *   the global alert below. Checks: 15 per email and 200 per IP per 10 minutes, on top of a code's 5 tries.
  * - 300 new guests per IP an hour. Every new anonymous session would otherwise start a fresh per-user
  *   budget; 300 is generous for one CGNAT address (Firebase itself allows 100 new accounts per IP an hour
  *   by default, and that quota can be raised in its console, so ours mostly stops tokens minted
  *   elsewhere and brought to one address).
+ * - The code-send alert at 2,000 an hour across everyone: sends cost money and a sudden spike is either
+ *   a launch moment or someone spraying addresses from many IPs; either way an admin should know.
  */
 export const limitsFromEnv = (env = process.env): Limits => ({
   userPerMinute: int("RATE_LIMIT_USER_PER_MINUTE", 600, env),
   ipPerMinute: int("RATE_LIMIT_IP_PER_MINUTE", 300, env),
-  codeSendsPerIpPerHour: int("RATE_LIMIT_CODE_SENDS_PER_IP_PER_HOUR", 100, env),
+  codeSendsPerIpPerHour: int("RATE_LIMIT_CODE_SENDS_PER_IP_PER_HOUR", 500, env),
   codeSendsPerEmailPerHour: int("RATE_LIMIT_CODE_SENDS_PER_EMAIL_PER_HOUR", 5, env),
   codeChecksPerIpPer10Min: int("RATE_LIMIT_CODE_CHECKS_PER_IP_PER_10_MIN", 200, env),
   codeChecksPerEmailPer10Min: int("RATE_LIMIT_CODE_CHECKS_PER_EMAIL_PER_10_MIN", 15, env),
   oauthPerIpPer10Min: int("RATE_LIMIT_OAUTH_PER_IP_PER_10_MIN", 120, env),
   guestsPerIpPerHour: int("RATE_LIMIT_GUESTS_PER_IP_PER_HOUR", 300, env),
+  codeSendsAlertPerHour: int("ALERT_CODE_SENDS_PER_HOUR", 2000, env),
 });
