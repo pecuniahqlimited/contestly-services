@@ -813,8 +813,110 @@ describe("contradictions: resolved by two admins", () => {
     const done = (await confirmIt(admin2, c.id)).json().contradiction;
     expect(done).toMatchObject({ recoveredKobo: kobo(400), owedKobo: payout.amountKobo - kobo(400) });
     expect(await cash(u)).toBe(0);
-    const [owed] = await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "payout_owed"), eq(ledgerAccounts.scope, "mock")));
-    expect(owed.balanceKobo).toBeLessThanOrEqual(-(payout.amountKobo - kobo(400)));
+    expect(await ledger.owedKobo(db, u.id)).toBe(payout.amountKobo - kobo(400));
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  /** Someone who owes the whole duplicate payout (their cash was spent first). */
+  async function owing(name: string) {
+    const x = await contradicted(name, 0);
+    await resolve(admin, x.c.id);
+    await confirmIt(admin2, x.c.id);
+    expect(await ledger.owedKobo(db, x.u.id)).toBe(x.payout.amountKobo);
+    return x;
+  }
+  /** The person's side of each repayment (leg 0: their cash). */
+  const repayments = async (userId: string) => (await db.select().from(ledgerEntries).where(and(eq(ledgerEntries.type, "owed_repaid"), eq(ledgerEntries.refId, userId)))).filter((e) => !e.idempotencyKey.includes("#"));
+  async function partyWithPot(potKobo: number) {
+    const host = await makeUser(nextName("owhost"));
+    const [party] = await db.insert(parties).values({ createdByUserId: host.id, title: `owed ${tag}`, category: "General knowledge", maxPlayers: 6, funding: "pooled", split: [100], startsAt: new Date(Date.now() + 3_600_000) }).returning();
+    const payer = await makeUser(nextName("owpayer"));
+    await fund(payer, potKobo);
+    await db.transaction((tx) => ledger.post(tx, { userId: payer.id, kind: "cash", amountKobo: -potKobo, type: "party_entry", refType: "party", refId: party.id, idempotencyKey: `t:owed:entry:${party.id}` }));
+    return party;
+  }
+
+  it("winnings repay what's owed first, as their own movement; the wallet shows the rest; withdrawals wait, playing doesn't", async () => {
+    const { u, account, payout } = await owing("owwin");
+    const owed = payout.amountKobo;
+    const wallet = (await app.inject({ method: "GET", url: "/wallet", headers: as(u) })).json();
+    expect(wallet.owed).toEqual({ amountKobo: owed, reason: "duplicate_payout" });
+    expect((await app.inject({ method: "GET", url: "/me", headers: as(u) })).json().canWithdraw).toBe(false);
+    await expect(request(u, account.id, kobo(1500))).rejects.toMatchObject({ message: "withdraw_not_allowed", details: { reason: "amount_owed" } });
+
+    const party = await partyWithPot(kobo(5000));
+    await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: kobo(600), type: "party_prize", refType: "party", refId: party.id, idempotencyKey: `t:owed:prize:${party.id}` }));
+    expect(await cash(u)).toBe(0); // all of it repaid
+    expect(await ledger.owedKobo(db, u.id)).toBe(owed - kobo(600));
+    const [r] = await repayments(u.id);
+    expect([r.idempotencyKey, r.amountKobo]).toEqual([`owed_repay:t:owed:prize:${party.id}`, -kobo(600)]);
+    expect(r.journalId).not.toBe((await entriesFor(`t:owed:prize:${party.id}`))[0].journalId); // its own movement
+
+    // Bonus coins never repay; and playing isn't blocked (an entry from bonus).
+    await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: kobo(300), type: "welcome_bonus", idempotencyKey: `t:owed:bonus:${u.id}` }));
+    expect(await ledger.owedKobo(db, u.id)).toBe(owed - kobo(600));
+    await db.transaction((tx) => ledger.charge(tx, { userId: u.id, amountKobo: kobo(200), type: "party_entry", refType: "party", refId: party.id, idempotencyKey: `t:owed:play:${u.id}` }));
+    expect(await ledger.balances(u.id)).toEqual({ cashKobo: 0, bonusKobo: kobo(100) });
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("a refund repays it", async () => {
+    const x = await contradicted("owrefund", kobo(500));
+    const party = await partyWithPot(kobo(100));
+    // Cash held for a host prize before the contradiction is resolved, so none of it is recovered then.
+    await db.transaction((tx) => ledger.hold(tx, { userId: x.u.id, amountKobo: kobo(500), type: "party_fund", refType: "party", refId: party.id, idempotencyKey: `t:owed:hold:${party.id}` }));
+    await resolve(admin, x.c.id);
+    expect((await confirmIt(admin2, x.c.id)).json().contradiction.recoveredKobo).toBe(0);
+    await db.transaction((tx) => ledger.release(tx, { holdKey: `t:owed:hold:${party.id}`, type: "party_refund", refType: "party", refId: party.id, idempotencyKey: `t:owed:release:${party.id}` }));
+    expect(await cash(x.u)).toBe(0);
+    expect(await ledger.owedKobo(db, x.u.id)).toBe(x.payout.amountKobo - kobo(500));
+  });
+
+  it("top-ups repay it, partly and then in full, and the rest is theirs; then they can withdraw", async () => {
+    const { u, account, payout } = await owing("owtopup");
+    const owed = payout.amountKobo;
+    const topUp = async (amountKobo: number) => {
+      const t = await createTopup(u, amountKobo, { returnUrl: null });
+      await mock.completeCheckout(t.reference, "pay");
+      expect(await confirmTopup(t.id, "check")).toBe("credited");
+    };
+    await topUp(kobo(1000)); // less than owed: all of it repays
+    expect([await cash(u), await ledger.owedKobo(db, u.id)]).toEqual([0, owed - kobo(1000)]);
+    await topUp(kobo(2000)); // more than what's left: the rest is cash
+    expect([await cash(u), await ledger.owedKobo(db, u.id)]).toEqual([kobo(3000) - owed, 0]);
+    expect((await app.inject({ method: "GET", url: "/wallet", headers: as(u) })).json().owed).toBeNull();
+    expect((await repayments(u.id)).reduce((a, e) => a + Number(e.amountKobo), 0)).toBe(-owed);
+    const [fresh] = await db.select().from(users).where(eq(users.id, u.id));
+    await fund(u, kobo(2000));
+    expect((await request(fresh, account.id, kobo(1500))).payout.status).toBe("requested");
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("a waiver takes two admins and a reason; the platform bears it; never more than is owed when confirmed", async () => {
+    const { u, payout } = await owing("owwaive");
+    const waive = (who: User, reason?: string) => app.inject({ method: "POST", url: `/admin/payments/users/${u.id}/owed/waive`, headers: as(who), payload: reason ? { reason } : {} });
+    expect((await waive(admin)).statusCode).toBe(400); // a reason is required
+    expect((await waive(viewer, "support ticket 12")).statusCode).toBe(403);
+    const asked = (await waive(admin, "support ticket 12: bank confirmed one transfer")).json().waiver;
+    expect(asked).toMatchObject({ status: "awaiting_second_admin", amountKobo: payout.amountKobo });
+    expect((await waive(admin2, "again")).json().error).toBe("waiver_pending");
+    expect(await ledger.owedKobo(db, u.id)).toBe(payout.amountKobo);
+    const confirm = (who: User) => app.inject({ method: "POST", url: `/admin/payments/owed-waivers/${asked.id}/confirm`, headers: as(who) });
+    expect((await confirm(admin)).json().error).toBe("second_admin_required");
+    // Partly repaid between the ask and the confirm: only what's left is waived.
+    await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: kobo(100), type: "topup", idempotencyKey: `t:owed:mint:${u.id}` }));
+    const done = (await confirm(admin2)).json().waiver;
+    expect(done).toMatchObject({ status: "applied", waivedKobo: payout.amountKobo - kobo(100), confirmedBy: admin2.id });
+    expect(await ledger.owedKobo(db, u.id)).toBe(0);
+    expect((await app.inject({ method: "GET", url: "/admin/payments/owed", headers: as(viewer) })).json().owed.some((o: { userId: string }) => o.userId === u.id)).toBe(false);
+    const log = await db.select().from(adminActions).where(eq(adminActions.targetId, u.id));
+    expect(log.map((l) => l.action)).toEqual(expect.arrayContaining(["payments.owed_waiver_requested", "payments.owed_waived"]));
+    expect(log.find((l) => l.action === "payments.owed_waived")?.reason).toBe("support ticket 12: bank confirmed one transfer");
+    expect((await waive(admin, "nothing left")).json().error).toBe("nothing_owed");
+    // Their own: never.
+    await db.update(users).set({ isAdmin: true }).where(eq(users.id, u.id));
+    await db.insert(adminPermissions).values({ userId: u.id, permission: "payments.finalize" });
+    expect((await app.inject({ method: "POST", url: `/admin/payments/users/${u.id}/owed/waive`, headers: as(u), payload: { reason: "mine" } })).json().error).toBe("own_transaction");
     expect(await findBreaches(db)).toEqual([]);
   });
 

@@ -37,7 +37,8 @@ type Kind = (typeof USER_ACCOUNT_KINDS)[number];
  * - payout_settled: withdrawals the provider confirmed sent (scope: provider)
  * - payout_fees: what the provider charged to send them (scope: provider)
  * - platform_funds: the platform paying a fee it chose to bear
- * - payout_owed: what people owe after a payout we reversed was paid after all and their cash didn't cover it
+ * - payout_owed: what one person owes after a payout we reversed was paid after all and their cash didn't
+ *   cover it (scope: their user id). Every later cash credit to them repays it first (repayOwed).
  */
 export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed"] as const;
 export type SystemKind = (typeof SYSTEM_ACCOUNT_KINDS)[number];
@@ -106,7 +107,50 @@ export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; 
     if ((USER_ACCOUNT_KINDS as readonly string[]).includes(acct.kind) && balance < 0) throw new InsufficientFunds();
     await tx.update(ledgerAccounts).set({ balanceKobo: balance }).where(eq(ledgerAccounts.id, id));
   }
+  // Cash that just reached a person who owes repays it first, each as its own journal (ADR 0013).
+  const credited = new Map<string, { accountId: string; kobo: number }>();
+  j.legs.forEach((l, i) => {
+    if (!isUserRef(l.account) || l.account.kind !== "cash") return;
+    const c = credited.get(l.account.userId) ?? { accountId: ids[i], kobo: 0 };
+    credited.set(l.account.userId, { ...c, kobo: c.kobo + l.amountKobo });
+  });
+  for (const [userId, c] of credited) {
+    if (c.kobo <= 0) continue;
+    const repaid = await repayOwed(tx, userId, c.kobo, j.idempotencyKey);
+    if (repaid) next.set(c.accountId, next.get(c.accountId)! - repaid);
+  }
   return { replayed: false, balances: next };
+}
+
+/** What a person owes (after a duplicate payout their cash didn't cover): the platform's payout_owed account for them. */
+export const owedAccount = (userId: string): AccountRef => ({ system: "payout_owed", scope: userId });
+
+/** How much this person owes, in kobo (0 when nothing). */
+export async function owedKobo(conn: Tx | typeof db, userId: string): Promise<number> {
+  const [treasury] = await conn.select({ id: users.id }).from(users).where(eq(users.handle, TREASURY_HANDLE));
+  if (!treasury) return 0;
+  const [row] = await conn.select({ b: ledgerAccounts.balanceKobo }).from(ledgerAccounts)
+    .where(and(eq(ledgerAccounts.userId, treasury.id), eq(ledgerAccounts.kind, "payout_owed"), eq(ledgerAccounts.scope, userId)));
+  return row ? Math.max(0, -row.b) : 0;
+}
+
+/**
+ * Repay what a person owes from cash just credited to them, up to that credit: cash → payout_owed, under
+ * owed_repay:<the credit's key>. Only cash: bonus coins never repay. The owed account is locked first, so two
+ * credits at once can't both repay the same debt. Returns what it repaid.
+ */
+async function repayOwed(tx: Tx, userId: string, creditKobo: number, sourceKey: string): Promise<number> {
+  const [treasury] = await tx.select({ id: users.id }).from(users).where(eq(users.handle, TREASURY_HANDLE));
+  if (!treasury || treasury.id === userId) return 0;
+  const [owed] = await tx.select().from(ledgerAccounts)
+    .where(and(eq(ledgerAccounts.userId, treasury.id), eq(ledgerAccounts.kind, "payout_owed"), eq(ledgerAccounts.scope, userId))).for("update");
+  if (!owed || owed.balanceKobo >= 0) return 0;
+  const repay = Math.min(creditKobo, -owed.balanceKobo);
+  await journal(tx, {
+    type: "owed_repaid", refType: "owed", refId: userId, idempotencyKey: `owed_repay:${sourceKey}`,
+    legs: [{ account: { userId, kind: "cash" }, amountKobo: -repay }, { account: owedAccount(userId), amountKobo: repay }],
+  });
+  return repay;
 }
 
 /**

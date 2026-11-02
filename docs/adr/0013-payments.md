@@ -1,7 +1,8 @@
 # ADR 0013: Payments: pluggable providers, verify-then-credit, debit-first withdrawals
 
 Status: accepted (2026-10-31; revised 2026-11-02 after an independent review). Roadmap row 10. Makes the
-ledger double entry. Migrations 0021 (double entry, the payment tables) and 0022 (the review's fixes).
+ledger double entry. Migrations 0021 (double entry, the payment tables), 0022 (the review's fixes) and 0023
+(waiving what's owed).
 
 ## Context
 
@@ -82,9 +83,20 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    before sending). Reconciliation asks the provider about any reversed withdrawal it lists as paid, so
    this happens the same night at the latest. Resolving it is maker-checker (`payments.finalize`, then a
    different admin): in one transaction the debit is re-applied from their cash up to what's there, the
-   rest is recorded as owed (`payout_owed`, per provider), the transfer is booked as sent and its fee as
-   paid, and withdrawals unfreeze once nothing else is open for them. A failure after a success is a
-   critical alert, never auto-fixed.
+   rest is recorded as owed (`payout_owed`, one per person, scoped by their user id), the transfer is
+   booked as sent and its fee as paid, and the freeze lifts once nothing else is open for them. A failure
+   after a success is a critical alert, never auto-fixed.
+   **What's owed** (decided 2026-11-02): every new cash credit to that person (winnings, refunds, top-ups,
+   anything `ledger.journal()` puts in their cash) repays it first, up to the credit, as its own journal
+   (`owed_repaid`, key `owed_repay:<the credit's key>`, the owed account locked so two credits can't repay
+   the same debt). Bonus coins never repay it. Withdrawals are refused while anything is owed
+   (`withdraw_not_allowed`, reason `amount_owed`; queued ones are held before sending); playing isn't.
+   `GET /wallet` returns `owed: { amountKobo, reason: "duplicate_payout" }` (null when nothing is owed),
+   for the app's "₦X owed from a duplicate payout. Contact support if this looks wrong." An admin can waive
+   it: `payments.finalize`, a second admin, a reason (`owed_waivers`); the platform bears it
+   (`payout_owed` ← `platform_funds`), never more than is still owed when it's confirmed, never by or for
+   the admin themselves, all logged. The invariants check that what was booked as owed equals what the
+   resolved contradictions recorded, and that no owed account goes above zero.
 5. **Manual finalize and maker-checker.** For a stuck payout (`submitted`, `unknown`) or top-up
    (`pending`, `mismatch`, `expired`) an admin with `payments.finalize` sees a fresh provider check, then
    chooses success or failed with a required reason. The server asks the provider again at that moment and
@@ -197,5 +209,3 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   second update's foreign-key check needs a key-share lock on the person's row. `FOR UPDATE` blocks that
   and deadlocked with the request waiting for `payout_pending` (found by `sim:payments`; a test reproduces
   the interleaving).
-- **Still open:** owed amounts after a contradiction are recorded, not collected; whether future credits
-  repay them first, and whether someone who owes can withdraw new winnings, is a product decision.

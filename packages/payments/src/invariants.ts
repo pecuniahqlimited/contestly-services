@@ -7,7 +7,8 @@
  *    fees, equals what came in (top-ups, dev mints, coins issued, prizes funded) minus what went out.
  * 2. Every account's balance is the sum of its entries.
  * 3. Per provider: topup_in is exactly the credited top-ups; payout_pending exactly the open withdrawals;
- *    payout_settled exactly what succeeded withdrawals sent; payout_fees exactly their fees.
+ *    payout_settled exactly what succeeded withdrawals sent; payout_fees exactly their fees. What people
+ *    were booked as owing (payout_owed, per person) is exactly what resolved contradictions recorded.
  * 4. Every withdrawal's own entries: debited once; reversed at most once and only if failed or rejected;
  *    settled only if succeeded; never both; recovered (a contradiction resolved) once, and only then.
  * 5. A finished or cancelled party's pot is zero. Parties with entries from before double entry (migration
@@ -47,21 +48,20 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
   if (drift.length) out.push({ kind: "balance_drift", detail: { accounts: drift.map((r) => ({ id: r.id, kind: r.kind, scope: r.scope, balance: num(r.balance), entries: num(r.entries) })) } });
 
   // 3. The payment accounts against the rows they stand for, per provider.
-  const accounts = await rows(conn, sql`select kind, scope, balance_kobo::bigint as balance from ledger_accounts where kind in ('topup_in', 'payout_pending', 'payout_settled', 'payout_fees', 'payout_owed')`);
+  const accounts = await rows(conn, sql`select kind, scope, balance_kobo::bigint as balance from ledger_accounts where kind in ('topup_in', 'payout_pending', 'payout_settled', 'payout_fees')`);
   const balance = (kind: string, provider: string) => num(accounts.find((a) => a.kind === kind && a.scope === provider)?.balance);
   const topupSums = await rows(conn, sql`select provider, sum(coalesce(credited_kobo, amount_kobo))::bigint as credited from topups where status = 'succeeded' group by provider`);
   // A resolved contradiction books the transfer as sent (and its fee), and what the person couldn't cover as owed.
   const payoutSums = await rows(conn, sql`select p.provider,
       coalesce(sum(p.amount_kobo) filter (where p.status in (${openList})), 0)::bigint as pending,
       coalesce(sum(p.sent_kobo) filter (where p.status = 'succeeded' or c.status = 'resolved'), 0)::bigint as settled,
-      coalesce(sum(p.fee_kobo) filter (where p.status = 'succeeded' or c.status = 'resolved'), 0)::bigint as fees,
-      coalesce(sum(c.owed_kobo) filter (where c.status = 'resolved'), 0)::bigint as owed
+      coalesce(sum(p.fee_kobo) filter (where p.status = 'succeeded' or c.status = 'resolved'), 0)::bigint as fees
     from payouts p left join payout_contradictions c on c.payout_id = p.id group by p.provider`);
   const providers = new Set<string>([...accounts.map((a) => String(a.scope)), ...topupSums.map((r) => String(r.provider)), ...payoutSums.map((r) => String(r.provider))]);
   for (const p of providers) {
     const t = topupSums.find((r) => r.provider === p);
     const po = payoutSums.find((r) => r.provider === p);
-    const expect = { topup_in: -num(t?.credited), payout_pending: num(po?.pending), payout_settled: num(po?.settled), payout_fees: num(po?.fees), payout_owed: -num(po?.owed) };
+    const expect = { topup_in: -num(t?.credited), payout_pending: num(po?.pending), payout_settled: num(po?.settled), payout_fees: num(po?.fees) };
     for (const [kind, want] of Object.entries(expect)) {
       const got = balance(kind, p);
       if (got !== want) out.push({ kind: `provider_${kind}`, detail: { provider: p, ledger: got, records: want } });
@@ -89,6 +89,12 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
       || num(r.recoveries) !== (r.resolved === true ? 1 : 0) || (r.resolved === true && !reversed);
   });
   if (bad.length) out.push({ kind: "payout_entries", detail: { payouts: bad.slice(0, 20).map((r) => ({ id: r.id, status: r.status, cashLegs: num(r.cash_legs), cashSum: num(r.cash_sum), debits: num(r.debits), finals: num(r.finals), settledLegs: num(r.settled_legs), recoveries: num(r.recoveries) })) } });
+
+  // 3b. What people were recorded as owing is exactly what resolved contradictions said (repayments and waivers move it on from there).
+  const [owed] = await rows(conn, sql`select
+      coalesce((select sum(e.amount_kobo) from ledger_entries e join ledger_accounts a on a.id = e.account_id where a.kind = 'payout_owed' and e.type = 'withdrawal_recovered'), 0)::bigint as booked,
+      coalesce((select sum(owed_kobo) from payout_contradictions where status = 'resolved'), 0)::bigint as resolved`);
+  if (num(owed.booked) !== -num(owed.resolved)) out.push({ kind: "owed_recorded", detail: { ledger: num(owed.booked), contradictions: -num(owed.resolved) } });
 
   // 5. Closed parties' pots are empty (parties with pre-double-entry entries left out; ADR 0013 lists them).
   const pots = await rows(conn, sql`select a.scope as party_id, pa.status, a.balance_kobo::bigint as balance

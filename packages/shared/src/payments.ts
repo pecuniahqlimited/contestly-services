@@ -64,8 +64,17 @@ export const SECOND_ADMIN_BECAUSE = ["over_threshold", "check_not_definite", "ch
 export type SecondAdminBecause = (typeof SECOND_ADMIN_BECAUSE)[number];
 
 /** Why a withdrawal is refused (details.reason with withdraw_not_allowed). */
-export const WITHDRAW_BLOCK_REASONS = ["guest", "email_unverified", "phone_unverified", "deleted", "frozen", "payment_review", "system"] as const;
+export const WITHDRAW_BLOCK_REASONS = ["guest", "email_unverified", "phone_unverified", "deleted", "frozen", "payment_review", "amount_owed", "system"] as const;
 export type WithdrawBlockReason = (typeof WITHDRAW_BLOCK_REASONS)[number];
+/** Why a person owes: a payout we reversed was paid after all, and their cash didn't cover it. */
+export const OWED_REASONS = ["duplicate_payout"] as const;
+/**
+ * What the wallet shows when something is owed. Every new cash credit repays it first; withdrawals wait
+ * until it's clear; playing doesn't. The app: "₦X owed from a duplicate payout. Contact support if this looks wrong."
+ */
+export const owedSchema = z.object({ amountKobo: z.number().int().positive(), reason: z.enum(OWED_REASONS) });
+export type Owed = z.infer<typeof owedSchema>;
+
 /** Which limit was hit (details.limit with limit_reached). */
 export const PAYMENT_LIMITS = ["topup_max", "topup_daily", "payout_max", "payout_daily_amount", "payout_daily_count"] as const;
 
@@ -207,6 +216,15 @@ export const paymentConfigChangeSchema = z.object({
   before: z.unknown(), proposed: z.unknown(), createdAt: z.string(),
 });
 export type PaymentConfigChangeView = z.infer<typeof paymentConfigChangeSchema>;
+
+/** Waiving what someone owes: payments.finalize, a second admin, a reason. */
+export const owedWaiverSchema = z.object({
+  id: z.string().uuid(), userId: z.string().uuid(), amountKobo: z.number().int(), reason: z.string(),
+  status: z.enum(["awaiting_second_admin", "applied", "superseded"]), requestedBy: z.string().uuid(), confirmedBy: z.string().uuid().nullable(),
+  /** What was actually waived (no more than is owed when confirmed). */
+  waivedKobo: z.number().int().nullable(), createdAt: z.string(), appliedAt: z.string().nullable(),
+});
+export const owedListSchema = z.object({ owed: z.array(z.object({ userId: z.string().uuid(), handle: z.string(), amountKobo: z.number().int() })) });
 
 /** A reversed payout the provider says was paid, and how it was resolved. */
 export const payoutContradictionSchema = z.object({

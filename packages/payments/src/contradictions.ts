@@ -3,7 +3,7 @@
  * the moment it's heard their withdrawals freeze, in the same transaction as the alert (payouts.ts). Resolving
  * it is maker-checker: one admin with payments.finalize asks, a different one confirms. On confirm, in one
  * transaction: the debit is re-applied from their cash, up to what's there; the rest is recorded as owed
- * (payout_owed); the transfer is booked as settled (and its fee as paid); withdrawals unfreeze once nothing
+ * (their payout_owed account: later cash credits repay it first, and withdrawals wait until it's clear; owed.ts); the transfer is booked as settled (and its fee as paid); withdrawals unfreeze once nothing
  * else is open for them. Every step logged. Nobody acts on their own payout.
  */
 import { and, desc, eq, ne } from "drizzle-orm";
@@ -63,7 +63,7 @@ export async function confirmContradictionResolution(adminUserId: string, id: st
     // Mirrors a settle: what the person had back leaves again, the transfer is booked as sent, the fee as paid.
     const legs: ledger.Leg[] = [{ account: { system: "payout_settled", scope: p.provider }, amountKobo: p.sentKobo }];
     if (recovered > 0) legs.push({ account: { userId: c.userId, kind: "cash" }, amountKobo: -recovered });
-    if (owed > 0) legs.push({ account: { system: "payout_owed", scope: p.provider }, amountKobo: -owed });
+    if (owed > 0) legs.push({ account: ledger.owedAccount(c.userId), amountKobo: -owed });
     if (userPaidFee > 0) legs.push({ account: { system: "payout_fees", scope: p.provider }, amountKobo: userPaidFee });
     await ledger.journal(tx, { type: "withdrawal_recovered", refType: "payout", refId: p.id, idempotencyKey: `payout_recovery:${p.id}`, legs });
     const platformPart = feeKobo - userPaidFee;

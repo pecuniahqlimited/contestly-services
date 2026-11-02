@@ -50,7 +50,7 @@ export interface WithdrawalRequest { amountKobo: number; bankAccountId: string; 
 export async function requestPayout(user: User, req: WithdrawalRequest, deps: PaymentsDeps, now = new Date()): Promise<{ payout: Payout; replayed: boolean }> {
   const [settings, cfg] = await Promise.all([currentSettings(), getPaymentsConfig()]);
   if (settings.payoutsPaused) throw paymentsError(503, PAYMENTS_PAUSED, { what: "payouts" });
-  const blocked = withdrawBlockReason(user);
+  const blocked = withdrawBlockReason(user, { owedKobo: await ledger.owedKobo(db, user.id) });
   if (blocked) throw paymentsError(403, WITHDRAW_NOT_ALLOWED, { reason: blocked });
   if (req.amountKobo < cfg.payout.minKobo) throw paymentsError(422, BELOW_MINIMUM, { minKobo: cfg.payout.minKobo });
   if (req.amountKobo > cfg.payout.maxKobo) throw paymentsError(422, LIMIT_REACHED, { limit: "payout_max", maxKobo: cfg.payout.maxKobo });
@@ -63,7 +63,7 @@ export async function requestPayout(user: User, req: WithdrawalRequest, deps: Pa
     const [fresh] = await tx.select().from(users).where(eq(users.id, user.id)).for("no key update");
     const [prior] = await tx.select().from(payouts).where(and(eq(payouts.userId, user.id), eq(payouts.clientRequestId, req.clientRequestId)));
     if (prior) return { payout: prior, replayed: true, hold: null as string | null, userHourCount: 0 };
-    const blockedNow = withdrawBlockReason(fresh);
+    const blockedNow = withdrawBlockReason(fresh, { owedKobo: await ledger.owedKobo(tx, user.id) });
     if (blockedNow) throw paymentsError(403, WITHDRAW_NOT_ALLOWED, { reason: blockedNow });
 
     const [account] = await tx.select().from(payoutAccounts).where(and(eq(payoutAccounts.id, req.bankAccountId), eq(payoutAccounts.userId, user.id)));
@@ -231,7 +231,7 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
   const go = await db.transaction(async (tx): Promise<number | false> => {
     const row = await lockPayout(tx, payoutId);
     if (row.status !== "requested") return false;
-    const blocked = withdrawBlockReason(u);
+    const blocked = withdrawBlockReason(u, { owedKobo: await ledger.owedKobo(tx, p.userId) });
     if (blocked) {
       await tx.update(payouts).set({ status: "awaiting_approval", holdReason: `blocked:${blocked}`, updatedAt: now }).where(eq(payouts.id, p.id));
       await raiseAlert(tx, { severity: "warning", kind: "payout_held_blocked", dedupeKey: `payout_held_blocked:${p.id}`, refType: "payout", refId: p.id, detail: { reason: blocked } });

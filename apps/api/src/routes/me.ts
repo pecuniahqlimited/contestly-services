@@ -22,7 +22,7 @@ export async function meRoutes(app: FastifyInstance) {
     const u = requireSession(req);
     return {
       ...publicUser(u), isGuest: u.isGuest, isAdmin: u.isAdmin, email: u.email, phoneAdded: !!u.phoneVerifiedAt,
-      canWithdraw: canWithdraw(u), wallet: await ledger.balances(u.id),
+      canWithdraw: canWithdraw(u, { owedKobo: await ledger.owedKobo(db, u.id) }), wallet: await ledger.balances(u.id),
     };
   });
 

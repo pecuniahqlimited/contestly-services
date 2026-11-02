@@ -16,7 +16,8 @@ const WITHDRAWALS_SHOWN = 50;
 export async function walletRoutes(app: FastifyInstance) {
   app.get("/wallet", async (req) => {
     const me = requireUser(req);
-    return { ...(await ledger.balances(me.id)), history: await ledger.history(me.id) };
+    const owedKobo = await ledger.owedKobo(db, me.id);
+    return { ...(await ledger.balances(me.id)), history: await ledger.history(me.id), owed: owedKobo > 0 ? { amountKobo: owedKobo, reason: "duplicate_payout" as const } : null };
   });
 
   /** Local-only funding for sims and tests (minted against dev_mint, never a payment). Only with PAYMENTS_DEV_TOOLS, never in production. */

@@ -3,12 +3,13 @@ import { z } from "zod";
 import { getPaymentsConfig } from "@contestly/db";
 import {
   adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
-  adminPaymentsConfigBodySchema, adminReasonBodySchema, paymentConfigChangeSchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
+  adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
   acknowledgeAlert, adminVerifyTopup, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
   listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
+  confirmOwedWaiver, listOwed, listOwedWaivers, requestOwedWaiver,
 } from "@contestly/payments";
 import { requirePermission, uuidParam } from "../auth.js";
 import { paymentsDeps } from "../payments.js";
@@ -115,6 +116,26 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.post("/admin/payments/contradictions/:id/confirm", async (req) => {
     const admin = await requirePermission(req, "payments.finalize");
     return { contradiction: payoutContradictionSchema.parse(await confirmContradictionResolution(admin.id, uuidParam(req))) };
+  });
+
+  // ---- What people owe after a duplicate payout; waiving it takes two admins ----
+  app.get("/admin/payments/owed", async (req) => {
+    await requirePermission(req, "payments.view");
+    return owedListSchema.parse({ owed: await listOwed(limitQuery.parse(req.query).limit) });
+  });
+  app.get("/admin/payments/owed-waivers", async (req) => {
+    await requirePermission(req, "payments.view");
+    return { waivers: (await listOwedWaivers(limitQuery.parse(req.query).limit)).map((w) => owedWaiverSchema.parse(w)) };
+  });
+  app.post("/admin/payments/users/:id/owed/waive", async (req) => {
+    const admin = await requirePermission(req, "payments.finalize");
+    const { reason } = adminReasonBodySchema.parse(req.body);
+    return { waiver: owedWaiverSchema.parse(await requestOwedWaiver(admin.id, uuidParam(req), reason)) };
+  });
+  /** The second admin: the platform bears what's still owed, up to what was asked. */
+  app.post("/admin/payments/owed-waivers/:id/confirm", async (req) => {
+    const admin = await requirePermission(req, "payments.finalize");
+    return { waiver: owedWaiverSchema.parse(await confirmOwedWaiver(admin.id, uuidParam(req))) };
   });
 
   /** Run the invariant checks now (they also run hourly). A breach that repeats alerts and pauses payouts. */

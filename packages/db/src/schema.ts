@@ -831,6 +831,25 @@ export const payoutContradictions = pgTable("payout_contradictions", {
 }, (t) => [uniqueIndex("payout_contradictions_payout").on(t.payoutId), index("payout_contradictions_user_idx").on(t.userId)]);
 
 /**
+ * Waiving what a person owes after a duplicate payout (ADR 0013): one admin with payments.finalize asks with
+ * a reason, a different one confirms; the platform bears it (payout_owed ← platform_funds). Never edited after.
+ */
+export const owedWaivers = pgTable("owed_waivers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  /** Owed when it was asked; no more than this is waived. */
+  amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["awaiting_second_admin", "applied", "superseded"] }).notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  /** What was waived on confirm: the smaller of the request and what was still owed. */
+  waivedKobo: bigint("waived_kobo", { mode: "number" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+}, (t) => [uniqueIndex("owed_waivers_one_open").on(t.userId).where(sql`status = 'awaiting_second_admin'`)]);
+
+/**
  * A change to payments config or settings that loosens a control (raises a limit or threshold, switches a
  * provider, un-pauses): it waits here for a second admin. Tightening applies at once. Never edited after.
  */
@@ -1195,6 +1214,7 @@ export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 export type PaymentFinalization = typeof paymentFinalizations.$inferSelect;
 export type PayoutContradiction = typeof payoutContradictions.$inferSelect;
 export type PaymentConfigChange = typeof paymentConfigChanges.$inferSelect;
+export type OwedWaiver = typeof owedWaivers.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;

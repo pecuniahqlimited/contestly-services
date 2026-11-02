@@ -13,6 +13,7 @@ export * from "./sweep.js";
 export * from "./admin.js";
 export * from "./contradictions.js";
 export * from "./controls.js";
+export * from "./owed.js";
 export { assertPaymentsEnv, paymentsDevTools, closeProviders, configuredProviderNames, defaultProviderName, knownProviderNames, mockControlsOrNull, providerNamed, resetProviders } from "./providers/index.js";
 export { paystackProvider, paystackTransferFeeKobo, PAYSTACK, type Fetch } from "./providers/paystack.js";
 export { mockProvider, MOCK, type MockControls, type MockDelivery } from "./providers/mock.js";

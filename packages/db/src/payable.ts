@@ -22,8 +22,11 @@ export const isUnderPaymentReview = (u: Pick<User, "withdrawalsFrozenAt">) => !!
 
 type WithdrawFields = Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "deletedAt" | "phoneVerifiedAt" | "bannedAt" | "withdrawalsFrozenAt">;
 
+/** What the ledger knows that the user row doesn't: what they owe (ledger.owedKobo). */
+export interface WithdrawContext { owedKobo: number }
+
 /** Why this account can't withdraw, or null if it can. The app shows the reason (withdraw_not_allowed). */
-export function withdrawBlockReason(u: WithdrawFields): WithdrawBlockReason | null {
+export function withdrawBlockReason(u: WithdrawFields, ctx: WithdrawContext): WithdrawBlockReason | null {
   if (u.isSystem) return "system";
   if (u.isGuest) return "guest";
   if (u.deletedAt) return "deleted";
@@ -31,8 +34,9 @@ export function withdrawBlockReason(u: WithdrawFields): WithdrawBlockReason | nu
   if (!u.phoneVerifiedAt) return "phone_unverified";
   if (isWalletFrozen(u)) return "frozen";
   if (isUnderPaymentReview(u)) return "payment_review";
+  if (ctx.owedKobo > 0) return "amount_owed";
   return null;
 }
 
 /** Withdrawing cash also needs a verified phone number, one per account, so payouts reach one real person; and a wallet that isn't frozen. */
-export const canWithdraw = (u: WithdrawFields) => canBePaidCash(u) && withdrawBlockReason(u) === null;
+export const canWithdraw = (u: WithdrawFields, ctx: WithdrawContext) => canBePaidCash(u) && withdrawBlockReason(u, ctx) === null;

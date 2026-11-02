@@ -20,6 +20,7 @@ import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
+import { owedSchema } from "./payments.js";
 import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX } from "./accounts.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
@@ -448,7 +449,8 @@ export const ledgerEntrySchema = z.object({
   refId: z.string().nullable(),
   createdAt: z.string().datetime(),
 });
-export const walletResponseSchema = walletSchema.extend({ history: z.array(ledgerEntrySchema) });
+/** owed: what the person owes after a duplicate payout (repaid first from any new cash; withdrawals wait), or null. */
+export const walletResponseSchema = walletSchema.extend({ history: z.array(ledgerEntrySchema), owed: owedSchema.nullable() });
 
 /** A party's public host, resolved only through publicHost() (ADR 0001). Step 4 adds kind "brand". */
 export const publicHostSchema = z.object({
