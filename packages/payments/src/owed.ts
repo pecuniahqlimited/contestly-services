@@ -10,7 +10,7 @@
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 import { db, ledger, ledgerAccounts, owedWaivers, recordAdminAction, users, type OwedWaiver } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED } from "@contestly/shared";
-import { paymentsError } from "./common.js";
+import { lockPerson, paymentsError } from "./common.js";
 
 const iso = (d: Date | null) => d?.toISOString() ?? null;
 export const owedWaiverView = (w: OwedWaiver) => ({
@@ -34,6 +34,7 @@ export async function listOwedWaivers(limit: number) {
 export async function requestOwedWaiver(adminUserId: string, userId: string, reason: string) {
   if (userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
   return db.transaction(async (tx) => {
+    await lockPerson(tx, userId);
     const owed = await ledger.owedKobo(tx, userId);
     if (owed <= 0) throw paymentsError(409, "nothing_owed");
     const [open] = await tx.select({ id: owedWaivers.id }).from(owedWaivers).where(and(eq(owedWaivers.userId, userId), eq(owedWaivers.status, "awaiting_second_admin")));
@@ -46,9 +47,11 @@ export async function requestOwedWaiver(adminUserId: string, userId: string, rea
 
 /** A second admin confirms: waives the smaller of the request and what's still owed (superseded if nothing is). */
 export async function confirmOwedWaiver(adminUserId: string, waiverId: string, now = new Date()) {
+  const [pre] = await db.select({ userId: owedWaivers.userId }).from(owedWaivers).where(eq(owedWaivers.id, waiverId));
+  if (!pre) throw paymentsError(404, "not_found");
   return db.transaction(async (tx) => {
+    await lockPerson(tx, pre.userId); // the lock order: the person, the waiver, then what they owe
     const [w] = await tx.select().from(owedWaivers).where(eq(owedWaivers.id, waiverId)).for("update");
-    if (!w) throw paymentsError(404, "not_found");
     if (w.status !== "awaiting_second_admin") throw paymentsError(409, "waiver_not_pending", { status: w.status });
     if (w.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);
     if (w.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);

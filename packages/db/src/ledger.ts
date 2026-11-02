@@ -53,8 +53,24 @@ export interface Leg { account: AccountRef; amountKobo: number }
 export interface Journal { legs: Leg[]; type: string; refType?: string; refId?: string; idempotencyKey: string }
 
 const isUserRef = (a: AccountRef): a is { userId: string; kind: Kind } => "userId" in a;
+/** Platform accounts kept per person (scope = their user id): locked with the person's own. */
+const PERSON_SCOPED_SYSTEM: readonly string[] = ["payout_owed", "contradiction_hold"];
+const isPersonScoped = (a: AccountRef) => isUserRef(a) || PERSON_SCOPED_SYSTEM.includes(a.system);
+/** People whose cash this journal credits, net. */
+function creditedCash(j: Journal) {
+  const net = new Map<string, number>();
+  for (const l of j.legs) if (isUserRef(l.account) && l.account.kind === "cash") net.set(l.account.userId, (net.get(l.account.userId) ?? 0) + l.amountKobo);
+  return [...net].filter(([, v]) => v > 0).map(([u]) => u);
+}
+
 /** Leg 0 carries the journal's key itself (so existing keys keep meaning what they meant); leg i carries key#i. */
 export const legKey = (key: string, i: number) => (i === 0 ? key : `${key}#${i}`);
+
+async function existingAccountId(tx: Tx, a: AccountRef): Promise<string | null> {
+  const { userId, kind, scope } = isUserRef(a) ? { ...a, scope: "" } : { userId: await treasuryUserId(tx), kind: a.system, scope: a.scope ?? "" };
+  const [row] = await tx.select({ id: ledgerAccounts.id }).from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, kind), eq(ledgerAccounts.scope, scope)));
+  return row?.id ?? null;
+}
 
 async function accountId(tx: Tx, a: AccountRef): Promise<string> {
   const { userId, kind, scope } = isUserRef(a) ? { ...a, scope: "" } : { userId: await treasuryUserId(tx), kind: a.system, scope: a.scope ?? "" };
@@ -85,7 +101,17 @@ export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; 
   assertBalanced(j);
   const ids = [] as string[];
   for (const l of j.legs) ids.push(await accountId(tx, l.account));
-  const locked = await tx.select().from(ledgerAccounts).where(inArray(ledgerAccounts.id, [...new Set(ids)])).orderBy(asc(ledgerAccounts.id)).for("update");
+  // The lock order (ADR 0013): a person's accounts (theirs, and what they owe or have held) before platform
+  // accounts, each by id. Cash credited to someone who owes repays it below, so their owed account is locked
+  // now, with the person's, rather than after the platform's.
+  const person = new Set<string>(), platform = new Set<string>();
+  j.legs.forEach((l, i) => (isPersonScoped(l.account) ? person : platform).add(ids[i]));
+  for (const userId of creditedCash(j)) {
+    const owed = await existingAccountId(tx, owedAccount(userId));
+    if (owed) person.add(owed);
+  }
+  const lockIds = async (set: Set<string>) => (set.size ? tx.select().from(ledgerAccounts).where(inArray(ledgerAccounts.id, [...set])).orderBy(asc(ledgerAccounts.id)).for("update") : []);
+  const locked = [...(await lockIds(person)), ...(await lockIds(platform))];
   const byId = new Map(locked.map((a) => [a.id, a]));
   const keys = j.legs.map((_, i) => legKey(j.idempotencyKey, i));
 

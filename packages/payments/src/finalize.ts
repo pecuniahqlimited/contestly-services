@@ -18,7 +18,7 @@
 import { and, eq } from "drizzle-orm";
 import { db, getPaymentsConfig, paymentFinalizations, payouts, recordAdminAction, topups, type PaymentFinalization, type Payout, type Topup, type Tx } from "@contestly/db";
 import { CURRENCY, FINALIZE_TOO_SOON, NO_VERIFIED_AMOUNT, NOT_FINALIZABLE, OWN_TRANSACTION, SECOND_ADMIN_REQUIRED, type PaymentsConfig, type SecondAdminBecause } from "@contestly/shared";
-import { paymentsError } from "./common.js";
+import { lockPerson, paymentsError } from "./common.js";
 import { queryProvider, reverseLocked, settleLocked } from "./payouts.js";
 import { creditLocked, failLocked, verifyWithProvider } from "./topups.js";
 import type { ProviderCheck } from "./types.js";
@@ -117,6 +117,7 @@ export async function requestFinalization(adminUserId: string, target: FinalizeT
   if (target.type === "payout") assertQuietSinceSend(first as Payout, cfg, now);
   const check = await freshCheck(target);
   return db.transaction(async (tx) => {
+    await lockPerson(tx, first.userId); // the lock order: the person, then transaction rows, then accounts
     const row = await load(target, tx, true);
     assertFinalizable(target, row, adminUserId);
     const { amountKobo, secondAdminBecause } = judge(target.type, row, outcome, check, cfg);
@@ -153,7 +154,9 @@ export async function confirmFinalization(adminUserId: string, finalizationId: s
   const target: FinalizeTarget = { type: pending.targetType, id: pending.targetId };
   const cfg = await getPaymentsConfig();
   const check = await freshCheck(target);
+  const owner = await load(target);
   return db.transaction(async (tx) => {
+    await lockPerson(tx, owner.userId);
     const [f] = await tx.select().from(paymentFinalizations).where(eq(paymentFinalizations.id, finalizationId)).for("update");
     if (f.status !== "awaiting_second_admin") throw paymentsError(409, "finalization_not_pending", { status: f.status });
     if (f.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);

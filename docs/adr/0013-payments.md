@@ -241,6 +241,23 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   top-up credit locks the same row and they run one at a time. This is speed, not money, and fine at
   launch volumes. If it bites, bucket the platform accounts (`scope` = `<provider>:<n>`, n from a hash of
   the transaction id; the invariants sum the buckets), with no change to the rules.
+- **The lock order** for every money path (two paths taking the same locks in opposite orders deadlock):
+  1. the person's `users` row, when the path locks it at all: `FOR NO KEY UPDATE` (`lockPerson`), unless the
+     transaction changes a key column of it (email, handle), which needs `FOR UPDATE`;
+  2. transaction rows: the party, or the payout / top-up / contradiction / waiver / finalization / grant;
+  3. ledger accounts, inside `ledger.journal()`: the person's own and those kept per person (what they owe,
+     what's held) first, then platform accounts, each group by id; cash credited to someone who owes locks
+     their owed account up front for the repayment.
+  A transaction that moves several people's money (settlement, a cancel's refunds) is serialised by the
+  party row, and each journal in it follows 3. Audit (2026-11-03), every place a user row is locked:
+  withdrawal request, send, every payout transition (applyOutcome, the freeze), approve, reject, finalize
+  and its confirm, contradiction confirm, waiver request and confirm, top-up start, permission changes:
+  person first, `NO KEY UPDATE` (changed in payments; tested). Account deletion and a guest's sign-up
+  (`becomeMember`): `FOR UPDATE`, needed because they change the email; person, then accounts; deletion is
+  refused while a withdrawal or a party is open, so it never meets a settle. Party join, leave, cancel,
+  settle and refunds never lock a user row (party row, then accounts). Ban/unban, the Climb run start,
+  About you and the streak lock a user row `FOR UPDATE` but move no money and wait for nothing after it, so
+  they can't be in a cycle; `NO KEY UPDATE` would do for them, left as main's to change.
 - A withdrawal request locks the person's row `FOR NO KEY UPDATE`, not `FOR UPDATE`: the worker settling
   their earlier payout holds `payout_pending` and updates that payout row twice in one transaction, and the
   second update's foreign-key check needs a key-share lock on the person's row. `FOR UPDATE` blocks that

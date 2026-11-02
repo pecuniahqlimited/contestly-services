@@ -15,7 +15,7 @@ import {
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  permissionsOf, pruneRejections, recordRejection, REJECTIONS_KEPT_DAYS, REJECTIONS_PER_HOUR_CAP, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, confirmFinalization, confirmOwedWaiver, permissionsOf, pruneRejections, rejectPayout, requestFinalization, requestOwedWaiver, recordRejection, REJECTIONS_KEPT_DAYS, REJECTIONS_PER_HOUR_CAP, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -1075,6 +1075,92 @@ describe("contradictions: resolved by two admins", () => {
     expect((await resolve(u, c.id)).json().error).toBe("own_transaction");
     await resolve(admin, c.id);
     expect((await confirmIt(u, c.id)).json().error).toBe("own_transaction");
+  });
+});
+
+describe("the lock order: the person's row, then transaction rows, then the person's accounts, then platform accounts", () => {
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  /** Runs `fn` while another transaction holds the person's row: it must wait for it (it locks the person first), then finish. */
+  async function waitsForPerson(userId: string, fn: () => Promise<unknown>) {
+    let finished = false;
+    let run: Promise<unknown> | undefined;
+    await db.transaction(async (tx) => {
+      await tx.select().from(users).where(eq(users.id, userId)).for("no key update");
+      run = fn().then((v) => { finished = true; return v; });
+      await pause(300);
+      expect(finished).toBe(false);
+    });
+    const out = await run!;
+    expect(finished).toBe(true);
+    return out;
+  }
+  /** Whether another transaction holds this ledger account's row lock right now. */
+  async function isLocked(accountId: string) {
+    try {
+      await db.transaction(async (tx) => { await tx.execute(sqlRaw`select id from ledger_accounts where id = ${accountId} for update nowait`); });
+      return false;
+    } catch (e) {
+      if ((e as { code?: string }).code === "55P03") return true;
+      throw e;
+    }
+  }
+
+  it("approve and reject take the person first", async () => {
+    await config((c) => { c.payout.approvalThresholdKobo = kobo(2000); });
+    try {
+      const a = await withdrawer("lkappr");
+      const big = (await request(a.u, a.account.id, kobo(2500))).payout;
+      expect((await waitsForPerson(a.u.id, () => approvePayout(admin.id, big.id, deps)) as Payout).status).toBe("requested");
+      const b = await withdrawer("lkrej");
+      const other = (await request(b.u, b.account.id, kobo(2500))).payout;
+      expect((await waitsForPerson(b.u.id, () => rejectPayout(admin.id, other.id, "looks wrong")) as Payout).status).toBe("rejected");
+      expect(await cash(b.u)).toBe(kobo(10_000));
+    } finally {
+      await config(() => {});
+    }
+  });
+
+  it("a manual finalize and its confirm take the person first", async () => {
+    const w = await withdrawer("lkfin", kobo(100_000));
+    const { payout } = await request(w.u, w.account.id, kobo(1500) + 14);
+    const longAgo = new Date(Date.now() - 2 * 3600_000);
+    await db.update(payouts).set({ status: "unknown", submittedAt: longAgo, lastSentAt: longAgo, sendAttempts: 1 }).where(eq(payouts.id, payout.id));
+    const f = await waitsForPerson(w.u.id, () => requestFinalization(admin.id, { type: "payout", id: payout.id }, "failed", "provider says nothing")) as { id: string; status: string };
+    expect(f.status).toBe("awaiting_second_admin"); // not found: a second admin
+    await mock.setTransfer(payout.reference, { amountKobo: payout.sentKobo, recipientCode: "RCP_x", state: "failed", createdAt: Date.now(), queries: 0 });
+    expect(((await waitsForPerson(w.u.id, () => confirmFinalization(admin2.id, f.id))) as { status: string }).status).toBe("applied");
+    expect((await reload(payout.id)).status).toBe("failed");
+  });
+
+  it("a waiver takes the person first; a cash credit locks what they owe before any platform account", async () => {
+    const { u, account } = await withdrawer("lkowe", 0);
+    // Owing, the plain way: a contradiction with no cash to hold.
+    await fund(u, kobo(1500) + 11);
+    const { payout } = await request(u, account.id, kobo(1500) + 11);
+    expect(await submitPayout(payout.id)).toBe("failed");
+    await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: -(kobo(1500) + 11), type: "topup", idempotencyKey: `t:lk:spend:${u.id}` }));
+    await mock.setTransfer(payout.reference, { amountKobo: payout.sentKobo, recipientCode: "RCP_x", state: "success", createdAt: Date.now(), queries: 0 });
+    await checkPayout(payout.id, "check");
+    expect(await ledger.owedKobo(db, u.id)).toBe(kobo(1500) + 11);
+
+    // A credit to them, while a platform account it needs (the dev mint) is held elsewhere: by then it already
+    // holds their cash and their owed account.
+    const [cashAcct] = await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, u.id), eq(ledgerAccounts.kind, "cash")));
+    const [owedAcct] = await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "payout_owed"), eq(ledgerAccounts.scope, u.id)));
+    let credit: Promise<unknown> | undefined;
+    await db.transaction(async (tx) => {
+      await tx.execute(sqlRaw`select id from ledger_accounts where kind = 'dev_mint' for update`);
+      credit = db.transaction((t2) => ledger.post(t2, { userId: u.id, kind: "cash", amountKobo: kobo(100), type: "topup", idempotencyKey: `t:lk:credit:${u.id}` }));
+      await pause(300);
+      expect([await isLocked(cashAcct.id), await isLocked(owedAcct.id)]).toEqual([true, true]);
+    });
+    await credit;
+    expect(await ledger.owedKobo(db, u.id)).toBe(kobo(1400) + 11);
+
+    const asked = await waitsForPerson(u.id, () => requestOwedWaiver(admin.id, u.id, "support ticket: lock order")) as { id: string };
+    expect(((await waitsForPerson(u.id, () => confirmOwedWaiver(admin2.id, asked.id))) as { status: string }).status).toBe("applied");
+    expect(await ledger.owedKobo(db, u.id)).toBe(0);
+    expect(await findBreaches(db)).toEqual([]);
   });
 });
 

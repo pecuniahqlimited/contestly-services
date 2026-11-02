@@ -335,8 +335,16 @@ export async function checkPayout(payoutId: string, via: "check" | "webhook", no
 
 const notAwaiting = () => paymentsError(409, "not_awaiting_approval");
 
+/** The person who owns a payout, locked first (the lock order), or a 404. */
+async function lockOwner(tx: Tx, payoutId: string) {
+  const [owner] = await tx.select({ userId: payouts.userId }).from(payouts).where(eq(payouts.id, payoutId));
+  if (!owner) throw paymentsError(404, "not_found");
+  await lockPerson(tx, owner.userId);
+}
+
 export async function approvePayout(adminUserId: string, payoutId: string, deps: PaymentsDeps) {
   const p = await db.transaction(async (tx) => {
+    await lockOwner(tx, payoutId);
     const row = await lockPayout(tx, payoutId);
     if (!row) throw paymentsError(404, "not_found");
     if (row.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
@@ -352,6 +360,7 @@ export async function approvePayout(adminUserId: string, payoutId: string, deps:
 
 export async function rejectPayout(adminUserId: string, payoutId: string, reason: string) {
   return db.transaction(async (tx) => {
+    await lockOwner(tx, payoutId);
     const row = await lockPayout(tx, payoutId);
     if (!row) throw paymentsError(404, "not_found");
     if (row.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
