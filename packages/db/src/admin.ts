@@ -13,7 +13,7 @@ type Conn = Tx | typeof db;
 export interface AdminActionInput {
   adminUserId: string;
   action: string;
-  targetType: "user" | "party" | "question" | "config";
+  targetType: "user" | "party" | "question" | "config" | "alert";
   targetId: string;
   reason?: string | null;
   before?: unknown;

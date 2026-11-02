@@ -22,6 +22,7 @@ import { adminClimbWordsRoutes } from "./routes/adminClimbWords.js";
 import { authRoutes } from "./routes/auth.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
 import { adminUsersRoutes } from "./routes/adminUsers.js";
+import { adminAlertsRoutes } from "./routes/adminAlerts.js";
 import { adminPartiesRoutes } from "./routes/adminParties.js";
 import { adminQuestionsRoutes } from "./routes/adminQuestions.js";
 import { chatsRoutes } from "./routes/chats.js";
@@ -111,6 +112,7 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(authRoutes);
   await app.register(onboardingRoutes);
   await app.register(adminUsersRoutes);
+  await app.register(adminAlertsRoutes);
   await app.register(adminPartiesRoutes);
   await app.register(adminQuestionsRoutes);
   await app.register(chatsRoutes);

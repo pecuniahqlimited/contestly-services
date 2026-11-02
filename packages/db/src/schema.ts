@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -123,6 +123,54 @@ export const adminActions = pgTable("admin_actions", {
   after: jsonb("after"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("admin_actions_target_idx").on(t.targetType, t.targetId, t.createdAt), index("admin_actions_created_idx").on(t.createdAt)]);
+
+/**
+ * Something an admin should look at (adminAlert() in alerts.ts). The same dedupe key inside its window
+ * bumps count and last_seen_at instead of adding a row; once acknowledged, the next one is a new row.
+ * `delivered` is, per channel (email, webhook), how many of `count` that channel has sent, so the worker
+ * delivers each occurrence once per channel and a failing channel doesn't hold up the other.
+ * Rows are acknowledged, never deleted.
+ */
+export const adminAlerts = pgTable("admin_alerts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: text("kind").notNull(),
+  severity: text("severity", { enum: ALERT_SEVERITIES }).notNull(),
+  subject: text("subject").notNull(),
+  details: jsonb("details").$type<Record<string, unknown>>().notNull(),
+  dedupeKey: text("dedupe_key").notNull(),
+  /** What it's about, for finding a thing's alerts (a payout, a party, a user). */
+  refType: text("ref_type"),
+  refId: text("ref_id"),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  /** A repeat of the key before this bumps the row; after it, a new row. */
+  windowEndsAt: timestamp("window_ends_at", { withTimezone: true }).notNull(),
+  count: integer("count").notNull().default(1),
+  delivered: jsonb("delivered").$type<Record<string, number>>().notNull().default({}),
+  acknowledgedByUserId: uuid("acknowledged_by_user_id").references(() => users.id),
+  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  ackNote: text("ack_note"),
+}, (t) => [
+  index("admin_alerts_dedupe_idx").on(t.dedupeKey, t.windowEndsAt),
+  index("admin_alerts_open_idx").on(t.severity, t.lastSeenAt).where(sql`acknowledged_at is null`),
+  index("admin_alerts_kind_idx").on(t.kind, t.lastSeenAt),
+  index("admin_alerts_ref_idx").on(t.refType, t.refId),
+]);
+
+/** Every message the worker sent (or tried to) for admin alerts: the throttle and digest clock, and a record. */
+export const adminAlertDeliveries = pgTable("admin_alert_deliveries", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  channel: text("channel").notNull(),
+  /** "immediate" (critical, one kind) or "digest" (warnings, every kind). */
+  mode: text("mode", { enum: ["immediate", "digest"] }).notNull(),
+  /** The alert kind for an immediate message; null for a digest. */
+  kind: text("kind"),
+  alertIds: uuid("alert_ids").array().notNull(),
+  occurrences: integer("occurrences").notNull(),
+  ok: boolean("ok").notNull(),
+  error: text("error"),
+  sentAt: timestamp("sent_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("admin_alert_deliveries_clock_idx").on(t.channel, t.mode, t.kind, t.sentAt)]);
 
 /**
  * About you, per audience (person | brand): one immutable row per admin save, numbered 1, 2, … within

@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { and, asc, eq } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, type Party, type Tx } from "@contestly/db";
+import { db, parties, partyPlayers, partyPrizes, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig, type Party, type Tx } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, partyQueue, questionsQueue } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, PARTY_EVENTS_CHANNEL, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
@@ -10,6 +10,8 @@ import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
 import { GENERATION_FAILED_MESSAGE, allQuestionsPlayed, refundParty as refundPartyWith, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { selectTranscriber } from "./transcribe/index.js";
+import { sendersFromEnv } from "@contestly/email";
+import { ALERT_DELIVERY_EVERY_MS, alertChannelsFromEnv, alertDeliveryConfigFromEnv, deliverAlerts } from "./alertDelivery.js";
 
 const connection = makeRedis();
 const pub = makeRedis();
@@ -156,9 +158,15 @@ const chatWorker = new Worker<ChatJob>(QUEUES.chat, async (job) => {
 }, { connection });
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const alertChannels = alertChannelsFromEnv(process.env, { senders: sendersFromEnv(process.env), primary: async () => (await currentEmailConfig()).primary });
+const alertConfig = alertDeliveryConfigFromEnv();
+if (!alertChannels.length) console.warn("[alerts] no delivery channel configured (ADMIN_ALERT_EMAILS, ADMIN_ALERT_WEBHOOK_URL): admin alerts show only in the console");
 const housekeepingJobs = housekeepingQueue();
 const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, async (job) => {
-  if (job.data.kind === "purge_email_sends") {
+  if (job.data.kind === "deliver_alerts") {
+    const sent = await deliverAlerts(alertChannels, alertConfig);
+    for (const r of sent ?? []) if (r.ok) console.log(`[alerts] ${r.channel} ${r.mode}${r.kind ? ` ${r.kind}` : ""}: ${r.alerts} alert(s), ${r.occurrences} occurrence(s)`);
+  } else if (job.data.kind === "purge_email_sends") {
     const n = await purgeEmailSends(new Date(Date.now() - EMAIL_SEND_RETENTION_DAYS * DAY_MS));
     if (n) console.log(`[housekeeping] deleted ${n} email send record(s) older than ${EMAIL_SEND_RETENTION_DAYS} days`);
   } else if (job.data.kind === "purge_voice_notes") {
@@ -171,6 +179,8 @@ const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, asyn
     if (n) console.log(`[housekeeping] cleared the archive of ${n} account(s) deleted more than ${days} days ago`);
   }
 }, { connection });
+await housekeepingJobs.upsertJobScheduler("deliver_alerts", { every: ALERT_DELIVERY_EVERY_MS }, { name: "deliver_alerts", data: { kind: "deliver_alerts" } });
+
 /** Every day at 03:00 Lagos, when nobody's playing. */
 const PURGE_EMAIL_SENDS = "0 3 * * *";
 await housekeepingJobs.upsertJobScheduler("purge_email_sends", { pattern: PURGE_EMAIL_SENDS, tz: CLIMB_TIME_ZONE }, { name: "purge_email_sends", data: { kind: "purge_email_sends" } });

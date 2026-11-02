@@ -176,3 +176,37 @@ export type AdminEvent = { kind: "user_banned" | "user_deleted"; userId: string 
 
 /** Errors the admin routes add. */
 export const ACCOUNT_BANNED = "account_banned";
+
+// ---------------------------------------------------------------- admin alerts
+
+/**
+ * How urgent an admin alert is, which decides where it goes: critical by email at once (and the webhook),
+ * warning in the email digest, info only in the console's list.
+ */
+export const ALERT_SEVERITIES = ["info", "warning", "critical"] as const;
+export type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
+export const alertSeverityRank = (s: AlertSeverity) => ALERT_SEVERITIES.indexOf(s);
+
+export const adminAlertsQuerySchema = z.object({
+  severity: z.enum(ALERT_SEVERITIES).optional(),
+  kind: z.string().trim().min(1).max(100).optional(),
+  /** open (default): not acknowledged yet; acknowledged; all. */
+  state: z.enum(["open", "acknowledged", "all"]).default("open"),
+  /** Paging: rows last seen before this (an alert's lastSeenAt). */
+  before: z.string().datetime().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+/** Acknowledging says what was found or done; kept on the alert and in admin_actions. */
+export const adminAlertAckSchema = z.object({ note: reasonSchema });
+
+export const adminAlertSchema = z.object({
+  id: uuid, kind: z.string(), severity: z.enum(ALERT_SEVERITIES), subject: z.string(), details: z.record(z.unknown()),
+  refType: z.string().nullable(), refId: z.string().nullable(),
+  firstSeenAt: iso, lastSeenAt: iso, count: z.number().int(),
+  acknowledgedBy: personSchema.nullable(), acknowledgedAt: isoOrNull, ackNote: z.string().nullable(),
+});
+export type AdminAlert = z.infer<typeof adminAlertSchema>;
+export const adminAlertsResponseSchema = z.object({ alerts: z.array(adminAlertSchema) });
+/** The admin home's badge: open alerts by severity (the console shows the critical count). */
+export const adminAlertAckResponseSchema = z.object({ alert: adminAlertSchema, replayed: z.boolean() });
+export const adminAlertsSummarySchema = z.object({ open: z.object({ info: z.number().int(), warning: z.number().int(), critical: z.number().int() }) });

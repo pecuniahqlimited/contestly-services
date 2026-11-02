@@ -1,0 +1,176 @@
+/**
+ * Admin alerts: something an admin should look at. adminAlert() only records (inside the caller's
+ * transaction when one is passed, so an alert commits or rolls back with what caused it); the worker
+ * delivers from the table (apps/worker/src/alertDelivery.ts), never the request that raised it.
+ * Severity decides where it goes: critical by email at once (and the webhook), warning in the email
+ * digest, info only in the console's list. Every alert is also a console line when raised.
+ */
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
+import { ALERT_SEVERITIES, type AlertSeverity } from "@contestly/shared";
+import { db, type Tx } from "./client.js";
+import { adminAlertDeliveries, adminAlerts, users, type User } from "./schema.js";
+import { recordAdminAction } from "./admin.js";
+
+type Conn = Tx | typeof db;
+export type AdminAlertRow = typeof adminAlerts.$inferSelect;
+
+/** A repeat of the same dedupe key within this long of the first bumps the count (callers can pass their own). */
+export const DEFAULT_ALERT_DEDUPE_WINDOW_SECONDS = 24 * 3600;
+
+export interface AdminAlertInput {
+  /** What happened, as a stable code: "payout_unknown_too_long", "code_sends_spike". Throttling is per kind. */
+  kind: string;
+  severity: AlertSeverity;
+  /** One line a person reads first (the email subject, the list row). */
+  subject: string;
+  details: Record<string, unknown>;
+  /** The same key within the window is the same alert: its count goes up instead of a new row. */
+  dedupeKey: string;
+  /** What it's about, to find a thing's alerts: ("payout", id), ("user", id). */
+  refType?: string;
+  refId?: string;
+  dedupeWindowSeconds?: number;
+}
+
+export interface RaisedAlert {
+  id: string;
+  /** False when it bumped an open alert with the same key. */
+  isNew: boolean;
+  count: number;
+}
+
+const consoleFor: Record<AlertSeverity, (line: string) => void> = { info: console.log, warning: console.warn, critical: console.error };
+
+/**
+ * Record an alert. Pass the transaction it belongs to (a freeze and its alert commit together); without
+ * one it runs in its own. Two raises of one key at once are serialised on the key, so they share a row.
+ */
+export async function adminAlert(a: AdminAlertInput, conn: Conn = db): Promise<RaisedAlert> {
+  const raised = "rollback" in conn ? await raiseIn(conn, a) : await db.transaction((tx) => raiseIn(tx, a));
+  // A new alert is logged; a repeat only at ×10, ×100, ×1000…, so a storm doesn't flood the log either.
+  if (raised.isNew || Number.isInteger(Math.log10(raised.count))) {
+    consoleFor[a.severity](`[alert] ${a.severity.toUpperCase()} ${a.kind}${raised.isNew ? "" : ` (×${raised.count})`}: ${a.subject} ${JSON.stringify(a.details)}`);
+  }
+  return raised;
+}
+
+async function raiseIn(tx: Tx, a: AdminAlertInput): Promise<RaisedAlert> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`admin_alert:${a.dedupeKey}`}, 0))`);
+  const [open] = await tx.select({ id: adminAlerts.id }).from(adminAlerts)
+    .where(and(eq(adminAlerts.dedupeKey, a.dedupeKey), gt(adminAlerts.windowEndsAt, sql`now()`), isNull(adminAlerts.acknowledgedAt)))
+    .orderBy(desc(adminAlerts.firstSeenAt)).limit(1);
+  if (open) {
+    const [bumped] = await tx.update(adminAlerts)
+      .set({ count: sql`${adminAlerts.count} + 1`, lastSeenAt: sql`now()`, subject: a.subject, details: a.details })
+      .where(eq(adminAlerts.id, open.id)).returning({ id: adminAlerts.id, count: adminAlerts.count });
+    return { id: bumped.id, isNew: false, count: bumped.count };
+  }
+  const window = a.dedupeWindowSeconds ?? DEFAULT_ALERT_DEDUPE_WINDOW_SECONDS;
+  const [row] = await tx.insert(adminAlerts).values({
+    kind: a.kind, severity: a.severity, subject: a.subject, details: a.details, dedupeKey: a.dedupeKey,
+    refType: a.refType ?? null, refId: a.refId ?? null, windowEndsAt: sql`now() + make_interval(secs => ${window})`,
+  }).returning({ id: adminAlerts.id, count: adminAlerts.count });
+  return { id: row.id, isNew: true, count: row.count };
+}
+
+// ---------------------------------------------------------------- the console
+
+export interface AlertFilter {
+  severity?: AlertSeverity;
+  kind?: string;
+  state: "open" | "acknowledged" | "all";
+  before?: string;
+  limit: number;
+}
+
+export async function listAdminAlerts(f: AlertFilter): Promise<{ alert: AdminAlertRow; ackedBy: User | null }[]> {
+  const where: SQL[] = [];
+  if (f.severity) where.push(eq(adminAlerts.severity, f.severity));
+  if (f.kind) where.push(eq(adminAlerts.kind, f.kind));
+  if (f.state === "open") where.push(isNull(adminAlerts.acknowledgedAt));
+  if (f.state === "acknowledged") where.push(isNotNull(adminAlerts.acknowledgedAt));
+  if (f.before) where.push(lt(adminAlerts.lastSeenAt, new Date(f.before)));
+  const rows = await db.select({ alert: adminAlerts, ackedBy: users }).from(adminAlerts).leftJoin(users, eq(users.id, adminAlerts.acknowledgedByUserId))
+    .where(where.length ? and(...where) : undefined).orderBy(desc(adminAlerts.lastSeenAt)).limit(f.limit);
+  return rows;
+}
+
+/** Open (unacknowledged) alerts by severity: the admin home shows the critical count. */
+export async function openAlertCounts(): Promise<Record<AlertSeverity, number>> {
+  const rows = await db.select({ severity: adminAlerts.severity, n: sql<number>`count(*)::int` }).from(adminAlerts)
+    .where(isNull(adminAlerts.acknowledgedAt)).groupBy(adminAlerts.severity);
+  const counts = Object.fromEntries(ALERT_SEVERITIES.map((s) => [s, 0])) as Record<AlertSeverity, number>;
+  for (const r of rows) counts[r.severity] = r.n;
+  return counts;
+}
+
+/**
+ * An admin acknowledges with a note (what they found or did), logged in admin_actions in the same
+ * transaction. Acknowledging twice keeps the first and logs nothing more. Delivery stops for it, and the
+ * next raise of its key is a new alert.
+ */
+export async function acknowledgeAdminAlert(adminUserId: string, id: string, note: string): Promise<{ alert: AdminAlertRow; ackedBy: User; replayed: boolean } | null> {
+  return db.transaction(async (tx) => {
+    const [a] = await tx.select().from(adminAlerts).where(eq(adminAlerts.id, id)).for("update");
+    if (!a) return null;
+    const acker = async (userId: string) => (await tx.select().from(users).where(eq(users.id, userId)))[0];
+    if (a.acknowledgedAt) return { alert: a, ackedBy: await acker(a.acknowledgedByUserId!), replayed: true };
+    const [after] = await tx.update(adminAlerts).set({ acknowledgedByUserId: adminUserId, acknowledgedAt: sql`now()`, ackNote: note }).where(eq(adminAlerts.id, id)).returning();
+    await recordAdminAction(tx, {
+      adminUserId, action: "alert.acknowledge", targetType: "alert", targetId: id, reason: note,
+      before: { acknowledgedAt: null }, after: { kind: a.kind, severity: a.severity, count: a.count },
+    });
+    return { alert: after, ackedBy: await acker(adminUserId), replayed: false };
+  });
+}
+
+// ---------------------------------------------------------------- delivery (the worker)
+
+/** How far back delivery looks: an alert nobody delivered for a week isn't sent late. */
+const DELIVERY_LOOKBACK = sql`now() - interval '7 days'`;
+
+/**
+ * Open alerts of these severities with occurrences this channel hasn't sent yet, oldest first. `pending`
+ * is how many; `deliveredUpTo` is the count to mark once they're sent (new repeats after this read stay pending).
+ */
+export async function undeliveredAlerts(channel: string, severities: readonly AlertSeverity[], conn: Conn = db, kindPrefix?: string) {
+  const sent = sql<number>`coalesce((${adminAlerts.delivered} ->> ${channel})::int, 0)`;
+  const rows = await conn.select({ alert: adminAlerts, sent }).from(adminAlerts)
+    .where(and(
+      inArray(adminAlerts.severity, [...severities]), isNull(adminAlerts.acknowledgedAt), gt(adminAlerts.lastSeenAt, DELIVERY_LOOKBACK), sql`${adminAlerts.count} > ${sent}`,
+      kindPrefix ? sql`starts_with(${adminAlerts.kind}, ${kindPrefix})` : undefined,
+    ))
+    .orderBy(adminAlerts.firstSeenAt);
+  return rows.map(({ alert, sent }) => ({ alert, alreadySent: sent, pending: alert.count - sent, deliveredUpTo: alert.count }));
+}
+export type UndeliveredAlert = Awaited<ReturnType<typeof undeliveredAlerts>>[number];
+
+/** After a channel sent them: those occurrences are delivered on that channel. */
+export async function markAlertsDelivered(channel: string, sent: readonly { id: string; deliveredUpTo: number }[], conn: Conn = db) {
+  for (const s of sent) {
+    await conn.update(adminAlerts).set({ delivered: sql`${adminAlerts.delivered} || jsonb_build_object(${channel}::text, ${s.deliveredUpTo}::int)` }).where(eq(adminAlerts.id, s.id));
+  }
+}
+
+export async function recordAlertDelivery(d: typeof adminAlertDeliveries.$inferInsert, conn: Conn = db) {
+  await conn.insert(adminAlertDeliveries).values(d);
+}
+
+/** When this channel last sent (ok) or last tried and failed, for one mode and kind (null kind: the digest). */
+export async function lastAlertDelivery(channel: string, mode: "immediate" | "digest", kind: string | null, conn: Conn = db) {
+  const where = and(eq(adminAlertDeliveries.channel, channel), eq(adminAlertDeliveries.mode, mode), kind === null ? isNull(adminAlertDeliveries.kind) : eq(adminAlertDeliveries.kind, kind));
+  const [ok] = await conn.select({ at: adminAlertDeliveries.sentAt }).from(adminAlertDeliveries).where(and(where, eq(adminAlertDeliveries.ok, true))).orderBy(desc(adminAlertDeliveries.sentAt)).limit(1);
+  const [failed] = await conn.select({ at: adminAlertDeliveries.sentAt }).from(adminAlertDeliveries).where(and(where, eq(adminAlertDeliveries.ok, false))).orderBy(desc(adminAlertDeliveries.sentAt)).limit(1);
+  return { ok: ok?.at ?? null, failed: failed?.at ?? null };
+}
+
+/**
+ * Runs `fn` only if no other worker is delivering right now (a transaction-scoped advisory lock), so two
+ * worker instances never send the same alert twice. Returns null when another had it.
+ */
+export async function withAlertDeliveryLock<T>(fn: (tx: Tx) => Promise<T>): Promise<T | null> {
+  return db.transaction(async (tx) => {
+    const [{ locked }] = await tx.execute<{ locked: boolean }>(sql`select pg_try_advisory_xact_lock(hashtextextended('admin_alert_delivery', 0)) as locked`);
+    return locked ? fn(tx) : null;
+  });
+}

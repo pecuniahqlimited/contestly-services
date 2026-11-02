@@ -339,9 +339,10 @@ export type PartyJob =
  * Daily clean-up in the worker: `purge_email_sends` deletes the email send log past its retention;
  * `purge_voice_notes` deletes uploads nobody sent and voice notes past their retention from storage;
  * `purge_deleted_archives` clears deleted accounts' archived personal fields past the accounts retention
- * (does nothing while that's unset; ADR 0010).
+ * (does nothing while that's unset; ADR 0010). `deliver_alerts`, every few seconds: send admin alerts that are
+ * due (apps/worker/src/alertDelivery.ts).
  */
-export type HousekeepingJob = { kind: "purge_email_sends" } | { kind: "purge_voice_notes" } | { kind: "purge_deleted_archives" };
+export type HousekeepingJob = { kind: "purge_email_sends" } | { kind: "purge_voice_notes" } | { kind: "purge_deleted_archives" } | { kind: "deliver_alerts" };
 /**
  * Questions-service jobs (ADR 0002). `generate_set` builds and seals the set when the party is
  * created (curate: when the host asks for drafts) and publishes the set's state on
