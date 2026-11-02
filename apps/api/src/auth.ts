@@ -1,6 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
-import { assertNotBanned, resolveUser, Unauthorized, type Session } from "@contestly/auth";
+import { assertNotBanned, NoCredentials, resolveUser, Unauthorized, type Session } from "@contestly/auth";
 import { SIGN_UP_REQUIRED, TOO_MANY_GUESTS } from "@contestly/shared";
 import { limit } from "./redis.js";
 import type { User } from "@contestly/db";
@@ -45,6 +45,15 @@ export function requireSession(req: FastifyRequest): User {
   if (!req.auth) throw req.authRejected ?? new Unauthorized();
   assertNotBanned(req.auth.user);
   return req.auth.user;
+}
+
+/**
+ * The session if there is one, or null when the request carries no credentials at all. Credentials that
+ * were sent and refused (expired, a deleted account, banned) still fail: only "none" means sessionless.
+ */
+export function optionalSession(req: FastifyRequest): User | null {
+  if (!req.auth && req.authRejected instanceof NoCredentials) return null;
+  return requireSession(req);
 }
 
 /** A signed-up account. Guests are refused with sign_up_required (money, boards, profiles, hosting). */

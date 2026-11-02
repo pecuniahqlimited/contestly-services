@@ -3,10 +3,11 @@
  *  1. the provider identity is already an account's → that account;
  *  2. the verified email is an account's → that account (and the identity is attached to it);
  *  3. the session is a guest → the guest signs up: same row, held awards paid;
- *  4. otherwise (a signed-up session signing into a new email) → sign_out_first.
+ *  4. no session (the app couldn't get an anonymous one) → a new account for the verified email;
+ *  5. otherwise (a signed-up session signing into a new email) → sign_out_first.
  * An existing account never takes anything from the guest; the guest row is left as it is.
  */
-import { attachIdentity, becomeMember, db, firebaseUidFor, memberByEmail, userByIdentity, users, type User } from "@contestly/db";
+import { attachIdentity, becomeMember, db, firebaseUidFor, memberByEmail, newMember, userByIdentity, users, type User } from "@contestly/db";
 import { assertNotBanned, createCustomToken } from "@contestly/auth";
 import { eq } from "drizzle-orm";
 import type { OAuthProvider, SignInAccount, SignInResult } from "@contestly/shared";
@@ -27,7 +28,7 @@ export interface SignInOutcome {
 
 const existing = (userId: string): SignInOutcome => ({ userId, account: "existing" });
 
-export async function signIn(session: User, v: VerifiedSignIn): Promise<SignInOutcome> {
+export async function signIn(session: User | null, v: VerifiedSignIn): Promise<SignInOutcome> {
   const outcome = await db.transaction(async (tx): Promise<SignInOutcome> => {
     if (v.identity) {
       const owner = await userByIdentity(v.identity.provider, v.identity.subject, tx);
@@ -38,15 +39,20 @@ export async function signIn(session: User, v: VerifiedSignIn): Promise<SignInOu
       if (v.identity) await attachIdentity(tx, member.id, v.identity.provider, v.identity.subject);
       return existing(member.id);
     }
-    if (!session.isGuest) throw httpError(409, "sign_out_first");
+    if (session && !session.isGuest) throw httpError(409, "sign_out_first");
     if (!v.email) throw httpError(422, "email_not_verified");
+    if (!session) {
+      const { user } = await newMember(tx, v.email);
+      if (v.identity) await attachIdentity(tx, user.id, v.identity.provider, v.identity.subject);
+      return { userId: user.id, account: "created" };
+    }
     if (v.identity) await attachIdentity(tx, session.id, v.identity.provider, v.identity.subject);
     await becomeMember(tx, session.id, v.email);
     return { userId: session.id, account: "upgraded" };
   });
   if (outcome.account === "upgraded") await putOnBoard(outcome.userId);
   // A signed-up session signing into itself again: that's the re-verification account deletion asks for.
-  if (!session.isGuest && outcome.userId === session.id) await markReverified(session.id);
+  if (session && !session.isGuest && outcome.userId === session.id) await markReverified(session.id);
   return outcome;
 }
 

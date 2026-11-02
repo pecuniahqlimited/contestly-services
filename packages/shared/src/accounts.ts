@@ -49,8 +49,11 @@ export const EMAIL_CODE_RESEND_SECONDS = 30;
 export const emailStartSchema = z.object({ email: emailSchema });
 export const emailVerifySchema = z.object({ email: emailSchema, code: z.string().regex(/^\d{6}$/, "six digits") });
 
-/** Which account a sign-in landed on: the guest's own, now signed up, or an account that already existed. */
-export const SIGN_IN_ACCOUNTS = ["upgraded", "existing"] as const;
+/**
+ * Which account a sign-in landed on: the guest's own, now signed up; an account that already existed; or,
+ * signing in with no session (no guest to upgrade), a new account made for the email.
+ */
+export const SIGN_IN_ACCOUNTS = ["upgraded", "existing", "created"] as const;
 export type SignInAccount = (typeof SIGN_IN_ACCOUNTS)[number];
 
 /** POST /auth/email/verify and /auth/exchange. */

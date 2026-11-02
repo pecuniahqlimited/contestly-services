@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { authMode } from "@contestly/auth";
 import { OAUTH_PROVIDERS, authExchangeSchema, emailStartSchema, emailVerifySchema, oauthStartSchema, type OAuthProvider } from "@contestly/shared";
-import { requireSession } from "../auth.js";
+import { optionalSession, requireSession } from "../auth.js";
 import { limit } from "../redis.js";
 import { checkEmailCode, startEmailCode } from "../signin/emailCode.js";
 import { signIn, withSessionToken } from "../signin/account.js";
@@ -20,16 +20,23 @@ const finish = (reply: FastifyReply, r: CallbackResult) => ("redirect" in r ? re
 
 /** Sign-in is email-first and nobody leaves the app (ADR 0006). Every route works from a web client. */
 export async function authRoutes(app: FastifyInstance) {
-  /** Email a 6-digit code. The session (a guest, usually) is who it's for. */
+  /**
+   * Email a 6-digit code. The session (a guest, usually) is who it's for; with no session at all (Firebase
+   * wouldn't give the app an anonymous one), it's for whoever proves the email.
+   */
   app.post("/auth/email/start", async (req) => {
-    const session = requireSession(req);
+    const session = optionalSession(req);
     const { email } = emailStartSchema.parse(req.body);
     return startEmailCode(session, email, req.clientIp, app.limits);
   });
 
-  /** Check the code and sign in: the guest signs up (same account), or lands on the account that has this email. */
+  /**
+   * Check the code and sign in: the guest signs up (same account), or lands on the account that has this
+   * email; with no session, the account that has this email or a new one for it. The token is only ever for
+   * the account the code proved.
+   */
   app.post("/auth/email/verify", async (req) => {
-    const session = requireSession(req);
+    const session = optionalSession(req);
     const { email, code } = emailVerifySchema.parse(req.body);
     await checkEmailCode(session, email, code, req.clientIp, app.limits);
     return withSessionToken(await signIn(session, { email }));

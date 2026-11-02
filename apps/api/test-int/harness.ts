@@ -5,7 +5,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { Unauthorized, type Session } from "@contestly/auth";
+import { NoCredentials, Unauthorized, type Session } from "@contestly/auth";
 import { db, users, type User } from "@contestly/db";
 import { buildApp, type AppOptions } from "../src/app.js";
 
@@ -18,7 +18,7 @@ export async function testApp(opts: Pick<AppOptions, "limits" | "trust"> = {}) {
     ...opts,
     resolveSession: async (req): Promise<Session> => {
       const id = req.headers["x-test-user"];
-      if (typeof id !== "string") throw new Unauthorized();
+      if (typeof id !== "string") throw new NoCredentials();
       const [user] = await db.select().from(users).where(eq(users.id, id));
       if (!user) throw new Unauthorized();
       return { user, via: "token" };

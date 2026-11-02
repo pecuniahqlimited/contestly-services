@@ -44,13 +44,19 @@ export async function attachIdentity(tx: Tx, userId: string, provider: IdentityP
   if (row.userId !== userId) throw Object.assign(new Error("identity_in_use"), { statusCode: 409 });
 }
 
+/** A fresh guest row: a placeholder handle and name until "Name and face". */
+async function insertGuest(tx: Tx): Promise<User> {
+  const handle = GUEST_HANDLE_PREFIX + randomBytes(6).toString("hex");
+  const [u] = await tx.insert(users).values({ handle, displayName: "Guest", isGuest: true }).returning();
+  return u;
+}
+
 /** A first sight of an anonymous Firebase session: a guest row for it. Two first requests at once share one row. */
 export async function guestForFirebaseUid(uid: string): Promise<User> {
   const existing = await userByIdentity("firebase", uid);
   if (existing) return existing;
   await db.transaction(async (tx) => {
-    const handle = GUEST_HANDLE_PREFIX + randomBytes(6).toString("hex");
-    const [u] = await tx.insert(users).values({ handle, displayName: "Guest", isGuest: true }).returning();
+    const u = await insertGuest(tx);
     const [linked] = await tx.insert(userIdentities).values({ provider: "firebase", externalId: uid, userId: u.id }).onConflictDoNothing().returning();
     if (!linked) tx.rollback(); // the other request won; its row is the one
   }).catch((e) => { if (!(e instanceof TransactionRollbackError)) throw e; });
@@ -98,4 +104,14 @@ export async function becomeMember(tx: Tx, userId: string, email: string): Promi
     .where(eq(users.id, userId)).returning();
   const awardsPaid = await payHeldAwards(tx, userId);
   return { user, awardsPaid };
+}
+
+/**
+ * An account for a verified email nobody holds yet, when there's no guest to upgrade (the app couldn't get
+ * an anonymous session). It starts as a guest row and signs up through becomeMember, so it is exactly what
+ * an upgraded guest with no play would be.
+ */
+export async function newMember(tx: Tx, email: string): Promise<SignUpResult> {
+  const guest = await insertGuest(tx);
+  return becomeMember(tx, guest.id, email);
 }

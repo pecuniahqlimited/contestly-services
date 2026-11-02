@@ -1,7 +1,8 @@
 /**
  * Sign in with a 6-digit code typed in the app (never a link). The code lives in Valkey as an HMAC for
- * 10 minutes, bound to the session that asked for it; 5 wrong tries kill it; a new one can be sent after
- * 30 s. Sends and checks are rate-limited per email and per client IP (limits.ts).
+ * 10 minutes, bound to the session that asked for it (or to having none: the app signs in by email when
+ * Firebase won't give it an anonymous session, and a sessionless code is checked only without one); 5 wrong
+ * tries kill it; a new one can be sent after 30 s. Sends and checks are rate-limited per email and per client IP (limits.ts).
  */
 import { randomInt, timingSafeEqual } from "node:crypto";
 import type { User } from "@contestly/db";
@@ -17,8 +18,10 @@ const TEN_MINUTES = 600;
 
 const codeKey = (email: string) => `auth:email:${email}`;
 const codeHmac = (email: string, code: string) => hmac("EMAIL_CODE_SECRET", `${email}:${code}`);
+/** Who a code is bound to: the session's user, or nobody. */
+const boundTo = (session: User | null) => session?.id ?? "";
 
-export async function startEmailCode(session: User, email: string, ip: string, limits: Limits) {
+export async function startEmailCode(session: User | null, email: string, ip: string, limits: Limits) {
   await limit(`email-start:ip:${ip}`, limits.codeSendsPerIpPerHour, HOUR, TOO_MANY_CODES);
   const sentAt = Number(await valkey().hget(codeKey(email), "sentAt"));
   const sinceSent = Date.now() - sentAt;
@@ -28,7 +31,7 @@ export async function startEmailCode(session: User, email: string, ip: string, l
   const code = String(randomInt(0, 10 ** EMAIL_CODE_LENGTH)).padStart(EMAIL_CODE_LENGTH, "0");
   await valkey().multi()
     .del(codeKey(email))
-    .hset(codeKey(email), { hmac: codeHmac(email, code), attempts: 0, sessionUserId: session.id, sentAt: Date.now() })
+    .hset(codeKey(email), { hmac: codeHmac(email, code), attempts: 0, sessionUserId: boundTo(session), sentAt: Date.now() })
     .expire(codeKey(email), EMAIL_CODE_TTL_SECONDS).exec();
   const sent = await sendSignInCode(email, code);
   if (!sent.deliveredBy) {
@@ -39,7 +42,7 @@ export async function startEmailCode(session: User, email: string, ip: string, l
 }
 
 /** Checks the code. True once, then the code is gone; throws invalid_code / too_many_attempts otherwise. */
-export async function checkEmailCode(session: User, email: string, code: string, ip: string, limits: Limits): Promise<void> {
+export async function checkEmailCode(session: User | null, email: string, code: string, ip: string, limits: Limits): Promise<void> {
   await limit(`email-check:ip:${ip}`, limits.codeChecksPerIpPer10Min, TEN_MINUTES, TOO_MANY_ATTEMPTS);
   await limit(`email-check:email:${email}`, limits.codeChecksPerEmailPer10Min, TEN_MINUTES, TOO_MANY_ATTEMPTS);
   const key = codeKey(email);
@@ -50,7 +53,7 @@ export async function checkEmailCode(session: User, email: string, code: string,
     await valkey().del(key);
     throw rateLimited(TOO_MANY_ATTEMPTS, EMAIL_CODE_TTL_SECONDS);
   }
-  const match = entry.sessionUserId === session.id && timingSafeEqual(Buffer.from(entry.hmac, "hex"), Buffer.from(codeHmac(email, code), "hex"));
+  const match = entry.sessionUserId === boundTo(session) && timingSafeEqual(Buffer.from(entry.hmac, "hex"), Buffer.from(codeHmac(email, code), "hex"));
   if (!match) {
     if (attempts === EMAIL_CODE_MAX_ATTEMPTS) await valkey().del(key);
     throw httpError(400, "invalid_code");

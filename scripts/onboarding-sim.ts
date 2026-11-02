@@ -6,7 +6,8 @@
  * the new one; no coins anywhere; the primary email provider fails and the backup delivers; a guest is refused on a staked party;
  * an approved Climb award is paid on sign-up; Google and Apple through the one-time-code exchange (stub
  * provider), a reused, expired or wrong-session code refused; an existing account is signed into, not
- * merged; phone check and contact matching by hash.
+ * merged; with no anonymous session at all (Firebase busy), the email code still signs up or in; phone
+ * check and contact matching by hash.
  *
  * Needs AUTH_MODE=dev, FIREBASE_AUTH_EMULATOR_HOST and EMAIL_TRANSPORT=mailpit (see .env.example).
  */
@@ -58,10 +59,11 @@ async function phoneCheckToken(phone: string): Promise<string> {
 
 // ---------------------------------------------------------------- the API as a session
 
-async function http<T = any>(s: Session, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
+/** `s` null: no session at all (Firebase refused the app an anonymous one). */
+async function http<T = any>(s: Session | null, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
   const res = await fetch(`${API}${path}`, {
     method, redirect: "manual",
-    headers: { authorization: `Bearer ${s.token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { ...(s ? { authorization: `Bearer ${s.token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as T };
@@ -86,7 +88,7 @@ async function mailFor(to: string, after?: string) {
   throw new Error(`no email reached ${to}`);
 }
 /** Ask for a code and sign in with it. */
-async function signUpByEmail(s: Session, email: string) {
+async function signUpByEmail(s: Session | null, email: string) {
   const start = await http(s, "POST", "/auth/email/start", { email });
   if (start.status !== 200) throw new Error(`email start ${start.status} ${JSON.stringify(start.body)}`);
   const { code } = await mailFor(email);
@@ -306,6 +308,15 @@ try {
   // The same person by email code (the email is the account key) lands on the same account too.
   const byEmail = await signUpByEmail(await anonymous(), ginaEmail);
   ok(byEmail.body.account === "existing" && (await withCustomToken(byEmail.body.customToken)).uid === gina.uid, "her email code signs into the account Google made");
+
+  console.log("\n==== no anonymous session (Firebase busy): the email code works without one ====");
+  const jayEmail = `sim${tag}jay@example.com`;
+  const jayOut = await signUpByEmail(null, jayEmail);
+  ok(jayOut.status === 200 && jayOut.body.account === "created", `a new email: a new account (${jayOut.status} ${jayOut.body.account ?? jayOut.body.error})`);
+  const jay = await me(await withCustomToken(jayOut.body.customToken));
+  ok(jay.isGuest === false && jay.email === jayEmail, "its token signs into that account, signed up");
+  const ginaNoSession = await signUpByEmail(null, ginaEmail);
+  ok(ginaNoSession.body.account === "existing" && (await withCustomToken(ginaNoSession.body.customToken)).uid === gina.uid, "an existing email: that account's uid");
 
   console.log("\n==== deleting an account: re-verify, delete, gone; the email signs up again as someone new ====");
   const ivy = await anonymous();

@@ -9,6 +9,8 @@ export { createCustomToken, deleteFirebaseUser, disableFirebaseUser, verifyIdTok
 
 /** 401. The message is the error code the API replies with. */
 export class Unauthorized extends Error { constructor(msg: string = UNAUTHORIZED) { super(msg); } }
+/** 401 unauthorized, when the request carried no credentials at all (as opposed to ones that were refused). */
+export class NoCredentials extends Unauthorized {}
 /** 401 account_gone: a valid token for an account that no longer exists. */
 export class AccountGone extends Unauthorized { constructor() { super(ACCOUNT_GONE); } }
 
@@ -55,7 +57,7 @@ export async function resolveUser(h: { authorization?: string; devUser?: string;
   const token = h.authorization?.replace(/^Bearer\s+/i, "").trim();
   if (!token) {
     if (authMode() === "dev" && h.devUser?.trim()) return { user: await devUser(h.devUser), via: "dev" };
-    throw new Unauthorized();
+    throw new NoCredentials();
   }
   const checked = await checkIdToken(token);
   if (checked.kind === "invalid") throw new Unauthorized();
