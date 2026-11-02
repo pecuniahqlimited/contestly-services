@@ -90,21 +90,27 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    withdrawal it lists as paid, so this happens the same night at the latest. Resolving it is
    maker-checker (`payments.finalize`, then a different admin), and the confirm asks the provider again:
    still paid, the hold becomes the recovery (hold → `payout_settled`, the fee booked as for a settle),
-   never back to cash; reversed or failed since, the contradiction dissolves (the hold is released: what's
-   still owed for it is cleared, the rest returns to cash; logged with why); anything else, nothing changes
+   never back to cash; reversed or failed since, the contradiction dissolves and the person gets back only
+   what was taken from them: what was held from their cash plus what they've repaid toward that
+   contradiction's debt; a waived part goes back to `platform_funds`; what's still owed for it is cleared
+   (their owed account and hold are locked before anything is read; logged with why); anything else, nothing changes
    (409 `provider_not_definite`). Either way the freeze lifts once nothing else is open for them;
    withdrawals stay blocked by `amount_owed` while anything is owed. A failure after a success is a critical
    alert, never auto-fixed.
    **What's owed** (decided 2026-11-02): every new cash credit to that person (winnings, refunds, top-ups,
-   anything `ledger.journal()` puts in their cash) repays it first, up to the credit, as its own journal
-   (`owed_repaid`, key `owed_repay:<user>:<the credit's key>`, the owed account locked so two credits can't repay
-   the same debt). Bonus coins never repay it. Withdrawals are refused while anything is owed
+   anything `ledger.journal()` puts in their cash) repays it first, up to the credit, oldest contradiction's
+   debt first, one journal per debt (`owed_repaid`, key `owed_repay:<user>:<the credit's key>:<contradiction>`,
+   the owed account locked so two credits can't repay the same debt). Every movement on a person's owed
+   account names its contradiction (booked at the freeze, repaid, waived, released at a dissolve), so each
+   contradiction's debt is exact from the ledger alone (`contradictionDebt`), however many there are. Bonus coins never repay it. Withdrawals are refused while anything is owed
    (`withdraw_not_allowed`, reason `amount_owed`; queued ones are held before sending); playing isn't.
    `GET /wallet` returns `owed: { amountKobo, reason: "duplicate_payout" }` (null when nothing is owed),
    for the app's "₦X owed from a duplicate payout. Contact support if this looks wrong." An admin can waive
    it: `payments.finalize`, a second admin, a reason (`owed_waivers`); the platform bears it
-   (`payout_owed` ← `platform_funds`), never more than is still owed when it's confirmed, never by or for
-   the admin themselves, all logged. The invariants check that what was booked as owed equals what the
+   (`payout_owed` ← `platform_funds`, oldest debt first, one journal per contradiction), never while any of
+   the person's contradictions is still open (409 `contradiction_open`: a dissolve could otherwise return
+   money the platform waived), never more than is still owed when it's confirmed, never by or for the
+   admin themselves, all logged. The invariants check that what was booked as owed equals what the
    contradictions recorded at their freezes, that each person's hold equals the disputed amount of their
    contradictions still open, and that no owed account goes above zero and no hold below.
 5. **Manual finalize and maker-checker.** For a stuck payout (`submitted`, `unknown`) or top-up
@@ -241,6 +247,15 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   top-up credit locks the same row and they run one at a time. This is speed, not money, and fine at
   launch volumes. If it bites, bucket the platform accounts (`scope` = `<provider>:<n>`, n from a hash of
   the transaction id; the invariants sum the buckets), with no change to the rules.
+- **Read under the lock you journal under.** Every place that reads a balance or a debt and uses it to size
+  a journal (audit 2026-11-03): `ledger.charge` (cash and bonus, locked by `lockUserAccounts`), the freeze's
+  hold (cash, the same), the repayment (the owed account, locked `FOR UPDATE` first), the waiver (the owed
+  account), the dissolve (owed account and hold, `lockPersonScoped`; it used to read the owed balance
+  unlocked), and account deletion's bonus forfeit (it read the bonus unlocked; now `lockUserAccounts`, a
+  one-line change in main's `deletion.ts`). Refunds, releases and forfeits size from earlier entries, which
+  never change; settlement sizes from the party's own figures; contradiction resolution from its fixed
+  amount. Balance reads elsewhere (wallet, `/me`, onboarding's can-afford, admin views, the
+  `withdrawBlockReason` owed check outside a transaction) only display or pre-check; the transaction re-checks.
 - **The lock order** for every money path (two paths taking the same locks in opposite orders deadlock):
   1. the person's `users` row, when the path locks it at all: `FOR NO KEY UPDATE` (`lockPerson`), unless the
      transaction changes a key column of it (email, handle), which needs `FOR UPDATE`;

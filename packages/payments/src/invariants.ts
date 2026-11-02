@@ -107,6 +107,10 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
       coalesce((select sum(e.amount_kobo) from ledger_entries e join ledger_accounts a on a.id = e.account_id where a.kind = 'payout_owed' and e.type = 'contradiction_held'), 0)::bigint as booked,
       coalesce((select sum(owed_kobo) from payout_contradictions), 0)::bigint as recorded`);
   if (num(owed.booked) !== -num(owed.recorded)) out.push({ kind: "owed_recorded", detail: { ledger: num(owed.booked), contradictions: -num(owed.recorded) }, items: { all: Math.abs(num(owed.booked) + num(owed.recorded)) } });
+  // No contradiction's debt is paid down past zero (repaid, waived or released beyond what was booked).
+  const overpaid = await rows(conn, sql`select e.ref_id as contradiction_id, sum(e.amount_kobo)::bigint as net from ledger_entries e join ledger_accounts a on a.id = e.account_id
+    where a.kind = 'payout_owed' and e.ref_type = 'contradiction' group by e.ref_id having sum(e.amount_kobo) > 0 order by e.ref_id limit ${LIMIT}`);
+  if (overpaid.length) out.push({ kind: "contradiction_debt", detail: { contradictions: overpaid.map((r) => ({ id: r.contradiction_id, net: num(r.net) })) }, items: itemsOf(overpaid, "contradiction_id", (r) => num(r.net)) });
   const holds = await rows(conn, sql`select coalesce(a.scope, c.user_id::text) as user_id, coalesce(a.balance_kobo, 0)::bigint as held, coalesce(c.open, 0)::bigint as open
     from (select scope, balance_kobo from ledger_accounts where kind = 'contradiction_hold') a
     full join (select user_id, sum(amount_kobo) as open from payout_contradictions where status in ('open', 'awaiting_second_admin') group by user_id) c on c.user_id::text = a.scope

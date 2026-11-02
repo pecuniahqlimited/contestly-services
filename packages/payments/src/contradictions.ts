@@ -19,9 +19,13 @@ export const contradictionView = (c: PayoutContradiction) => ({
   recoveredKobo: c.recoveredKobo, owedKobo: c.owedKobo, createdAt: c.createdAt.toISOString(), resolvedAt: iso(c.resolvedAt),
 });
 
+/** With each one's debt: held from cash at the freeze, then booked as owed, repaid, waived, still outstanding. */
 export async function listContradictions(open: boolean, limit: number) {
-  const rows = await db.select().from(payoutContradictions).where(open ? ne(payoutContradictions.status, "resolved") : undefined).orderBy(desc(payoutContradictions.createdAt)).limit(limit);
-  return rows.map(contradictionView);
+  const rows = await db.select().from(payoutContradictions).where(open ? inArray(payoutContradictions.status, ["open", "awaiting_second_admin"]) : undefined).orderBy(desc(payoutContradictions.createdAt)).limit(limit);
+  return Promise.all(rows.map(async (c) => {
+    const d = await ledger.contradictionDebt(db, c.userId, c.id);
+    return { ...contradictionView(c), debt: { heldFromCashKobo: c.recoveredKobo ?? 0, owedKobo: d.booked, repaidKobo: d.repaid, waivedKobo: d.waived, outstandingKobo: d.outstanding } };
+  }));
 }
 
 async function lockContradiction(tx: Tx, id: string) {
@@ -77,17 +81,24 @@ export async function confirmContradictionResolution(adminUserId: string, id: st
     const checkSeen = { status: check.status, providerStatus: check.providerStatus, amountKobo: check.amountKobo, feeKobo: check.feeKobo, at: now.toISOString() };
 
     if (check.status === "failed") {
-      const owedNow = await ledger.owedKobo(tx, c.userId);
-      const clear = Math.min(owedNow, c.owedKobo ?? 0);
+      // Only what was taken from them goes back: what was held from their cash and what they've repaid
+      // toward this debt. A waived part goes back to the platform; what's still owed for it is cleared.
+      // Their owed account and hold are locked before anything is read (a prize repaying meanwhile waits).
+      await ledger.lockPersonScoped(tx, c.userId);
+      const debt = await ledger.contradictionDebt(tx, c.userId, c.id);
+      const heldFromCash = c.recoveredKobo ?? 0;
+      const toCash = heldFromCash + debt.repaid;
+      if (heldFromCash + debt.booked !== c.amountKobo || debt.released !== 0) throw new Error(`contradiction ${c.id}: hold ${c.amountKobo} isn't held ${heldFromCash} + owed ${debt.booked} (released ${debt.released})`);
       const legs: ledger.Leg[] = [{ account: hold, amountKobo: -c.amountKobo }];
-      if (clear > 0) legs.push({ account: ledger.owedAccount(c.userId), amountKobo: clear });
-      if (c.amountKobo - clear > 0) legs.push({ account: { userId: c.userId, kind: "cash" }, amountKobo: c.amountKobo - clear });
+      if (debt.outstanding > 0) legs.push({ account: ledger.owedAccount(c.userId), amountKobo: debt.outstanding });
+      if (toCash > 0) legs.push({ account: { userId: c.userId, kind: "cash" }, amountKobo: toCash });
+      if (debt.waived > 0) legs.push({ account: { system: "platform_funds" }, amountKobo: debt.waived });
       await ledger.journal(tx, { type: "contradiction_released", refType: "contradiction", refId: c.id, idempotencyKey: `contradiction_release:${p.id}`, legs });
       const [after] = await tx.update(payoutContradictions).set({ status: "dissolved", confirmedByUserId: adminUserId, resolvedAt: now }).where(eq(payoutContradictions.id, id)).returning();
       const unfrozen = await unfreezeIfClear(tx, c.userId);
       await recordAdminAction(tx, {
         adminUserId, action: "payments.contradiction_dissolved", targetType: "payout", targetId: p.id, reason: c.requestReason,
-        before: { status: c.status }, after: { contradictionId: id, why: "the provider now says the transfer failed or was reversed", providerCheck: checkSeen, owedClearedKobo: clear, toCashKobo: c.amountKobo - clear, unfrozen },
+        before: { status: c.status }, after: { contradictionId: id, why: "the provider now says the transfer failed or was reversed", providerCheck: checkSeen, owedClearedKobo: debt.outstanding, toCashKobo: toCash, heldFromCashKobo: heldFromCash, repaidKobo: debt.repaid, waivedBackToPlatformKobo: debt.waived, unfrozen },
       });
       return contradictionView(after);
     }

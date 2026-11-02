@@ -254,4 +254,6 @@ export const payoutContradictionSchema = z.object({
   status: z.enum(["open", "awaiting_second_admin", "resolved", "dissolved"]), providerCheck: z.unknown(),
   requestedBy: z.string().uuid().nullable(), requestReason: z.string().nullable(), confirmedBy: z.string().uuid().nullable(),
   recoveredKobo: z.number().int().nullable(), owedKobo: z.number().int().nullable(), createdAt: z.string(), resolvedAt: z.string().nullable(),
+  /** In lists: where the disputed amount came from and where its debt stands. */
+  debt: z.object({ heldFromCashKobo: z.number().int(), owedKobo: z.number().int(), repaidKobo: z.number().int(), waivedKobo: z.number().int(), outstandingKobo: z.number().int() }).optional(),
 });

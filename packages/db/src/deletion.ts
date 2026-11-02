@@ -79,8 +79,9 @@ export async function archiveAccount(tx: Tx, user: User, reason: string | null, 
     .where(and(eq(userIdentities.userId, user.id), isNull(userIdentities.disabledAt))).returning();
 
   // Bonus coins aren't withdrawable and die with the account; posted, never by touching an entry.
-  const [bonus] = await tx.select({ balance: ledgerAccounts.balanceKobo }).from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, user.id), eq(ledgerAccounts.kind, "bonus")));
-  const forfeitedBonusKobo = Math.max(0, bonus?.balance ?? 0);
+  // Read under the lock it's posted under, so a bonus credit or charge committing meanwhile can't be missed.
+  const { bonus } = await ledger.lockUserAccounts(tx, user.id);
+  const forfeitedBonusKobo = Math.max(0, bonus.balanceKobo);
   if (forfeitedBonusKobo) {
     await ledger.post(tx, { userId: user.id, kind: "bonus", amountKobo: -forfeitedBonusKobo, type: "account_deleted_forfeit", refType: "user", refId: user.id, idempotencyKey: `account_deleted:${user.id}:bonus` });
   }

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, sql as dsql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql as dsql } from "drizzle-orm";
 import { WELCOME_BONUS_KOBO } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { ledgerAccounts, ledgerEntries, users } from "./schema.js";
+import { ledgerAccounts, ledgerEntries, payoutContradictions, users } from "./schema.js";
 
 export class InsufficientFunds extends Error { constructor() { super("insufficient_funds"); } }
 /** A journal whose legs don't sum to zero, or a leg that isn't a whole, non-zero number of kobo. Never caught: it's a bug. */
@@ -168,9 +168,52 @@ export async function owedKobo(conn: Tx | typeof db, userId: string): Promise<nu
 }
 
 /**
- * Repay what a person owes from cash just credited to them, up to that credit: cash → payout_owed, under
- * owed_repay:<user>:<the credit's key> (the user id too: one journal may credit several people who owe). Only cash: bonus coins never repay. The owed account is locked first, so two
- * credits at once can't both repay the same debt. Returns what it repaid.
+ * What one contradiction's debt has become (ADR 0013), read from the person's owed account, where every
+ * movement names its contradiction (refType "contradiction"): booked at the freeze, repaid, waived,
+ * released at a dissolve. outstanding = booked − repaid − waived − released. Read it under the owed
+ * account's lock when it sizes a journal.
+ */
+export async function contradictionDebt(conn: Tx | typeof db, userId: string, contradictionId: string) {
+  const rows = await conn.select({ type: ledgerEntries.type, total: dsql<number>`sum(${ledgerEntries.amountKobo})::bigint` })
+    .from(ledgerEntries).innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
+    .where(and(eq(ledgerAccounts.kind, "payout_owed"), eq(ledgerAccounts.scope, userId), eq(ledgerEntries.refType, "contradiction"), eq(ledgerEntries.refId, contradictionId)))
+    .groupBy(ledgerEntries.type);
+  const of = (type: string) => Number(rows.find((r) => r.type === type)?.total ?? 0);
+  const booked = -of("contradiction_held");
+  const repaid = of("owed_repaid");
+  const waived = of("owed_waived");
+  const released = of("contradiction_released");
+  return { booked, repaid, waived, released, outstanding: booked - repaid - waived - released };
+}
+
+/** A person's contradictions with debt outstanding, oldest first: what repayments and waivers pay down, in that order. */
+export async function outstandingDebts(tx: Tx, userId: string) {
+  const cs = await tx.select({ id: payoutContradictions.id }).from(payoutContradictions)
+    .where(and(eq(payoutContradictions.userId, userId), gt(payoutContradictions.owedKobo, 0))).orderBy(asc(payoutContradictions.createdAt), asc(payoutContradictions.id));
+  const out: { contradictionId: string; outstanding: number }[] = [];
+  for (const c of cs) {
+    const d = await contradictionDebt(tx, userId, c.id);
+    if (d.outstanding > 0) out.push({ contradictionId: c.id, outstanding: d.outstanding });
+  }
+  return out;
+}
+
+/** Lock what's kept per person (their owed account and hold), by id, before reading either to size a journal. */
+export async function lockPersonScoped(tx: Tx, userId: string) {
+  const ids: string[] = [];
+  for (const a of [owedAccount(userId), contradictionHoldAccount(userId)]) {
+    const id = await existingAccountId(tx, a);
+    if (id) ids.push(id);
+  }
+  if (ids.length) await tx.select({ id: ledgerAccounts.id }).from(ledgerAccounts).where(inArray(ledgerAccounts.id, ids)).orderBy(asc(ledgerAccounts.id)).for("update");
+}
+
+/**
+ * Repay what a person owes from cash just credited to them, up to that credit: cash → payout_owed, oldest
+ * contradiction's debt first, one journal per debt, keyed owed_repay:<user>:<the credit's key>:<contradiction>
+ * (the user too: one journal may credit several people who owe) and naming the contradiction. Only cash:
+ * bonus coins never repay. The owed account is locked before anything is read, so two credits at once can't
+ * both repay the same debt. Returns what it repaid.
  */
 async function repayOwed(tx: Tx, userId: string, creditKobo: number, sourceKey: string): Promise<number> {
   const [treasury] = await tx.select({ id: users.id }).from(users).where(eq(users.handle, TREASURY_HANDLE));
@@ -178,12 +221,19 @@ async function repayOwed(tx: Tx, userId: string, creditKobo: number, sourceKey: 
   const [owed] = await tx.select().from(ledgerAccounts)
     .where(and(eq(ledgerAccounts.userId, treasury.id), eq(ledgerAccounts.kind, "payout_owed"), eq(ledgerAccounts.scope, userId))).for("update");
   if (!owed || owed.balanceKobo >= 0) return 0;
-  const repay = Math.min(creditKobo, -owed.balanceKobo);
-  await journal(tx, {
-    type: "owed_repaid", refType: "owed", refId: userId, idempotencyKey: `owed_repay:${userId}:${sourceKey}`,
-    legs: [{ account: { userId, kind: "cash" }, amountKobo: -repay }, { account: owedAccount(userId), amountKobo: repay }],
-  });
-  return repay;
+  let left = Math.min(creditKobo, -owed.balanceKobo);
+  let repaid = 0;
+  for (const d of await outstandingDebts(tx, userId)) {
+    if (left <= 0) break;
+    const amount = Math.min(left, d.outstanding);
+    await journal(tx, {
+      type: "owed_repaid", refType: "contradiction", refId: d.contradictionId, idempotencyKey: `owed_repay:${userId}:${sourceKey}:${d.contradictionId}`,
+      legs: [{ account: { userId, kind: "cash" }, amountKobo: -amount }, { account: owedAccount(userId), amountKobo: amount }],
+    });
+    left -= amount;
+    repaid += amount;
+  }
+  return repaid;
 }
 
 /**

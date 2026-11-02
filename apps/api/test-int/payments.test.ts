@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  adminActions, adminPermissions, archiveAccount, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -975,7 +975,7 @@ describe("contradictions: resolved by two admins", () => {
     return x;
   }
   /** The person's side of each repayment (leg 0: their cash). */
-  const repayments = async (userId: string) => (await db.select().from(ledgerEntries).where(and(eq(ledgerEntries.type, "owed_repaid"), eq(ledgerEntries.refId, userId)))).filter((e) => !e.idempotencyKey.includes("#"));
+  const repayments = async (userId: string) => (await db.select().from(ledgerEntries).where(and(eq(ledgerEntries.type, "owed_repaid"), like(ledgerEntries.idempotencyKey, `owed_repay:${userId}:%`)))).filter((e) => !e.idempotencyKey.includes("#"));
   async function partyWithPot(potKobo: number) {
     const host = await makeUser(nextName("owhost"));
     const [party] = await db.insert(parties).values({ createdByUserId: host.id, title: `owed ${tag}`, category: "General knowledge", maxPlayers: 6, funding: "pooled", split: [100], startsAt: new Date(Date.now() + 3_600_000) }).returning();
@@ -986,7 +986,7 @@ describe("contradictions: resolved by two admins", () => {
   }
 
   it("winnings repay what's owed first, as their own movement; the wallet shows the rest; withdrawals wait, playing doesn't", async () => {
-    const { u, account, payout } = await owing("owwin");
+    const { u, account, payout, c } = await owing("owwin");
     const owed = payout.amountKobo;
     const wallet = (await app.inject({ method: "GET", url: "/wallet", headers: as(u) })).json();
     expect(wallet.owed).toEqual({ amountKobo: owed, reason: "duplicate_payout" });
@@ -998,7 +998,7 @@ describe("contradictions: resolved by two admins", () => {
     expect(await cash(u)).toBe(0); // all of it repaid
     expect(await ledger.owedKobo(db, u.id)).toBe(owed - kobo(600));
     const [r] = await repayments(u.id);
-    expect([r.idempotencyKey, r.amountKobo]).toEqual([`owed_repay:${u.id}:t:owed:prize:${party.id}`, -kobo(600)]);
+    expect([r.idempotencyKey, r.amountKobo]).toEqual([`owed_repay:${u.id}:t:owed:prize:${party.id}:${c.id}`, -kobo(600)]);
     expect(r.journalId).not.toBe((await entriesFor(`t:owed:prize:${party.id}`))[0].journalId); // its own movement
 
     // Bonus coins never repay; and playing isn't blocked (an entry from bonus).
@@ -1079,6 +1079,48 @@ describe("contradictions: resolved by two admins", () => {
     expect(await findBreaches(db)).toEqual([]);
   });
 
+  it("no waiver while a contradiction is open (request or confirm)", async () => {
+    const { u, c } = await contradicted("crnowaive", 0);
+    const asked = await app.inject({ method: "POST", url: `/admin/payments/users/${u.id}/owed/waive`, headers: as(admin), payload: { reason: "they're broke" } });
+    expect([asked.statusCode, asked.json().error, asked.json().details.contradictionId]).toEqual([409, "contradiction_open", c.id]);
+  });
+
+  it("a dissolve pays back only what was taken: held cash and repayments; a waived part goes back to the platform", async () => {
+    const { u, payout, c } = await contradicted("crwaivedis", kobo(400)); // held ₦400 from cash; ₦1,100.11 owed
+    const party = await partyWithPot(kobo(5000));
+    await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: kobo(300), type: "party_prize", refType: "party", refId: party.id, idempotencyKey: `t:cr:wd:prize:${u.id}` })); // repays ₦300
+    // A waiver of ₦500 against this debt, written the way one applied before waivers waited for contradictions to close.
+    await db.transaction((tx) => ledger.journal(tx, { type: "owed_waived", refType: "contradiction", refId: c.id, idempotencyKey: `t:cr:wd:waive:${c.id}`,
+      legs: [{ account: ledger.owedAccount(u.id), amountKobo: kobo(500) }, { account: { system: "platform_funds" }, amountKobo: -kobo(500) }] }));
+    expect(await ledger.owedKobo(db, u.id)).toBe(payout.amountKobo - kobo(400) - kobo(300) - kobo(500));
+    const [funds] = await db.select().from(ledgerAccounts).where(eq(ledgerAccounts.kind, "platform_funds"));
+    await resolve(admin, c.id);
+    const t = (await mock.getTransfer(payout.reference))!;
+    await mock.setTransfer(payout.reference, { ...t, state: "failed" });
+    expect((await confirmIt(admin2, c.id)).json().contradiction.status).toBe("dissolved");
+    expect([await cash(u), await ledger.owedKobo(db, u.id), await held(u)]).toEqual([kobo(400) + kobo(300), 0, 0]); // never the waived ₦500
+    const [fundsAfter] = await db.select().from(ledgerAccounts).where(eq(ledgerAccounts.id, funds.id));
+    expect(fundsAfter.balanceKobo - funds.balanceKobo).toBe(kobo(500));
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("a dissolve racing a prize that repays the debt reads it under the owed account's lock: nobody loses the prize", async () => {
+    const { u, payout, c } = await contradicted("crrace", kobo(300)); // held ₦300; ₦1,200.11 owed
+    await resolve(admin, c.id);
+    const t = (await mock.getTransfer(payout.reference))!;
+    await mock.setTransfer(payout.reference, { ...t, state: "failed" });
+    const party = await partyWithPot(kobo(5000));
+    let dissolve: Promise<{ json(): { contradiction: { status: string } } }> | undefined;
+    await db.transaction(async (tx) => {
+      await ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: kobo(200), type: "party_prize", refType: "party", refId: party.id, idempotencyKey: `t:cr:race:${u.id}` }); // repays ₦200, uncommitted
+      dissolve = confirmIt(admin2, c.id);
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    expect((await dissolve!).json().contradiction.status).toBe("dissolved");
+    expect([await cash(u), await ledger.owedKobo(db, u.id), await held(u)]).toEqual([kobo(300) + kobo(200), 0, 0]);
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
   it("nobody resolves their own", async () => {
     const { u, c } = await contradicted("crown", kobo(10_000));
     await db.update(users).set({ isAdmin: true }).where(eq(users.id, u.id));
@@ -1115,6 +1157,19 @@ describe("the lock order: the person's row, then transaction rows, then the pers
       throw e;
     }
   }
+
+  it("account deletion reads the bonus it forfeits under the lock it posts under: a credit committing meanwhile is forfeited too", async () => {
+    const u = await makeUser(nextName("lkdel"));
+    await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: kobo(100), type: "welcome_bonus", idempotencyKey: `t:lk:del:1:${u.id}` }));
+    let archived: Promise<{ forfeitedBonusKobo: number }> | undefined;
+    await db.transaction(async (tx) => {
+      await ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: kobo(50), type: "welcome_bonus", idempotencyKey: `t:lk:del:2:${u.id}` }); // uncommitted
+      archived = db.transaction(async (t2) => archiveAccount(t2, (await t2.select().from(users).where(eq(users.id, u.id)))[0], null));
+      await pause(300);
+    });
+    expect((await archived!).forfeitedBonusKobo).toBe(kobo(150));
+    expect((await ledger.balances(u.id)).bonusKobo).toBe(0);
+  });
 
   it("approve and reject take the person first", async () => {
     await config((c) => { c.payout.approvalThresholdKobo = kobo(2000); });
@@ -1168,6 +1223,10 @@ describe("the lock order: the person's row, then transaction rows, then the pers
     await credit;
     expect(await ledger.owedKobo(db, u.id)).toBe(kobo(1400) + 11);
 
+    // Waivers wait for the contradiction to close: resolve it (the provider still says paid).
+    const [c] = await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id));
+    await app.inject({ method: "POST", url: `/admin/payments/contradictions/${c.id}/resolve`, headers: as(admin), payload: { reason: "confirmed paid" } });
+    expect((await app.inject({ method: "POST", url: `/admin/payments/contradictions/${c.id}/confirm`, headers: as(admin2) })).json().contradiction.status).toBe("resolved");
     const asked = await waitsForPerson(u.id, () => requestOwedWaiver(admin.id, u.id, "support ticket: lock order")) as { id: string };
     expect(((await waitsForPerson(u.id, () => confirmOwedWaiver(admin2.id, asked.id))) as { status: string }).status).toBe("applied");
     expect(await ledger.owedKobo(db, u.id)).toBe(0);
