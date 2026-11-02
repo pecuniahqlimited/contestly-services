@@ -37,8 +37,9 @@ type Kind = (typeof USER_ACCOUNT_KINDS)[number];
  * - payout_settled: withdrawals the provider confirmed sent (scope: provider)
  * - payout_fees: what the provider charged to send them (scope: provider)
  * - platform_funds: the platform paying a fee it chose to bear
+ * - payout_owed: what people owe after a payout we reversed was paid after all and their cash didn't cover it
  */
-export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds"] as const;
+export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed"] as const;
 export type SystemKind = (typeof SYSTEM_ACCOUNT_KINDS)[number];
 
 export type AccountRef = { userId: string; kind: Kind } | { system: SystemKind; scope?: string };

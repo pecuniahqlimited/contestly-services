@@ -8,6 +8,8 @@ import {
 import { db, type Tx } from "./client.js";
 import { aboutConfigs, appConfig } from "./schema.js";
 
+type Conn = Tx | typeof db;
+
 /**
  * One admin-editable JSON document per key, validated by its shared schema. Stored values are
  * layered over the defaults, so a key added to a schema later takes its default until an admin
@@ -15,13 +17,14 @@ import { aboutConfigs, appConfig } from "./schema.js";
  */
 function configEntry<T extends object>(key: string, schema: z.ZodType<T>, fallback: T) {
   return {
-    async get(): Promise<T> {
-      const [row] = await db.select().from(appConfig).where(eq(appConfig.key, key));
+    /** Pass a transaction to read (or write) as part of it, e.g. with the admin log entry for the change. */
+    async get(conn: Conn = db): Promise<T> {
+      const [row] = await conn.select().from(appConfig).where(eq(appConfig.key, key));
       return row ? schema.parse({ ...fallback, ...(row.value as object) }) : fallback;
     },
-    async set(value: unknown): Promise<T> {
+    async set(value: unknown, conn: Conn = db): Promise<T> {
       const parsed = schema.parse(value);
-      await db.insert(appConfig).values({ key, value: parsed }).onConflictDoUpdate({ target: appConfig.key, set: { value: parsed, updatedAt: new Date() } });
+      await conn.insert(appConfig).values({ key, value: parsed }).onConflictDoUpdate({ target: appConfig.key, set: { value: parsed, updatedAt: new Date() } });
       return parsed;
     },
   };
@@ -62,7 +65,6 @@ const social = configEntry("social", socialConfigSchema, DEFAULT_SOCIAL_CONFIG);
 export const getSocialConfig = social.get;
 export const setSocialConfig = social.set;
 
-type Conn = Tx | typeof db;
 export interface AboutConfigRow { audience: AboutAudience; version: number; config: AboutConfig; createdAt: Date }
 const asRow = (r: typeof aboutConfigs.$inferSelect): AboutConfigRow => ({ audience: r.audience as AboutAudience, version: r.version, config: r.config, createdAt: r.createdAt });
 

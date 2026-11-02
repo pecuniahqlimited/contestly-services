@@ -20,10 +20,15 @@ export async function currentSettings(conn: Conn = db): Promise<PaymentSettingsV
 
 export interface SettingsChange { collections: string; payouts: string; topupsPaused: boolean; payoutsPaused: boolean; reason: string }
 
-/** An admin's change. Both providers must be configured here (secrets in env). */
-export async function saveSettings(tx: Tx, change: SettingsChange, adminUserId: string) {
+/** Both providers must be configured here (secrets in env). */
+export function assertProvidersConfigured(change: Pick<SettingsChange, "collections" | "payouts">) {
   const configured = configuredProviderNames();
   for (const name of [change.collections, change.payouts]) if (!configured.includes(name)) throw paymentsError(409, "provider_not_configured", { provider: name, configured });
+}
+
+/** An admin's change (through controls.ts: loosening ones need a second admin). */
+export async function saveSettings(tx: Tx, change: SettingsChange, adminUserId: string) {
+  assertProvidersConfigured(change);
   await tx.insert(paymentSettings).values({ ...change, changedBy: "admin", createdByUserId: adminUserId });
 }
 

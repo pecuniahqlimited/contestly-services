@@ -1,9 +1,14 @@
 /**
  * Top-ups (ADR 0013). Our server makes the reference and the pending row before the provider is asked. The
- * wallet is credited only by confirmTopup(): a fresh verify with the provider that created it, matching our
- * row exactly (reference, amount, currency, user) and, when a webhook triggered it, the webhook too. The
- * credit happens with the row locked, under ledger key topup:<provider>:<reference>, so however many
- * webhooks, checks or admin replays arrive, at most one credits.
+ * wallet is credited only by confirmTopup(): a fresh server-to-server verify with the provider that created
+ * it, matching our row exactly (reference, amount, currency, user) and, when a webhook triggered it, the
+ * webhook too. That verify is the provider's confirmation, whether a webhook, the worker's scheduled check
+ * or an admin's replay asked for it; the app's polling only reads our row and never credits. The credit
+ * happens with the row locked, under ledger key topup:<provider>:<reference>, so however many webhooks,
+ * checks or admin replays arrive, at most one credits.
+ *
+ * A failed attempt isn't final: the checkout stays payable (another card, another channel), so the top-up
+ * stays pending, marked attempt_failed, until its cutoff, and the check at the cutoff is the final one.
  */
 import { randomBytes } from "node:crypto";
 import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
@@ -19,7 +24,7 @@ const newReference = () => `tp-${randomBytes(12).toString("hex")}`;
 
 export const topupView = (t: Topup): TopupView => ({
   reference: t.reference, amountKobo: t.amountKobo, currency: CURRENCY, status: t.status,
-  checkoutUrl: t.status === "pending" ? t.checkoutUrl : null, createdAt: t.createdAt.toISOString(), creditedAt: t.creditedAt?.toISOString() ?? null,
+  checkoutUrl: t.status === "pending" ? t.checkoutUrl : null, attemptFailed: t.status === "pending" && !!t.attemptFailedAt, createdAt: t.createdAt.toISOString(), creditedAt: t.creditedAt?.toISOString() ?? null,
 });
 
 export interface CreateTopupOptions { returnUrl: string | null; now?: Date }
@@ -122,13 +127,17 @@ export function topupProblems(t: Topup, check: ProviderCheck, claim?: WebhookEve
 
 const checkRecord = (c: ProviderCheck, via: string, at: Date) => ({ ...c, via, at: at.toISOString() });
 
-/** Credit a locked top-up once (ledger key topup:<provider>:<reference>) and mark it succeeded. */
-export async function creditLocked(tx: Tx, t: Topup, via: string, now: Date) {
+/**
+ * Credit a locked top-up once (ledger key topup:<provider>:<reference>) and mark it succeeded. The amount is
+ * what the provider verified as paid: our own amount on the automatic path (it must match), and on an admin's
+ * finalize the verified amount even when it differs (which needed a second admin).
+ */
+export async function creditLocked(tx: Tx, t: Topup, via: string, now: Date, verifiedKobo: number = t.amountKobo) {
   await ledger.journal(tx, {
     type: "topup", refType: "topup", refId: t.id, idempotencyKey: `topup:${t.provider}:${t.reference}`,
-    legs: [{ account: { userId: t.userId, kind: "cash" }, amountKobo: t.amountKobo }, { account: { system: "topup_in", scope: t.provider }, amountKobo: -t.amountKobo }],
+    legs: [{ account: { userId: t.userId, kind: "cash" }, amountKobo: verifiedKobo }, { account: { system: "topup_in", scope: t.provider }, amountKobo: -verifiedKobo }],
   });
-  await tx.update(topups).set({ status: "succeeded", creditedAt: now, creditedVia: via, nextCheckAt: null, updatedAt: now }).where(eq(topups.id, t.id));
+  await tx.update(topups).set({ status: "succeeded", creditedKobo: verifiedKobo, creditedAt: now, creditedVia: via, nextCheckAt: null, updatedAt: now }).where(eq(topups.id, t.id));
 }
 
 export async function failLocked(tx: Tx, t: Topup, problem: Record<string, unknown>, now: Date) {
@@ -177,17 +186,22 @@ export async function confirmTopup(topupId: string, via: ConfirmVia, claim: Webh
       await creditLocked(tx, t, via, now);
       return "credited";
     }
+    const cutoff = new Date(t.createdAt.getTime() + cfg.checks.topupCutoffMinutes * 60_000);
+    const next = new Date(Math.min(now.getTime() + backoffMs(t.checks + 1, cfg.checks.topupFirstCheckSeconds, 3600), cutoff.getTime()));
     if (check.status === "failed") {
+      // A declined attempt: the person can still pay on the same checkout until it expires. Final only at the cutoff.
+      if (t.status === "pending" && now < cutoff) {
+        await tx.update(topups).set({ attemptFailedAt: now, lastCheck: record, checks: t.checks + 1, nextCheckAt: next, updatedAt: now }).where(eq(topups.id, t.id));
+        return "still_pending";
+      }
       await failLocked(tx, t, { reason: "provider_failed", check: record }, now);
       return "failed";
     }
     // pending, not_found, unknown: keep checking until the cutoff; the check at the cutoff is the final one.
-    const cutoff = new Date(t.createdAt.getTime() + cfg.checks.topupCutoffMinutes * 60_000);
     if (t.status === "pending" && now >= cutoff) {
       await tx.update(topups).set({ status: "expired", lastCheck: record, checks: t.checks + 1, nextCheckAt: null, updatedAt: now }).where(eq(topups.id, t.id));
       return "expired";
     }
-    const next = new Date(Math.min(now.getTime() + backoffMs(t.checks + 1, cfg.checks.topupFirstCheckSeconds, 3600), cutoff.getTime()));
     await tx.update(topups).set({ lastCheck: record, checks: t.checks + 1, nextCheckAt: t.status === "pending" ? next : null, updatedAt: now }).where(eq(topups.id, t.id));
     return t.status === "expired" ? "expired" : "still_pending";
   });

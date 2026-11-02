@@ -6,6 +6,9 @@
  * 1. Banks and account resolution.
  * 2. A top-up: prints a checkout link; pay it with Paystack's test card (4084 0840 8408 4081, any future
  *    expiry, CVV 408, PIN 0000, OTP 123456). It then verifies by our reference until Paystack says success.
+ *    Optional: first try a card that's declined (a failed attempt), then pay with the good card on the same
+ *    page; the check reports whether Paystack's verify said "failed" and then "success" for the same
+ *    reference, i.e. whether a failed attempt is final (ADR 0013 treats it as not final until the cutoff).
  * 3. A transfer of ₦100 to a test recipient, with our reference, then queried until final. Paystack may
  *    refuse transfers on a business that isn't verified yet ("third party payouts"/"starter business"): that's
  *    reported as such, and the module would keep such a payout unknown (debited, alerting) rather than guess.
@@ -51,8 +54,11 @@ console.log(`\n  Pay it with the test card, then come back:\n  ${checkoutUrl}\n`
 const before = await p.collection!.verifyTopup(reference);
 ok(before.status === "pending", `before paying, verify says pending (Paystack: ${before.providerStatus})`);
 let paid = before;
-for (let i = 0; i < 120 && paid.status !== "success" && paid.status !== "failed"; i++) { await sleep(5000); paid = await p.collection!.verifyTopup(reference); }
+const seen = new Set<string>([before.status]);
+// A "failed" isn't the end: the person may retry on the same checkout. Keep verifying until success (10 minutes).
+for (let i = 0; i < 120 && paid.status !== "success"; i++) { await sleep(5000); paid = await p.collection!.verifyTopup(reference); seen.add(paid.status); }
 ok(paid.status === "success", `verify says success (Paystack: ${paid.providerStatus})`);
+console.log(seen.has("failed") ? `  verify said "failed" and then "success" for the same reference: a failed attempt is not final` : `  (no failed attempt was made; try a declined card first to check that a failed reference can still be paid)`);
 ok(paid.reference === reference && paid.amountKobo === amountKobo && paid.currency === "NGN" && paid.userId === userId, "reference, amount, currency and our user id all match");
 ok((await p.collection!.verifyTopup(`tp-${randomBytes(12).toString("hex")}`)).status === "not_found", "an unknown reference is not_found");
 

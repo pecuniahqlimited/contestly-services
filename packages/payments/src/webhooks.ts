@@ -1,11 +1,12 @@
 /**
  * Webhooks: authenticate first (each provider its own way), store the raw event, acknowledge, and let the
- * worker process it. A webhook is only a hint: processing it runs the same fresh verify (top-ups) or query
+ * worker process it. An event is marked processed only once it has had its effect; one whose top-up the
+ * provider's verify still calls pending is tried again later. A webhook is only a hint: processing it runs the same fresh verify (top-ups) or query
  * (payouts) as every other path, so a forged, replayed or wrong webhook can't move money on its own.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { db, paymentWebhookEvents, payouts, topups } from "@contestly/db";
-import { paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
+import { backoffMs, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
 import { knownProviderNames, providerNamed } from "./providers/index.js";
 import { confirmTopup } from "./topups.js";
 import { checkPayout } from "./payouts.js";
@@ -49,8 +50,31 @@ export async function processWebhookEvent(eventRowId: string, now = new Date()):
   } else {
     outcome = "ignored";
   }
-  await db.update(paymentWebhookEvents).set({ processedAt: now, outcome }).where(eq(paymentWebhookEvents.id, row.id));
+  if (outcome === STILL_PENDING) {
+    // The provider's verify doesn't agree yet (it can lag its own webhook): not processed; the sweep brings it back.
+    const attempts = row.attempts + 1;
+    await db.update(paymentWebhookEvents).set({ outcome, attempts, nextAttemptAt: new Date(now.getTime() + backoffMs(attempts, RETRY_FIRST_SECONDS, RETRY_MAX_SECONDS)) }).where(eq(paymentWebhookEvents.id, row.id));
+    return outcome;
+  }
+  await db.update(paymentWebhookEvents).set({ processedAt: now, outcome, attempts: row.attempts + 1, nextAttemptAt: null }).where(eq(paymentWebhookEvents.id, row.id));
   return outcome;
+}
+
+const STILL_PENDING = "topup:still_pending";
+const RETRY_FIRST_SECONDS = 60;
+const RETRY_MAX_SECONDS = 3600;
+/** An event stored but never processed (a lost job, a worker that died mid-way) is picked up after this. */
+const ORPHAN_AFTER_MS = 5 * 60_000;
+
+/**
+ * Stored events still to process: ones whose top-up was still pending (from next_attempt_at), and ones whose
+ * job never ran. Each is retried until its top-up stops being pending (credited, failed or expired at the cutoff).
+ */
+export async function dueWebhookEvents(now: Date, limit: number) {
+  return db.select({ id: paymentWebhookEvents.id, attempts: paymentWebhookEvents.attempts }).from(paymentWebhookEvents).where(and(
+    isNull(paymentWebhookEvents.processedAt),
+    or(lte(paymentWebhookEvents.nextAttemptAt, now), and(isNull(paymentWebhookEvents.nextAttemptAt), lt(paymentWebhookEvents.receivedAt, new Date(now.getTime() - ORPHAN_AFTER_MS)))),
+  )).limit(limit);
 }
 
 async function unknownReference(provider: string, object: string, reference: string, eventId: string) {

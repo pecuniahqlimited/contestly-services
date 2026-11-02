@@ -6,7 +6,7 @@ import {
   resolveAccountResponseSchema, resolveAccountSchema, topupSchema, withdrawalRequestSchema,
 } from "@contestly/shared";
 import {
-  addBankAccount, bankAccountsOf, createTopup, listBanks, payoutView, removeBankAccount, requestPayout, resolveAccount, topupForUser, topupView,
+  addBankAccount, bankAccountsOf, createTopup, listBanks, paymentsDevTools, payoutView, removeBankAccount, requestPayout, resolveAccount, topupForUser, topupView,
 } from "@contestly/payments";
 import { requireUser, uuidParam } from "../auth.js";
 import { paymentsDeps, paymentsKv, topupReturnUrl } from "../payments.js";
@@ -19,9 +19,9 @@ export async function walletRoutes(app: FastifyInstance) {
     return { ...(await ledger.balances(me.id)), history: await ledger.history(me.id) };
   });
 
-  /** Local-only funding for sims and tests (minted against dev_mint, never a payment). Gone in production. */
+  /** Local-only funding for sims and tests (minted against dev_mint, never a payment). Only with PAYMENTS_DEV_TOOLS, never in production. */
   app.post("/wallet/dev-topup", async (req, reply) => {
-    if (process.env.NODE_ENV === "production") return reply.code(404).send();
+    if (!paymentsDevTools()) return reply.code(404).send();
     const me = requireUser(req);
     const { nairaAmount = 1000 } = (req.body ?? {}) as { nairaAmount?: number };
     const ref = `devtopup:${me.id}:${Date.now()}`;

@@ -50,9 +50,21 @@ export const NOT_FINALIZABLE = "not_finalizable";
 export const EMAIL_REQUIRED = "email_required";
 /** 422: the provider refused to start the payment (details.message says why). Nothing was charged. */
 export const TOPUP_REFUSED = "topup_refused";
+/** 409: a sent payout can't be finalized by hand inside the resend window or the quiet period after its last send. */
+export const FINALIZE_TOO_SOON = "finalize_too_soon";
+/** 409: a top-up is credited by hand only with an amount the provider verified as paid. */
+export const NO_VERIFIED_AMOUNT = "no_verified_amount";
+/** 403: the second admin of a maker-checker pair must be someone else. */
+export const SECOND_ADMIN_REQUIRED = "second_admin_required";
+/** 409: what the request was decided against has changed since (the provider's answer, the config): ask again. */
+export const CHANGED_SINCE_REQUEST = "changed_since_request";
+
+/** Why a manual finalize needs a second admin. */
+export const SECOND_ADMIN_BECAUSE = ["over_threshold", "check_not_definite", "check_disagrees", "amount_differs"] as const;
+export type SecondAdminBecause = (typeof SECOND_ADMIN_BECAUSE)[number];
 
 /** Why a withdrawal is refused (details.reason with withdraw_not_allowed). */
-export const WITHDRAW_BLOCK_REASONS = ["guest", "email_unverified", "phone_unverified", "deleted", "frozen", "system"] as const;
+export const WITHDRAW_BLOCK_REASONS = ["guest", "email_unverified", "phone_unverified", "deleted", "frozen", "payment_review", "system"] as const;
 export type WithdrawBlockReason = (typeof WITHDRAW_BLOCK_REASONS)[number];
 /** Which limit was hit (details.limit with limit_reached). */
 export const PAYMENT_LIMITS = ["topup_max", "topup_daily", "payout_max", "payout_daily_amount", "payout_daily_count"] as const;
@@ -74,8 +86,12 @@ export const paymentsConfigSchema = z.object({
     userDailyApprovalCeilingKobo: positiveKobo,
     feeBearer: z.enum(FEE_BEARERS),
   }),
-  /** A manual finalize at or above this needs a second admin to confirm it. */
-  finalize: z.object({ secondAdminThresholdKobo: positiveKobo }),
+  finalize: z.object({
+    /** A manual finalize at or above this needs a second admin to confirm it (so does one the provider's answer doesn't back). */
+    secondAdminThresholdKobo: positiveKobo,
+    /** A sent payout can't be finalized by hand until this long after its last send (and never inside the resend window). */
+    quietAfterSendMinutes: z.number().int().positive().default(30),
+  }),
   /** Alerts (and, per user, approval) above these. */
   velocity: z.object({ payoutsPerHour: z.number().int().positive(), userPayoutsPerHour: z.number().int().positive() }),
   checks: z.object({
@@ -86,7 +102,10 @@ export const paymentsConfigSchema = z.object({
     payoutMaxBackoffSeconds: z.number().int().positive(),
     /** An unknown payout older than this alerts admins; it keeps being checked and never resolves itself. */
     unknownAlertAfterMinutes: z.number().int().positive(),
-    /** A transfer the provider says it never got is sent again (same reference) only after this long. */
+    /**
+     * A transfer the provider says it never got is sent again (same reference) only after this long. Long on
+     * purpose: a provider's lookup can lag its send, and every refusal of a resend is treated as unknown.
+     */
     resendAfterNotFoundSeconds: z.number().int().positive(),
   }),
 }).refine((c) => c.topup.minKobo <= c.topup.maxKobo && c.payout.minKobo <= c.payout.maxKobo, { message: "min must not exceed max" });
@@ -99,9 +118,9 @@ export type PaymentsConfig = z.infer<typeof paymentsConfigSchema>;
 export const DEFAULT_PAYMENTS_CONFIG: PaymentsConfig = {
   topup: { minKobo: 10_000, maxKobo: 50_000_000, dailyCapKobo: 100_000_000 },
   payout: { minKobo: 100_000, maxKobo: 50_000_000, dailyAmountKobo: 50_000_000, dailyCount: 5, approvalThresholdKobo: 10_000_000, userDailyApprovalCeilingKobo: 20_000_000, feeBearer: "platform" },
-  finalize: { secondAdminThresholdKobo: 5_000_000 },
+  finalize: { secondAdminThresholdKobo: 5_000_000, quietAfterSendMinutes: 30 },
   velocity: { payoutsPerHour: 500, userPayoutsPerHour: 3 },
-  checks: { topupFirstCheckSeconds: 60, topupCutoffMinutes: 24 * 60, payoutFirstCheckSeconds: 30, payoutMaxBackoffSeconds: 3600, unknownAlertAfterMinutes: 24 * 60, resendAfterNotFoundSeconds: 300 },
+  checks: { topupFirstCheckSeconds: 60, topupCutoffMinutes: 24 * 60, payoutFirstCheckSeconds: 30, payoutMaxBackoffSeconds: 3600, unknownAlertAfterMinutes: 24 * 60, resendAfterNotFoundSeconds: 30 * 60 },
 };
 
 // ---- The app ----
@@ -111,6 +130,8 @@ export const topupSchema = z.object({
   reference: z.string(), amountKobo: kobo, currency: z.literal(CURRENCY), status: z.enum(TOPUP_STATUSES),
   /** Where to send the person to pay; null once it's no longer payable. */
   checkoutUrl: z.string().nullable(),
+  /** The last attempt was declined; the checkout is still open, so the app can say "try again or another card". */
+  attemptFailed: z.boolean(),
   createdAt: z.string(), creditedAt: z.string().nullable(),
 });
 export type TopupView = z.infer<typeof topupSchema>;
@@ -169,6 +190,28 @@ export const adminFinalizeResponseSchema = z.object({
   finalization: z.object({
     id: z.string().uuid(), targetType: z.enum(["topup", "payout"]), targetId: z.string().uuid(), outcome: z.enum(["success", "failed"]),
     status: z.enum(["awaiting_second_admin", "applied", "superseded"]), requestedBy: z.string().uuid(), confirmedBy: z.string().uuid().nullable(),
+    /** What it applies (a top-up: the amount the provider verified). */
+    amountKobo: z.number().int().nullable(),
+    /** The provider's answer when it was asked for, and why a second admin must confirm (both admins see it). */
     providerCheck: providerCheckSchema,
+    secondAdminBecause: z.array(z.enum(SECOND_ADMIN_BECAUSE)),
+    /** The provider's answer when the second admin confirmed. */
+    confirmCheck: providerCheckSchema.nullable(),
   }),
+});
+
+/** A loosening change to payments config or settings, waiting for (or confirmed by) a second admin. */
+export const paymentConfigChangeSchema = z.object({
+  id: z.string().uuid(), kind: z.enum(["config", "settings"]), loosens: z.array(z.string()), reason: z.string(),
+  status: z.enum(["awaiting_second_admin", "applied", "superseded"]), requestedBy: z.string().uuid(), confirmedBy: z.string().uuid().nullable(),
+  before: z.unknown(), proposed: z.unknown(), createdAt: z.string(),
+});
+export type PaymentConfigChangeView = z.infer<typeof paymentConfigChangeSchema>;
+
+/** A reversed payout the provider says was paid, and how it was resolved. */
+export const payoutContradictionSchema = z.object({
+  id: z.string().uuid(), payoutId: z.string().uuid(), userId: z.string().uuid(), amountKobo: z.number().int(),
+  status: z.enum(["open", "awaiting_second_admin", "resolved"]), providerCheck: z.unknown(),
+  requestedBy: z.string().uuid().nullable(), requestReason: z.string().nullable(), confirmedBy: z.string().uuid().nullable(),
+  recoveredKobo: z.number().int().nullable(), owedKobo: z.number().int().nullable(), createdAt: z.string(), resolvedAt: z.string().nullable(),
 });

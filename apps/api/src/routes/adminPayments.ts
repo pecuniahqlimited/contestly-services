@@ -1,13 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { db, getPaymentsConfig, recordAdminAction, setPaymentsConfig } from "@contestly/db";
+import { getPaymentsConfig } from "@contestly/db";
 import {
   adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
-  adminPaymentsConfigBodySchema, adminReasonBodySchema, paymentSettingsSchema, providerCheckSchema,
+  adminPaymentsConfigBodySchema, adminReasonBodySchema, paymentConfigChangeSchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
-  acknowledgeAlert, adminVerifyTopup, approvePayout, confirmFinalization, currentSettings, finalizationsFor, freshCheck, listAlerts, listPayouts, listReconciliation,
-  listTopups, listWebhooks, paymentsOverview, permissionsOf, rejectPayout, requestFinalization, resolveReconItem, runInvariants, saveSettings, setPermissions,
+  acknowledgeAlert, adminVerifyTopup, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
+  listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
+  rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
 } from "@contestly/payments";
 import { requirePermission, uuidParam } from "../auth.js";
 import { paymentsDeps } from "../payments.js";
@@ -19,7 +20,9 @@ const reconRunSchema = z.object({ provider: z.string().min(1), day: z.string().r
 /**
  * The console's payments pages (ADR 0013). Each route names the permission it needs: payments.view (read),
  * payments.approve (payouts over the threshold), payments.finalize (stuck transactions, alerts, reconciliation
- * notes), payments.config (providers, pauses, limits, who holds which permission). Every write is logged.
+ * notes, contradictions), payments.config (providers, pauses, limits, who holds which permission). Every write
+ * is logged. Maker-checker: a finalize the provider doesn't back (or over the threshold), resolving a
+ * contradiction, and any change that loosens a control each need a second admin.
  */
 export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.get("/admin/payments", async (req) => {
@@ -97,7 +100,24 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
     await paymentsDeps.enqueue({ kind: "reconcile", provider: body.provider, day: body.day });
     return { queued: true };
   });
-  /** Run the invariant checks now (they also run hourly). A breach alerts and pauses payouts. */
+  // ---- Contradictions: a reversed payout the provider says was paid (the person's withdrawals are frozen) ----
+  app.get("/admin/payments/contradictions", async (req) => {
+    await requirePermission(req, "payments.view");
+    const q = limitQuery.parse(req.query);
+    return { contradictions: (await listContradictions(q.open !== "false", q.limit)).map((c) => payoutContradictionSchema.parse(c)) };
+  });
+  app.post("/admin/payments/contradictions/:id/resolve", async (req) => {
+    const admin = await requirePermission(req, "payments.finalize");
+    const { reason } = adminReasonBodySchema.parse(req.body);
+    return { contradiction: payoutContradictionSchema.parse(await requestContradictionResolution(admin.id, uuidParam(req), reason)) };
+  });
+  /** The second admin: re-applies the debit up to the cash there, records the rest as owed, unfreezes. */
+  app.post("/admin/payments/contradictions/:id/confirm", async (req) => {
+    const admin = await requirePermission(req, "payments.finalize");
+    return { contradiction: payoutContradictionSchema.parse(await confirmContradictionResolution(admin.id, uuidParam(req))) };
+  });
+
+  /** Run the invariant checks now (they also run hourly). A breach that repeats alerts and pauses payouts. */
   app.post("/admin/payments/invariants/run", async (req) => {
     await requirePermission(req, "payments.finalize");
     return runInvariants();
@@ -108,28 +128,35 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
     await requirePermission(req, "payments.view");
     return { settings: paymentSettingsSchema.parse(await currentSettings()) };
   });
-  /** Providers and kill switches. Transactions already started finish with their own provider. Pausing payouts never reverses one. */
-  app.put("/admin/payments/settings", async (req) => {
+  /**
+   * Providers and kill switches. Transactions already started finish with their own provider. Pausing payouts
+   * never reverses one. Pausing applies at once; switching a provider or un-pausing waits for a second admin (202).
+   */
+  app.put("/admin/payments/settings", async (req, reply) => {
     const admin = await requirePermission(req, "payments.config");
     const { reason, ...change } = adminPaymentSettingsBodySchema.parse(req.body);
-    await db.transaction(async (tx) => {
-      const before = await currentSettings(tx);
-      await saveSettings(tx, { ...change, reason }, admin.id);
-      await recordAdminAction(tx, { adminUserId: admin.id, action: "config.payments_settings", targetType: "config", targetId: "payments_settings", reason, before, after: change });
-    });
-    return { settings: paymentSettingsSchema.parse(await currentSettings()) };
+    const out = await proposeControlChange(admin.id, "settings", change, reason);
+    return reply.code(out.applied ? 200 : 202).send({ settings: paymentSettingsSchema.parse(await currentSettings()), change: out.change && paymentConfigChangeSchema.parse(out.change) });
   });
   app.get("/admin/payments/config", async (req) => {
     await requirePermission(req, "payments.view");
     return { config: await getPaymentsConfig() };
   });
-  app.put("/admin/payments/config", async (req) => {
+  /** Limits and thresholds. Lowering a limit applies at once; anything that loosens waits for a second admin (202). */
+  app.put("/admin/payments/config", async (req, reply) => {
     const admin = await requirePermission(req, "payments.config");
     const { config, reason } = adminPaymentsConfigBodySchema.parse(req.body);
-    const before = await getPaymentsConfig();
-    const saved = await setPaymentsConfig(config);
-    await recordAdminAction(db, { adminUserId: admin.id, action: "config.payments", targetType: "config", targetId: "payments", reason, before, after: saved });
-    return { config: saved };
+    const out = await proposeControlChange(admin.id, "config", config, reason);
+    return reply.code(out.applied ? 200 : 202).send({ config: await getPaymentsConfig(), change: out.change && paymentConfigChangeSchema.parse(out.change) });
+  });
+  app.get("/admin/payments/config-changes", async (req) => {
+    await requirePermission(req, "payments.view");
+    return { changes: (await listControlChanges(limitQuery.parse(req.query).limit)).map((c) => paymentConfigChangeSchema.parse(c)) };
+  });
+  /** A second payments.config holder confirms a loosening change; superseded instead if the config moved since. */
+  app.post("/admin/payments/config-changes/:id/confirm", async (req) => {
+    const admin = await requirePermission(req, "payments.config");
+    return { change: paymentConfigChangeSchema.parse(await confirmControlChange(admin.id, uuidParam(req))) };
   });
   app.get("/admin/payments/permissions/:id", async (req) => {
     await requirePermission(req, "payments.config");

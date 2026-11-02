@@ -3,13 +3,15 @@
  *
  * 1. A top-up: POST /wallet/topups, "pay" on the mock checkout (its signed webhook goes through the real
  *    ingest), the worker verifies and credits; polling never credited anything itself. A doubled webhook
- *    still credits once.
+ *    still credits once. A declined card isn't the end: the top-up stays pending (attemptFailed) and paying
+ *    on the same checkout credits it.
  * 2. A withdrawal: phone verified, a bank account resolved and confirmed by name, a withdrawal debited at
  *    once and sent by the worker; one the provider refuses comes back exactly once; one whose send timed out
  *    is checked (never resent blind) and settles.
- * 3. The console: the overview, and the invariant checks find nothing.
+ * 3. The console: the overview; raising a limit waits for a second admin, who confirms it; lowering it back
+ *    is one admin; the invariant checks find nothing.
  *
- * TEST-ONLY: marks the sim user's phone verified straight in Postgres. Run with the stack up (and the mock
+ * TEST-ONLY: marks the sim user's phone verified, and a second sim admin, straight in Postgres. Run with the stack up (and the mock
  * provider, the dev default): npm run sim:payments
  */
 import { randomBytes, randomUUID } from "node:crypto";
@@ -32,6 +34,15 @@ ok(paid.deliveries?.length === 2 && paid.deliveries.every((d: string) => d === "
 const credited = await waitFor(async () => (await api(ME, "GET", `/wallet/topups/${t.reference}`)).status === "succeeded", { tries: 40 });
 ok(!!credited, "the worker verified and credited it");
 ok((await cash()) === kobo(5000) + 27, "credited exactly once");
+
+const retry = await api(ME, "POST", "/wallet/topups", { amountKobo: kobo(1000) });
+const checkout = (action: "pay" | "fail") => fetch(`${API}/payments/mock/checkout/${retry.reference}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }).then((r) => r.json());
+await checkout("fail");
+const declined = await waitFor(async () => { const v = await api(ME, "GET", `/wallet/topups/${retry.reference}`); return v.attemptFailed ? v : null; }, { tries: 40 });
+ok(declined?.status === "pending" && declined?.checkoutUrl === retry.checkoutUrl, "a declined card leaves it pending, same checkout, attemptFailed");
+await checkout("pay");
+ok(await waitFor(async () => (await api(ME, "GET", `/wallet/topups/${retry.reference}`)).status === "succeeded", { tries: 40 }) !== null, "paid on the same checkout after the decline: credited");
+ok((await cash()) === kobo(5000) + 27 + kobo(1000), "both top-ups credited exactly once");
 
 console.log("— withdrawals");
 const tooEarly = await call(ME, "POST", "/wallet/withdrawals", { amountKobo: kobo(1500), bankAccountId: randomUUID(), clientRequestId: randomUUID() });
@@ -65,6 +76,19 @@ ok(Number(sends) === 1, "the timed-out one was never sent twice");
 console.log("— console");
 const overview = await api(ADMIN, "GET", "/admin/payments");
 ok(overview.providers.configured.includes("mock") && overview.settings.collections === "mock", "overview: mock provider");
+const ADMIN2 = `payadm.${tag}`;
+await api(ADMIN2, "GET", "/me");
+await db.update(users).set({ isAdmin: true }).where(eq(users.handle, ADMIN2));
+const cfg = (await api(ADMIN, "GET", "/admin/payments/config")).config;
+const raised = structuredClone(cfg);
+raised.payout.maxKobo += kobo(1000);
+const asked = await call(ADMIN, "PUT", "/admin/payments/config", { config: raised, reason: "sim: raise the max" });
+ok(asked.status === 202 && (asked.body as any).change?.loosens?.[0] === "payout.maxKobo", "raising a limit waits for a second admin");
+const self = await call(ADMIN, "POST", `/admin/payments/config-changes/${(asked.body as any).change.id}/confirm`);
+ok(self.status === 403, "not the same admin");
+ok((await api(ADMIN2, "POST", `/admin/payments/config-changes/${(asked.body as any).change.id}/confirm`)).change.status === "applied", "a second admin confirms it");
+const back = await call(ADMIN, "PUT", "/admin/payments/config", { config: cfg, reason: "sim: back to before" });
+ok(back.status === 200, "lowering it back is one admin");
 const inv = await api(ADMIN, "POST", "/admin/payments/invariants/run");
 ok(inv.breaches.length === 0, `invariants: ${inv.breaches.length ? JSON.stringify(inv.breaches) : "no breach"}`);
 

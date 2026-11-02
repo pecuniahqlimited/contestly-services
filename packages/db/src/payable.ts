@@ -17,7 +17,10 @@ export const isBanned = (u: Pick<User, "bannedAt">) => !!u.bannedAt;
  */
 export const isWalletFrozen = (u: Pick<User, "bannedAt">) => isBanned(u);
 
-type WithdrawFields = Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "deletedAt" | "phoneVerifiedAt" | "bannedAt">;
+/** Withdrawals frozen by payments itself: a payout we reversed was paid after all, until an admin resolves it (ADR 0013). */
+export const isUnderPaymentReview = (u: Pick<User, "withdrawalsFrozenAt">) => !!u.withdrawalsFrozenAt;
+
+type WithdrawFields = Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "deletedAt" | "phoneVerifiedAt" | "bannedAt" | "withdrawalsFrozenAt">;
 
 /** Why this account can't withdraw, or null if it can. The app shows the reason (withdraw_not_allowed). */
 export function withdrawBlockReason(u: WithdrawFields): WithdrawBlockReason | null {
@@ -27,6 +30,7 @@ export function withdrawBlockReason(u: WithdrawFields): WithdrawBlockReason | nu
   if (!u.emailVerifiedAt) return "email_unverified";
   if (!u.phoneVerifiedAt) return "phone_unverified";
   if (isWalletFrozen(u)) return "frozen";
+  if (isUnderPaymentReview(u)) return "payment_review";
   return null;
 }
 

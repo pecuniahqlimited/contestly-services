@@ -14,6 +14,10 @@
  *  27 its webhook is delivered twice            17 success, webhook delivered twice
  *                                               18 success, webhook claims ₦1 more
  *                                               19 success, webhook has a bad signature
+ *                                               31 send times out but went through; queries say "not found"
+ *                                                  (the provider's lookup lags) and a resend is refused for
+ *                                                  "insufficient balance" (the first send emptied it), until
+ *                                                  a test reveals it (setTransfer with hidden: false)
  * Tests can also set the provider's side directly (setTopup / setTransfer) to plant what they need.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -29,7 +33,7 @@ const BANKS: Bank[] = [{ code: "001", name: "Mock Bank" }, { code: "002", name: 
 type TopupState = "created" | "paid" | "failed";
 type TransferState = "success" | "failed" | "pending";
 export interface MockTopup { amountKobo: number; userId: string; state: TopupState; createdAt: number; verifies: number }
-export interface MockTransfer { amountKobo: number; recipientCode: string; state: TransferState; createdAt: number; queries: number }
+export interface MockTransfer { amountKobo: number; recipientCode: string; state: TransferState; createdAt: number; queries: number; hidden?: boolean }
 /** A webhook as the provider would POST it. */
 export interface MockDelivery { rawBody: Buffer; headers: Record<string, string> }
 
@@ -128,6 +132,8 @@ export function mockProvider(opts: MockOptions) {
       async sendTransfer(input) {
         const ref = input.reference;
         const existing = await readJson<MockTransfer>(key.transfer(ref));
+        // A transfer its lookup can't see yet: refused on balance before the duplicate check (scenario 31).
+        if (existing?.hidden) return check("failed", ref, { providerStatus: "refused: Insufficient balance", amountKobo: input.amountKobo, currency: "NGN" });
         // The provider is idempotent on our reference: a resend reports the transfer it already has.
         if (existing) return transferCheck(ref, existing);
         const s = scenario(input.amountKobo);
@@ -141,13 +147,14 @@ export function mockProvider(opts: MockOptions) {
           await setTransfer(ref, t);
           return transferCheck(ref, t);
         }
+        if (s === 31) { await setTransfer(ref, { ...t, hidden: true }); return check("unknown", ref, { providerStatus: "timeout", error: "timeout" }); }
         if (s === 16) { await setTransfer(ref, t); return check("unknown", ref, { providerStatus: "http_502", error: "502 Bad Gateway" }); }
         await setTransfer(ref, t);
         return transferCheck(ref, t);
       },
       async queryTransfer(reference) {
         const t = await readJson<MockTransfer>(key.transfer(reference));
-        if (!t) return check("not_found", reference, { providerStatus: "not_found" });
+        if (!t || t.hidden) return check("not_found", reference, { providerStatus: "not_found" });
         if (t.state === "pending") {
           const n = t.queries + 1;
           const next: MockTransfer = { ...t, queries: n, state: n <= PENDING_CHECKS ? "pending" : scenario(t.amountKobo) === 13 ? "failed" : "success" };

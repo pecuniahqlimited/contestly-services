@@ -6,7 +6,7 @@ export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 /** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0013). */
-export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds"]);
+export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
@@ -53,6 +53,8 @@ export const users = pgTable("users", {
   archetype: text("archetype"),
   /** Banned by an admin: can't sign in, join, host or play (assertNotBanned). Unban clears both. */
   bannedAt: timestamp("banned_at", { withTimezone: true }),
+  /** Withdrawals frozen because a payout we reversed turned out to have been paid (ADR 0013); cleared when an admin resolves it. */
+  withdrawalsFrozenAt: timestamp("withdrawals_frozen_at", { withTimezone: true }),
   banReason: text("ban_reason"),
   /** A staked invite this person opened before signing up: onboarding ends in its lobby. */
   invitePartyId: uuid("invite_party_id").references((): AnyPgColumn => parties.id, { onDelete: "set null" }),
@@ -676,6 +678,10 @@ export const topups = pgTable("topups", {
   creditedAt: timestamp("credited_at", { withTimezone: true }),
   /** What credited it: webhook, check (the worker), admin_verify, admin_finalize. */
   creditedVia: text("credited_via"),
+  /** What was credited: the amount the provider verified (equal to amountKobo unless an admin credited a different verified amount). */
+  creditedKobo: bigint("credited_kobo", { mode: "number" }),
+  /** The provider last said an attempt failed; the checkout stays payable, so the top-up stays pending until it expires. */
+  attemptFailedAt: timestamp("attempt_failed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -765,7 +771,13 @@ export const paymentWebhookEvents = pgTable("payment_webhook_events", {
   deliveries: integer("deliveries").notNull().default(1),
   processedAt: timestamp("processed_at", { withTimezone: true }),
   outcome: text("outcome"),
-}, (t) => [uniqueIndex("payment_webhook_events_provider_event").on(t.provider, t.eventId), index("payment_webhook_events_reference_idx").on(t.reference)]);
+  /** Processing attempts; one that left its top-up still pending is tried again from next_attempt_at (the sweep). */
+  attempts: integer("attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("payment_webhook_events_provider_event").on(t.provider, t.eventId), index("payment_webhook_events_reference_idx").on(t.reference),
+  index("payment_webhook_events_retry_idx").on(t.nextAttemptAt).where(sql`processed_at is null`),
+]);
 
 /**
  * An admin's manual finalize of a stuck payout or top-up: the provider's answer when they asked, their
@@ -779,6 +791,10 @@ export const paymentFinalizations = pgTable("payment_finalizations", {
   outcome: text("outcome", { enum: ["success", "failed"] }).notNull(),
   reason: text("reason").notNull(),
   providerCheck: jsonb("provider_check").notNull(),
+  /** What it applies: a top-up credits the provider-verified amount; a payout its own amount. */
+  amountKobo: bigint("amount_kobo", { mode: "number" }),
+  /** Why a second admin must confirm: over_threshold, check_not_definite, check_disagrees, amount_differs. Empty: one admin. */
+  secondAdminBecause: text("second_admin_because").array().notNull().default(sql`'{}'::text[]`),
   status: text("status", { enum: ["awaiting_second_admin", "applied", "superseded"] }).notNull(),
   requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
   confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
@@ -788,6 +804,50 @@ export const paymentFinalizations = pgTable("payment_finalizations", {
   index("payment_finalizations_target_idx").on(t.targetType, t.targetId),
   uniqueIndex("payment_finalizations_one_open").on(t.targetType, t.targetId).where(sql`status = 'awaiting_second_admin'`),
 ]);
+
+/**
+ * A payout we reversed that the provider later said was paid: the person got the money twice. Raised with
+ * their withdrawals frozen, in the same transaction as the alert. An admin (payments.finalize) asks to
+ * resolve it and a second admin confirms: the debit is re-applied up to the cash available, the rest is
+ * recorded as owed (payout_owed), and withdrawals unfreeze once nothing else is open for them.
+ */
+export const payoutContradictions = pgTable("payout_contradictions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  payoutId: uuid("payout_id").notNull().references(() => payouts.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
+  status: text("status", { enum: ["open", "awaiting_second_admin", "resolved"] }).notNull().default("open"),
+  /** The provider's answer that contradicted the reversal. */
+  providerCheck: jsonb("provider_check").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  requestedByUserId: uuid("requested_by_user_id").references(() => users.id),
+  requestReason: text("request_reason"),
+  requestedAt: timestamp("requested_at", { withTimezone: true }),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  /** Taken back from the person's cash, and what they still owe. */
+  recoveredKobo: bigint("recovered_kobo", { mode: "number" }),
+  owedKobo: bigint("owed_kobo", { mode: "number" }),
+}, (t) => [uniqueIndex("payout_contradictions_payout").on(t.payoutId), index("payout_contradictions_user_idx").on(t.userId)]);
+
+/**
+ * A change to payments config or settings that loosens a control (raises a limit or threshold, switches a
+ * provider, un-pauses): it waits here for a second admin. Tightening applies at once. Never edited after.
+ */
+export const paymentConfigChanges = pgTable("payment_config_changes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  kind: text("kind", { enum: ["config", "settings"] }).notNull(),
+  before: jsonb("before").notNull(),
+  proposed: jsonb("proposed").notNull(),
+  /** What it loosens, field by field. */
+  loosens: text("loosens").array().notNull(),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["awaiting_second_admin", "applied", "superseded"] }).notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+}, (t) => [uniqueIndex("payment_config_changes_one_open").on(t.kind).where(sql`status = 'awaiting_second_admin'`)]);
 
 /** Something an admin must look at (critical: money may be wrong). Deduped by key; acknowledged, never deleted. */
 export const paymentAlerts = pgTable("payment_alerts", {
@@ -1133,6 +1193,8 @@ export type Payout = typeof payouts.$inferSelect;
 export type PayoutAccount = typeof payoutAccounts.$inferSelect;
 export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 export type PaymentFinalization = typeof paymentFinalizations.$inferSelect;
+export type PayoutContradiction = typeof payoutContradictions.$inferSelect;
+export type PaymentConfigChange = typeof paymentConfigChanges.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;

@@ -7,10 +7,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, desc, eq, like } from "drizzle-orm";
+import { and, desc, eq, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, db, deletionBlockers, ledger, ledgerAccounts, ledgerEntries, paymentAlerts, paymentReconItems, paymentSettings, paymentWebhookEvents, payoutAccounts, payouts, setPaymentsConfig, sql, topups,
-  users, type Payout, type User,
+  adminActions, adminPermissions, db, deletionBlockers, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents,
+  payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
@@ -242,14 +242,58 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
     expect((await db.select().from(topups).where(eq(topups.id, stuck.id)))[0].status).toBe("failed");
   });
 
-  it("a definite failure is final; limits and the pause are enforced", async () => {
-    const u = await makeUser(nextName("tpfail"));
-    const t = await start(u, kobo(500) + 24);
+  it("a declined attempt isn't final: still payable on the same checkout until the cutoff, whose check is the final one", async () => {
+    // Declined, then paid with another card on the same checkout: credited once.
+    const u = await makeUser(nextName("tpretry"));
+    const t = await start(u, kobo(500));
+    await mock.completeCheckout(t.reference, "fail");
+    const row = await topupRow(t.reference);
+    expect(await confirmTopup(row.id, "check")).toBe("still_pending");
+    const polled = (await app.inject({ method: "GET", url: `/wallet/topups/${t.reference}`, headers: as(u) })).json();
+    expect([polled.status, polled.attemptFailed, polled.checkoutUrl]).toEqual(["pending", true, t.checkoutUrl]);
+    expect((await topupRow(t.reference)).nextCheckAt).not.toBeNull();
     const [d] = await mock.completeCheckout(t.reference, "pay");
     await postWebhook(d);
-    await confirmTopup((await topupRow(t.reference)).id, "check");
-    expect((await topupRow(t.reference)).status).toBe("failed");
-    expect(await cash(u)).toBe(0);
+    expect(await processWebhooks(t.reference)).toContain("topup:credited");
+    expect(await cash(u)).toBe(kobo(500));
+
+    // Declined and never paid: failed only by the check at the cutoff.
+    const v = await makeUser(nextName("tpfail"));
+    const f = await start(v, kobo(500) + 24);
+    await mock.completeCheckout(f.reference, "pay");
+    const frow = await topupRow(f.reference);
+    expect(await confirmTopup(frow.id, "check")).toBe("still_pending");
+    expect((await topupRow(f.reference)).status).toBe("pending");
+    expect(await confirmTopup(frow.id, "check", null, new Date(frow.createdAt.getTime() + DEFAULT_PAYMENTS_CONFIG.checks.topupCutoffMinutes * MIN))).toBe("failed");
+    expect((await topupRow(f.reference)).status).toBe("failed");
+    expect(await cash(v)).toBe(0);
+  });
+
+  it("a webhook the provider's verify doesn't agree with yet isn't marked processed: the sweep brings it back until it credits", async () => {
+    const u = await makeUser(nextName("tpwhlag"));
+    const t = await start(u, kobo(500) + 25); // verify says pending twice after paying
+    const [d] = await mock.completeCheckout(t.reference, "pay");
+    await postWebhook(d);
+    expect(await processWebhooks(t.reference)).toEqual(["topup:still_pending"]);
+    const [ev] = await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.reference, t.reference));
+    expect([ev.processedAt, ev.attempts]).toEqual([null, 1]);
+    expect(ev.nextAttemptAt).not.toBeNull();
+    queued.length = 0;
+    await sweepDue(deps, later(2 * MIN));
+    expect(queued.some((j) => j.kind === "webhook" && j.eventId === ev.id)).toBe(true);
+    expect(await processWebhookEvent(ev.id)).toBe("topup:still_pending");
+    expect(await processWebhookEvent(ev.id)).toBe("topup:credited");
+    const [done] = await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.id, ev.id));
+    expect([done.outcome, done.attempts, done.nextAttemptAt]).toEqual(["topup:credited", 3, null]);
+    expect(done.processedAt).not.toBeNull();
+    queued.length = 0;
+    await sweepDue(deps, later(2 * 3600_000));
+    expect(queued.some((j) => j.kind === "webhook" && j.eventId === ev.id)).toBe(false);
+    expect(await cash(u)).toBe(kobo(500) + 25);
+  });
+
+  it("limits and the pause are enforced", async () => {
+    const u = await makeUser(nextName("tplimits"));
 
     const ask = (amountKobo: number) => app.inject({ method: "POST", url: "/wallet/topups", headers: as(u), payload: { amountKobo } });
     expect((await ask(DEFAULT_PAYMENTS_CONFIG.topup.minKobo - 1)).json().error).toBe("below_minimum");
@@ -340,7 +384,9 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     expect(await submitPayout(payout.id)).toBe("unknown");
     expect(await checkPayout(payout.id, "check")).toBe("unknown"); // too soon: no resend
     expect((await reload(payout.id)).sendAttempts).toBe(1);
-    expect(await checkPayout(payout.id, "check", later(10 * MIN))).toBe("succeeded");
+    expect(await checkPayout(payout.id, "check", later(10 * MIN))).toBe("unknown"); // still inside the 30-minute window
+    expect((await reload(payout.id)).sendAttempts).toBe(1);
+    expect(await checkPayout(payout.id, "check", later(DEFAULT_PAYMENTS_CONFIG.checks.resendAfterNotFoundSeconds * 1000 + MIN))).toBe("succeeded");
     expect((await reload(payout.id)).sendAttempts).toBe(2);
     expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 15));
   });
@@ -368,9 +414,10 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 12));
   });
 
-  it("a success after a reversal raises a critical alert and changes nothing", async () => {
+  it("a success after a reversal freezes the person's withdrawals in the same transaction as the critical alert, and moves no money", async () => {
     const { u, account } = await withdrawer("porevsucc");
     const { payout } = await request(u, account.id, kobo(1500) + 11);
+    const queuedOne = (await request(u, account.id, kobo(1500))).payout; // asked before anyone knew
     expect(await submitPayout(payout.id)).toBe("failed");
     const t = (await mock.getTransfer(payout.reference))!;
     await mock.setTransfer(payout.reference, { ...t, state: "success" });
@@ -378,10 +425,58 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     await postWebhook(d);
     await processWebhooks(payout.reference);
     const alerts = await alertsFor(payout.id);
-    expect(alerts.find((a) => a.kind === "payout_success_after_reversal")?.severity).toBe("critical");
+    const alert = alerts.find((a) => a.kind === "payout_success_after_reversal")!;
+    expect(alert.severity).toBe("critical");
+    const [frozen] = await db.select().from(users).where(eq(users.id, u.id));
+    expect(frozen.withdrawalsFrozenAt).not.toBeNull();
+    const [c] = await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id));
+    expect([c.status, c.amountKobo, c.userId]).toEqual(["open", payout.amountKobo, u.id]);
     expect((await reload(payout.id)).status).toBe("failed");
-    expect(await cash(u)).toBe(kobo(10_000));
+    expect(await cash(u)).toBe(kobo(10_000) - kobo(1500));
     expect(await entriesFor(`payout_final:${payout.id}`)).toHaveLength(2);
+    // The refunded cash can't leave: new requests refused, a queued one held before sending.
+    await expect(request(frozen, account.id, kobo(1500))).rejects.toMatchObject({ message: "withdraw_not_allowed", details: { reason: "payment_review" } });
+    expect(await submitPayout(queuedOne.id)).toBe("unchanged");
+    expect((await reload(queuedOne.id)).holdReason).toBe("blocked:payment_review");
+    expect(await mock.getTransfer(queuedOne.reference)).toBeNull();
+    // Heard again: still one contradiction, one alert.
+    await checkPayout(payout.id, "check");
+    expect(await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id))).toHaveLength(1);
+    expect((await alertsFor(payout.id)).filter((a) => a.kind === "payout_success_after_reversal")).toHaveLength(1);
+  });
+
+  it("double payout path 1: a timed-out send, a lagging lookup, then a balance refusal on the resend is unknown, never reversed", async () => {
+    const { u, account } = await withdrawer("poresendbal");
+    const { payout } = await request(u, account.id, kobo(1500) + 31);
+    expect(await submitPayout(payout.id)).toBe("unknown"); // the send timed out; the transfer went through
+    const afterWindow = later(DEFAULT_PAYMENTS_CONFIG.checks.resendAfterNotFoundSeconds * 1000 + MIN);
+    // Lookup says not found past the window: resent with the same reference, and refused on balance.
+    expect(await checkPayout(payout.id, "check", afterWindow)).toBe("unknown");
+    const p = await reload(payout.id);
+    expect([p.status, p.sendAttempts]).toEqual(["unknown", 2]);
+    expect((p.lastCheck as { providerStatus: string }).providerStatus).toMatch(/^resend_refused: refused: Insufficient balance/);
+    expect(await entriesFor(`payout_final:${payout.id}`)).toHaveLength(0); // never reversed
+    expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 31));
+    // The provider's lookup catches up: settled once. Paid once.
+    const t = (await mock.getTransfer(payout.reference))!;
+    await mock.setTransfer(payout.reference, { ...t, hidden: false });
+    expect(await checkPayout(payout.id, "check", later(2 * DEFAULT_PAYMENTS_CONFIG.checks.resendAfterNotFoundSeconds * 1000))).toBe("succeeded");
+    expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 31));
+    expect((await alertsFor(payout.id)).map((a) => a.kind)).not.toContain("payout_success_after_reversal");
+  });
+
+  it("a resend never goes to an account the person removed: it stays unknown and alerts", async () => {
+    const { u, account } = await withdrawer("poresendgone");
+    const { payout } = await request(u, account.id, kobo(1500) + 15); // first send times out, nothing created
+    expect(await submitPayout(payout.id)).toBe("unknown");
+    const del = await app.inject({ method: "DELETE", url: `/wallet/bank-accounts/${account.id}`, headers: as(u) });
+    expect(del.statusCode).toBe(204);
+    expect(await checkPayout(payout.id, "check", later(DEFAULT_PAYMENTS_CONFIG.checks.resendAfterNotFoundSeconds * 1000 + MIN))).toBe("unknown");
+    const p = await reload(payout.id);
+    expect([p.status, p.sendAttempts]).toEqual(["unknown", 1]);
+    expect(await mock.getTransfer(payout.reference)).toBeNull();
+    expect((await alertsFor(payout.id)).find((a) => a.kind === "payout_resend_account_removed")?.severity).toBe("critical");
+    expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 15));
   });
 
   it("duplicate, wrong-amount and badly signed transfer webhooks", async () => {
@@ -529,22 +624,29 @@ describe("limits, approval and who can withdraw", () => {
 });
 
 describe("admins finalize stuck transactions through the same transitions", () => {
-  const stuck = async (name: string, amountKobo: number, owner?: Partial<typeof users.$inferInsert>) => {
+  /** Past the resend window and the quiet period after a send. */
+  const QUIET_MS = Math.max(DEFAULT_PAYMENTS_CONFIG.checks.resendAfterNotFoundSeconds * 1000, DEFAULT_PAYMENTS_CONFIG.finalize.quietAfterSendMinutes * MIN) + MIN;
+  const stuck = async (name: string, amountKobo: number, owner?: Partial<typeof users.$inferInsert>, sentAgoMs = QUIET_MS) => {
     const w = await withdrawer(name, kobo(100_000), owner);
     const { payout } = await request(w.u, w.account.id, amountKobo + 14 - (amountKobo % 100));
-    await db.update(payouts).set({ status: "unknown", submittedAt: new Date(), lastSentAt: new Date(), sendAttempts: 1 }).where(eq(payouts.id, payout.id));
+    const sentAt = new Date(Date.now() - sentAgoMs);
+    await db.update(payouts).set({ status: "unknown", submittedAt: sentAt, lastSentAt: sentAt, sendAttempts: 1 }).where(eq(payouts.id, payout.id));
     return { ...w, payout: await reload(payout.id) };
   };
+  /** What the provider says about it, planted. */
+  const provider = (p: Payout, state: "success" | "failed" | "pending") => mock.setTransfer(p.reference, { amountKobo: p.sentKobo, recipientCode: "RCP_x", state, createdAt: Date.now(), queries: -100 });
   const finalize = (who: User, p: Payout, outcome: string, reason = "checked with the provider by phone") =>
     app.inject({ method: "POST", url: `/admin/payments/payouts/${p.id}/finalize`, headers: as(who), payload: { outcome, reason } });
+  const confirm = (who: User, id: string) => app.inject({ method: "POST", url: `/admin/payments/finalizations/${id}/confirm`, headers: as(who) });
 
-  it("shows a fresh provider check, then success settles once and failed reverses once", async () => {
+  it("shows a fresh provider check; one admin when it's definite and agrees: success settles once, failed reverses once", async () => {
     const s = await stuck("fnsucc", kobo(1500));
+    await provider(s.payout, "success");
     const check = await app.inject({ method: "GET", url: `/admin/payments/payouts/${s.payout.id}/check`, headers: as(admin) });
-    expect(check.json().check.status).toBe("not_found");
+    expect(check.json().check.status).toBe("success");
     const ok = await finalize(admin, s.payout, "success");
-    expect(ok.json().finalization).toMatchObject({ status: "applied", outcome: "success" });
-    expect(ok.json().finalization.providerCheck.status).toBe("not_found");
+    expect(ok.json().finalization).toMatchObject({ status: "applied", outcome: "success", secondAdminBecause: [] });
+    expect(ok.json().finalization.providerCheck.status).toBe("success");
     expect((await reload(s.payout.id)).status).toBe("succeeded");
     expect(await entriesFor(`payout_final:${s.payout.id}`)).toHaveLength(2);
     expect((await finalize(admin, s.payout, "failed")).json().error).toBe("not_finalizable");
@@ -552,44 +654,90 @@ describe("admins finalize stuck transactions through the same transitions", () =
     expect(log[0].reason).toBe("checked with the provider by phone");
 
     const f = await stuck("fnfail", kobo(1500));
+    await provider(f.payout, "failed");
     const before = await cash(f.u);
-    await finalize(admin, f.payout, "failed");
+    expect((await finalize(admin, f.payout, "failed")).json().finalization.status).toBe("applied");
     expect(await cash(f.u)).toBe(before + f.payout.amountKobo);
     expect((await finalize(admin, f.payout, "failed")).statusCode).toBe(409);
     expect(await cash(f.u)).toBe(before + f.payout.amountKobo);
     expect((await app.inject({ method: "POST", url: `/admin/payments/payouts/${f.payout.id}/finalize`, headers: as(admin), payload: { outcome: "failed" } })).statusCode).toBe(400);
   });
 
-  it("over the threshold a second admin confirms (maker-checker); nobody finalizes their own", async () => {
+  it("double payout path 2: an admin can't fail a payout still in flight; once quiet, an answer that isn't definite needs a second admin, and a transfer that lands meanwhile supersedes it", async () => {
+    const s = await stuck("fninflight", kobo(1500), {}, 2 * MIN); // sent two minutes ago; the provider says not found
+    const early = await finalize(admin, s.payout, "failed");
+    expect([early.statusCode, early.json().error]).toEqual([409, "finalize_too_soon"]);
+    expect(early.json().details.until).toBeDefined();
+    expect((await reload(s.payout.id)).status).toBe("unknown");
+    // Past the quiet period, still not found: one admin isn't enough.
+    await db.update(payouts).set({ lastSentAt: new Date(Date.now() - QUIET_MS), submittedAt: new Date(Date.now() - QUIET_MS) }).where(eq(payouts.id, s.payout.id));
+    const asked = await finalize(admin, s.payout, "failed");
+    expect(asked.json().finalization).toMatchObject({ status: "awaiting_second_admin", secondAdminBecause: ["check_not_definite"] });
+    expect(asked.json().finalization.providerCheck.status).toBe("not_found");
+    expect((await reload(s.payout.id)).status).toBe("unknown");
+    // Both admins see why: the second reads it before confirming.
+    const seen = await app.inject({ method: "GET", url: `/admin/payments/payouts/${s.payout.id}/check`, headers: as(admin2) });
+    expect(seen.json().finalizations[0]).toMatchObject({ secondAdminBecause: ["check_not_definite"], status: "awaiting_second_admin" });
+    // The transfer lands before the second admin confirms: superseded, never reversed.
+    await provider(s.payout, "success");
+    const before = await cash(s.u);
+    const confirmed = await confirm(admin2, asked.json().finalization.id);
+    expect(confirmed.json().finalization).toMatchObject({ status: "superseded" });
+    expect(confirmed.json().finalization.confirmCheck.status).toBe("success");
+    expect(await cash(s.u)).toBe(before);
+    expect(await entriesFor(`payout_final:${s.payout.id}`)).toHaveLength(0);
+    expect(await checkPayout(s.payout.id, "check")).toBe("succeeded");
+    expect(await cash(s.u)).toBe(before); // paid once, debited once
+  });
+
+  it("a provider answer that disagrees needs a second admin; over the threshold too; nobody confirms their own or finalizes their own", async () => {
+    const dis = await stuck("fndisagree", kobo(1500));
+    await provider(dis.payout, "success");
+    const asked = await finalize(admin, dis.payout, "failed");
+    expect(asked.json().finalization).toMatchObject({ status: "awaiting_second_admin", secondAdminBecause: ["check_disagrees"] });
+    expect((await confirm(admin2, asked.json().finalization.id)).json().finalization.status).toBe("superseded"); // the provider still says paid
+
     const big = await stuck("fnbig", DEFAULT_PAYMENTS_CONFIG.finalize.secondAdminThresholdKobo);
-    const asked = await finalize(admin, big.payout, "failed");
-    expect(asked.json().finalization.status).toBe("awaiting_second_admin");
+    await provider(big.payout, "failed");
+    const bigAsk = await finalize(admin, big.payout, "failed");
+    expect(bigAsk.json().finalization).toMatchObject({ status: "awaiting_second_admin", secondAdminBecause: ["over_threshold"] });
     expect((await reload(big.payout.id)).status).toBe("unknown");
-    const fid = asked.json().finalization.id;
-    const same = await app.inject({ method: "POST", url: `/admin/payments/finalizations/${fid}/confirm`, headers: as(admin) });
+    const fid = bigAsk.json().finalization.id;
+    const same = await confirm(admin, fid);
     expect([same.statusCode, same.json().error]).toEqual([403, "second_admin_required"]);
     expect((await finalize(admin2, big.payout, "success")).json().error).toBe("finalization_pending");
     const before = await cash(big.u);
-    const confirmed = await app.inject({ method: "POST", url: `/admin/payments/finalizations/${fid}/confirm`, headers: as(admin2) });
+    const confirmed = await confirm(admin2, fid);
     expect(confirmed.json().finalization).toMatchObject({ status: "applied", confirmedBy: admin2.id });
     expect(await cash(big.u)).toBe(before + big.payout.amountKobo);
-    expect((await app.inject({ method: "POST", url: `/admin/payments/finalizations/${fid}/confirm`, headers: as(admin2) })).json().error).toBe("finalization_not_pending");
+    expect((await confirm(admin2, fid)).json().error).toBe("finalization_not_pending");
 
     const own = await stuck("fnown", kobo(1500), { isAdmin: true });
     await db.insert(adminPermissions).values({ userId: own.u.id, permission: "payments.finalize" });
     expect((await finalize(own.u, own.payout, "failed")).json().error).toBe("own_transaction");
   });
 
-  it("a mismatched top-up can be credited by hand once; a missed one replayed through the normal verify", async () => {
+  it("a top-up is credited by hand only with the amount the provider verified; a different amount needs a second admin; none verified, none credited", async () => {
+    // The provider says ₦1 more was paid than we asked for (scenario 21): a mismatch.
     const u = await makeUser(nextName("fntopup"));
     const t = await createTopup(u, kobo(500) + 21, { returnUrl: null });
     await mock.completeCheckout(t.reference, "pay");
     expect(await confirmTopup(t.id, "check")).toBe("mismatch");
-    const res = await app.inject({ method: "POST", url: `/admin/payments/topups/${t.id}/finalize`, headers: as(admin), payload: { outcome: "success", reason: "provider confirmed our amount" } });
-    expect(res.json().finalization.status).toBe("applied");
-    expect(await cash(u)).toBe(kobo(500) + 21);
+    const res = await app.inject({ method: "POST", url: `/admin/payments/topups/${t.id}/finalize`, headers: as(admin), payload: { outcome: "success", reason: "provider confirmed what was paid" } });
+    expect(res.json().finalization).toMatchObject({ status: "awaiting_second_admin", amountKobo: kobo(501) + 21, secondAdminBecause: ["amount_differs"] });
+    expect(await cash(u)).toBe(0);
+    expect((await confirm(admin2, res.json().finalization.id)).json().finalization.status).toBe("applied");
+    expect(await cash(u)).toBe(kobo(501) + 21); // what was paid, never t.amountKobo
+    expect((await db.select().from(topups).where(eq(topups.id, t.id)))[0].creditedKobo).toBe(kobo(501) + 21);
     expect((await app.inject({ method: "POST", url: `/admin/payments/topups/${t.id}/finalize`, headers: as(admin), payload: { outcome: "success", reason: "again" } })).json().error).toBe("not_finalizable");
-    expect(await cash(u)).toBe(kobo(500) + 21);
+    expect(await cash(u)).toBe(kobo(501) + 21);
+
+    // Nothing paid at the provider: there's no verified amount to credit.
+    const w = await makeUser(nextName("fnunpaid"));
+    const unpaid = await createTopup(w, kobo(500), { returnUrl: null });
+    const refused = await app.inject({ method: "POST", url: `/admin/payments/topups/${unpaid.id}/finalize`, headers: as(admin), payload: { outcome: "success", reason: "customer says they paid" } });
+    expect([refused.statusCode, refused.json().error]).toEqual([409, "no_verified_amount"]);
+    expect(await cash(w)).toBe(0);
 
     const v = await makeUser(nextName("fnreplay"));
     const s = await createTopup(v, kobo(500), { returnUrl: null });
@@ -598,6 +746,65 @@ describe("admins finalize stuck transactions through the same transitions", () =
     expect(replay.json().outcome).toBe("credited");
     expect((await app.inject({ method: "POST", url: `/admin/payments/topups/${s.id}/verify`, headers: as(admin), payload: { reason: "again" } })).json().outcome).toBe("already_credited");
     expect(await cash(v)).toBe(kobo(500));
+  });
+});
+
+describe("contradictions: resolved by two admins", () => {
+  /** A withdrawal reversed, then paid after all, with the person's cash at `cashAfter`. */
+  async function contradicted(name: string, cashAfter: number) {
+    const { u, account } = await withdrawer(name);
+    const { payout } = await request(u, account.id, kobo(1500) + 11);
+    expect(await submitPayout(payout.id)).toBe("failed");
+    const t = (await mock.getTransfer(payout.reference))!;
+    await mock.setTransfer(payout.reference, { ...t, state: "success" });
+    await checkPayout(payout.id, "check");
+    const [c] = await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id));
+    // Spend down to cashAfter (as if they'd joined parties), through the ledger.
+    const spend = (await cash(u)) - cashAfter;
+    if (spend > 0) await db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: -spend, type: "topup", idempotencyKey: `t:spend:${payout.id}` }));
+    return { u, account, payout, c };
+  }
+  const resolve = (who: User, id: string, reason = "provider confirmed the transfer was paid") => app.inject({ method: "POST", url: `/admin/payments/contradictions/${id}/resolve`, headers: as(who), payload: { reason } });
+  const confirmIt = (who: User, id: string) => app.inject({ method: "POST", url: `/admin/payments/contradictions/${id}/confirm`, headers: as(who) });
+
+  it("enough cash: the debit is re-applied in full, the transfer booked as sent, withdrawals unfrozen; all logged", async () => {
+    const { u, payout, c } = await contradicted("crfull", kobo(10_000));
+    const listed = await app.inject({ method: "GET", url: "/admin/payments/contradictions", headers: as(viewer) });
+    expect(listed.json().contradictions.some((x: { id: string }) => x.id === c.id)).toBe(true);
+    expect((await resolve(viewer, c.id)).statusCode).toBe(403);
+    expect((await resolve(admin, c.id)).json().contradiction.status).toBe("awaiting_second_admin");
+    expect(await cash(u)).toBe(kobo(10_000)); // nothing moves on the request
+    const self = await confirmIt(admin, c.id);
+    expect([self.statusCode, self.json().error]).toEqual([403, "second_admin_required"]);
+    const done = (await confirmIt(admin2, c.id)).json().contradiction;
+    expect(done).toMatchObject({ status: "resolved", recoveredKobo: payout.amountKobo, owedKobo: 0, confirmedBy: admin2.id });
+    expect(await cash(u)).toBe(kobo(10_000) - payout.amountKobo);
+    expect(await entriesFor(`payout_recovery:${payout.id}`)).toHaveLength(2);
+    expect((await db.select().from(users).where(eq(users.id, u.id)))[0].withdrawalsFrozenAt).toBeNull();
+    expect((await confirmIt(admin2, c.id)).json().error).toBe("contradiction_not_pending");
+    const log = await db.select().from(adminActions).where(eq(adminActions.targetId, payout.id));
+    expect(log.map((l) => l.action)).toEqual(expect.arrayContaining(["payments.contradiction_requested", "payments.contradiction_resolved"]));
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("not enough cash: takes what's there, records the rest as owed", async () => {
+    const { u, payout, c } = await contradicted("crowed", kobo(400));
+    await resolve(admin, c.id);
+    const done = (await confirmIt(admin2, c.id)).json().contradiction;
+    expect(done).toMatchObject({ recoveredKobo: kobo(400), owedKobo: payout.amountKobo - kobo(400) });
+    expect(await cash(u)).toBe(0);
+    const [owed] = await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "payout_owed"), eq(ledgerAccounts.scope, "mock")));
+    expect(owed.balanceKobo).toBeLessThanOrEqual(-(payout.amountKobo - kobo(400)));
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("nobody resolves their own", async () => {
+    const { u, c } = await contradicted("crown", kobo(10_000));
+    await db.update(users).set({ isAdmin: true }).where(eq(users.id, u.id));
+    await db.insert(adminPermissions).values({ userId: u.id, permission: "payments.finalize" });
+    expect((await resolve(u, c.id)).json().error).toBe("own_transaction");
+    await resolve(admin, c.id);
+    expect((await confirmIt(u, c.id)).json().error).toBe("own_transaction");
   });
 });
 
@@ -637,8 +844,12 @@ describe("providers", () => {
     resetProviders();
     mock = mockControlsOrNull()!;
     try {
-      const moved = await app.inject({ method: "PUT", url: "/admin/payments/settings", headers: as(admin), payload: { collections: "paystack", payouts: "paystack", topupsPaused: false, payoutsPaused: false, reason: "move to paystack" } });
-      expect(moved.json().settings).toMatchObject({ collections: "paystack", payouts: "paystack" });
+      const asked = await app.inject({ method: "PUT", url: "/admin/payments/settings", headers: as(admin), payload: { collections: "paystack", payouts: "paystack", topupsPaused: false, payoutsPaused: false, reason: "move to paystack" } });
+      expect(asked.statusCode).toBe(202); // switching a provider waits for a second admin
+      expect(asked.json().change.loosens).toEqual(["collections", "payouts"]);
+      const moved = await app.inject({ method: "POST", url: `/admin/payments/config-changes/${asked.json().change.id}/confirm`, headers: as(admin2) });
+      expect(moved.json().change.status).toBe("applied");
+      expect((await app.inject({ method: "GET", url: "/admin/payments/settings", headers: as(admin) })).json().settings).toMatchObject({ collections: "paystack", payouts: "paystack" });
       let out = await checkPayout(payout.id, "check");
       while (out === "unknown") out = await checkPayout(payout.id, "check");
       expect(out).toBe("succeeded"); // finished by mock, whatever the setting
@@ -655,15 +866,100 @@ describe("providers", () => {
     }
   });
 
-  it("a live key outside production refuses to start", async () => {
-    process.env.PAYSTACK_SECRET_KEY = "sk_live_abc";
+  it("a live key, or any Paystack key that isn't a test key, outside production refuses to start", async () => {
+    for (const [key, why] of [["sk_live_abc", /live payment key/], ["rk_something", /isn't a test key/]] as const) {
+      process.env.PAYSTACK_SECRET_KEY = key;
+      try {
+        await expect(buildApp()).rejects.toThrow(why);
+      } finally {
+        delete process.env.PAYSTACK_SECRET_KEY;
+        resetProviders();
+        mock = mockControlsOrNull()!;
+      }
+    }
+  });
+
+  it("without PAYMENTS_DEV_TOOLS: no mock provider, no mock checkout, no dev top-up; and no default mock webhook secret", async () => {
+    const u = await makeUser(nextName("stg"));
+    process.env.PAYMENTS_DEV_TOOLS = "";
+    resetProviders();
+    const staging = await buildApp();
     try {
-      await expect(buildApp()).rejects.toThrow(/live payment key/);
+      expect(mockControlsOrNull()).toBeNull();
+      expect((await staging.inject({ method: "POST", url: "/wallet/dev-topup", headers: as(u), payload: { nairaAmount: 1000 } })).statusCode).toBe(404);
+      expect((await staging.inject({ method: "POST", url: "/payments/mock/checkout/tp-x", payload: { action: "pay" } })).statusCode).toBe(404);
+      expect((await staging.inject({ method: "GET", url: "/payments/mock/checkout/tp-x" })).statusCode).toBe(404);
+      const wh = mock.signedDelivery("topup.paid", { reference: "tp-x" });
+      expect((await staging.inject({ method: "POST", url: "/webhooks/mock", headers: wh.headers, payload: wh.rawBody })).statusCode).toBe(409); // provider_not_configured
+      expect(await cash(u)).toBe(0);
     } finally {
-      delete process.env.PAYSTACK_SECRET_KEY;
+      await staging.close();
+      process.env.PAYMENTS_DEV_TOOLS = "true";
       resetProviders();
       mock = mockControlsOrNull()!;
     }
+    // Dev tools on with no mock secret: refuses to start.
+    const secret = process.env.MOCK_PAYMENTS_WEBHOOK_SECRET;
+    delete process.env.MOCK_PAYMENTS_WEBHOOK_SECRET;
+    try {
+      await expect(buildApp()).rejects.toThrow(/MOCK_PAYMENTS_WEBHOOK_SECRET/);
+    } finally {
+      process.env.MOCK_PAYMENTS_WEBHOOK_SECRET = secret;
+      resetProviders();
+      mock = mockControlsOrNull()!;
+    }
+  });
+});
+
+describe("maker-checker on loosening controls", () => {
+  const putConfig = (who: User, c: PaymentsConfig, reason = "adjusting limits") => app.inject({ method: "PUT", url: "/admin/payments/config", headers: as(who), payload: { config: c, reason } });
+  const putSettings = (who: User, change: Record<string, unknown>, reason = "ops") => app.inject({ method: "PUT", url: "/admin/payments/settings", headers: as(who), payload: { collections: "mock", payouts: "mock", topupsPaused: false, payoutsPaused: false, ...change, reason } });
+  const confirmChange = (who: User, id: string) => app.inject({ method: "POST", url: `/admin/payments/config-changes/${id}/confirm`, headers: as(who) });
+  const edit = (f: (c: PaymentsConfig) => void) => { const c = structuredClone(DEFAULT_PAYMENTS_CONFIG); f(c); return c; };
+
+  it("raising a threshold waits for a second admin (not the same one); config and the log are written together", async () => {
+    await config(() => {});
+    const raise = edit((c) => { c.finalize.secondAdminThresholdKobo *= 10; });
+    const asked = await putConfig(admin, raise, "raise the finalize threshold");
+    expect(asked.statusCode).toBe(202);
+    expect(asked.json().change).toMatchObject({ status: "awaiting_second_admin", loosens: ["finalize.secondAdminThresholdKobo"] });
+    expect((await getPaymentsConfig()).finalize.secondAdminThresholdKobo).toBe(DEFAULT_PAYMENTS_CONFIG.finalize.secondAdminThresholdKobo);
+    expect((await putConfig(admin2, raise)).json().error).toBe("change_pending");
+    const self = await confirmChange(admin, asked.json().change.id);
+    expect([self.statusCode, self.json().error]).toEqual([403, "second_admin_required"]);
+    expect((await confirmChange(admin2, asked.json().change.id)).json().change).toMatchObject({ status: "applied", confirmedBy: admin2.id });
+    expect((await getPaymentsConfig()).finalize.secondAdminThresholdKobo).toBe(DEFAULT_PAYMENTS_CONFIG.finalize.secondAdminThresholdKobo * 10);
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.action, "config.payments"), eq(adminActions.adminUserId, admin2.id))).orderBy(desc(adminActions.createdAt)).limit(1);
+    expect(log.after).toMatchObject({ requestedBy: admin.id, changeId: asked.json().change.id });
+    // Lowering it back is tightening: one admin, at once, logged.
+    const lowered = await putConfig(admin, DEFAULT_PAYMENTS_CONFIG, "back to default");
+    expect([lowered.statusCode, lowered.json().change]).toEqual([200, null]);
+    expect((await getPaymentsConfig()).finalize.secondAdminThresholdKobo).toBe(DEFAULT_PAYMENTS_CONFIG.finalize.secondAdminThresholdKobo);
+  });
+
+  it("a loosening change asked against a config that has since moved is superseded, never applied over it", async () => {
+    await config(() => {});
+    const asked = await putConfig(admin, edit((c) => { c.payout.maxKobo *= 2; }));
+    expect((await putConfig(admin2, edit((c) => { c.payout.dailyCount = 2; }), "tighten")).statusCode).toBe(200);
+    const late = await confirmChange(admin2, asked.json().change.id);
+    expect(late.json().change.status).toBe("superseded");
+    expect((await getPaymentsConfig()).payout.maxKobo).toBe(DEFAULT_PAYMENTS_CONFIG.payout.maxKobo);
+    await config(() => {});
+  });
+
+  it("pausing is one admin; un-pausing (the system's pause too) needs a second", async () => {
+    expect((await putSettings(admin, { payoutsPaused: true }, "incident")).statusCode).toBe(200);
+    const unpause = await putSettings(admin, {}, "incident over");
+    expect([unpause.statusCode, unpause.json().change.loosens]).toEqual([202, ["payouts_unpaused"]]);
+    expect(unpause.json().settings.payoutsPaused).toBe(true);
+    expect((await confirmChange(admin2, unpause.json().change.id)).json().change.status).toBe("applied");
+    await db.transaction((tx) => pausePayoutsBySystem(tx, "invariant breach: test"));
+    const afterBreach = await putSettings(admin, {}, "checked the books");
+    expect(afterBreach.statusCode).toBe(202);
+    await confirmChange(admin2, afterBreach.json().change.id);
+    expect((await app.inject({ method: "GET", url: "/admin/payments/settings", headers: as(viewer) })).json().settings.payoutsPaused).toBe(false);
+    const changes = await db.select().from(paymentConfigChanges).where(eq(paymentConfigChanges.kind, "settings"));
+    expect(changes.every((c) => c.status !== "awaiting_second_admin")).toBe(true);
   });
 });
 
@@ -732,5 +1028,66 @@ describe("guardrails", () => {
     const s = await app.inject({ method: "GET", url: "/admin/payments/settings", headers: as(viewer) });
     expect(s.json().settings).toMatchObject({ payoutsPaused: true, pausedBy: "system" });
     await settings({});
+  });
+
+  /** Plant something inside a transaction, read the breaches, roll it all back. */
+  async function plantAndCheck(plant: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>) {
+    let kinds: string[] = [];
+    await db.transaction(async (tx) => {
+      await plant(tx);
+      kinds = (await findBreaches(tx)).map((b) => b.kind).sort();
+      tx.rollback();
+    }).catch((e) => { if (!/rollback/i.test(String(e?.message ?? e))) throw e; });
+    return kinds;
+  }
+
+  it("a closed party's pot must be empty, and platform accounts point the right way; parties from before double entry are left out", async () => {
+    const host = await makeUser(nextName("invhost"));
+    const player = await makeUser(nextName("invplayer"));
+    await fund(player, kobo(100));
+    const newParty = async (tx: Tx, status: "finished" | "cancelled") => (await tx.insert(parties).values({ createdByUserId: host.id, title: `inv ${tag}`, category: "General knowledge", maxPlayers: 6, funding: "pooled", split: [100], status, startsAt: new Date() }).returning())[0];
+    // A finished party whose entry is still in the pot (a settlement that paid out less than came in).
+    expect(await plantAndCheck(async (tx) => {
+      const party = await newParty(tx, "finished");
+      await ledger.post(tx, { userId: player.id, kind: "cash", amountKobo: -kobo(50), type: "party_entry", refType: "party", refId: party.id, idempotencyKey: `t:inv:entry:${party.id}` });
+    })).toEqual(["closed_party_pot"]);
+    // Paid out more than came in: a negative pot (wrong way, and not empty).
+    expect(await plantAndCheck(async (tx) => {
+      const party = await newParty(tx, "cancelled");
+      await ledger.post(tx, { userId: player.id, kind: "cash", amountKobo: kobo(50), type: "party_prize", refType: "party", refId: party.id, idempotencyKey: `t:inv:prize:${party.id}` });
+    })).toEqual(["closed_party_pot", "platform_direction"]);
+    // A seat charged before double entry (no journal) and refunded after: left out.
+    expect(await plantAndCheck(async (tx) => {
+      const party = await newParty(tx, "cancelled");
+      const [acct] = await tx.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, player.id), eq(ledgerAccounts.kind, "cash")));
+      await tx.insert(ledgerEntries).values({ journalId: null, accountId: acct.id, amountKobo: -kobo(50), type: "party_entry", refType: "party", refId: party.id, idempotencyKey: `t:inv:legacy:${party.id}`, createdAt: new Date("2026-01-01") });
+      await tx.update(ledgerAccounts).set({ balanceKobo: sqlRaw`${ledgerAccounts.balanceKobo} - ${kobo(50)}` }).where(eq(ledgerAccounts.id, acct.id));
+      await ledger.post(tx, { userId: player.id, kind: "cash", amountKobo: kobo(50), type: "party_leave_refund", refType: "party", refId: party.id, idempotencyKey: `t:inv:refund:${party.id}` });
+    })).toEqual([]);
+    // A platform account going the wrong way: dev_mint above zero.
+    expect(await plantAndCheck(async (tx) => {
+      const [mint] = await tx.select().from(ledgerAccounts).where(eq(ledgerAccounts.kind, "dev_mint"));
+      await ledger.journal(tx, { type: "t", idempotencyKey: `t:inv:mint:${tag}`, legs: [{ account: { system: "dev_mint" }, amountKobo: -mint.balanceKobo + 1 }, { account: { system: "bonus_issued" }, amountKobo: mint.balanceKobo - 1 }] });
+    })).toEqual(["platform_direction"]);
+  });
+
+  it("for real: one REPEATABLE READ snapshot, a breach that repeats pauses payouts; clearing it takes two admins", async () => {
+    const u = await makeUser(nextName("invreal"));
+    const t = await createTopup(u, kobo(500), { returnUrl: null });
+    await mock.completeCheckout(t.reference, "pay");
+    expect(await confirmTopup(t.id, "check")).toBe("credited");
+    await db.update(topups).set({ creditedKobo: kobo(499) }).where(eq(topups.id, t.id)); // the record no longer matches the books
+    try {
+      const out = await runInvariants();
+      expect(out.breaches.map((b) => b.kind)).toEqual(["provider_topup_in"]);
+      expect([out.paused, out.transient]).toEqual([true, []]);
+    } finally {
+      await db.update(topups).set({ creditedKobo: kobo(500) }).where(eq(topups.id, t.id));
+    }
+    expect((await runInvariants()).breaches).toEqual([]);
+    const unpause = await app.inject({ method: "PUT", url: "/admin/payments/settings", headers: as(admin), payload: { collections: "mock", payouts: "mock", topupsPaused: false, payoutsPaused: false, reason: "fixed the record" } });
+    expect(unpause.statusCode).toBe(202);
+    await app.inject({ method: "POST", url: `/admin/payments/config-changes/${unpause.json().change.id}/confirm`, headers: as(admin2) });
+    expect((await app.inject({ method: "GET", url: "/admin/payments/settings", headers: as(viewer) })).json().settings.payoutsPaused).toBe(false);
   });
 });

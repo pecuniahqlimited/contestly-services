@@ -12,10 +12,15 @@
  *
  * Every transition locks the payout row. Settling and reversing share the ledger key payout_final:<id>, so at
  * most one of them can ever be written.
+ *
+ * Only the first send can be definitely refused. A resend (same reference, after the provider said "not
+ * found") can be refused for reasons that say nothing about the first send (the first one emptied the balance,
+ * say), so every refusal of a resend is unknown and queried again. A success heard after a reversal freezes the
+ * person's withdrawals in the same transaction as its alert (payout_contradictions; contradictions.ts).
  */
 import { randomUUID } from "node:crypto";
-import { and, count, eq, gte, notInArray, sql } from "drizzle-orm";
-import { db, getPaymentsConfig, ledger, payoutAccounts, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
+import { and, count, eq, gte, isNull, notInArray, sql } from "drizzle-orm";
+import { db, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
 import {
   ACCOUNT_UNRESOLVED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
@@ -149,11 +154,11 @@ export async function applyOutcome(payoutId: string, check: ProviderCheck, via: 
     const p = await lockPayout(tx, payoutId);
     const record = checkRecord(check, via, now);
     if (isFinal(p)) {
-      const contradicts = (p.status === "succeeded" && check.status === "failed") || (p.status !== "succeeded" && check.status === "success");
-      if (contradicts) {
-        // Never auto-fixed: money may already have gone both ways. An admin works it out with the provider.
-        await raiseAlert(tx, { severity: "critical", kind: p.status === "succeeded" ? "payout_failed_after_success" : "payout_success_after_reversal", dedupeKey: `payout_contradiction:${p.id}:${check.status}`, refType: "payout", refId: p.id, detail: { status: p.status, check: record } });
+      if (p.status === "succeeded" && check.status === "failed") {
+        // Never auto-fixed: the provider may have reversed it after paying. An admin works it out with the provider.
+        await raiseAlert(tx, { severity: "critical", kind: "payout_failed_after_success", dedupeKey: `payout_contradiction:${p.id}:failed`, refType: "payout", refId: p.id, detail: { status: p.status, check: record } });
       }
+      if (p.status !== "succeeded" && check.status === "success") await freezeForContradiction(tx, p, record, now);
       return "unchanged";
     }
     if (p.status !== "submitted" && p.status !== "unknown") return "unchanged"; // not sent yet: nothing a provider says applies
@@ -173,6 +178,22 @@ export async function applyOutcome(payoutId: string, check: ProviderCheck, via: 
     }
     return markUnknown(tx, p, record, cfg, now);
   });
+}
+
+/**
+ * We gave the money back and the provider says it went out: the person has it twice. Their withdrawals stop
+ * now, in this transaction, with the alert; an admin and a second admin resolve it (contradictions.ts).
+ */
+async function freezeForContradiction(tx: Tx, p: Payout, record: Record<string, unknown>, now: Date) {
+  await tx.insert(payoutContradictions).values({ payoutId: p.id, userId: p.userId, amountKobo: p.amountKobo, providerCheck: record, createdAt: now }).onConflictDoNothing();
+  await tx.update(users).set({ withdrawalsFrozenAt: now }).where(and(eq(users.id, p.userId), isNull(users.withdrawalsFrozenAt)));
+  await raiseAlert(tx, { severity: "critical", kind: "payout_success_after_reversal", dedupeKey: `payout_contradiction:${p.id}:success`, refType: "payout", refId: p.id, detail: { status: p.status, check: record, withdrawalsFrozen: true } });
+}
+
+/** Only a first send can be definitely refused: a refusal of a resend says nothing about the first send, so it's unknown. */
+export function onResend(check: ProviderCheck): ProviderCheck {
+  if (check.status !== "failed") return check;
+  return { ...check, status: "unknown", providerStatus: `resend_refused: ${check.providerStatus}`, error: "a resend was refused; the first send may have gone through" };
 }
 
 async function markUnknown(tx: Tx, p: Payout, record: Record<string, unknown>, cfg: Awaited<ReturnType<typeof getPaymentsConfig>>, now: Date): Promise<PayoutOutcome> {
@@ -205,7 +226,7 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
   if ((await currentSettings()).payoutsPaused) return "unchanged";
   const [[u], [account]] = await Promise.all([db.select().from(users).where(eq(users.id, p.userId)), db.select().from(payoutAccounts).where(eq(payoutAccounts.id, p.payoutAccountId))]);
 
-  const go = await db.transaction(async (tx) => {
+  const go = await db.transaction(async (tx): Promise<number | false> => {
     const row = await lockPayout(tx, payoutId);
     if (row.status !== "requested") return false;
     const blocked = withdrawBlockReason(u);
@@ -215,10 +236,11 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
       return false;
     }
     await tx.update(payouts).set({ status: "submitted", submittedAt: row.submittedAt ?? now, sendAttempts: row.sendAttempts + 1, lastSentAt: now, nextCheckAt: new Date(now.getTime() + 60_000), updatedAt: now }).where(eq(payouts.id, p.id));
-    return true;
+    return row.sendAttempts + 1;
   });
   if (!go) return "unchanged";
-  return applyOutcome(payoutId, await send(p, account), "send", now);
+  const answer = await send(p, account);
+  return applyOutcome(payoutId, go > 1 ? onResend(answer) : answer, "send", now);
 }
 
 const send = (p: Payout, account: PayoutAccount) => ask(async () => {
@@ -228,7 +250,9 @@ const send = (p: Payout, account: PayoutAccount) => ask(async () => {
 
 /**
  * Ask the provider about a submitted or unknown payout and apply the answer. "Not found" means the provider
- * never got it: after a quiet period it's sent again with the same reference (the provider's idempotency key).
+ * may never have got it: after a long quiet period (resendAfterNotFoundSeconds) it's sent again with the same
+ * reference (the provider's idempotency key), to the same account only if the person still has it, and any
+ * refusal of that resend is unknown (onResend).
  */
 export async function checkPayout(payoutId: string, via: "check" | "webhook", now = new Date(), claim: WebhookEvent | null = null): Promise<PayoutOutcome> {
   const [p] = await db.select().from(payouts).where(eq(payouts.id, payoutId));
@@ -244,6 +268,11 @@ export async function checkPayout(payoutId: string, via: "check" | "webhook", no
   const quietFor = now.getTime() - (p.lastSentAt ?? p.createdAt).getTime();
   if (quietFor < cfg.checks.resendAfterNotFoundSeconds * 1000 || (await currentSettings()).payoutsPaused) return applyOutcome(payoutId, check, via, now);
   const [account] = await db.select().from(payoutAccounts).where(eq(payoutAccounts.id, p.payoutAccountId));
+  if (!account || account.removedAt || account.userId !== p.userId) {
+    // The person removed the account since the first send: never send there again. It stays unknown for an admin.
+    await raiseAlert(db, { severity: "critical", kind: "payout_resend_account_removed", dedupeKey: `payout_resend_account_removed:${p.id}`, refType: "payout", refId: p.id, detail: { payoutAccountId: p.payoutAccountId, check } });
+    return applyOutcome(payoutId, unknownCheck(p.reference, "not resent: the recipient account was removed", "not_resent"), via, now);
+  }
   const resend = await db.transaction(async (tx) => {
     const row = await lockPayout(tx, payoutId);
     if (isFinal(row) || row.lastSentAt?.getTime() !== p.lastSentAt?.getTime()) return false; // someone else moved it
@@ -251,7 +280,7 @@ export async function checkPayout(payoutId: string, via: "check" | "webhook", no
     return true;
   });
   if (!resend) return "unchanged";
-  return applyOutcome(payoutId, await send(p, account), "resend", now);
+  return applyOutcome(payoutId, onResend(await send(p, account)), "resend", now);
 }
 
 // ---- Admin approval ----

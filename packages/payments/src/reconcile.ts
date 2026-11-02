@@ -2,12 +2,14 @@
  * Nightly reconciliation, per provider and Lagos day: our top-ups and withdrawals against the provider's own
  * lists. Every difference becomes a row for an admin (missing on our side, missing on theirs, amount differs,
  * status differs). Nothing is fixed here; a confirmed missed top-up is replayed by an admin through the normal
- * verify path.
+ * verify path. A reversed withdrawal the provider lists as paid is asked about at once (checkPayout), which
+ * freezes the person's withdrawals if the provider confirms it.
  */
 import { and, eq, gte, lt } from "drizzle-orm";
 import { db, paymentReconItems, paymentReconRuns, payouts, topups } from "@contestly/db";
 import { lagosDayRange, raiseAlert } from "./common.js";
 import { providerNamed } from "./providers/index.js";
+import { checkPayout } from "./payouts.js";
 import type { ProviderRecord } from "./types.js";
 
 type Kind = "missing_ours" | "missing_theirs" | "amount_differs" | "status_differs";
@@ -60,6 +62,13 @@ export async function reconcileDay(providerName: string, day: string) {
     const counts = Object.fromEntries((["missing_ours", "missing_theirs", "amount_differs", "status_differs"] as const).map((k) => [k, items.filter((i) => i.kind === k).length]));
     await db.update(paymentReconRuns).set({ finishedAt: new Date(), counts }).where(eq(paymentReconRuns.id, run.id));
     if (items.length) await raiseAlert(db, { severity: "warning", kind: "reconciliation_differences", dedupeKey: `recon:${providerName}:${day}:${run.id}`, refType: "recon_run", refId: run.id, detail: { provider: providerName, day, counts } });
+    // A withdrawal we gave back that the provider lists as paid: ask the provider now, so a confirmed
+    // contradiction freezes the person's withdrawals tonight rather than whenever a webhook comes.
+    for (const i of items) {
+      if (i.object !== "payout" || i.kind !== "status_differs" || i.theirs?.status !== "success" || !["failed", "rejected"].includes(i.ours?.status ?? "")) continue;
+      const [p] = await db.select({ id: payouts.id }).from(payouts).where(and(eq(payouts.provider, providerName), eq(payouts.reference, i.reference)));
+      if (p) await checkPayout(p.id, "check");
+    }
     return { runId: run.id, items };
   } catch (e) {
     await db.update(paymentReconRuns).set({ finishedAt: new Date(), error: (e as Error).message }).where(eq(paymentReconRuns.id, run.id));

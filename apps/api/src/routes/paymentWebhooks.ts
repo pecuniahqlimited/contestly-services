@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ingestWebhook, mockControlsOrNull } from "@contestly/payments";
+import { ingestWebhook, mockControlsOrNull, paymentsDevTools } from "@contestly/payments";
 import { paymentsDeps, topupReturnUrl, webhookIpAllowlist } from "../payments.js";
 
 /**
@@ -27,9 +27,9 @@ const page = (reference: string) => `<!doctype html><html><head><meta charset="u
 <button class="pay" onclick="go('pay')">Pay</button><button onclick="go('fail')">Fail</button><p id="out"></p></main>
 <script>async function go(action){const r=await fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});const j=await r.json();document.getElementById('out').textContent=r.ok?'Done. Return to the app.':'Error: '+j.error;if(r.ok&&j.returnUrl)location.href=j.returnUrl+(j.returnUrl.includes('?')?'&':'?')+'reference=${reference}';}</script></body></html>`;
 
-/** Dev only: the mock provider's checkout page. Paying posts the mock's signed webhook through the real ingest path. */
+/** Dev only (PAYMENTS_DEV_TOOLS, never production): the mock provider's checkout page. Paying posts the mock's signed webhook through the real ingest path. */
 export async function mockCheckoutRoutes(app: FastifyInstance) {
-  if (process.env.NODE_ENV === "production") return;
+  if (!paymentsDevTools()) return;
   app.get("/payments/mock/checkout/:reference", async (req, reply) => {
     const { reference } = req.params as { reference: string };
     return reply.type("text/html").send(page(reference.replace(/[^a-z0-9-]/gi, "")));
