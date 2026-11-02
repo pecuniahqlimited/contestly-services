@@ -31,7 +31,8 @@
     "test:int": "npm run test:int -w @contestly/api",
     "sim:admin": "tsx --env-file=.env scripts/admin-sim.ts",
     "sim:chat": "tsx --env-file=.env scripts/chat-sim.ts",
-    "sim:social": "tsx --env-file=.env scripts/social-sim.ts"
+    "sim:social": "tsx --env-file=.env scripts/social-sim.ts",
+    "probe:firebase-custom-tokens": "tsx --env-file=.env scripts/firebase-custom-token-probe.ts"
   },
   "devDependencies": {
     "colyseus.js": "^0.15.0",
