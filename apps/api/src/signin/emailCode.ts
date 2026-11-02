@@ -5,14 +5,12 @@
  * tries kill it; a new one can be sent after 30 s. Sends and checks are rate-limited per email and per client IP (limits.ts).
  */
 import { randomInt, timingSafeEqual } from "node:crypto";
-import type { FastifyBaseLogger } from "fastify";
-import type { User } from "@contestly/db";
+import { adminAlert, type User } from "@contestly/db";
 import { EMAIL_CODE_LENGTH, EMAIL_CODE_MAX_ATTEMPTS, EMAIL_CODE_RESEND_SECONDS, EMAIL_CODE_TTL_SECONDS, RESEND_COOLDOWN, TOO_MANY_ATTEMPTS, TOO_MANY_CODES } from "@contestly/shared";
 import { limit, rateLimited, valkey } from "../redis.js";
 import type { Limits } from "../limits.js";
 import { sendSignInCode } from "../email.js";
 import { httpError } from "../httpError.js";
-import { adminAlert } from "../adminAlert.js";
 import { hmac } from "./secrets.js";
 
 const HOUR = 3600;
@@ -47,13 +45,17 @@ export async function startEmailCode(session: User | null, email: string, ip: st
 const clockHour = (now = new Date()) => now.toISOString().slice(0, 13);
 
 /**
- * Counts a code that went out against the clock hour, everyone together, and raises one admin alert the
- * moment the hour passes `threshold` (the request that crosses it, and only that one).
+ * Counts a code that went out against the clock hour, everyone together, and raises a warning (the admin
+ * digest) the moment the hour passes `threshold`: the request that crosses it, and only that one.
  */
-export async function watchCodeSends(threshold: number, log: FastifyBaseLogger, hour = clockHour()): Promise<void> {
+export async function watchCodeSends(threshold: number, hour = clockHour()): Promise<void> {
   const key = `stats:code-sends:${hour}`;
   const [[, sent]] = (await valkey().multi().incr(key).expire(key, 2 * HOUR).exec()) as [[null, number], unknown];
-  if (sent === threshold + 1) adminAlert(log, "code_sends_spike", { hour, sent, threshold });
+  if (sent !== threshold + 1) return;
+  await adminAlert({
+    kind: "code_sends_spike", severity: "warning", subject: `More than ${threshold} sign-in codes sent in the hour ${hour}:00 UTC`,
+    details: { hour, sent, threshold }, dedupeKey: `code_sends_spike:${hour}`,
+  });
 }
 
 /** Checks the code. True once, then the code is gone; throws invalid_code / too_many_attempts otherwise. */

@@ -4,8 +4,9 @@
  * the sign-in code routes have their own per-IP and per-email limits; every 429 says which limit and
  * when to retry (body and Retry-After).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { sql, type User } from "@contestly/db";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { adminAlerts, db, sql, type User } from "@contestly/db";
+import { eq } from "drizzle-orm";
 import { CLOUDFLARE_RANGES } from "../src/clientIp.js";
 import type { Limits } from "../src/limits.js";
 import { limit, valkey } from "../src/redis.js";
@@ -131,15 +132,15 @@ describe("naming and watching", () => {
     await expect(limit("test-named", subject, 1, 60, "too_many_codes")).rejects.toMatchObject({ statusCode: 429, message: "too_many_codes", limit: "test-named" });
   });
 
-  it("code sends across everyone: one admin alert the moment an hour passes the threshold, never again that hour", async () => {
-    const log = { error: vi.fn() } as unknown as Parameters<typeof watchCodeSends>[1];
+  it("code sends across everyone: one admin alert (a warning, for the digest) the moment an hour passes the threshold, never again that hour", async () => {
     const hour = `test-${tag}`; // TEST-ONLY: its own bucket, so other sends this hour don't count
-    for (let i = 0; i < 3; i++) await watchCodeSends(3, log, hour);
-    expect(log.error).not.toHaveBeenCalled();
-    await watchCodeSends(3, log, hour);
-    expect(log.error).toHaveBeenCalledOnce();
-    expect(log.error).toHaveBeenCalledWith({ adminAlert: "code_sends_spike", hour, sent: 4, threshold: 3 }, "admin alert: code_sends_spike");
-    for (let i = 0; i < 5; i++) await watchCodeSends(3, log, hour);
-    expect(log.error).toHaveBeenCalledOnce();
+    const spikes = () => db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `code_sends_spike:${hour}`));
+    for (let i = 0; i < 3; i++) await watchCodeSends(3, hour);
+    expect(await spikes()).toEqual([]);
+    await watchCodeSends(3, hour);
+    const [alert] = await spikes();
+    expect(alert).toMatchObject({ kind: "code_sends_spike", severity: "warning", count: 1, details: { hour, sent: 4, threshold: 3 } });
+    for (let i = 0; i < 5; i++) await watchCodeSends(3, hour);
+    expect((await spikes()).map((a) => a.count)).toEqual([1]);
   });
 });

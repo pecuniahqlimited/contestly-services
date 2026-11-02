@@ -27,7 +27,7 @@ export interface Limits {
   oauthPerIpPer10Min: number;
   /** New guest rows (a first anonymous session) per client IP per hour: guests are users, so each new one would get a fresh per-user limit. */
   guestsPerIpPerHour: number;
-  /** Not a limit: an admin alert when the codes sent in one clock hour, everyone together, pass this. */
+  /** Not a limit: an admin alert (warning, code_sends_spike) when the codes sent in one clock hour, everyone together, pass this. */
   codeSendsAlertPerHour: number;
 }
 

@@ -28,7 +28,7 @@ export async function authRoutes(app: FastifyInstance) {
     const session = optionalSession(req);
     const { email } = emailStartSchema.parse(req.body);
     const sent = await startEmailCode(session, email, req.clientIp, app.limits);
-    await watchCodeSends(app.limits.codeSendsAlertPerHour, req.log);
+    await watchCodeSends(app.limits.codeSendsAlertPerHour);
     return sent;
   });
 
