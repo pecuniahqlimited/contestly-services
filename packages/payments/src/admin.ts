@@ -58,7 +58,10 @@ export async function listPayouts(q: ListQuery) {
 
 export async function listWebhooks(limit: number) {
   const rows = await db.select().from(paymentWebhookEvents).orderBy(desc(paymentWebhookEvents.receivedAt)).limit(limit);
-  return rows.map((w) => ({ id: w.id, provider: w.provider, eventId: w.eventId, type: w.type, reference: w.reference, deliveries: w.deliveries, receivedAt: w.receivedAt.toISOString(), processedAt: iso(w.processedAt), outcome: w.outcome, body: w.body }));
+  return rows.map((w) => ({
+    id: w.id, provider: w.provider, eventId: w.eventId, type: w.type, reference: w.reference, deliveries: w.deliveries, receivedAt: w.receivedAt.toISOString(),
+    processedAt: iso(w.processedAt), outcome: w.outcome, attempts: w.attempts, deadLetteredAt: iso(w.deadLetteredAt), body: w.body,
+  }));
 }
 
 export async function listAlerts(open: boolean, limit: number) {

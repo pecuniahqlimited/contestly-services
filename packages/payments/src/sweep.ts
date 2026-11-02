@@ -7,13 +7,14 @@ import { and, eq, inArray, isNotNull, lte, or } from "drizzle-orm";
 import { db, payouts, topups } from "@contestly/db";
 import { currentSettings } from "./settings.js";
 import { failUnstartedTopups } from "./topups.js";
-import { dueWebhookEvents } from "./webhooks.js";
+import { dueWebhookEvents, pruneRejections } from "./webhooks.js";
 import type { PaymentsDeps } from "./common.js";
 
 const BATCH = 200;
 
 export async function sweepDue(deps: PaymentsDeps, now = new Date()) {
   const unstarted = await failUnstartedTopups(now);
+  await pruneRejections(now);
   const webhooks = await dueWebhookEvents(now, BATCH);
   for (const w of webhooks) await deps.enqueue({ kind: "webhook", eventId: w.id }, { jobId: `webhook-${w.id}-retry-${w.attempts}` });
   const dueTopups = await db.select({ id: topups.id, checks: topups.checks }).from(topups)

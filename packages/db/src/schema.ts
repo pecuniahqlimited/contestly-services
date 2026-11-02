@@ -771,13 +771,29 @@ export const paymentWebhookEvents = pgTable("payment_webhook_events", {
   deliveries: integer("deliveries").notNull().default(1),
   processedAt: timestamp("processed_at", { withTimezone: true }),
   outcome: text("outcome"),
-  /** Processing attempts; one that left its top-up still pending is tried again from next_attempt_at (the sweep). */
+  /** Processing attempts; one that left its top-up still pending, or threw, is tried again from next_attempt_at (the sweep). */
   attempts: integer("attempts").notNull().default(0),
   nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+  /** Given up on after webhooks.maxAttempts (alerted); never retried again. The top-up's own checks still run. */
+  deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true }),
 }, (t) => [
   uniqueIndex("payment_webhook_events_provider_event").on(t.provider, t.eventId), index("payment_webhook_events_reference_idx").on(t.reference),
   index("payment_webhook_events_retry_idx").on(t.nextAttemptAt).where(sql`processed_at is null`),
 ]);
+
+/**
+ * A webhook refused before it was stored (unknown provider, off the allow-list, bad signature): when, from
+ * where, why, and the first 500 bytes, never the whole body. Capped per hour and kept 30 days (ADR 0013).
+ * A spike (every webhook failing after a key rotation, say) alerts.
+ */
+export const paymentWebhookRejections = pgTable("payment_webhook_rejections", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  provider: text("provider").notNull(),
+  sourceIp: text("source_ip").notNull(),
+  reason: text("reason").notNull(),
+  head: text("head").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("payment_webhook_rejections_created_idx").on(t.createdAt)]);
 
 /**
  * An admin's manual finalize of a stuck payout or top-up: the provider's answer when they asked, their

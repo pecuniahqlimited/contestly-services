@@ -175,7 +175,15 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
 9. **Webhooks** at `POST /webhooks/:provider`: authenticate first (Paystack: HMAC-SHA512 of the raw body
    in `x-paystack-signature`), store the raw event (one row per event; redeliveries counted), acknowledge,
    process in the worker. Exempt from the per-IP rate limit only. An optional allow-list of the provider's
-   addresses (`PAYMENTS_WEBHOOK_IP_ALLOWLIST=true`).
+   addresses (`PAYMENTS_WEBHOOK_IP_ALLOWLIST=true`). An event is marked processed only once it has had its
+   effect; one that leaves its top-up still pending, or whose processing throws, counts an attempt and is
+   retried by the sweep under a new job id; after `webhooks.maxAttempts` (default 50) it's dead-lettered
+   with a warning alert (the top-up's own checks still run). A refused webhook (unknown or unconfigured
+   provider, off the allow-list, bad signature) isn't stored as an event; it's recorded in
+   `payment_webhook_rejections`: time, provider, source IP, reason and the first 500 bytes, never the whole
+   body, at most 1,000 an hour, kept 30 days. The webhooks page shows the counts; at
+   `webhooks.rejectionsAlertPerHour` (default 20) in an hour a warning alert fires, since a wrong secret
+   after a key rotation fails every webhook at once.
 10. **Loosening a control takes two admins.** A change to payments config or settings that loosens a
    control waits for a second `payments.config` holder (`payment_config_changes`, 202 from the PUT):
    raising a limit or threshold (including both maker-checker thresholds), lowering a minimum or a safety

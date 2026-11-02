@@ -8,7 +8,7 @@ import {
 import {
   acknowledgeAlert, adminVerifyTopup, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
   listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
-  rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
+  rejectionSummary, rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
   confirmAcknowledgment, listAcknowledgments, requestAcknowledgment, confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
 } from "@contestly/payments";
 import { requirePermission, uuidParam } from "../auth.js";
@@ -40,7 +40,7 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   });
   app.get("/admin/payments/webhooks", async (req) => {
     await requirePermission(req, "payments.view");
-    return { webhooks: await listWebhooks(limitQuery.parse(req.query).limit) };
+    return { webhooks: await listWebhooks(limitQuery.parse(req.query).limit), rejections: await rejectionSummary() };
   });
   app.get("/admin/payments/alerts", async (req) => {
     await requirePermission(req, "payments.view");

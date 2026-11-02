@@ -103,6 +103,12 @@ export const paymentsConfigSchema = z.object({
   }),
   /** Alerts (and, per user, approval) above these. */
   velocity: z.object({ payoutsPerHour: z.number().int().positive(), userPayoutsPerHour: z.number().int().positive() }),
+  webhooks: z.object({
+    /** A stored webhook still unprocessed after this many attempts is dead-lettered, with an alert. */
+    maxAttempts: z.number().int().positive(),
+    /** Rejected webhooks in an hour at or above this alert (a wrong secret after a key rotation fails them all). */
+    rejectionsAlertPerHour: z.number().int().positive(),
+  }).default({ maxAttempts: 50, rejectionsAlertPerHour: 20 }),
   checks: z.object({
     topupFirstCheckSeconds: z.number().int().positive(),
     /** After this a pending top-up gets a final verify and, if still nothing, expires. */
@@ -129,6 +135,7 @@ export const DEFAULT_PAYMENTS_CONFIG: PaymentsConfig = {
   payout: { minKobo: 100_000, maxKobo: 50_000_000, dailyAmountKobo: 50_000_000, dailyCount: 5, approvalThresholdKobo: 10_000_000, userDailyApprovalCeilingKobo: 20_000_000, feeBearer: "platform" },
   finalize: { secondAdminThresholdKobo: 5_000_000, quietAfterSendMinutes: 30 },
   velocity: { payoutsPerHour: 500, userPayoutsPerHour: 3 },
+  webhooks: { maxAttempts: 50, rejectionsAlertPerHour: 20 },
   checks: { topupFirstCheckSeconds: 60, topupCutoffMinutes: 24 * 60, payoutFirstCheckSeconds: 30, payoutMaxBackoffSeconds: 3600, unknownAlertAfterMinutes: 24 * 60, resendAfterNotFoundSeconds: 30 * 60 },
 };
 

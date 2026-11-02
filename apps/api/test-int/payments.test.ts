@@ -7,15 +7,15 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, desc, eq, inArray, like, sql as sqlRaw } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents,
+  adminActions, adminPermissions, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  permissionsOf, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  permissionsOf, pruneRejections, recordRejection, REJECTIONS_KEPT_DAYS, REJECTIONS_PER_HOUR_CAP, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -290,6 +290,62 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
     await sweepDue(deps, later(2 * 3600_000));
     expect(queued.some((j) => j.kind === "webhook" && j.eventId === ev.id)).toBe(false);
     expect(await cash(u)).toBe(kobo(500) + 25);
+  });
+
+  it("a webhook whose processing keeps throwing is retried under a new job id each time, then dead-lettered with an alert", async () => {
+    await config((c) => { c.webhooks.maxAttempts = 3; });
+    try {
+      const [ev] = await db.insert(paymentWebhookEvents).values({ provider: "mock", eventId: `broken-${tag}`, type: "topup.paid", reference: null, body: "this is not json" }).returning();
+      const jobIds: string[] = [];
+      const recorder: PaymentsDeps = { async enqueue(job, opts) { if (job.kind === "webhook" && job.eventId === ev.id) jobIds.push(opts!.jobId!); } };
+      for (let i = 1; i <= 3; i++) {
+        await sweepDue(recorder, later(i * 10 * MIN)); // orphaned at first, then due by next_attempt_at
+        await expect(processWebhookEvent(ev.id)).rejects.toThrow();
+        const [row] = await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.id, ev.id));
+        expect(row.attempts).toBe(i);
+        expect(row.outcome).toMatch(/^error: /);
+      }
+      expect(new Set(jobIds).size).toBe(jobIds.length); // never the same job id twice
+      expect(jobIds.length).toBe(3);
+      const [dead] = await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.id, ev.id));
+      expect([dead.deadLetteredAt !== null, dead.processedAt, dead.nextAttemptAt]).toEqual([true, null, null]);
+      expect((await alertsFor(ev.id)).find((a) => a.kind === "webhook_dead_lettered")?.severity).toBe("warning");
+      jobIds.length = 0;
+      await sweepDue(recorder, later(24 * 3600_000));
+      expect(jobIds).toEqual([]);
+      expect(await processWebhookEvent(ev.id)).toBe("dead_lettered");
+    } finally {
+      await config(() => {});
+    }
+  });
+
+  it("rejected webhooks are logged (time, provider, source IP, reason, first 500 bytes), capped per hour, and a spike alerts", async () => {
+    await config((c) => { c.webhooks.rejectionsAlertPerHour = 3; });
+    try {
+      const big = mock.signedDelivery("topup.paid", { reference: `tp-rej-${tag}`, padding: "x".repeat(2000) }, true);
+      expect((await postWebhook(big)).statusCode).toBe(401);
+      expect((await postWebhook(big, "nosuchprovider")).statusCode).toBe(404);
+      expect((await postWebhook(big)).statusCode).toBe(401);
+      const rows = await db.select().from(paymentWebhookRejections).where(like(paymentWebhookRejections.head, `%tp-rej-${tag}%`));
+      expect(rows.map((r) => [r.provider, r.reason]).sort()).toEqual([["mock", "invalid_signature"], ["mock", "invalid_signature"], ["nosuchprovider", "not_found"]]);
+      expect(rows.every((r) => r.head.length === 500 && r.sourceIp.length > 0)).toBe(true);
+      expect(await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.reference, `tp-rej-${tag}`))).toHaveLength(0);
+      expect((await db.select().from(paymentAlerts).where(like(paymentAlerts.dedupeKey, "webhook_rejections:%"))).length).toBeGreaterThan(0);
+      const page = (await app.inject({ method: "GET", url: "/admin/payments/webhooks", headers: as(viewer) })).json();
+      expect(page.rejections.lastHour).toBeGreaterThanOrEqual(3);
+      // The cap: past it, nothing more is stored this hour.
+      const hourAgo = new Date(Date.now() - 3600_000);
+      const [{ n }] = await db.select({ n: count() }).from(paymentWebhookRejections).where(gte(paymentWebhookRejections.createdAt, hourAgo));
+      const fill = REJECTIONS_PER_HOUR_CAP - Number(n);
+      await db.insert(paymentWebhookRejections).values(Array.from({ length: fill }, () => ({ provider: "mock", sourceIp: "203.0.113.9", reason: "invalid_signature", head: `filler-${tag}` })));
+      expect(await recordRejection("mock", "203.0.113.9", "invalid_signature", Buffer.from(`over-${tag}`))).toBe(false);
+      expect((await postWebhook(big)).statusCode).toBe(401); // still refused, just not stored
+      expect(await db.select().from(paymentWebhookRejections).where(like(paymentWebhookRejections.head, `over-${tag}%`))).toHaveLength(0);
+      // Kept 30 days.
+      expect(await pruneRejections(new Date(Date.now() + (REJECTIONS_KEPT_DAYS + 1) * 24 * 3600_000))).toBeGreaterThanOrEqual(REJECTIONS_PER_HOUR_CAP);
+    } finally {
+      await config(() => {});
+    }
   });
 
   it("limits and the pause are enforced", async () => {
