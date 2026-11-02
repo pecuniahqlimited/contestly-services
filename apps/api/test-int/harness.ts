@@ -36,3 +36,9 @@ export async function makeUser(name: string, extra: Partial<typeof users.$inferI
 }
 
 export const as = (u: { id: string }) => ({ "x-test-user": u.id });
+
+/**
+ * A client address no other test will draw: rate-limit buckets live in the shared Valkey and test files run
+ * in parallel, so a small pool (254 IPv4 addresses) collides. IPv6 documentation range, 48 random bits.
+ */
+export const clientAddress = () => `2001:db8:${randomBytes(6).toString("hex").match(/.{4}/g)!.join(":")}::1`;

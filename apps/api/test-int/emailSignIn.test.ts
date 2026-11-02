@@ -5,7 +5,6 @@
  * with a session still upgrades in place; a code is bound to who asked (a session, or none); a wrong code
  * never yields a token; the per-email and per-IP limits apply without a session too. Needs the emulator.
  */
-import { randomInt } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { db, sql, users } from "@contestly/db";
@@ -14,7 +13,7 @@ import { buildApp } from "../src/app.js";
 import { limitsFromEnv } from "../src/limits.js";
 import { valkey } from "../src/redis.js";
 import { hmac } from "../src/signin/secrets.js";
-import { makeUser, tag } from "./harness.js";
+import { clientAddress as ip, makeUser, tag } from "./harness.js";
 
 const EMULATOR = process.env.FIREBASE_AUTH_EMULATOR_HOST;
 if (!EMULATOR || !process.env.FIREBASE_PROJECT_ID) throw new Error("emailSignIn.test.ts needs FIREBASE_AUTH_EMULATOR_HOST and FIREBASE_PROJECT_ID (.env) and the emulator running");
@@ -45,7 +44,6 @@ async function idt(path: string, body: unknown) {
 /** What the app does with the result: sign in to Firebase with the custom token, then use the ID token. */
 const signInWith = async (customToken: string) => (await idt("accounts:signInWithCustomToken", { token: customToken, returnSecureToken: true })).idToken;
 
-const ip = () => `198.51.100.${randomInt(1, 255)}`;
 const email = (n: string) => `es-${n}-${tag}@example.com`;
 const bearer = (token?: string) => (token ? { authorization: `Bearer ${token}` } : {});
 const start = (e: string, o: { token?: string; from?: string; on?: App } = {}) =>
