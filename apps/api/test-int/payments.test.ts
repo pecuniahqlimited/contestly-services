@@ -998,7 +998,7 @@ describe("contradictions: resolved by two admins", () => {
     expect(await cash(u)).toBe(0); // all of it repaid
     expect(await ledger.owedKobo(db, u.id)).toBe(owed - kobo(600));
     const [r] = await repayments(u.id);
-    expect([r.idempotencyKey, r.amountKobo]).toEqual([`owed_repay:t:owed:prize:${party.id}`, -kobo(600)]);
+    expect([r.idempotencyKey, r.amountKobo]).toEqual([`owed_repay:${u.id}:t:owed:prize:${party.id}`, -kobo(600)]);
     expect(r.journalId).not.toBe((await entriesFor(`t:owed:prize:${party.id}`))[0].journalId); // its own movement
 
     // Bonus coins never repay; and playing isn't blocked (an entry from bonus).
@@ -1006,6 +1006,17 @@ describe("contradictions: resolved by two admins", () => {
     expect(await ledger.owedKobo(db, u.id)).toBe(owed - kobo(600));
     await db.transaction((tx) => ledger.charge(tx, { userId: u.id, amountKobo: kobo(200), type: "party_entry", refType: "party", refId: party.id, idempotencyKey: `t:owed:play:${u.id}` }));
     expect(await ledger.balances(u.id)).toEqual({ cashKobo: 0, bonusKobo: kobo(100) });
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
+  it("one journal crediting two people who both owe repays each of them (the key carries the user)", async () => {
+    const [x, y] = [await owing("owtwo1"), await owing("owtwo2")];
+    await db.transaction((tx) => ledger.journal(tx, {
+      type: "topup", idempotencyKey: `t:owed:two:${x.u.id}`,
+      legs: [{ account: { system: "dev_mint" }, amountKobo: -kobo(700) }, { account: { userId: x.u.id, kind: "cash" }, amountKobo: kobo(300) }, { account: { userId: y.u.id, kind: "cash" }, amountKobo: kobo(400) }],
+    }));
+    expect([await ledger.owedKobo(db, x.u.id), await ledger.owedKobo(db, y.u.id)]).toEqual([x.payout.amountKobo - kobo(300), y.payout.amountKobo - kobo(400)]);
+    expect([await cash(x.u), await cash(y.u)]).toEqual([0, 0]);
     expect(await findBreaches(db)).toEqual([]);
   });
 

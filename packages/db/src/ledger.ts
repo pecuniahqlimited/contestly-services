@@ -169,7 +169,7 @@ export async function owedKobo(conn: Tx | typeof db, userId: string): Promise<nu
 
 /**
  * Repay what a person owes from cash just credited to them, up to that credit: cash → payout_owed, under
- * owed_repay:<the credit's key>. Only cash: bonus coins never repay. The owed account is locked first, so two
+ * owed_repay:<user>:<the credit's key> (the user id too: one journal may credit several people who owe). Only cash: bonus coins never repay. The owed account is locked first, so two
  * credits at once can't both repay the same debt. Returns what it repaid.
  */
 async function repayOwed(tx: Tx, userId: string, creditKobo: number, sourceKey: string): Promise<number> {
@@ -180,7 +180,7 @@ async function repayOwed(tx: Tx, userId: string, creditKobo: number, sourceKey: 
   if (!owed || owed.balanceKobo >= 0) return 0;
   const repay = Math.min(creditKobo, -owed.balanceKobo);
   await journal(tx, {
-    type: "owed_repaid", refType: "owed", refId: userId, idempotencyKey: `owed_repay:${sourceKey}`,
+    type: "owed_repaid", refType: "owed", refId: userId, idempotencyKey: `owed_repay:${userId}:${sourceKey}`,
     legs: [{ account: { userId, kind: "cash" }, amountKobo: -repay }, { account: owedAccount(userId), amountKobo: repay }],
   });
   return repay;

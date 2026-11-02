@@ -97,7 +97,7 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    alert, never auto-fixed.
    **What's owed** (decided 2026-11-02): every new cash credit to that person (winnings, refunds, top-ups,
    anything `ledger.journal()` puts in their cash) repays it first, up to the credit, as its own journal
-   (`owed_repaid`, key `owed_repay:<the credit's key>`, the owed account locked so two credits can't repay
+   (`owed_repaid`, key `owed_repay:<user>:<the credit's key>`, the owed account locked so two credits can't repay
    the same debt). Bonus coins never repay it. Withdrawals are refused while anything is owed
    (`withdraw_not_allowed`, reason `amount_owed`; queued ones are held before sending); playing isn't.
    `GET /wallet` returns `owed: { amountKobo, reason: "duplicate_payout" }` (null when nothing is owed),
