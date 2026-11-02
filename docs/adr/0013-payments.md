@@ -126,8 +126,14 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    Nobody approves, finalizes or confirms their own transaction. All logged in `admin_actions` and
    `payment_finalizations`.
 6. **Permissions.** The admin role stays one flag (`users.is_admin`); payments add four permissions per
-   admin (`admin_permissions`): `payments.view`, `.approve`, `.finalize`, `.config`. A `.config` holder
-   grants them, never to themselves; dev sessions and seeded dev admins hold all four.
+   admin (`admin_permissions`): `payments.view`, `.approve`, `.finalize`, `.config`. Granting is loosening,
+   so it's maker-checker (`payment_permission_grants`): a `.config` holder asks, a different `.config`
+   holder confirms, and the grantee can never confirm their own grant; otherwise one admin could make a
+   second account that passes every second-admin check. Nobody changes their own permissions. Revoking
+   applies at once with one admin. Dev sessions and seeded dev admins hold all four. **Who is an admin at
+   all** (`ADMIN_EMAILS`, and `DEV_ADMIN_HANDLES` in dev) **is controlled by whoever controls the
+   environment**: none of these controls protect against them, so production secrets and deploys need
+   their own two-person rule.
 7. **Double entry, and the invariants.** `ledger.journal()` is the only way money moves: legs that sum to
    zero, every account locked in id order, idempotent on its key (a replay with different legs is an
    error, never a no-op). `post()` keeps its signature and adds the platform's side from one type→account

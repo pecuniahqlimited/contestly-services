@@ -183,6 +183,13 @@
       "when": 1793665816224,
       "tag": "0025_contradiction_hold",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793665816897,
+      "tag": "0026_permission_grants",
+      "breakpoints": true
     }
   ]
 }

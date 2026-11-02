@@ -15,7 +15,7 @@ import {
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  permissionsOf, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -1033,7 +1033,12 @@ describe("permissions", () => {
     expect((await app.inject({ method: "GET", url: "/admin/payments", headers: as(viewer) })).statusCode).toBe(200);
     expect((await app.inject({ method: "PUT", url: `/admin/payments/permissions/${plain.id}`, headers: as(viewer), payload: { permissions: ["payments.view"], reason: "trying" } })).statusCode).toBe(403);
     const grant = await app.inject({ method: "PUT", url: `/admin/payments/permissions/${plain.id}`, headers: as(admin), payload: { permissions: ["payments.view", "payments.approve"], reason: "joins the payments rota" } });
-    expect(grant.json().permissions).toEqual(["payments.approve", "payments.view"]);
+    expect([grant.statusCode, grant.json().permissions, grant.json().pendingGrant.permissions]).toEqual([202, [], ["payments.approve", "payments.view"]]);
+    expect((await app.inject({ method: "GET", url: "/admin/payments", headers: as(plain) })).statusCode).toBe(403); // not until a second admin confirms
+    const confirmGrant = (who: User, id: string) => app.inject({ method: "POST", url: `/admin/payments/permission-grants/${id}/confirm`, headers: as(who) });
+    const self = await confirmGrant(admin, grant.json().pendingGrant.id);
+    expect([self.statusCode, self.json().error]).toEqual([403, "second_admin_required"]);
+    expect((await confirmGrant(admin2, grant.json().pendingGrant.id)).json().grant).toMatchObject({ status: "applied", confirmedBy: admin2.id });
     expect((await app.inject({ method: "GET", url: "/admin/payments", headers: as(plain) })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: "/admin/session", headers: as(plain) })).json().permissions.sort()).toEqual(["payments.approve", "payments.view"]);
     expect((await app.inject({ method: "PUT", url: `/admin/payments/permissions/${admin.id}`, headers: as(admin), payload: { permissions: [], reason: "self" } })).json().error).toBe("cannot_change_own_permissions");
@@ -1041,6 +1046,22 @@ describe("permissions", () => {
     expect((await app.inject({ method: "PUT", url: `/admin/payments/permissions/${notAdmin.id}`, headers: as(admin), payload: { permissions: ["payments.view"], reason: "x y z" } })).json().error).toBe("not_admin");
     const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, plain.id), eq(adminActions.action, "payments.permissions")));
     expect(log.after).toEqual(["payments.approve", "payments.view"]);
+    expect(log.adminUserId).toBe(admin2.id);
+    // Revoking applies at once, one admin.
+    const revoked = await app.inject({ method: "PUT", url: `/admin/payments/permissions/${plain.id}`, headers: as(admin), payload: { permissions: ["payments.view"], reason: "off the rota" } });
+    expect([revoked.statusCode, revoked.json().permissions, revoked.json().pendingGrant]).toEqual([200, ["payments.view"], null]);
+  });
+
+  it("a grantee can't confirm their own grant (one admin can't make a second admin)", async () => {
+    const accomplice = await makeUser(nextName("permacc"), { isAdmin: true });
+    await db.insert(adminPermissions).values({ userId: accomplice.id, permission: "payments.config" });
+    const asked = await app.inject({ method: "PUT", url: `/admin/payments/permissions/${accomplice.id}`, headers: as(admin), payload: { permissions: ["payments.config", "payments.finalize"], reason: "second pair of hands" } });
+    expect(asked.statusCode).toBe(202);
+    const own = await app.inject({ method: "POST", url: `/admin/payments/permission-grants/${asked.json().pendingGrant.id}/confirm`, headers: as(accomplice) });
+    expect([own.statusCode, own.json().error]).toEqual([403, "own_transaction"]);
+    expect(await permissionsOf(accomplice.id)).toEqual(["payments.config"]);
+    // And nobody grants to themselves.
+    expect((await app.inject({ method: "PUT", url: `/admin/payments/permissions/${accomplice.id}`, headers: as(accomplice), payload: { permissions: ["payments.config", "payments.view"], reason: "for myself" } })).json().error).toBe("cannot_change_own_permissions");
   });
 });
 

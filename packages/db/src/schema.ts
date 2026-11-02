@@ -832,6 +832,22 @@ export const payoutContradictions = pgTable("payout_contradictions", {
 }, (t) => [uniqueIndex("payout_contradictions_payout").on(t.payoutId), index("payout_contradictions_user_idx").on(t.userId)]);
 
 /**
+ * Granting payments permissions is loosening (ADR 0013): a payments.config holder asks, a different one
+ * confirms; never the grantee, never for themselves. Revoking applies at once. Never edited after.
+ */
+export const paymentPermissionGrants = pgTable("payment_permission_grants", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  permissions: text("permissions").array().notNull(),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["awaiting_second_admin", "applied", "superseded"] }).notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+}, (t) => [uniqueIndex("payment_permission_grants_one_open").on(t.userId).where(sql`status = 'awaiting_second_admin'`)]);
+
+/**
  * Waiving what a person owes after a duplicate payout (ADR 0013): one admin with payments.finalize asks with
  * a reason, a different one confirms; the platform bears it (payout_owed ← platform_funds). Never edited after.
  */
@@ -1216,6 +1232,7 @@ export type PaymentFinalization = typeof paymentFinalizations.$inferSelect;
 export type PayoutContradiction = typeof payoutContradictions.$inferSelect;
 export type PaymentConfigChange = typeof paymentConfigChanges.$inferSelect;
 export type OwedWaiver = typeof owedWaivers.$inferSelect;
+export type PaymentPermissionGrant = typeof paymentPermissionGrants.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;
 export type PartyPrize = typeof partyPrizes.$inferSelect;

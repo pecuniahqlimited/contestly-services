@@ -217,6 +217,13 @@ export const paymentConfigChangeSchema = z.object({
 });
 export type PaymentConfigChangeView = z.infer<typeof paymentConfigChangeSchema>;
 
+/** A grant of payments permissions waiting for (or confirmed by) a second payments.config holder. */
+export const permissionGrantSchema = z.object({
+  id: z.string().uuid(), userId: z.string().uuid(), permissions: z.array(z.enum(PAYMENT_PERMISSIONS)), reason: z.string(),
+  status: z.enum(["awaiting_second_admin", "applied", "superseded"]), requestedBy: z.string().uuid(), confirmedBy: z.string().uuid().nullable(),
+  createdAt: z.string(), appliedAt: z.string().nullable(),
+});
+
 /** Waiving what someone owes: payments.finalize, a second admin, a reason. */
 export const owedWaiverSchema = z.object({
   id: z.string().uuid(), userId: z.string().uuid(), amountKobo: z.number().int(), reason: z.string(),

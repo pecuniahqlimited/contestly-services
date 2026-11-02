@@ -3,13 +3,13 @@ import { z } from "zod";
 import { getPaymentsConfig } from "@contestly/db";
 import {
   adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
-  adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
+  adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
   acknowledgeAlert, adminVerifyTopup, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
   listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
-  confirmOwedWaiver, listOwed, listOwedWaivers, requestOwedWaiver,
+  confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
 } from "@contestly/payments";
 import { requirePermission, uuidParam } from "../auth.js";
 import { paymentsDeps } from "../payments.js";
@@ -183,9 +183,20 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
     await requirePermission(req, "payments.config");
     return { permissions: await permissionsOf(uuidParam(req)) };
   });
-  app.put("/admin/payments/permissions/:id", async (req) => {
+  /** Revoking applies at once; anything granted waits for a second payments.config holder (202, pendingGrant). */
+  app.put("/admin/payments/permissions/:id", async (req, reply) => {
     const admin = await requirePermission(req, "payments.config");
     const { permissions, reason } = adminPaymentPermissionsBodySchema.parse(req.body);
-    return { permissions: await setPermissions(admin.id, uuidParam(req), permissions, reason) };
+    const out = await setPermissions(admin.id, uuidParam(req), permissions, reason);
+    return reply.code(out.pendingGrant ? 202 : 200).send({ permissions: out.permissions, pendingGrant: out.pendingGrant && permissionGrantSchema.parse(out.pendingGrant) });
+  });
+  app.get("/admin/payments/permission-grants", async (req) => {
+    await requirePermission(req, "payments.config");
+    return { grants: (await listPermissionGrants(limitQuery.parse(req.query).limit)).map((g) => permissionGrantSchema.parse(g)) };
+  });
+  /** A second payments.config holder confirms: not whoever asked, never the grantee. */
+  app.post("/admin/payments/permission-grants/:id/confirm", async (req) => {
+    const admin = await requirePermission(req, "payments.config");
+    return { grant: permissionGrantSchema.parse(await confirmPermissionGrant(admin.id, uuidParam(req))) };
   });
 }
