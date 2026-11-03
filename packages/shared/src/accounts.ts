@@ -279,3 +279,15 @@ export const adminEmailViewSchema = z.object({
     at: z.string().datetime() })),
 });
 export type AdminEmailView = z.infer<typeof adminEmailViewSchema>;
+
+// ---------------------------------------------------------------- public config
+
+/** GET /config: what the app needs before anyone signs in. Support contacts are null when not set. */
+export const publicConfigSchema = z.object({
+  support: z.object({
+    email: z.string().email().nullable(),
+    /** E.164 ("+2348012345678"); the app opens https://wa.me/<digits>. */
+    whatsapp: z.string().regex(/^\+[1-9]\d{7,14}$/, "E.164, like +2348012345678").nullable(),
+  }),
+});
+export type PublicConfig = z.infer<typeof publicConfigSchema>;
