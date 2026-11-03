@@ -6,7 +6,7 @@
  * reconciliation catch what they should.
  */
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
   adminActions, adminPermissions, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
@@ -15,7 +15,7 @@ import {
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, raiseAlert, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -1323,6 +1323,24 @@ describe("the lock order: the person's row, then transaction rows, then the pers
     let tries = 0;
     await expect(moneyTransaction(async () => { tries++; throw Object.assign(new Error("deadlock detected"), { code: "40P01" }); }, { attempts: 3 })).rejects.toThrow("deadlock detected");
     expect(tries).toBe(3);
+  });
+
+  it("an alert raised in a transaction that's retried is recorded once and logged once, after the commit", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let attempt = 0;
+      const key = `t:retry-alert:${tag}`;
+      await moneyTransaction(async (tx) => {
+        attempt++;
+        await raiseAlert(tx, { severity: "warning", kind: "test_retry_alert", dedupeKey: key, detail: { attempt } });
+        if (attempt === 1) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      });
+      expect(attempt).toBe(2);
+      expect(await db.select().from(paymentAlerts).where(eq(paymentAlerts.dedupeKey, key))).toHaveLength(1);
+      expect(logged.mock.calls.filter((c) => String(c[0]).includes("test_retry_alert"))).toHaveLength(1);
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("approve and reject take the person first", async () => {

@@ -14,11 +14,31 @@ const JITTER_MS = 50;
 
 export interface RetryOptions { attempts?: number; label?: string; onRetry?: (attempt: number, code: string) => void }
 
+/** Effects to run once a money transaction has committed (a log line, later a push): never on an attempt that rolled back. */
+const pending = new WeakMap<Tx, (() => void)[]>();
+
+/**
+ * Run `fn` after the transaction commits, once, when `tx` is a money transaction's; anywhere else, now. Rows
+ * written in the transaction (an alert) commit or roll back with it; anything that leaves the process
+ * (a log line, a delivery) belongs here, so a retried attempt doesn't repeat it.
+ */
+export function afterCommit(tx: unknown, fn: () => void) {
+  const queue = pending.get(tx as Tx);
+  if (queue) queue.push(fn);
+  else fn();
+}
+
 export async function moneyTransaction<T>(fn: (tx: Tx) => Promise<T>, opts: RetryOptions = {}): Promise<T> {
   const attempts = opts.attempts ?? 3;
   for (let attempt = 1; ; attempt++) {
+    const effects: (() => void)[] = [];
     try {
-      return await db.transaction(fn);
+      const out = await db.transaction((tx) => {
+        pending.set(tx, effects);
+        return fn(tx);
+      });
+      for (const run of effects) run();
+      return out;
     } catch (e) {
       const code = (e as { code?: string }).code ?? "";
       if (!RETRYABLE.has(code) || attempt >= attempts) throw e;

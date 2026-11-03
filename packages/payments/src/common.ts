@@ -1,7 +1,7 @@
 /** Small pieces every payments module uses: typed HTTP errors, the Lagos day, alerts, and the job hook. */
 import { lagosDay, type PaymentsJob } from "@contestly/shared";
 import { eq } from "drizzle-orm";
-import { db, paymentAlerts, users, type Tx } from "@contestly/db";
+import { afterCommit, db, paymentAlerts, users, type Tx } from "@contestly/db";
 
 export type Conn = Tx | typeof db;
 
@@ -35,7 +35,8 @@ export interface AlertInput { severity: "warning" | "critical"; kind: string; de
  */
 export async function raiseAlert(conn: Conn, a: AlertInput) {
   const [row] = await conn.insert(paymentAlerts).values({ ...a, refType: a.refType ?? null, refId: a.refId ?? null }).onConflictDoNothing().returning({ id: paymentAlerts.id });
-  if (row) console.error(`[payments] ${a.severity.toUpperCase()} ${a.kind} ${a.refType ?? ""}:${a.refId ?? ""} ${JSON.stringify(a.detail)}`);
+  // The row commits (or rolls back) with the transaction; the log line goes out once, after it commits.
+  if (row) afterCommit(conn, () => console.error(`[payments] ${a.severity.toUpperCase()} ${a.kind} ${a.refType ?? ""}:${a.refId ?? ""} ${JSON.stringify(a.detail)}`));
   return !!row;
 }
 

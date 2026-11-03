@@ -300,7 +300,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   opposite orders (the party row serialises one party, not two). Those cycles are possible; Postgres breaks
   one by aborting a side, which rolls back whole (no money moves), and money transactions in payments run in
   `moneyTransaction`, which retries a deadlock or serialization failure up to 3 times with jitter, logging
-  each retry. Settlement and refunds (main's party code) don't use it yet; their jobs are retried by BullMQ. Audit (2026-11-03), every place a user row is locked:
+  each retry. Settlement and refunds (main's party code) don't use it yet; their jobs are retried by BullMQ.
+  Inside a retried transaction only rows are written (an alert is a row, committed or rolled back with it);
+  anything that leaves the process (a log line, later a push) goes through `afterCommit` and runs once,
+  after the commit. Audit (2026-11-03), every place a user row is locked:
   withdrawal request, send, every payout transition (applyOutcome, the freeze), approve, reject, finalize
   and its confirm, contradiction confirm, waiver request and confirm, top-up start, permission changes:
   person first, `NO KEY UPDATE` (changed in payments; tested). Account deletion and a guest's sign-up
