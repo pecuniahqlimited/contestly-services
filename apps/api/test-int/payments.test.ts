@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, notInArray, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminAlert, adminAlerts, adminPermissions, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  adminActions, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, systemActorId, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -1350,6 +1350,25 @@ describe("the lock order: the person's row, then transaction rows, then the pers
       expect(attempt).toBe(2);
       expect(await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, key))).toHaveLength(1);
       expect(logged.mock.calls.filter((c) => String(c[0]).includes("test_retry_alert"))).toHaveLength(1);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("an after-commit effect that throws doesn't fail the committed transaction: logged and alerted, the caller gets its result, later effects still run", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const label = `test after-commit ${tag}`;
+    const ran: string[] = [];
+    try {
+      const out = await moneyTransaction(async (tx) => {
+        afterCommit(tx, () => { throw new Error("push provider down"); });
+        afterCommit(tx, async () => { ran.push("second"); });
+        return "committed";
+      }, { label });
+      expect([out, ran]).toEqual(["committed", ["second"]]);
+      const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `after_commit_effect_failed:${label}`));
+      expect(alert).toMatchObject({ kind: "after_commit_effect_failed", severity: "warning", details: { label, error: "push provider down" } });
+      expect(logged.mock.calls.some((c) => String(c[0]).includes("after-commit effect failed"))).toBe(true);
     } finally {
       logged.mockRestore();
     }
