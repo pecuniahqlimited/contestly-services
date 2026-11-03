@@ -2,6 +2,7 @@
  * The provider interfaces (ADR 0013). Everything outside src/providers speaks these types; a provider maps
  * its own codes into them, and anything it can't map is "unknown" — never success, never failure.
  */
+import type { FeeTier } from "@contestly/shared";
 
 /**
  * What a provider says about one top-up or transfer, by our reference.
@@ -62,8 +63,8 @@ export interface PayoutProvider {
   banks: BankDirectory | null;
   /** Register where the money goes; returns the provider's id for it. Throws if it can't. */
   createRecipient(destination: PayoutDestination): Promise<{ recipientCode: string }>;
-  /** The provider's fee for sending this amount, as published (the real one replaces it when it succeeds, if reported). */
-  transferFeeKobo(amountKobo: number): number;
+  /** The provider's published fee tiers for a transfer (the real fee replaces the estimate when it succeeds, if reported). */
+  readonly transferFeeTiers: readonly FeeTier[];
   /**
    * Send, with our reference as the provider's idempotency reference. Never throws: a timeout, a network
    * error or a 5xx is "unknown" (it may have gone through), and only a definite refusal is "failed".

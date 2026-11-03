@@ -3,10 +3,10 @@ import { and, desc, eq } from "drizzle-orm";
 import { db, ledger, payoutAccounts, payouts } from "@contestly/db";
 import {
   addBankAccountSchema, bankAccountSchema, bankAccountsResponseSchema, banksResponseSchema, createTopupSchema, kobo, payoutSchema, payoutsResponseSchema,
-  resolveAccountResponseSchema, resolveAccountSchema, topupSchema, withdrawalRequestSchema,
+  resolveAccountResponseSchema, resolveAccountSchema, topupSchema, walletLimitsQuerySchema, walletLimitsSchema, withdrawalRequestSchema,
 } from "@contestly/shared";
 import {
-  addBankAccount, bankAccountsOf, createTopup, listBanks, paymentsDevTools, payoutView, removeBankAccount, requestPayout, resolveAccount, topupForUser, topupView,
+  addBankAccount, bankAccountsOf, createTopup, listBanks, paymentsDevTools, payoutView, removeBankAccount, requestPayout, resolveAccount, topupForUser, topupView, walletLimits,
 } from "@contestly/payments";
 import { requireUser, uuidParam } from "../auth.js";
 import { paymentsDeps, paymentsKv, topupReturnUrl } from "../payments.js";
@@ -39,6 +39,16 @@ export async function walletRoutes(app: FastifyInstance) {
     const { amountKobo } = createTopupSchema.parse(req.body);
     const t = await createTopup(me, amountKobo, { returnUrl: topupReturnUrl() });
     return reply.code(201).send(topupSchema.parse(topupView(t)));
+  });
+
+  /**
+   * What the person can do right now: top-up min, max and what's left of today's cap; the withdrawal minimum
+   * and what's left of each daily limit; who bears the transfer fee, its tiers, and (?amountKobo=) the estimate.
+   */
+  app.get("/wallet/limits", async (req) => {
+    const me = requireUser(req);
+    const { amountKobo } = walletLimitsQuerySchema.parse(req.query);
+    return walletLimitsSchema.parse(await walletLimits(me.id, amountKobo));
   });
 
   /** After checkout the app polls this. Our record only: it never asks the provider and never credits. */

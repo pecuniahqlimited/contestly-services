@@ -128,7 +128,7 @@ export function mockProvider(opts: MockOptions) {
         },
       },
       async createRecipient(d) { return { recipientCode: `RCP_mock_${d.bankCode}_${d.accountNumber}` }; },
-      transferFeeKobo: () => FLAT_FEE_KOBO,
+      transferFeeTiers: [{ upToKobo: null, feeKobo: FLAT_FEE_KOBO }],
       async sendTransfer(input) {
         const ref = input.reference;
         const existing = await readJson<MockTransfer>(key.transfer(ref));

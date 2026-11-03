@@ -17,6 +17,7 @@ import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
   approvePayout, breakGlassGrantConfig, linkedIssueAccounts, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
+import { PAYSTACK_TRANSFER_FEE_TIERS, paystackTransferFeeKobo } from "@contestly/payments";
 import { partyQueue } from "@contestly/queue";
 import { buildApp } from "../src/app.js";
 import { settle } from "../../worker/src/partySettle.js";
@@ -378,6 +379,38 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
     // A guest can't top up at all.
     const guest = await makeUser(nextName("tpguest"), { isGuest: true, email: null, emailVerifiedAt: null });
     expect((await app.inject({ method: "POST", url: "/wallet/topups", headers: as(guest), payload: { amountKobo: kobo(500) } })).json().error).toBe("sign_up_required");
+  });
+});
+
+describe("GET /wallet/limits: what the app shows is what the server allows", () => {
+  it("top-up and withdrawal limits with what's left today, and the fee: who bears it, the tiers, the estimate for an amount", async () => {
+    await config((c) => { c.topup.dailyCapKobo = kobo(2000); c.payout.dailyAmountKobo = kobo(5000); c.payout.dailyCount = 3; c.payout.feeBearer = "user"; });
+    try {
+      const { u, account } = await withdrawer("limits");
+      const limits = async (q = "") => (await app.inject({ method: "GET", url: `/wallet/limits${q}`, headers: as(u) })).json();
+      const before = await limits("?amountKobo=200000");
+      expect(before.topup).toEqual({ paused: false, minKobo: DEFAULT_PAYMENTS_CONFIG.topup.minKobo, maxKobo: DEFAULT_PAYMENTS_CONFIG.topup.maxKobo, dailyCapKobo: kobo(2000), remainingTodayKobo: kobo(2000) });
+      expect(before.withdrawal).toEqual({ paused: false, minKobo: DEFAULT_PAYMENTS_CONFIG.payout.minKobo, maxKobo: DEFAULT_PAYMENTS_CONFIG.payout.maxKobo, dailyAmountKobo: kobo(5000), remainingAmountTodayKobo: kobo(5000), dailyCount: 3, remainingCountToday: 3 });
+      expect(before.fee).toEqual({ bearer: "user", tiers: [{ upToKobo: null, feeKobo: 1000 }], estimate: { amountKobo: 200000, feeKobo: 1000, sentKobo: 199000 } });
+      expect((await limits()).fee.estimate).toBeNull();
+
+      // A pending top-up and a withdrawal count, as they do when enforced.
+      expect((await app.inject({ method: "POST", url: "/wallet/topups", headers: as(u), payload: { amountKobo: kobo(600) } })).statusCode).toBe(201);
+      const { payout } = await request(u, account.id, kobo(1500));
+      const after = await limits();
+      expect([after.topup.remainingTodayKobo, after.withdrawal.remainingAmountTodayKobo, after.withdrawal.remainingCountToday]).toEqual([kobo(1400), kobo(3500), 2]);
+      expect((await app.inject({ method: "POST", url: "/wallet/topups", headers: as(u), payload: { amountKobo: after.topup.remainingTodayKobo + 1 } })).json().details.limit).toBe("topup_daily");
+      expect(payout.feeKobo).toBe(before.fee.estimate.feeKobo);
+
+      await settings({ payoutsPaused: true });
+      expect((await limits()).withdrawal.paused).toBe(true);
+      await settings({});
+      // The Paystack tiers, as the app would see them with Paystack sending payouts.
+      expect(PAYSTACK_TRANSFER_FEE_TIERS.map((t) => [t.upToKobo, paystackTransferFeeKobo(t.upToKobo ?? 10_000_000)])).toEqual([[500_000, 1_000], [5_000_000, 2_500], [null, 5_000]]);
+      expect((await app.inject({ method: "GET", url: "/wallet/limits?amountKobo=-5", headers: as(u) })).statusCode).toBe(400);
+    } finally {
+      await config(() => {});
+    }
   });
 });
 

@@ -19,14 +19,15 @@
  * person's withdrawals in the same transaction as its alert (payout_contradictions; contradictions.ts).
  */
 import { randomUUID } from "node:crypto";
-import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { db, hasPaymentIssue, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User, adminAlert } from "@contestly/db";
 import {
-  ACCOUNT_UNRESOLVED, normaliseEmail, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
+  ACCOUNT_UNRESOLVED, feeFromTiers, normaliseEmail, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
-import { backoffMs, lagosDayStart, lockPerson, paymentsError, ONCE_PER_THING_SECONDS, type PaymentsDeps } from "./common.js";
+import { backoffMs, lockPerson, paymentsError, ONCE_PER_THING_SECONDS, type PaymentsDeps } from "./common.js";
 import { currentSettings } from "./settings.js";
 import { providerNamed } from "./providers/index.js";
+import { payoutsToday } from "./limits.js";
 import { unknownCheck, type ProviderCheck, type WebhookEvent } from "./types.js";
 
 const HOUR_MS = 3600_000;
@@ -148,14 +149,13 @@ export async function requestPayout(user: User, req: WithdrawalRequest, deps: Pa
     const [account] = await tx.select().from(payoutAccounts).where(and(eq(payoutAccounts.id, req.bankAccountId), eq(payoutAccounts.userId, user.id)));
     if (!account || account.removedAt || account.provider !== provider.name) throw paymentsError(409, ACCOUNT_UNRESOLVED);
 
-    const live = and(eq(payouts.userId, user.id), notInArray(payouts.status, ["failed", "rejected"]));
-    const [today] = await tx.select({ n: count(), total: sql<number>`coalesce(sum(${payouts.amountKobo}), 0)::bigint` }).from(payouts).where(and(live, gte(payouts.createdAt, lagosDayStart(now))));
+    const today = await payoutsToday(tx, user.id, now);
     const [lastHour] = await tx.select({ n: count() }).from(payouts).where(and(eq(payouts.userId, user.id), gte(payouts.createdAt, new Date(now.getTime() - HOUR_MS))));
-    if (Number(today.n) + 1 > cfg.payout.dailyCount) throw paymentsError(409, LIMIT_REACHED, { limit: "payout_daily_count", dailyCount: cfg.payout.dailyCount });
-    const todayTotal = Number(today.total) + req.amountKobo;
-    if (todayTotal > cfg.payout.dailyAmountKobo) throw paymentsError(409, LIMIT_REACHED, { limit: "payout_daily_amount", dailyAmountKobo: cfg.payout.dailyAmountKobo, usedKobo: Number(today.total) });
+    if (today.count + 1 > cfg.payout.dailyCount) throw paymentsError(409, LIMIT_REACHED, { limit: "payout_daily_count", dailyCount: cfg.payout.dailyCount });
+    const todayTotal = today.totalKobo + req.amountKobo;
+    if (todayTotal > cfg.payout.dailyAmountKobo) throw paymentsError(409, LIMIT_REACHED, { limit: "payout_daily_amount", dailyAmountKobo: cfg.payout.dailyAmountKobo, usedKobo: today.totalKobo });
 
-    const feeKobo = provider.payout!.transferFeeKobo(req.amountKobo);
+    const feeKobo = feeFromTiers(provider.payout!.transferFeeTiers, req.amountKobo);
     const sentKobo = cfg.payout.feeBearer === "user" ? req.amountKobo - feeKobo : req.amountKobo;
     if (sentKobo <= 0) throw paymentsError(422, BELOW_MINIMUM, { minKobo: feeKobo + 1 });
     const userHourCount = Number(lastHour.n) + 1;

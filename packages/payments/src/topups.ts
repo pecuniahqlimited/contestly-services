@@ -11,12 +11,13 @@
  * stays pending, marked attempt_failed, until its cutoff, and the check at the cutoff is the final one.
  */
 import { randomBytes } from "node:crypto";
-import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, isNull, lt } from "drizzle-orm";
 import { db, moneyTransaction, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User, adminAlert } from "@contestly/db";
 import { BELOW_MINIMUM, CURRENCY, EMAIL_REQUIRED, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, TOPUP_REFUSED, type TopupView } from "@contestly/shared";
-import { backoffMs, lagosDayStart, paymentsError, ONCE_PER_THING_SECONDS } from "./common.js";
+import { backoffMs, paymentsError, ONCE_PER_THING_SECONDS } from "./common.js";
 import { currentSettings } from "./settings.js";
 import { providerNamed } from "./providers/index.js";
+import { topupsTodayKobo } from "./limits.js";
 import { ProviderRefusal, unknownCheck, type ProviderCheck, type WebhookEvent } from "./types.js";
 
 /** Paystack allows letters, digits, "-", "." and "=" in a reference; ours is tp- and 24 hex digits. */
@@ -59,9 +60,8 @@ export async function createTopup(user: User, amountKobo: number, opts: CreateTo
 
   const row = await moneyTransaction(async (tx) => {
     await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for("no key update"); // one top-up start at a time per person (the daily cap holds), without blocking FK checks
-    const [{ total }] = await tx.select({ total: sql<number>`coalesce(sum(${topups.amountKobo}), 0)::bigint` }).from(topups)
-      .where(and(eq(topups.userId, user.id), gte(topups.createdAt, lagosDayStart(now)), inArray(topups.status, ["pending", "succeeded"])));
-    if (Number(total) + amountKobo > cfg.topup.dailyCapKobo) throw paymentsError(409, LIMIT_REACHED, { limit: "topup_daily", dailyCapKobo: cfg.topup.dailyCapKobo, usedKobo: Number(total) });
+    const total = await topupsTodayKobo(tx, user.id, now);
+    if (total + amountKobo > cfg.topup.dailyCapKobo) throw paymentsError(409, LIMIT_REACHED, { limit: "topup_daily", dailyCapKobo: cfg.topup.dailyCapKobo, usedKobo: total });
     const [t] = await tx.insert(topups).values({
       userId: user.id, amountKobo, currency: CURRENCY, provider: provider.name, reference: newReference(), status: "pending",
       nextCheckAt: null, createdAt: now, updatedAt: now,

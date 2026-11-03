@@ -10,6 +10,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Bank, CheckStatus, DateRange, Headers, PaymentProvider, ProviderCheck, ProviderRecord, WebhookEvent } from "../types.js";
 import { ProviderRefusal, assertDeliverableEmail, unknownCheck } from "../types.js";
+import { feeFromTiers, type FeeTier } from "@contestly/shared";
 
 export const PAYSTACK = "paystack";
 const BASE_URL = "https://api.paystack.co";
@@ -38,7 +39,8 @@ export interface PaystackOptions { secretKey: string; fetch?: Fetch; baseUrl?: s
 interface Answer { http: number; ok: boolean; message: string; data: any }
 
 /** Paystack's published transfer fee for NGN: ₦10 up to ₦5,000, ₦25 up to ₦50,000, ₦50 above. */
-export const paystackTransferFeeKobo = (amountKobo: number) => (amountKobo <= 500_000 ? 1_000 : amountKobo <= 5_000_000 ? 2_500 : 5_000);
+export const PAYSTACK_TRANSFER_FEE_TIERS: readonly FeeTier[] = [{ upToKobo: 500_000, feeKobo: 1_000 }, { upToKobo: 5_000_000, feeKobo: 2_500 }, { upToKobo: null, feeKobo: 5_000 }];
+export const paystackTransferFeeKobo = (amountKobo: number) => feeFromTiers(PAYSTACK_TRANSFER_FEE_TIERS, amountKobo);
 
 const koboFrom = (v: unknown): number | null => {
   const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
@@ -161,7 +163,7 @@ export function paystackProvider(opts: PaystackOptions): PaymentProvider {
         if (!a.ok || typeof a.data?.recipient_code !== "string") throw new Error(`paystack recipient: ${a.http} ${a.message}`);
         return { recipientCode: a.data.recipient_code };
       },
-      transferFeeKobo: paystackTransferFeeKobo,
+      transferFeeTiers: PAYSTACK_TRANSFER_FEE_TIERS,
       async sendTransfer(input) {
         const a = await attempt("POST", "/transfer", { source: "balance", amount: input.amountKobo, recipient: input.recipientCode, reference: input.reference, reason: input.reason, currency: "NGN" });
         if (a instanceof Error) return unknownCheck(input.reference, a.message, "no_answer");

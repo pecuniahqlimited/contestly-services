@@ -147,6 +147,42 @@ export const DEFAULT_PAYMENTS_CONFIG: PaymentsConfig = {
 // ---- The app ----
 
 export const createTopupSchema = z.object({ amountKobo: positiveKobo });
+
+/** A transfer fee by amount: up to and including `upToKobo` (null: anything above the last tier). */
+export const feeTierSchema = z.object({ upToKobo: positiveKobo.nullable(), feeKobo: kobo });
+export type FeeTier = z.infer<typeof feeTierSchema>;
+/** The fee for an amount from tiers in ascending order; the last tier has no upper bound. */
+export function feeFromTiers(tiers: readonly FeeTier[], amountKobo: number): number {
+  const tier = tiers.find((t) => t.upToKobo === null || amountKobo <= t.upToKobo);
+  if (!tier) throw new Error("fee tiers must end with an open tier (upToKobo null)");
+  return tier.feeKobo;
+}
+
+/** GET /wallet/limits?amountKobo=: what the person can top up and withdraw right now, and the transfer fee. */
+export const walletLimitsQuerySchema = z.object({ amountKobo: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() });
+export const walletLimitsSchema = z.object({
+  topup: z.object({
+    paused: z.boolean(),
+    minKobo: kobo, maxKobo: kobo,
+    /** Today's cap (Lagos day) and what's left of it: pending and credited top-ups count. */
+    dailyCapKobo: kobo, remainingTodayKobo: kobo,
+  }),
+  withdrawal: z.object({
+    paused: z.boolean(),
+    minKobo: kobo, maxKobo: kobo,
+    dailyAmountKobo: kobo, remainingAmountTodayKobo: kobo,
+    dailyCount: z.number().int().nonnegative(), remainingCountToday: z.number().int().nonnegative(),
+  }),
+  fee: z.object({
+    /** Who pays the transfer fee: the platform, or the person (it comes off what reaches the bank). */
+    bearer: z.enum(FEE_BEARERS),
+    /** The current payout provider's published fee tiers (empty when payouts aren't configured). */
+    tiers: z.array(feeTierSchema),
+    /** For ?amountKobo=: the estimated fee, and what reaches the bank. The real fee replaces it when the provider reports it. */
+    estimate: z.object({ amountKobo: kobo, feeKobo: kobo, sentKobo: z.number().int() }).nullable(),
+  }),
+});
+export type WalletLimits = z.infer<typeof walletLimitsSchema>;
 export const topupSchema = z.object({
   reference: z.string(), amountKobo: kobo, currency: z.literal(CURRENCY), status: z.enum(TOPUP_STATUSES),
   /** Where to send the person to pay; null once it's no longer payable. */
@@ -156,6 +192,7 @@ export const topupSchema = z.object({
   createdAt: z.string(), creditedAt: z.string().nullable(),
 });
 export type TopupView = z.infer<typeof topupSchema>;
+
 
 export const bankSchema = z.object({ code: z.string(), name: z.string() });
 export const banksResponseSchema = z.object({ banks: z.array(bankSchema) });
