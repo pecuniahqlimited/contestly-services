@@ -285,12 +285,21 @@ export type AdminEmailView = z.infer<typeof adminEmailViewSchema>;
 
 // ---------------------------------------------------------------- public config
 
-/** GET /config: what the app needs before anyone signs in. Support contacts are null when not set. */
-export const publicConfigSchema = z.object({
+/** What GET /config takes from the environment, checked once at start: support contacts, null when not set. */
+export const publicEnvConfigSchema = z.object({
   support: z.object({
     email: z.string().email().nullable(),
     /** E.164 ("+2348012345678"); the app opens https://wa.me/<digits>. */
     whatsapp: z.string().regex(/^\+[1-9]\d{7,14}$/, "E.164, like +2348012345678").nullable(),
   }),
+});
+export type PublicEnvConfig = z.infer<typeof publicEnvConfigSchema>;
+/**
+ * GET /config: what the app needs before anyone signs in or posts. `social` is the admin's current social
+ * config, read per request: the post length cap (check before sending; the server enforces it) and the
+ * "your people" window in days (for copy like "played together in the last 30 days").
+ */
+export const publicConfigSchema = publicEnvConfigSchema.extend({
+  social: z.object({ cornerPostMaxChars: z.number().int(), yourPeopleDays: z.number().int() }),
 });
 export type PublicConfig = z.infer<typeof publicConfigSchema>;

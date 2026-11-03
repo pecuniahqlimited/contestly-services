@@ -11,7 +11,7 @@ import { clientIpResolver, trustConfigFromEnv, type TrustConfig } from "./client
 import { limitsFromEnv, type Limits } from "./limits.js";
 import { publicConfigFromEnv } from "./publicConfig.js";
 import { configRoutes } from "./routes/config.js";
-import type { PublicConfig } from "@contestly/shared";
+import type { PublicEnvConfig } from "@contestly/shared";
 import { rateLimited, valkey } from "./redis.js";
 import { meRoutes } from "./routes/me.js";
 import { usersRoutes } from "./routes/users.js";
@@ -45,7 +45,7 @@ export interface AppOptions {
   /** Tests set the limits and the trusted proxies; the server reads them from the environment. */
   limits?: Limits;
   /** GET /config's answer (support contacts); from the environment unless a test passes its own. */
-  publicConfig?: PublicConfig;
+  publicConfig?: PublicEnvConfig;
   trust?: TrustConfig;
 }
 
