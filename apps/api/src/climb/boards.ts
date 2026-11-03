@@ -1,10 +1,10 @@
 /**
  * Climb leaderboards. Everyone is a Valkey sorted set per week (member = user id, score = week points);
- * Friends reads the same set for the people the viewer follows. Postgres (climb_weeks) is the record:
+ * Friends reads the same set for the viewer's people (ADR 0012). Postgres (climb_weeks) is the record:
  * a missing set is rebuilt from it. ▲/▼ compare with the snapshot the worker takes when each Lagos day begins.
  */
 import { and, eq, inArray } from "drizzle-orm";
-import { climbWeeks, db, follows, liveUser, users } from "@contestly/db";
+import { climbWeeks, db, liveUser, users, yourPeople } from "@contestly/db";
 import { valkey } from "../redis.js";
 import { CLIMB_BOARD_TTL_SECONDS, lagosDay, weekOf, climbBoardKey, climbBoardStartOfDayKey, type ClimbBoardRow, type ClimbDay, type Person } from "@contestly/shared";
 import { competitionRanks } from "@contestly/game";
@@ -116,11 +116,10 @@ export async function everyoneBoard(week: ClimbDay, viewerId: string, limit: num
   return { rows, me, ahead };
 }
 
-/** Friends: the viewer and everyone they follow who has played this week, ranked among themselves. */
+/** Friends: the viewer and their people (crew, contacts, played with lately) who have played this week, ranked among themselves. */
 export async function friendsBoard(week: ClimbDay, viewerId: string): Promise<Board> {
   await ensureBoard(week);
-  const followed = await db.select({ id: follows.followeeId }).from(follows).where(eq(follows.followerId, viewerId));
-  const ids = [viewerId, ...followed.map((f) => f.id)];
+  const ids = [viewerId, ...(await yourPeople(viewerId))];
   const [now, then] = await Promise.all([r().zmscore(climbBoardKey(week), ...ids), r().zmscore(climbBoardStartOfDayKey(week), ...ids)]);
   const present = ids.map((userId, i) => ({ userId, points: now[i], prev: then[i] })).filter((x) => x.points !== null);
   const ranked = competitionRanks(present.map((x) => ({ userId: x.userId, points: Number(x.points) })));

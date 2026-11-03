@@ -13,11 +13,13 @@ export * from "./about.js";
 export * from "./admin.js";
 export * from "./chat.js";
 export * from "./social.js";
+export * from "./corners.js";
 export * from "./partyLeave.js";
 export * from "./rateLimits.js";
 export * from "./payments.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
+import { CORNER_STATUSES, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { owedSchema } from "./payments.js";
@@ -325,6 +327,7 @@ export type PaymentsJob =
  * closed and write its pending weekly awards.
  */
 export type ClimbJob = { kind: "day_start" } | { kind: "week_close" };
+/** A public party opened: its host's corner followers with alerts on hear about it (row 9 delivers). */
 export type NotifyFollowersJob = { kind: "party_created"; partyId: string; hostId: string };
 export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserId: string; toUserIds: string[] };
 /** The host's question set couldn't be built; they can retry or edit the brief. */
@@ -411,26 +414,14 @@ export type SessionMe = z.infer<typeof sessionMeResponseSchema>;
 export const guestResponseSchema = publicUserSchema.extend({ isGuest: z.literal(true) });
 
 
-/** How the viewer stands with someone: follows them (with party alerts on or off), is followed back. All false signed out. */
-export const viewerFollowSchema = z.object({ following: z.boolean(), notify: z.boolean(), followsYou: z.boolean() });
+/** POST /me/contacts/match: people among the viewer's contacts who added a number. They become your people (ADR 0012). */
+export const contactsMatchResponseSchema = z.object({ matches: z.array(personSchema) });
 
-/** POST/DELETE/PATCH /users/:id/follow → the viewer's follow state for that person. */
-export const followStateSchema = z.object({ following: z.boolean(), notify: z.boolean() });
-/** PATCH /users/:id/follow: party alerts for this one follow. */
-export const followAlertSchema = z.object({ notify: z.boolean() });
-
-/** GET /users/:handle/followers and /following: people the viewer follows come first. */
-export const followListEntrySchema = personSchema.extend({ viewer: viewerFollowSchema });
-export const followListResponseSchema = z.array(followListEntrySchema);
-
-/** POST /me/contacts/match: people among the viewer's contacts who added a number. */
-export const contactsMatchResponseSchema = z.object({ matches: z.array(followListEntrySchema) });
-
-/** GET /me/played-with: people from finished parties I played, whom I don't follow yet. Most parties together first. */
+/** GET /me/played-with: people from finished parties I played, most parties together first, then most recent. */
 export const playedWithEntrySchema = personSchema.extend({ partiesTogether: z.number().int(), lastPlayedAt: z.string().datetime() });
 export const playedWithResponseSchema = z.array(playedWithEntrySchema);
 
-/** GET /users/:handle: a profile with counts, play stats, the viewer's follow state and open parties hosted. */
+/** GET /users/:handle: a profile with play stats, their corner (if they have one) and open parties hosted. People aren't followed (ADR 0012). */
 export const userStatsSchema = z.object({
   parties: z.number().int(),
   wins: z.number().int(),
@@ -493,12 +484,12 @@ export const partyRowSchema = z.object({
 
 /** Faces on a party card. */
 export const MAX_PARTY_FACES = 4;
-/** People the viewer follows, named on a card ("Ada and 2 you follow are in"). */
+/** The viewer's people (crew, contacts, played with lately), named on a card ("Ada and 2 of your people are in"). */
 export const MAX_FRIENDS_NAMED = 2;
 
 /**
  * Who's in a party, as a card shows it: the first faces (the host's, if they play, then by join time),
- * and the people the viewer follows who are in it, the first few named, with how many in all.
+ * and the viewer's people who are in it, the first few named, with how many in all.
  */
 export const partyPeopleSchema = z.object({
   faces: z.array(personSchema),
@@ -610,6 +601,8 @@ export const partyDetailSchema = partySummarySchema.extend({
   invite: partyLinksSchema,
   /** Who invited the viewer, while the invite is pending. */
   invitedBy: personSchema.nullable(),
+  /** The host's corner, if they have one: the lobby's "Follow corner". */
+  hostCorner: hostCornerSchema.nullable(),
   /** The host's own brief, so their team can fix a failed set; null for everyone else (it can give the answers away). */
   brief: z.string().nullable(),
   questions: questionDisclosureSchema,
@@ -640,15 +633,30 @@ export const recentPartySchema = partyRowSchema.pick({ id: true, title: true, ca
 export const MAX_PROFILE_RECENT_PARTIES = 5;
 
 export const userProfileSchema = publicUserSchema.merge(profileSocialSchema).extend({
-  followers: z.number().int(),
-  following: z.number().int(),
   stats: userStatsSchema,
-  viewer: viewerFollowSchema,
+  /** Their corner, if they have one unlocked: "Follow corner" goes there. */
+  corner: hostCornerSchema.nullable(),
   /** Null signed out and on your own profile. */
   headToHead: headToHeadSchema.nullable(),
   recent: z.array(recentPartySchema),
   hosting: z.array(partyRowSchema),
 });
+
+/**
+ * GET /corners/:id: a host's corner (ADR 0012). Up next (their open and live public parties), recent
+ * winners, this week's Regulars by party points in their parties, followers, and posts. `viewer.isOwner`
+ * shows the host's tools; `muted` is never sent, so a muted follower isn't told.
+ */
+export const cornerPageSchema = z.object({
+  corner: cornerRefSchema.extend({ bio: z.string().nullable(), status: z.enum(CORNER_STATUSES), unlockedAt: z.string().datetime().nullable() }),
+  viewer: cornerViewerSchema.extend({ isOwner: z.boolean() }),
+  yourPeopleFollowing: yourPeopleFollowingSchema,
+  upNext: z.array(partySummarySchema),
+  winners: z.array(cornerWinnerSchema),
+  regulars: z.object({ week: z.string(), rows: z.array(cornerRegularSchema) }),
+  posts: cornerPostsPageSchema,
+});
+export type CornerPage = z.infer<typeof cornerPageSchema>;
 
 /** Each party in GET /me/parties: why it's mine, its last chat line, who invited me, and where I placed. */
 export const MY_PARTY_ROLES = ["hosting", "playing", "invited"] as const;
@@ -678,7 +686,7 @@ export const myPartiesResponseSchema = z.object({
 
 /** Invites per party, from everyone in it together. */
 export const MAX_INVITES_PER_PARTY = 50;
-/** POST /parties/:id/invites: only people the inviter follows, is followed by, or has played with. */
+/** POST /parties/:id/invites: only people the inviter has as contacts, has played with, or shares a crew with. */
 export const inviteToPartySchema = z.object({ userIds: z.array(z.string().uuid()).min(1).max(MAX_INVITES_PER_PARTY) });
 /** → 201: how many were newly invited (already invited, already in, or yourself are skipped). */
 export const inviteToPartyResponseSchema = z.object({ invited: z.number().int() });
@@ -744,9 +752,6 @@ export type PartyPlayer = z.infer<typeof partyPlayerSchema>;
 export type QuestionDisclosure = z.infer<typeof questionDisclosureSchema>;
 export type JoinPartyResponse = z.infer<typeof joinPartyResponseSchema>;
 export type UserProfile = z.infer<typeof userProfileSchema>;
-export type ViewerFollow = z.infer<typeof viewerFollowSchema>;
-export type FollowState = z.infer<typeof followStateSchema>;
-export type FollowListEntry = z.infer<typeof followListEntrySchema>;
 export type PlayedWithEntry = z.infer<typeof playedWithEntrySchema>;
 export type PartyPeople = z.infer<typeof partyPeopleSchema>;
 export type PartyLinks = z.infer<typeof partyLinksSchema>;

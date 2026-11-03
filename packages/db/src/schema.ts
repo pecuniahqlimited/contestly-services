@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -212,25 +212,27 @@ export const emailSends = pgTable("email_sends", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("email_sends_created_idx").on(t.createdAt)]);
 
+/** Someone follows a corner (ADR 0012): people follow hosts' corners, never each other. Per-corner party alerts, on by default. */
 export const follows = pgTable("follows", {
   followerId: uuid("follower_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  followeeId: uuid("followee_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  cornerId: uuid("corner_id").notNull().references((): AnyPgColumn => corners.id, { onDelete: "cascade" }),
   notify: boolean("notify").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [primaryKey({ columns: [t.followerId, t.followeeId] }), index("follows_followee_idx").on(t.followeeId)]);
+}, (t) => [primaryKey({ columns: [t.followerId, t.cornerId] }), index("follows_corner_created_idx").on(t.cornerId, t.createdAt)]);
 
 /**
  * Follows of or by a deleted account (ADR 0010), moved here from `follows` in the delete's transaction:
- * out of every live query, kept so an admin can see who the account was connected to.
+ * out of every live query, kept so an admin can see who the account was connected to. A deleted host's
+ * corner is archived and its followers' follows move here too.
  */
 export const archivedFollows = pgTable("archived_follows", {
   id: uuid("id").primaryKey().defaultRandom(),
   followerId: uuid("follower_id").notNull().references(() => users.id),
-  followeeId: uuid("followee_id").notNull().references(() => users.id),
+  cornerId: uuid("corner_id").notNull().references((): AnyPgColumn => corners.id),
   notify: boolean("notify").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   archivedAt: timestamp("archived_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("archived_follows_follower_idx").on(t.followerId), index("archived_follows_followee_idx").on(t.followeeId)]);
+}, (t) => [index("archived_follows_follower_idx").on(t.followerId), index("archived_follows_corner_idx").on(t.cornerId)]);
 
 export const parties = pgTable("parties", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1280,8 +1282,158 @@ export const feedEvents = pgTable("feed_events", {
   data: jsonb("data").notNull(),
   /** A private party's finish is shown only to people who were in it. */
   partyId: uuid("party_id").references(() => parties.id, { onDelete: "cascade" }),
+  /** A corner_post event: the post (deleting it takes the event with it). */
+  cornerPostId: uuid("corner_post_id").references((): AnyPgColumn => cornerPosts.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("feed_events_user_created_idx").on(t.userId, t.createdAt), uniqueIndex("feed_events_party_once").on(t.userId, t.partyId).where(sql`kind = 'party_finished'`)]);
+}, (t) => [index("feed_events_user_created_idx").on(t.userId, t.createdAt), index("feed_events_corner_post_idx").on(t.cornerPostId), uniqueIndex("feed_events_party_once").on(t.userId, t.partyId).where(sql`kind = 'party_finished'`)]);
+
+// ---------------------------------------------------------------- Corners (ADR 0012, row 6c)
+
+export const cornerStatus = pgEnum("corner_status", CORNER_STATUSES);
+
+/**
+ * A host's home, one per account, made the first time a party they host finishes (locked) or when a verified
+ * brand is approved (createBrandCorner, unlocked). Shown only while unlocked, not archived and its owner isn't
+ * banned: a ban hides it and an unban brings it back, with nothing written (cornerShown in corners.ts).
+ */
+export const corners = pgTable("corners", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerUserId: uuid("owner_user_id").notNull().unique().references(() => users.id),
+  name: text("name").notNull(),
+  bio: text("bio"),
+  status: cornerStatus("status").notNull().default("locked"),
+  level: integer("level").notNull().default(1),
+  unlockedAt: timestamp("unlocked_at", { withTimezone: true }),
+  /** The corner_configs version whose thresholds it met; null for a brand's corner (no unlock). */
+  unlockConfigVersion: integer("unlock_config_version"),
+  /** Who made up N when it unlocked, so an admin can spot-check it. */
+  unlockContributors: uuid("unlock_contributors").array().notNull().default(sql`'{}'::uuid[]`),
+  revokedByUserId: uuid("revoked_by_user_id").references(() => users.id),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedReason: text("revoked_reason"),
+  /** Its owner deleted their account (ADR 0010): archived, its follows moved to archived_follows. */
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("corners_status_idx").on(t.status)]);
+
+/** The unlock thresholds (P, R, D, N): one immutable row per admin save; the newest is current. Version 1 from the migration. */
+export const cornerConfigs = pgTable("corner_configs", {
+  version: integer("version").primaryKey(),
+  config: jsonb("config").$type<CornerUnlockConfig>().notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Unlock progress, read model 1: every finished party a host hosted, with how many real players it had
+ * (signed in, actually answered, host excluded) and whether that met R then. Written at settlement.
+ */
+export const cornerParties = pgTable("corner_parties", {
+  partyId: uuid("party_id").primaryKey().references(() => parties.id, { onDelete: "cascade" }),
+  hostUserId: uuid("host_user_id").notNull().references(() => users.id),
+  realPlayers: integer("real_players").notNull(),
+  counts: boolean("counts").notNull(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }).notNull(),
+}, (t) => [index("corner_parties_host_idx").on(t.hostUserId, t.finishedAt)]);
+
+/** Read model 2: the real players of each counted party (D is the distinct ones per host). */
+export const cornerPartyPlayers = pgTable("corner_party_players", {
+  partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  hostUserId: uuid("host_user_id").notNull().references(() => users.id),
+}, (t) => [primaryKey({ columns: [t.partyId, t.userId] }), index("corner_party_players_host_idx").on(t.hostUserId, t.userId)]);
+
+/**
+ * Read model 3: who brought each person to Contestly. One row per person, for the first host only: whoever
+ * hosted their first finished party, or whose invite they signed up from. Pending until they've finished one
+ * of that host's parties; then counted or excluded (with why), once. A ban takes a counted player out of N
+ * without touching the row.
+ */
+export const cornerNewPlayers = pgTable("corner_new_players", {
+  userId: uuid("user_id").primaryKey().references(() => users.id),
+  hostUserId: uuid("host_user_id").notNull().references(() => users.id),
+  via: text("via").$type<NewPlayerVia>().notNull(),
+  status: text("status").$type<NewPlayerStatus>().notNull().default("pending"),
+  reason: text("reason").$type<NewPlayerExclusion>(),
+  /** The party that attributed them (first_party) or the invite's party. */
+  partyId: uuid("party_id").references(() => parties.id, { onDelete: "set null" }),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("corner_new_players_host_idx").on(t.hostUserId, t.status)]);
+
+/**
+ * Soft signals per account, for the new-player rule and the unlock cluster warning: the install id the app
+ * sends (INSTALL_ID_HEADER) and the client IP, each recorded the first time an account is seen with it.
+ * Never shown to people; admins see them only through the unlock alerts.
+ */
+export const userSignals = pgTable("user_signals", {
+  kind: text("kind").$type<"install" | "ip">().notNull(),
+  value: text("value").notNull(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.kind, t.value, t.userId] }), index("user_signals_user_idx").on(t.userId)]);
+
+/**
+ * Played-with, a read model (ADR 0012): each pair of signed-up people who finished a party together, how many
+ * times and when last. user_a < user_b. Written at settlement; DMs, your people and invites read it.
+ */
+export const playedWith = pgTable("played_with", {
+  userA: uuid("user_a").notNull().references(() => users.id),
+  userB: uuid("user_b").notNull().references(() => users.id),
+  parties: integer("parties").notNull().default(1),
+  lastPlayedAt: timestamp("last_played_at", { withTimezone: true }).notNull(),
+}, (t) => [primaryKey({ columns: [t.userA, t.userB] }), index("played_with_b_idx").on(t.userB, t.lastPlayedAt), check("played_with_ordered", sql`${t.userA} < ${t.userB}`)]);
+
+/** Contacts matched by phone hash (POST /me/contacts/match): `userId` has `contactUserId`'s number. Either way makes them contacts. */
+export const contactMatches = pgTable("contact_matches", {
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  contactUserId: uuid("contact_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  matchedAt: timestamp("matched_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.userId, t.contactUserId] }), index("contact_matches_contact_idx").on(t.contactUserId)]);
+
+/** A host's post on their corner. Text only in v1. Deleting keeps the row (who deleted it) and hides it. */
+export const cornerPosts = pgTable("corner_posts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  cornerId: uuid("corner_id").notNull().references(() => corners.id),
+  authorUserId: uuid("author_user_id").notNull().references(() => users.id),
+  text: text("text").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedByUserId: uuid("deleted_by_user_id").references(() => users.id),
+}, (t) => [index("corner_posts_corner_created_idx").on(t.cornerId, t.createdAt)]);
+
+/** One reaction per person per post, changeable. `muted`: sent while muted in the corner, so only its sender sees it. */
+export const cornerPostReactions = pgTable("corner_post_reactions", {
+  postId: uuid("post_id").notNull().references(() => cornerPosts.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  emoji: text("emoji").notNull(),
+  muted: boolean("muted").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.postId, t.userId] })]);
+
+/** A reply to a post, one level deep, masked like a chat line. `muted`: written while muted, so only its author sees it. */
+export const cornerPostReplies = pgTable("corner_post_replies", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  postId: uuid("post_id").notNull().references(() => cornerPosts.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  text: text("text").notNull(),
+  clientMsgId: uuid("client_msg_id").notNull(),
+  muted: boolean("muted").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  deletedByUserId: uuid("deleted_by_user_id").references(() => users.id),
+}, (t) => [index("corner_post_replies_post_idx").on(t.postId, t.createdAt), uniqueIndex("corner_post_replies_client").on(t.userId, t.clientMsgId)]);
+
+/** A follower muted in a corner by its host: their replies and reactions there reach only themselves. They aren't told. */
+export const cornerMutes = pgTable("corner_mutes", {
+  cornerId: uuid("corner_id").notNull().references(() => corners.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  mutedByUserId: uuid("muted_by_user_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.cornerId, t.userId] })]);
+
+export type Corner = typeof corners.$inferSelect;
+export type CornerPostRow = typeof cornerPosts.$inferSelect;
 
 export type Crew = typeof crews.$inferSelect;
 export type CrewMember = typeof crewMembers.$inferSelect;

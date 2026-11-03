@@ -4,13 +4,13 @@
  * by HMAC over the app's SHA-256 of each number, against people who added a number; nothing sent is kept.
  */
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { db, liveUser, userByIdentity, users, type User } from "@contestly/db";
+import { db, liveUser, recordContactMatches, userByIdentity, users, type User } from "@contestly/db";
 import { deleteFirebaseUser, verifyIdToken } from "@contestly/auth";
 import { CONTACT_HASHES_PER_DAY, CONTACT_SYNCS_PER_DAY, lagosDay, normalisePhone, phoneHash } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { limit } from "./redis.js";
 import { phoneHmac } from "./signin/secrets.js";
-import { personColumns, viewerRelations } from "./people.js";
+import { personColumns } from "./people.js";
 
 /** The SMS check must be this recent: an old phone token proves nothing about today. */
 const PHONE_CHECK_MAX_AGE_SECONDS = 10 * 60;
@@ -33,7 +33,7 @@ export async function addPhone(me: User, idToken: string) {
   return { phoneAdded: true };
 }
 
-/** People among the viewer's contacts who added a number. Capped per request (schema) and per Lagos day. */
+/** People among the viewer's contacts who added a number, recorded as contacts. Capped per request (schema) and per Lagos day. */
 export async function matchContacts(me: User, hashes: string[]) {
   const day = lagosDay();
   await limit("contacts:syncs", `${me.id}:${day}`, CONTACT_SYNCS_PER_DAY, DAY_SECONDS, "contacts_limit");
@@ -41,6 +41,7 @@ export async function matchContacts(me: User, hashes: string[]) {
   const hmacs = [...new Set(hashes)].map(phoneHmac);
   const rows = await db.select(personColumns).from(users)
     .where(and(inArray(users.phoneHmac, hmacs), eq(users.isGuest, false), eq(users.isSystem, false), ne(users.id, me.id), liveUser));
-  const relations = await viewerRelations(me.id, rows.map((r) => r.id));
-  return { matches: rows.map((r) => ({ ...r, viewer: relations.get(r.id)! })) };
+  // Kept (not the numbers sent, only who matched): contacts are your people and can message you directly (ADR 0012).
+  await recordContactMatches(me.id, rows.map((r) => r.id));
+  return { matches: rows };
 }

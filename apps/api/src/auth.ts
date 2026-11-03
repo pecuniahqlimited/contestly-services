@@ -3,6 +3,7 @@ import type { FastifyRequest } from "fastify";
 import { assertNotBanned, NoCredentials, resolveUser, Unauthorized, type Session } from "@contestly/auth";
 import { SIGN_UP_REQUIRED, TOO_MANY_GUESTS, MISSING_PERMISSION, type PaymentPermission } from "@contestly/shared";
 import { limit } from "./redis.js";
+import { noteSignals } from "./signals.js";
 import { hasPermission } from "@contestly/payments";
 import type { User } from "@contestly/db";
 
@@ -36,6 +37,7 @@ export const authPlugin = fp<{ resolve?: SessionResolver }>(async (app, opts) =>
       if (!(e instanceof Unauthorized)) throw e;
       req.authRejected = e;
     }
+    await noteSignals(req);
   });
 });
 

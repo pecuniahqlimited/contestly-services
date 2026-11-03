@@ -28,7 +28,7 @@ export async function climbRoutes(app: FastifyInstance) {
     return answerRound(requireSession(req), uuidParam(req), roundId, answer, req.log);
   });
 
-  /** This week's board: friends (the people you follow, and you) or everyone. */
+  /** This week's board: friends (you and your people) or everyone. */
   app.get("/climb/leaderboard", async (req): Promise<ClimbBoard> => {
     const me = requireSession(req);
     const { board } = boardQuerySchema.parse(req.query);

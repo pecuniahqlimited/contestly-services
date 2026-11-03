@@ -3,19 +3,23 @@ import { chatSendSchema, dmKey, dmPermission, maskProfanity, partyChatFromOutsid
 
 const person = { isGuest: false, isBrand: false, isSystem: false };
 const facts = (over: Partial<DmFacts> = {}): DmFacts => ({
-  sender: person, recipient: { ...person, isDeleted: false }, recipientFollowsSender: false, playedTogether: false, shareCrew: false, joinedSendersParty: false, ...over,
+  sender: person, recipient: { ...person, isDeleted: false }, contacts: false, playedTogether: false, shareCrew: false, joinedSendersParty: false, ...over,
 });
 
 describe("dmPermission", () => {
   it("asks a stranger with a request", () => expect(dmPermission(facts())).toBe("request"));
   it("refuses a deleted account, whatever connects them", () => {
-    expect(dmPermission(facts({ recipient: { ...person, isDeleted: true }, recipientFollowsSender: true, playedTogether: true, shareCrew: true }))).toBe("refused");
+    expect(dmPermission(facts({ recipient: { ...person, isDeleted: true }, contacts: true, playedTogether: true, shareCrew: true }))).toBe("refused");
   });
-  it("is direct when the recipient follows the sender", () => expect(dmPermission(facts({ recipientFollowsSender: true }))).toBe("direct"));
+  it("is direct between contacts (ADR 0012)", () => expect(dmPermission(facts({ contacts: true }))).toBe("direct"));
+  it("has no follow rule any more: following someone's corner opens nothing", () => {
+    expect(Object.keys(facts())).not.toContain("recipientFollowsSender");
+    expect(dmPermission(facts())).toBe("request");
+  });
   it("is direct after a finished party together", () => expect(dmPermission(facts({ playedTogether: true }))).toBe("direct"));
   it("is direct between crewmates", () => expect(dmPermission(facts({ shareCrew: true }))).toBe("direct"));
   it("refuses guests on either side", () => {
-    expect(dmPermission(facts({ sender: { ...person, isGuest: true }, recipientFollowsSender: true }))).toBe("refused");
+    expect(dmPermission(facts({ sender: { ...person, isGuest: true }, contacts: true }))).toBe("refused");
     expect(dmPermission(facts({ recipient: { ...person, isGuest: true }, playedTogether: true }))).toBe("refused");
   });
   it("refuses system accounts", () => expect(dmPermission(facts({ recipient: { ...person, isSystem: true } }))).toBe("refused"));
@@ -23,7 +27,7 @@ describe("dmPermission", () => {
     const brand = { ...person, isBrand: true };
     expect(dmPermission(facts({ sender: brand, joinedSendersParty: true }))).toBe("direct");
     expect(dmPermission(facts({ sender: brand }))).toBe("refused");
-    expect(dmPermission(facts({ sender: brand, recipientFollowsSender: true }))).toBe("refused");
+    expect(dmPermission(facts({ sender: brand, contacts: true, playedTogether: true }))).toBe("refused");
   });
 });
 

@@ -3,7 +3,7 @@
  *
  * 1. A bragging-rights party played to the end: party points for everyone, finishes in the feed, profiles
  *    with real stats, head-to-head and the DM rule opened by playing together.
- * 2. The friends board (Climb + party points).
+ * 2. The friends board (Climb + party points) from your people (ADR 0012).
  * 3. Rematch: one party for everyone who taps it. Challenge: a private party for two, posted in your DM.
  * 4. A crew: create, invite, accept, crew chat live in the inbox, the crew board, a crew party that invites
  *    the crew, a Climb run that sets a crew record, roles, and the creator leaving.
@@ -65,12 +65,11 @@ const points = await db.select().from(partyDays).where(eq(partyDays.day, today))
 const mine = (h: string) => points.find((p) => p.userId === id(h));
 ok([A, B, C].every((h) => (mine(h)?.points ?? 0) >= 10) && points.filter((p) => [A, B, C].map(id).includes(p.userId)).reduce((n, p) => n + p.wins, 0) === 1, "everyone earned party points, one of them a win");
 
-await api(B, "POST", `/users/${id(A)}/follow`);
-await api(B, "POST", `/users/${id(C)}/follow`);
 const profile = await api(B, "GET", `/users/${A}`);
 ok(profile.stats.parties === 1 && profile.headToHead?.played === 1, "A's profile shows the party and B's head-to-head");
 ok(profile.canMessage === "direct", "playing a party together opens messages");
-ok(profile.mutuals.count === 0 && profile.streak.best >= 0 && typeof profile.climb.bestRunPoints === "number", "the profile carries Climb bests, streaks and mutuals");
+ok(profile.mutuals.count === 1 && profile.mutuals.faces[0]?.id === id(C), "mutuals: C played with both, so C is B's person and A's");
+ok(profile.streak.best >= 0 && typeof profile.climb.bestRunPoints === "number" && profile.corner === null && !("followers" in profile), "the profile carries Climb bests and streaks, and no follow counts");
 const feed = await api(B, "GET", "/feed");
 ok(feed.events.some((e: any) => e.kind === "party_finished" && e.person.id === id(A) && e.data.partyId === party.id), "B's feed shows A finishing the party");
 ok(!JSON.stringify(feed).match(/kobo|prize|₦/i), "and says nothing about money");
@@ -81,7 +80,7 @@ ok((await api(B, "GET", `/users/${A}/activity`)).events.length >= 1, "A's activi
 console.log("\n2. Friends board");
 const board = await api(B, "GET", "/leaderboards/friends");
 const handlesOnBoard = board.rows.map((r: any) => r.person.handle);
-ok([A, B, C].every((h) => handlesOnBoard.includes(h)), "you and the people you follow, with points");
+ok([A, B, C].every((h) => handlesOnBoard.includes(h)), "you and your people (played together), with points");
 ok(board.rows.every((r: any) => r.total === r.climb + r.parties) && board.me?.isMe, "each total is Climb plus party points, your row marked");
 ok((await api(B, "GET", "/leaderboards/friends?period=all")).period === "all", "and all time");
 

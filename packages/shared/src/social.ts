@@ -1,6 +1,7 @@
 /**
- * The social layer (row 6b): profiles from real results, the friends and crew boards (Climb points plus
- * party points, ADR 0008), the feed of what your people did, crews, Challenge and rematch. Nothing here
+ * The social layer (row 6b; ADR 0012 for who your people are): profiles from real results, the friends and
+ * crew boards (Climb points plus party points, ADR 0008), the feed of what your people did, crews, Challenge
+ * and rematch. Nothing here
  * leads with money: boards and feeds count play, never prizes.
  */
 import { z } from "zod";
@@ -24,6 +25,10 @@ export const socialConfigSchema = z.object({
   challengesPerDay: z.number().int().min(1),
   /** Streak lengths that show up in the feed. */
   streakMilestones: z.array(z.number().int().min(2)),
+  /** Your people include who you finished a party with in the last this many days (ADR 0012). */
+  yourPeopleDays: z.number().int().min(1).max(365),
+  /** Longest host post on a corner, in characters. */
+  cornerPostMaxChars: z.number().int().min(20).max(5000),
 });
 export type SocialConfig = z.infer<typeof socialConfigSchema>;
 export const DEFAULT_SOCIAL_CONFIG: SocialConfig = {
@@ -34,6 +39,8 @@ export const DEFAULT_SOCIAL_CONFIG: SocialConfig = {
   partyPointsDailyCap: 5,
   challengesPerDay: 10,
   streakMilestones: [7, 14, 30, 50, 100, 365],
+  yourPeopleDays: 30,
+  cornerPostMaxChars: 500,
 };
 
 /**
@@ -81,13 +88,15 @@ export type SocialBoard = z.infer<typeof socialBoardSchema>;
 
 // ---- feed ------------------------------------------------------------------------------
 
-export const FEED_KINDS = ["party_finished", "climb_best", "streak"] as const;
+/** corner_post: a host's post, in the feed of the corner's followers (the others go to the person's people). */
+export const FEED_KINDS = ["party_finished", "climb_best", "streak", "corner_post"] as const;
 export type FeedKind = (typeof FEED_KINDS)[number];
 /** What each kind carries. Never an amount of money. */
 export const feedDataSchemas = {
   party_finished: z.object({ partyId: z.string().uuid(), title: z.string(), rank: z.number().int().nullable(), playerCount: z.number().int() }),
   climb_best: z.object({ points: z.number().int(), stagesCleared: z.number().int(), stageCount: z.number().int(), clearedAll: z.boolean() }),
   streak: z.object({ days: z.number().int() }),
+  corner_post: z.object({ cornerId: z.string().uuid(), postId: z.string().uuid(), text: z.string() }),
 } as const;
 export type FeedData<K extends FeedKind> = z.infer<(typeof feedDataSchemas)[K]>;
 export const feedEventSchema = z.discriminatedUnion("kind", FEED_KINDS.map((kind) =>
@@ -105,7 +114,7 @@ export type FeedPage = z.infer<typeof feedPageSchema>;
 export const profileSocialSchema = z.object({
   climb: z.object({ bestRunPoints: z.number().int(), bestStagesCleared: z.number().int(), clearedAll: z.boolean() }),
   streak: z.object({ current: z.number().int(), best: z.number().int() }),
-  /** People the viewer follows who follow this person: how many, and the first few. */
+  /** People who are both the viewer's people and theirs (crew, contacts, played with lately): how many, and the first few. */
   mutuals: z.object({ count: z.number().int(), faces: z.array(personSchema) }),
   /** Whether the viewer can message them: direct, a request, or not at all. Null signed out or on your own profile. */
   canMessage: z.enum(["direct", "request", "refused"]).nullable(),

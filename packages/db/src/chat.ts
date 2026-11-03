@@ -7,7 +7,8 @@ import { createHash } from "node:crypto";
 import { and, count, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { chatThreadChannel, chatUserChannel, dmKey, dmPermission, maskProfanity, type ChatConfig, type ChatMessage, type DmPermission, type InboxUpdate } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { chatMembers, chatMessages, chatThreads, crewMembers, crews, follows, parties, partyPlayers, users, voiceNotes, type ChatThread, type User, type VoiceNote } from "./schema.js";
+import { chatMembers, chatMessages, chatThreads, crewMembers, crews, parties, partyPlayers, users, voiceNotes, type ChatThread, type User, type VoiceNote } from "./schema.js";
+import { areContacts, playedTogether as finishedAPartyTogether } from "./social.js";
 import { hostTeamOf } from "./host.js";
 import { resolveMentions } from "./mentions.js";
 
@@ -62,10 +63,9 @@ const exists = (q: Conn, query: ReturnType<typeof sql>) => q.execute(sql`select 
 /** Loads the facts dmPermission() decides on. */
 export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient: Pick<User, "id" | "isGuest" | "isSystem" | "deletedAt">): Promise<DmPermission> {
   if (sender.id === recipient.id) return "refused";
-  const [recipientFollowsSender, playedTogether, shareCrew, joinedSendersParty] = await Promise.all([
-    exists(q, sql`select 1 from ${follows} where follower_id = ${recipient.id} and followee_id = ${sender.id}`),
-    exists(q, sql`select 1 from ${partyPlayers} a join ${partyPlayers} b on b.party_id = a.party_id join ${parties} p on p.id = a.party_id
-                  where a.user_id = ${sender.id} and b.user_id = ${recipient.id} and p.status = 'finished'`),
+  const [contacts, playedTogether, shareCrew, joinedSendersParty] = await Promise.all([
+    areContacts(q, sender.id, recipient.id),
+    finishedAPartyTogether(q, sender.id, recipient.id),
     exists(q, sql`select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id
                   where a.user_id = ${sender.id} and b.user_id = ${recipient.id} and c.archived_at is null`),
     sender.isBrand
@@ -74,7 +74,7 @@ export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient
       : false,
   ]);
   return dmPermission({
-    sender, recipient: { isGuest: recipient.isGuest, isSystem: recipient.isSystem, isDeleted: recipient.deletedAt !== null }, recipientFollowsSender, playedTogether, shareCrew, joinedSendersParty,
+    sender, recipient: { isGuest: recipient.isGuest, isSystem: recipient.isSystem, isDeleted: recipient.deletedAt !== null }, contacts, playedTogether, shareCrew, joinedSendersParty,
   });
 }
 
@@ -85,8 +85,8 @@ export const requestStateFor = (mine: { state: string }, theirs: { state: string
 
 /**
  * Open (or find) the DM between sender and recipient. A refused pair gets no thread. A request leaves the
- * recipient's side `request` until they accept or reply; if the rule now says direct (they followed back,
- * played together), a pending or declined side opens up.
+ * recipient's side `request` until they accept or reply; if the rule now says direct (they matched as
+ * contacts, played together), a pending or declined side opens up.
  */
 export async function openDm(sender: ChatSender, recipient: User) {
   const permission = await dmPermissionBetween(db, sender, recipient);
@@ -290,7 +290,7 @@ async function keptLine(userId: string, clientMsgId: string, q: Conn = db): Prom
 
 /**
  * A DM's own rules. Writing answers a request sent to you (it opens). If the other side hasn't accepted
- * yours, the rule is checked again (a follow-back opens it); otherwise a few text lines may wait for them,
+ * yours, the rule is checked again (becoming contacts or playing together opens it); otherwise a few text lines may wait for them,
  * and nothing once they've declined.
  */
 async function checkDm(thread: ChatThread, sender: ChatSender, mine: { state: string }, input: PostInput, deps: PostDeps) {

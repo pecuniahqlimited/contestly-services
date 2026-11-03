@@ -5,7 +5,7 @@
  *   npm run dev:bots -- <partyId>          3 bots join an existing open party
  *   npm run dev:bots -- --latest tunde     3 bots join tunde's newest open party
  *   npm run dev:bots -- --bots 5 --starts-in 2 --free --brief "Nollywood classics"
- *   npm run dev:bots -- --regulars --latest tunde   the same bots every run (@bot.bisi, @bot.chuks, …), to follow and play again
+ *   npm run dev:bots -- --regulars --latest tunde   the same bots every run (@bot.bisi, @bot.chuks, …), to play again with
  *   npm run dev:bots -- --regulars --invite tunde   a new party hosted by @bot.bisi, who invites @tunde to it
  *
  * Bots are real dev users, named "(bot)" with a 🤖, who join through the API, sit in the room and answer
@@ -32,7 +32,7 @@ const BOT_NAMES = ["Bisi", "Chuks", "Funmi", "Musa", "Ngozi", "Tobi"];
 /**
  * Fresh bots every run unless --regulars: the engine never repeats a question to anyone seated, so bots that
  * have played before shrink the pool of questions a new party can use (with the mock generator, enough to
- * cancel it after many runs). Regulars trade that for people you can follow, invite and play again.
+ * cancel it after many runs). Regulars trade that for people you've played with: your people, to invite and play again.
  */
 const regulars = process.argv.includes("--regulars");
 const RUN = Date.now().toString(36).slice(-4);
@@ -91,13 +91,13 @@ async function latestOpenParty(handle: string): Promise<string> {
   return p.id;
 }
 
-/** The host bot invites someone through the API, so the same guards apply: they must follow, be followed by, or have played with the bot. */
+/** The host bot invites someone through the API, so the same guards apply: they must be its contact, share a crew, or have played with the bot. */
 async function inviteFrom(hostHandle: string, partyId: string, handle: string) {
   const [u] = await db.select({ id: users.id }).from(users).where(eq(users.handle, handle));
   if (!u) throw new Error(`No user @${handle}.`);
   const { status, body } = await call<{ error?: string }>(hostHandle, "POST", `/parties/${partyId}/invites`, { userIds: [u.id] });
   if (status !== 201) {
-    console.error(`@${hostHandle} couldn't invite @${handle} (${body.error}). Play a round with --regulars first, or follow @${hostHandle}.`);
+    console.error(`@${hostHandle} couldn't invite @${handle} (${body.error}). Play a round with --regulars first.`);
     process.exit(1);
   }
   console.log(`@${hostHandle} invited @${handle}; it's in their Chats › Parties.`);

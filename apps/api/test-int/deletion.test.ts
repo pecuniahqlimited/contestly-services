@@ -1,7 +1,7 @@
 /**
  * Account deletion (ADR 0010) against the real database: each refusal; after a delete the account is
  * invisible everywhere people look but fully visible (and every look logged) to admins; the ledger is
- * untouched apart from the forfeit; follows and crew invites move to their archive tables; unpaid Climb
+ * untouched apart from the forfeit; its corner is archived; follows and crew invites move to their archive tables; unpaid Climb
  * prizes are voided (logged) and a run in progress ends abandoned; week close never places a deleted
  * account; the same email signs up again as a new account; the retention job clears the archive and keeps the row.
  */
@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   adminActions, archivedCrewInvites, archivedFollows, chatMessages, clearExpiredArchives, climbAwards, climbPrizeConfigs, climbRuns, climbWeekPrizes,
-  climbWeekResults, climbWeeks, crewInvites, crewMembers, crews, currentLadder, db, systemActorId, dmPermissionBetween, feedEvents, feedFor, follows, joinThread, crewThreadId,
+  climbWeekResults, climbWeeks, corners, crewInvites, crewMembers, crews, currentLadder, db, systemActorId, dmPermissionBetween, feedEvents, feedFor, follows, joinThread, crewThreadId,
   ledger, ledgerAccounts, ledgerEntries, messagesPage, openDm, parties, partyPlayers, postMessage, resolveMentions, sql, threadById, userIdentities, users, type User,
 } from "@contestly/db";
 import { DEFAULT_CHAT_CONFIG, DELETED_DISPLAY_NAME, climbBoardKey, kobo, lagosDay, phoneHash, weekOf } from "@contestly/shared";
@@ -27,6 +27,7 @@ let admin: User, gone: User, friend: User, crewmate: User, guest: User;
 const goneEmail = `gone${tag}@example.com`;
 const gonePhone = `+23480${String(Math.floor(Math.random() * 1e8)).padStart(8, "0")}`;
 const googleSubject = `google-sub-${tag}`;
+let goneCornerId: string, friendCornerId: string;
 let dmThreadId: string, crewId: string, otherCrewId: string, runId: string, ledgerBefore: (typeof ledgerEntries.$inferSelect)[];
 
 const del = (u: User, reason?: string) => app.inject({ method: "DELETE", url: "/me", headers: as(u), payload: reason ? { reason } : {} });
@@ -61,8 +62,10 @@ beforeAll(async () => {
     await ledger.post(tx, { userId: gone.id, kind: "cash", amountKobo: kobo(50), type: "topup", idempotencyKey: `t:${tag}:cash` });
     await ledger.post(tx, { userId: gone.id, kind: "cash", amountKobo: -kobo(50), type: "party_entry", refType: "party", refId: `t-${tag}`, idempotencyKey: `t:${tag}:spend` });
   });
-  // People: follows both ways, a DM with a line, a crew they created, a feed event, the Everyone board.
-  await db.insert(follows).values([{ followerId: friend.id, followeeId: gone.id }, { followerId: gone.id, followeeId: friend.id }]);
+  // People: corner follows both ways (each has an unlocked corner), a DM with a line, a crew they created, a feed event, the Everyone board.
+  for (const u of [gone, friend]) await db.insert(corners).values({ ownerUserId: u.id, name: u.displayName, status: "unlocked", unlockedAt: new Date() });
+  [goneCornerId, friendCornerId] = await Promise.all([gone, friend].map(async (u) => (await db.select().from(corners).where(eq(corners.ownerUserId, u.id)))[0].id));
+  await db.insert(follows).values([{ followerId: friend.id, cornerId: goneCornerId }, { followerId: gone.id, cornerId: friendCornerId }]);
   ({ threadId: dmThreadId } = await openDm(gone, friend));
   await say(gone, dmThreadId, "see you at the quiz");
   const [crew] = await db.insert(crews).values({ name: "Del crew", emoji: "🧪", color: "#123456", createdByUserId: gone.id }).returning();
@@ -167,11 +170,13 @@ describe("a deleted account", () => {
   it("is gone from profiles, follows, DMs, challenges, mentions, contacts and invites", async () => {
     const deletedHandle = (await fresh(gone)).handle;
     for (const h of [gone.handle, deletedHandle]) expect((await app.inject({ method: "GET", url: `/users/${h}` })).statusCode).toBe(404);
-    expect((await app.inject({ method: "POST", url: `/users/${gone.id}/follow`, headers: as(friend) })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: `/corners/${goneCornerId}/follow`, headers: as(friend) })).statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: `/corners/${goneCornerId}` })).statusCode).toBe(404);
+    expect((await db.select().from(corners).where(eq(corners.id, goneCornerId)))[0].archivedAt).toBeInstanceOf(Date);
     expect((await app.inject({ method: "POST", url: `/dm/${gone.id}`, headers: as(friend) })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: `/users/${gone.id}/challenge`, headers: as(friend) })).statusCode).toBe(404);
     expect(await db.select().from(follows).where(inArray(follows.followerId, [gone.id]))).toEqual([]);
-    expect(await db.select().from(follows).where(eq(follows.followeeId, gone.id))).toEqual([]);
+    expect(await db.select().from(follows).where(eq(follows.cornerId, goneCornerId))).toEqual([]);
     expect(await db.select().from(crewInvites).where(eq(crewInvites.inviteeId, gone.id))).toEqual([]);
     expect(await db.select().from(crewInvites).where(eq(crewInvites.inviterId, gone.id))).toEqual([]);
     expect((await app.inject({ method: "GET", url: "/me/crew-invites", headers: as(friend) })).json()).toEqual([]);
@@ -201,10 +206,10 @@ describe("a deleted account", () => {
     expect(lines.some((l) => l.text?.includes("left the crew") && l.text.includes("runs it now"))).toBe(true);
   });
 
-  it("moved its follows and crew invites, as they were, to the archive tables", async () => {
-    const f = await db.select().from(archivedFollows).where(eq(archivedFollows.followeeId, gone.id));
+  it("moved its follows (and its corner's followers) and crew invites, as they were, to the archive tables", async () => {
+    const f = await db.select().from(archivedFollows).where(eq(archivedFollows.cornerId, goneCornerId));
     const g = await db.select().from(archivedFollows).where(eq(archivedFollows.followerId, gone.id));
-    expect([...f, ...g].map((r) => [r.followerId, r.followeeId, r.notify])).toEqual([[friend.id, gone.id, true], [gone.id, friend.id, true]]);
+    expect([...f, ...g].map((r) => [r.followerId, r.cornerId, r.notify])).toEqual([[friend.id, goneCornerId, true], [gone.id, friendCornerId, true]]);
     expect(f[0].archivedAt).toBeInstanceOf(Date);
     const invites = await db.select().from(archivedCrewInvites).where(inArray(archivedCrewInvites.crewId, [crewId, otherCrewId]));
     expect(invites.map((i) => [i.crewId, i.inviteeId, i.inviterId, i.status]).sort()).toEqual([

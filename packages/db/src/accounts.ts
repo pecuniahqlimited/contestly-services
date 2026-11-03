@@ -1,7 +1,8 @@
 /**
  * Accounts (ADR 0006): how a session or sign-in reaches a users row, guests, and signing up.
  * Signing up turns the guest's own row into an account: nothing is copied or merged. It's the one
- * place held Climb awards are paid. There's no sign-up bonus (open question 5).
+ * place held Climb awards are paid and a new player is attributed to the host who brought them (ADR 0012).
+ * There's no sign-up bonus (open question 5).
  */
 import { randomBytes } from "node:crypto";
 import { TransactionRollbackError, and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
@@ -9,6 +10,7 @@ import { GUEST_HANDLE_PREFIX, type IdentityProvider } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { userIdentities, users, type User } from "./schema.js";
 import { payHeldAwards } from "./climb.js";
+import { attributeAtSignUp } from "./corners.js";
 
 type Conn = Tx | typeof db;
 
@@ -103,6 +105,8 @@ export async function becomeMember(tx: Tx, userId: string, email: string): Promi
     .set({ isGuest: false, email, emailVerifiedAt: new Date(), isAdmin: locked.isAdmin || adminEmails().has(email) })
     .where(eq(users.id, userId)).returning();
   const awardsPaid = await payHeldAwards(tx, userId);
+  // Whose new player they are: the invite they signed up from, or the party they finished as a guest (ADR 0012).
+  await attributeAtSignUp(tx, userId);
   return { user, awardsPaid };
 }
 

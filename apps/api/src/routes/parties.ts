@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, partyPrizes, follows, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers } from "@contestly/db";
-import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
+import { db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers } from "@contestly/db";
+import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
 import { notifyQueue, PARTY_EVENTS_CHANNEL } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
@@ -11,6 +11,7 @@ import { publishLine } from "../chats.js";
 import { valkey } from "../redis.js";
 import { createParty } from "../partyCreate.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
+import { followedCornerIds, hostCornerOf } from "../corners.js";
 
 const notify = notifyQueue();
 /** Party detail carries the latest lines; older ones page in from GET /chats/:threadId/messages. */
@@ -18,7 +19,10 @@ const PARTY_DETAIL_CHAT_LINES = 50;
 const REMATCH_PREFIX = "Rematch: ";
 
 export async function partiesRoutes(app: FastifyInstance) {
-  /** Discover feed. ?filter=following|brands|soon. Personalised by the viewer's interests when signed in. */
+  /**
+   * The Parties tab: public parties (from any host, corner or not), filling-up ones pinned on top, then starting
+   * soonest (partiesTabOrder; row 7's recommendations replace it). ?filter=following (corners you follow) | brands.
+   */
   app.get("/parties", async (req) => {
     const me = req.auth?.user;
     const { filter } = (req.query ?? {}) as { filter?: string };
@@ -28,12 +32,10 @@ export async function partiesRoutes(app: FastifyInstance) {
     let cards = await partySummaries(rows, me?.id);
     if (filter === "brands") cards = cards.filter((c) => c.host.isBrand);
     if (filter === "following" && me) {
-      const f = await db.select({ id: follows.followeeId }).from(follows).where(eq(follows.followerId, me.id));
-      const ids = new Set(f.map((x) => x.id));
-      cards = cards.filter((c) => ids.has(c.host.id));
+      const hosts = new Set((await followedCornerIds(me.id)).map((c) => c.ownerId));
+      cards = cards.filter((c) => hosts.has(c.host.id));
     }
-    if (!filter && me?.interests.length) cards.sort((a, b) => Number(me.interests.includes(b.category)) - Number(me.interests.includes(a.category)));
-    return cards;
+    return partiesTabOrder(cards, new Date());
   });
 
   /** What the signed-in host may choose in the Stakes scene now, the rake a pot preview takes, and whether they may offer goods. */
@@ -56,11 +58,11 @@ export async function partiesRoutes(app: FastifyInstance) {
     const [p] = await db.select().from(parties).where(eq(parties.id, id));
     if (!p) return reply.code(404).send({ error: "not_found" });
     const me = req.auth?.user;
-    const [[summary], invitedBy] = await Promise.all([partySummaries([p], me?.id), pendingInviter(p.id, me?.id)]);
+    const [[summary], invitedBy, hostCorner] = await Promise.all([partySummaries([p], me?.id), pendingInviter(p.id, me?.id), hostCornerOf(publicHostId(p), me?.id)]);
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
     const threadId = await partyThreadId(db, p.id);
     const { messages } = await messagesPage(threadId, { limit: PARTY_DETAIL_CHAT_LINES });
-    return { ...summary, brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages };
+    return { ...summary, brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, hostCorner, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages };
   });
 
   /**

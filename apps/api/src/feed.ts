@@ -4,7 +4,8 @@ import { db, feedFor, users } from "@contestly/db";
 import type { FeedPage, Person } from "@contestly/shared";
 import { personColumns } from "./people.js";
 
-export async function feedPage(userIds: string[], viewerId: string, opts: { before?: string; limit: number }): Promise<FeedPage> {
+/** What `userIds` did, plus (for the home feed) the posts of the corners in `cornerIds`. */
+export async function feedPage(userIds: string[], viewerId: string, opts: { before?: string; limit: number; cornerIds?: string[] }): Promise<FeedPage> {
   const { rows, before } = await feedFor(userIds, { ...opts, viewerId });
   const ids = [...new Set(rows.map((r) => r.userId))];
   const people = ids.length ? await db.select(personColumns).from(users).where(inArray(users.id, ids)) : [];

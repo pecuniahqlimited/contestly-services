@@ -1,10 +1,10 @@
 /**
  * Party invites and links. Anyone in an open party (a player or the host's team) can invite people they're
- * connected to: people they follow, who follow them, they've finished a party with, or share a crew with. At most
+ * connected to: their contacts, people they've finished a party with, or share a crew with (ADR 0012). At most
  * MAX_INVITES_PER_PARTY per party. The invitee sees it in Chats › Parties until they join or dismiss it.
  */
 import { and, count, eq, inArray, or, sql } from "drizzle-orm";
-import { crewMembers, crews, db, follows, liveUser, parties, partyInvites, partyPlayers, users, isHostTeam, type Party, type Tx, type User } from "@contestly/db";
+import { contactMatches, crewMembers, crews, db, liveUser, partyInvites, partyPlayers, playedWith, users, isHostTeam, type Party, type Tx, type User } from "@contestly/db";
 import { APP_LINK_SCHEME, MAX_INVITES_PER_PARTY, type PartyLinks } from "@contestly/shared";
 import { personColumns } from "./people.js";
 
@@ -15,12 +15,11 @@ export const partyLinks = (partyId: string): PartyLinks => ({ app: `${APP_LINK_S
 
 const httpError = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
 
-/** Of `ids`, the people `userId` follows, is followed by, has finished a party with, or shares a crew with. Crew invites use it too. */
+/** Of `ids`, the people `userId` has as contacts (either way), has finished a party with, or shares a crew with. Crew invites use it too. */
 export async function connectedTo(q: Tx | typeof db, userId: string, ids: string[]): Promise<Set<string>> {
   const rows = await q.select({ id: users.id }).from(users).where(and(inArray(users.id, ids), eq(users.isGuest, false), liveUser, or(
-    sql`exists (select 1 from ${follows} f where (f.follower_id = ${userId} and f.followee_id = ${users.id}) or (f.follower_id = ${users.id} and f.followee_id = ${userId}))`,
-    sql`exists (select 1 from ${partyPlayers} a join ${partyPlayers} b on b.party_id = a.party_id join ${parties} p on p.id = a.party_id
-                where a.user_id = ${userId} and b.user_id = ${users.id} and p.status = 'finished')`,
+    sql`exists (select 1 from ${contactMatches} m where (m.user_id = ${userId} and m.contact_user_id = ${users.id}) or (m.user_id = ${users.id} and m.contact_user_id = ${userId}))`,
+    sql`exists (select 1 from ${playedWith} w where (w.user_a = ${userId} and w.user_b = ${users.id}) or (w.user_a = ${users.id} and w.user_b = ${userId}))`,
     sql`exists (select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id
                 where a.user_id = ${userId} and b.user_id = ${users.id} and c.archived_at is null)`,
   )));

@@ -72,7 +72,7 @@ export async function createParty(me: User, body: CreatePartyInput, opts: Create
     if (opts.rematchOf) await copySources(tx, opts.rematchOf, p.id, me.id);
     // The host's team is in the party's chat whether or not they play.
     await joinPartyThread(tx, p.id, me.id);
-    await systemLine(tx, p.id, body.visibility === "public" ? "Party is open. Your followers have been told." : "Private party. Share the link to fill seats.");
+    await systemLine(tx, p.id, body.visibility === "public" ? "Party is open." : "Private party. Share the link to fill seats.");
     if (opts.rematchOf) await systemLine(tx, p.id, "Rematch! Same people, new questions.");
     // A crew party asks the whole crew (crewmates count as connected) and lands in the crew's chat.
     const crewmates = crew ? (await tx.select({ id: crewMembers.userId }).from(crewMembers).where(and(eq(crewMembers.crewId, crew.id), ne(crewMembers.userId, me.id)))).map((m) => m.id) : [];

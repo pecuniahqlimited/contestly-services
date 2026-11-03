@@ -6,7 +6,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
-  db, dmPermissionBetween, feedEvents, follows, parties, partyDays, partyInvites, partyPlayers, recordPartyFinish, setSocialConfig, sql, type Party, type User,
+  contactMatches, db, dmPermissionBetween, feedEvents, parties, partyDays, partyInvites, partyPlayers, recordPartyFinish, setSocialConfig, sql, type Party, type User,
 } from "@contestly/db";
 import {
   crewInviteAnswerResponseSchema, crewInvitedResponseSchema, crewLeaveResponseSchema, crewRemoveResponseSchema, crewRoleResponseSchema, DEFAULT_SOCIAL_CONFIG, lagosDay,
@@ -16,7 +16,8 @@ import { as, makeUser, testApp } from "./harness.js";
 let app: Awaited<ReturnType<typeof testApp>>["app"];
 let ada: User, kemi: User, tunde: User, zee: User, stranger: User, guest: User;
 
-const follow = (a: User, b: User) => db.insert(follows).values({ followerId: a.id, followeeId: b.id }).onConflictDoNothing();
+/** `a` has `b`'s number: contacts, so your people (ADR 0012) and connected for invites. */
+const contact = (a: User, b: User) => db.insert(contactMatches).values({ userId: a.id, contactUserId: b.id }).onConflictDoNothing();
 
 /** A finished party written straight to the database, with these seats and ranks. */
 async function finishedParty(host: User, seats: [User, number][], over: Partial<typeof parties.$inferInsert> = {}): Promise<Party> {
@@ -37,8 +38,8 @@ beforeAll(async () => {
   zee = await makeUser("zee");
   stranger = await makeUser("stranger");
   guest = await makeUser("guest", { isGuest: true, email: null, emailVerifiedAt: null });
-  for (const u of [kemi, tunde, zee]) await follow(ada, u);
-  await follow(kemi, tunde);
+  for (const u of [kemi, tunde, zee]) await contact(ada, u);
+  await contact(kemi, tunde);
 });
 
 afterAll(async () => {
@@ -81,7 +82,7 @@ describe("crews", () => {
   });
 
   it("makes crewmates able to message each other directly", async () => {
-    expect(await dmPermissionBetween(db, tunde, kemi)).toBe("direct"); // kemi follows tunde
+    expect(await dmPermissionBetween(db, tunde, kemi)).toBe("direct"); // contacts
     expect(await dmPermissionBetween(db, kemi, ada)).toBe("direct"); // only the crew connects them
   });
 
@@ -90,7 +91,7 @@ describe("crews", () => {
     expect((await app.inject({ method: "PATCH", url: `/crews/${crewId}/members/${tunde.id}`, headers: as(kemi), payload: { role: "admin" } })).json().error).toBe("creator_only");
     const promoted = crewRoleResponseSchema.parse((await app.inject({ method: "PATCH", url: `/crews/${crewId}/members/${kemi.id}`, headers: as(ada), payload: { role: "admin" } })).json());
     expect(promoted).toMatchObject({ person: { id: kemi.id }, role: "admin", crowned: false });
-    await follow(kemi, zee);
+    await contact(kemi, zee);
     const sent = await app.inject({ method: "POST", url: `/crews/${crewId}/invites`, headers: as(kemi), payload: { userIds: [zee.id] } });
     expect(sent.statusCode).toBe(201);
     expect(crewInvitedResponseSchema.parse(sent.json())).toMatchObject({ invited: 1, myRole: "admin" });
@@ -99,7 +100,7 @@ describe("crews", () => {
 
   it("holds to its cap, pending invites included", async () => {
     await setSocialConfig({ ...DEFAULT_SOCIAL_CONFIG, crewMaxMembers: 4 }); // 3 members + zee's pending invite
-    await follow(ada, stranger);
+    await contact(ada, stranger);
     expect((await app.inject({ method: "POST", url: `/crews/${crewId}/invites`, headers: as(ada), payload: { userIds: [stranger.id] } })).json().error).toBe("crew_full");
     await setSocialConfig(DEFAULT_SOCIAL_CONFIG);
   });
@@ -156,8 +157,8 @@ describe("the feed", () => {
     const p = await finishedParty(tunde, [[tunde, 1], [kemi, 2]], { visibility: "private", title: "Secret squad" });
     await db.transaction((tx) => recordPartyFinish(tx, p, seatsOf([[tunde, 1], [kemi, 2]])));
     const seen = (u: User) => app.inject({ url: "/feed", headers: as(u) }).then((r) => r.json().events.some((e: { data: { partyId?: string } }) => e.data.partyId === p.id));
-    expect(await seen(kemi)).toBe(true); // kemi follows tunde and played
-    expect(await seen(ada)).toBe(false); // ada follows tunde but wasn't there
+    expect(await seen(kemi)).toBe(true); // kemi is tunde's contact and played
+    expect(await seen(ada)).toBe(false); // ada is tunde's contact but wasn't there
   });
 
   it("never carries money", async () => {

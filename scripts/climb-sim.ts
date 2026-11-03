@@ -8,7 +8,7 @@ import { and, eq } from "drizzle-orm";
 import { climbChallengeAttempts, climbChallenges, climbWeekPrizes, climbWeeks, db, ledgerAccounts, ledgerEntries, sql, users } from "@contestly/db";
 import { climbQueue, closeQueues } from "@contestly/queue";
 import { lagosDay } from "@contestly/shared";
-import { api, call, failureCount, nextClimbRound, ok, rightClimbAnswer, sleep, waitFor, wrongClimbAnswer } from "./sim-lib.js";
+import { api, call, failureCount, makeContacts, nextClimbRound, ok, rightClimbAnswer, sleep, waitFor, wrongClimbAnswer } from "./sim-lib.js";
 
 const tag = Date.now().toString(36);
 const ADMIN = `climb.admin.${tag}`;
@@ -162,7 +162,7 @@ try {
   ok(edit.status === 409, "a challenge someone has played can't be rewritten");
 
   console.log("\n==== home and boards ====");
-  await api(ADA, "POST", `/users/${await userId(KEMI)}/follow`);
+  await makeContacts(ADA, KEMI); // your people (ADR 0012): contacts, crew, played with lately
   const home = await api(ADA, "GET", "/climb");
   const fullPoints = testLadder.stages.reduce((n: number, s: any) => n + s.points, 0);
   ok(home.today.bestPoints === fullPoints && home.today.runs === 1, "home: today's best is the full clear");
@@ -171,10 +171,10 @@ try {
   ok(home.records.bestRunPoints === fullPoints && home.records.fastestStageOneMs > 0 && home.records.streakDays === 1, "home: records and a one-day streak");
   ok(home.challenge.attempt.state === "finished", "home: Today's challenge shows as done");
   const friends = await api(ADA, "GET", "/climb/leaderboard?board=friends");
-  ok(friends.rows.length === 2 && friends.rows[0].isMe && friends.rows[1].person.handle === KEMI, "friends: me and the person I follow, ranked");
+  ok(friends.rows.length === 2 && friends.rows[0].isMe && friends.rows[1].person.handle === KEMI, "friends: me and my people, ranked");
   ok(friends.rows[0].clearedAll && friends.rows[1].bestStagesCleared === 1, "friends: each row's best run this week");
   const kemiFriends = await api(KEMI, "GET", "/climb/leaderboard?board=friends");
-  ok(kemiFriends.rows.length === 1 && kemiFriends.ahead === null, "friends is who you follow, not who follows you");
+  ok(kemiFriends.rows.length === 2 && kemiFriends.me?.person.handle === KEMI, "contacts are your people either way: Kemi sees Ada too");
   const everyone = await api(KEMI, "GET", "/climb/leaderboard?board=everyone");
   const adaRow = everyone.rows.find((r: any) => r.person.handle === ADA);
   ok(!!adaRow && everyone.me?.person.handle === KEMI && everyone.me.points === testLadder.stages[0].points, "everyone: the board has both, with my row");

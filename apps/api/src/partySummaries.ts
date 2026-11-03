@@ -4,7 +4,7 @@ import { db, getPartyConfig, partyPlayers, partyPrizes, publicHosts, users, type
 import type { Person } from "@contestly/shared";
 import { publicParty } from "./partyView.js";
 import { placesOf, potKobo } from "./places.js";
-import { followedBy, personColumns } from "./people.js";
+import { peopleOf, personColumns } from "./people.js";
 import { pickPartyPeople } from "./social.js";
 
 export async function partySummaries(list: Party[], viewerId?: string) {
@@ -19,7 +19,7 @@ export async function partySummaries(list: Party[], viewerId?: string) {
   ]);
   const goodsOf = new Map<string, PartyPrize[]>();
   for (const g of goods) goodsOf.set(g.partyId, [...(goodsOf.get(g.partyId) ?? []), g]);
-  const following = await followedBy(viewerId, [...new Set(seated.map((s) => s.id))]);
+  const people = await peopleOf(viewerId);
   const playersOf = new Map<string, Person[]>();
   for (const { partyId, ...person } of seated) playersOf.set(partyId, [...(playersOf.get(partyId) ?? []), person]);
   return list.map((p) => {
@@ -27,7 +27,7 @@ export async function partySummaries(list: Party[], viewerId?: string) {
     const host = hosts.get(p.id)!;
     return {
       ...publicParty(p), host, playerCount: players.length, potKobo: potKobo(p, players.length),
-      places: placesOf(p, players.length, cfg, goodsOf.get(p.id) ?? []), ...pickPartyPeople(players, host.id, following, viewerId),
+      places: placesOf(p, players.length, cfg, goodsOf.get(p.id) ?? []), ...pickPartyPeople(players, host.id, people, viewerId),
     };
   });
 }

@@ -30,6 +30,8 @@ import { adminPartiesRoutes } from "./routes/adminParties.js";
 import { adminQuestionsRoutes } from "./routes/adminQuestions.js";
 import { chatsRoutes } from "./routes/chats.js";
 import { crewsRoutes } from "./routes/crews.js";
+import { cornersRoutes } from "./routes/corners.js";
+import { adminCornersRoutes } from "./routes/adminCorners.js";
 import { socialRoutes } from "./routes/social.js";
 import { adminPaymentsRoutes } from "./routes/adminPayments.js";
 import { mockCheckoutRoutes, paymentWebhookRoutes } from "./routes/paymentWebhooks.js";
@@ -86,7 +88,7 @@ export async function buildApp(opts: AppOptions = {}) {
   // Source files only (PUT /parties/:id/files): one file, no other fields. The route sets the size cap.
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES + 1, files: 1, fields: 0 } });
 
-  // Allow empty JSON bodies (e.g. POST /users/:id/follow with no payload).
+  // Allow empty JSON bodies (e.g. POST /corners/:id/follow with no payload).
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
     if (!body || !(body as string).trim()) return done(null, {});
     try { done(null, JSON.parse(body as string)); } catch (e) { done(e as Error); }
@@ -128,6 +130,8 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(chatsRoutes);
   await app.register(crewsRoutes);
   await app.register(socialRoutes);
+  await app.register(cornersRoutes);
+  await app.register(adminCornersRoutes);
   await app.register(paymentWebhookRoutes);
   await app.register(mockCheckoutRoutes);
   await app.register(adminPaymentsRoutes);

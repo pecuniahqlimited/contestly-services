@@ -1,17 +1,18 @@
 /**
- * Demo data. Safe to re-run: the demo users (fixed IDs) are upserted back to their demo state and the follows
- * between them replaced. Each run opens four new demo parties, scheduled like any party the API creates: entries
+ * Demo data. Safe to re-run: the demo users (fixed IDs) are upserted back to their demo state, and the demo
+ * corners (seedCorners.ts) are written once. Each run opens four new demo parties, scheduled like any party the API creates: entries
  * and the host's prize go through the ledger, the sealed sets are queued now and the start jobs for startsAt.
  * Parties from earlier runs are left alone; the worker's sweep starts or cancels them once they're overdue.
  * Wallets are append-only: the one-off seed credits are posted once, and each seat or prize is topped up by
  * exactly what it costs, so a demo party's pot was really paid in.
  */
 import { randomUUID } from "node:crypto";
-import { and, inArray, sql as dsql } from "drizzle-orm";
+import { sql as dsql } from "drizzle-orm";
 import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, lagosDay, addDays, DEFAULT_QUESTIONS_CONFIG, type SplitId } from "@contestly/shared";
 import { closeQueues, partyQueue, questionsQueue } from "@contestly/queue";
 import { db, sql, type Tx } from "./client.js";
-import { users, follows, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
+import { users, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
+import { seedCorners } from "./seedCorners.js";
 import * as ledger from "./ledger.js";
 import { currentPrizes, savePrizes } from "./climb.js";
 import { seedAboutConfigs } from "./config.js";
@@ -56,18 +57,12 @@ await db.transaction(async (tx) => {
     set: { displayName: dsql`excluded.display_name`, avatarEmoji: dsql`excluded.avatar_emoji`, bio: dsql`excluded.bio`, interests: dsql`excluded.interests`, isBrand: dsql`excluded.is_brand`, isVerified: dsql`excluded.is_verified`, email: dsql`excluded.email`, emailVerifiedAt: dsql`excluded.email_verified_at`, isGuest: false, streakDays: 0, lastPlayedOn: null },
   }).returning();
   const by = Object.fromEntries(rows.map((u) => [u.handle, u.id]));
-  const demoUserIds = rows.map((u) => u.id);
 
   // Dev admins: DEV_ADMIN_HANDLES (default tunde) pass requireAdmin with a real sign-in too, holding every payment permission.
   await grantDevAdmins(tx, devAdminHandles());
 
-  await tx.delete(follows).where(and(inArray(follows.followerId, demoUserIds), inArray(follows.followeeId, demoUserIds)));
-  await tx.insert(follows).values([
-    { followerId: by["ada.o"], followeeId: by["tunde"] },
-    { followerId: by["kemz"], followeeId: by["tunde"] },
-    { followerId: by["tunde"], followeeId: by["afrobeatsweekly"] },
-    { followerId: by["zee"], followeeId: by["afrobeatsweekly"] },
-  ]);
+  // Corners (ADR 0012): Tunde's and Afrobeats Weekly's unlocked with posts and followers; Kemi close to unlocking.
+  await seedCorners(tx, by);
 
   for (const u of rows) {
     await ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: WELCOME_BONUS_KOBO, type: "welcome_bonus", idempotencyKey: `seed:welcome:${u.id}` });
@@ -113,7 +108,7 @@ await db.transaction(async (tx) => {
     const threadId = await partyThreadId(tx, p.id);
     await joinThread(tx, threadId, p.createdByUserId);
     for (const [sp, handle] of seats) if (sp.id === p.id) await joinThread(tx, threadId, by[handle]);
-    await systemLine(tx, p.id, "Party is open. Your followers have been told.");
+    await systemLine(tx, p.id, "Party is open.");
   }
   const afroThread = await partyThreadId(tx, afro.id);
   const footballThread = await partyThreadId(tx, football.id);

@@ -80,7 +80,7 @@ export const adminUserDetailSchema = z.object({
     /** What the account was, as archived; nulls once the retention job has cleared the archive. */
     archived: z.object({ email: z.string().nullable(), handle: z.string().nullable(), displayName: z.string().nullable(), avatarEmoji: z.string().nullable(), bio: z.string().nullable(), phone: z.string().nullable() }),
     archiveClearedAt: isoOrNull,
-    /** Moved out of the live tables on delete (archived_follows, archived_crew_invites): who the account was connected to. */
+    /** Moved out of the live tables on delete (archived_follows, archived_crew_invites): who the account was connected to. A follow is of a corner: "following" names the corner's owner, "follower" someone who followed their corner. */
     archivedFollows: z.array(z.object({ direction: z.enum(["following", "follower"]), user: adminUserRowSchema, followedAt: iso, archivedAt: iso })),
     archivedCrewInvites: z.array(z.object({
       direction: z.enum(["received", "sent"]), crew: z.object({ id: uuid, name: z.string() }), user: adminUserRowSchema,

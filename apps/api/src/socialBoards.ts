@@ -1,10 +1,10 @@
 /**
  * The friends and crew boards (ADR 0008): Climb points plus party points, this week or all time, ranked by
- * socialBoardRanks. The friends board lists you and the people you follow who've scored; a crew board lists
+ * socialBoardRanks. The friends board lists you and your people (ADR 0012) who've scored; a crew board lists
  * every member, with last week's champion crowned.
  */
-import { and, eq, inArray } from "drizzle-orm";
-import { db, follows, liveUser, socialScores, users } from "@contestly/db";
+import { and, inArray } from "drizzle-orm";
+import { db, liveUser, socialScores, users, yourPeople } from "@contestly/db";
 import { socialBoardRanks } from "@contestly/game";
 import { lagosDay, weekEndsAt, weekOf, type BoardPeriod, type Person, type SocialBoard } from "@contestly/shared";
 import { personColumns } from "./people.js";
@@ -32,9 +32,7 @@ export async function socialBoard(userIds: string[], period: BoardPeriod, viewer
   return { period, week, endsAt: period === "week" ? weekEndsAt(week).toISOString() : null, rows, me: rows.find((r) => r.isMe) ?? null };
 }
 
-/** You and the people you follow. */
+/** You and your people (crew, contacts, played with lately). */
 export async function friendsBoard(viewerId: string, period: BoardPeriod) {
-  const followed = await db.select({ id: follows.followeeId }).from(follows).innerJoin(users, eq(users.id, follows.followeeId))
-    .where(eq(follows.followerId, viewerId));
-  return socialBoard([viewerId, ...followed.map((f) => f.id)], period, viewerId, { everyone: false });
+  return socialBoard([viewerId, ...(await yourPeople(viewerId))], period, viewerId, { everyone: false });
 }

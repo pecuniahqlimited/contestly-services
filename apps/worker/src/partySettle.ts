@@ -6,7 +6,7 @@
  * What it tells the outside world is passed in.
  */
 import { and, asc, eq } from "drizzle-orm";
-import { cancelIfUnplaceable, db, getPartyConfig, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, users } from "@contestly/db";
+import { cancelIfUnplaceable, db, getPartyConfig, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, recordCornerProgress, recordPartyFinish, recordPlayedWith, users } from "@contestly/db";
 import { isGoods, type ChatMessage } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 
@@ -85,9 +85,13 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
       console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)`);
     }
 
-    await tx.update(parties).set({ status: "finished", endedAt: new Date() }).where(eq(parties.id, partyId));
-    // The feed hears every finish; a bragging-rights party also earns party points (ADR 0008).
-    await recordPartyFinish(tx, p, players);
+    const endedAt = new Date();
+    await tx.update(parties).set({ status: "finished", endedAt }).where(eq(parties.id, partyId));
+    // The feed hears every finish; a bragging-rights party also earns party points (ADR 0008). Who played whom,
+    // and the host's corner progress (ADR 0012), next to record_play, in the same once-per-party transaction.
+    await recordPartyFinish(tx, p, players, endedAt);
+    await recordPlayedWith(tx, p.id, endedAt);
+    await recordCornerProgress(tx, p, players, endedAt);
     line = await partyLifecycleLine(tx, partyId, "finished", "That's a wrap! Results are in.");
     event = { partyId, status: "finished" };
     return true;

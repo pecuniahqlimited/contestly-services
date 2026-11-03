@@ -18,7 +18,7 @@ import { eq } from "drizzle-orm";
 import { db, moderationItems } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { DEFAULT_CHAT_CONFIG, INBOX_ROOM, MSG, PARTY_ROOM } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, ok, sleep, waitFor } from "./sim-lib.js";
+import { RT, api, call, failureCount, inMinutes, makeContacts, ok, sleep, waitFor } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const [A, B, C] = ["ada", "bayo", "chi"].map((n) => `cs${tag}_${n}`);
@@ -91,9 +91,9 @@ ok(inboxes[B].lines.filter((m) => m.clientMsgId === sameId).length === 1, "and t
 
 console.log("\n2. Voice");
 await cooldown();
-await api(C, "POST", `/users/${ids.get(A)}/follow`); // C opts in to A: A → C is direct
+await makeContacts(C, A); // C has A's number: contacts, so A → C is direct
 const ac = await api(A, "POST", `/dm/${ids.get(C)}`);
-ok(ac.permission === "direct", "someone who follows you can be messaged directly");
+ok(ac.permission === "direct", "a contact can be messaged directly");
 const audio = randomBytes(2048);
 const up = await api(A, "POST", `/chats/${ac.threadId}/voice`, { durationMs: 4200, contentType: "audio/mp4", bytes: audio.length });
 const sendAC = (body: Record<string, unknown>) => inboxes[A].send({ threadId: ac.threadId, ...body });

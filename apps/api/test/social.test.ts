@@ -17,7 +17,7 @@ describe("pickPartyPeople", () => {
     expect(ids(pickPartyPeople(players, "nobody", new Set()).faces)[0]).toBe("a");
   });
 
-  it("names the first people the viewer follows and counts them all, never the viewer", () => {
+  it("names the first of the viewer's people in it and counts them all, never the viewer", () => {
     const { friendsIn } = pickPartyPeople(players, "host", new Set(["c", "e", "b", "me"]), "b");
     expect(friendsIn.count).toBe(2);
     expect(ids(friendsIn.people)).toEqual(["c", "e"].slice(0, MAX_FRIENDS_NAMED));

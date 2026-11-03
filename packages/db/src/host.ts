@@ -74,3 +74,9 @@ export const hostTeamOf = (userId: string) => eq(parties.createdByUserId, userId
 export async function partiesHostedBy(userId: string) {
   return db.select().from(parties).where(eq(parties.createdByUserId, userId));
 }
+
+/** The id of the account that publicly hosts a party: whose corner it builds (ADR 0012). Step 4 returns the brand's. */
+export const publicHostId = (party: PartyHostFields): string => party.createdByUserId;
+
+/** publicHostId as a query condition on parties: the parties this account publicly hosts. */
+export const publiclyHostedBy = (hostId: string) => eq(parties.createdByUserId, hostId);

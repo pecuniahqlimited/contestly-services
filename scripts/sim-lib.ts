@@ -4,7 +4,7 @@
  * Nothing like this exists in the product.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { climbRounds, db, ledgerAccounts, ledgerEntries } from "@contestly/db";
+import { climbRounds, contactMatches, db, ledgerAccounts, ledgerEntries, users } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
 import { SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
 
@@ -142,3 +142,12 @@ export async function rightClimbAnswer(roundId: string) {
 }
 export const wrongClimbAnswer = { index: -1, word: "zzzz", words: [], value: -999999, sequence: [], found: [] };
 
+
+/**
+ * TEST-ONLY: `a` has `b`'s number in their contacts, as POST /me/contacts/match would record after both added a
+ * phone (which needs a real SMS). Contacts are your people and can message each other directly (ADR 0012).
+ */
+export async function makeContacts(aHandle: string, bHandle: string) {
+  const id = async (h: string) => (await db.select({ id: users.id }).from(users).where(eq(users.handle, h)))[0].id;
+  await db.insert(contactMatches).values({ userId: await id(aHandle), contactUserId: await id(bHandle) }).onConflictDoNothing();
+}

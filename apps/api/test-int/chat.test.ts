@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { and, count, eq } from "drizzle-orm";
-import { chatMessages, db, follows, openDm, postMessage, sql, threadById, type User } from "@contestly/db";
+import { chatMessages, contactMatches, db, openDm, postMessage, sql, threadById, type User } from "@contestly/db";
 import { DEFAULT_CHAT_CONFIG } from "@contestly/shared";
 import { as, makeUser, testApp } from "./harness.js";
 
@@ -24,7 +24,7 @@ beforeAll(async () => {
   tunde = await makeUser("tunde");
   zee = await makeUser("zee");
   guest = await makeUser("guest", { isGuest: true, email: null, emailVerifiedAt: null });
-  await db.insert(follows).values({ followerId: kemi.id, followeeId: ada.id }); // kemi opted in to ada
+  await db.insert(contactMatches).values({ userId: kemi.id, contactUserId: ada.id }); // kemi has ada's number: contacts
 });
 
 afterAll(async () => {
@@ -33,7 +33,7 @@ afterAll(async () => {
 });
 
 describe("who may message whom", () => {
-  it("is direct when the recipient follows the sender", async () => {
+  it("is direct between contacts (ADR 0012)", async () => {
     const res = await app.inject({ method: "POST", url: `/dm/${kemi.id}`, headers: as(ada) });
     expect(res.json()).toMatchObject({ permission: "direct", request: "none" });
   });
@@ -80,13 +80,13 @@ describe("message requests", () => {
     expect((await app.inject({ url: "/chats", headers: as(zee) })).json().find((t: { id: string }) => t.id === threadId).request).toBe("none");
   });
 
-  it("stays shut after a decline, until the recipient opts in by following", async () => {
+  it("stays shut after a decline, until they become contacts", async () => {
     const { threadId: t } = await openDm(ada, zee);
     await say(ada, t, "hi zee");
     await app.inject({ method: "POST", url: `/chats/${t}/request/decline`, headers: as(zee) });
     expect(await refusal(say(ada, t, "hello?"))).toBe("cannot_message");
-    await db.insert(follows).values({ followerId: zee.id, followeeId: ada.id });
-    expect(await refusal(say(ada, t, "thanks for the follow"))).toBe("ok");
+    await db.insert(contactMatches).values({ userId: zee.id, contactUserId: ada.id });
+    expect(await refusal(say(ada, t, "found you in my contacts"))).toBe("ok");
   });
 });
 

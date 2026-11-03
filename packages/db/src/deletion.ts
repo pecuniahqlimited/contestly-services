@@ -2,7 +2,7 @@
  * Deleting an account (ADR 0010) is a soft delete: nothing is erased that could trace the account. The
  * row, its id, the ledger, chat lines, voice notes and results stay; what identified the person moves to
  * the archive columns, the live fields become the deleted placeholders, and the identities are disabled
- * so no session reaches it again. Follows and crew invites that would keep showing it to people move to
+ * so no session reaches it again. Its corner is archived. Follows and crew invites that would keep showing it to people move to
  * their archive tables; pending party invites are dismissed; Climb prizes not yet paid are voided (each
  * logged) and a run in progress ends as abandoned. Crew hand-over and the Firebase user are the API's part.
  */
@@ -10,7 +10,7 @@ import { and, eq, inArray, isNotNull, isNull, lt, or, sql, type AnyColumn, type 
 import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, PAYOUT_OPEN_STATUSES, leaveWindow, normaliseEmail, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import {
-  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
+  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, corners, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
 } from "./schema.js";
 import * as ledger from "./ledger.js";
 import { isConfigHolderAtFloor, recordAdminAction, systemActorId } from "./admin.js";
@@ -103,9 +103,13 @@ export async function archiveAccount(tx: Tx, user: User, reason: string | null, 
   return { firebaseUids: disabled.filter((i) => i.provider === "firebase").map((i) => i.externalId), forfeitedBonusKobo };
 }
 
-/** Follows of or by the account, moved (same columns, plus when) to archived_follows. */
+/**
+ * The account's corner is archived (out of every live query; ADR 0012), and follows by the account or of its
+ * corner move (same columns, plus when) to archived_follows.
+ */
 async function archiveFollows(tx: Tx, userId: string, now: Date) {
-  const moved = await tx.delete(follows).where(or(eq(follows.followerId, userId), eq(follows.followeeId, userId))).returning();
+  const [corner] = await tx.update(corners).set({ archivedAt: now }).where(and(eq(corners.ownerUserId, userId), isNull(corners.archivedAt))).returning({ id: corners.id });
+  const moved = await tx.delete(follows).where(or(eq(follows.followerId, userId), corner ? eq(follows.cornerId, corner.id) : undefined)).returning();
   if (moved.length) await tx.insert(archivedFollows).values(moved.map((f) => ({ ...f, archivedAt: now })));
 }
 

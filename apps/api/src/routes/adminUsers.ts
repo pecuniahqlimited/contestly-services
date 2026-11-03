@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
 import {
-  archivedCrewInvites, archivedFollows, climbAwards, crews, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
+  archivedCrewInvites, archivedFollows, climbAwards, corners, cornersAfterStandingChange, crews, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
 } from "@contestly/db";
 import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
 import {
@@ -35,18 +35,22 @@ function searchWhere(q: string): SQL {
   return or(handleLike(q), ilike(users.displayName, like), ilike(users.archivedDisplayName, like))!;
 }
 
-/** A deleted account's archived follows and crew invites, each with the person on the other side. */
+/**
+ * A deleted account's archived follows (the corners it followed, and its own corner's followers) and crew
+ * invites, each with the person on the other side (a corner's owner, or its follower).
+ */
 async function archivedConnections(id: string) {
   const [follows, invites] = await Promise.all([
-    db.select().from(archivedFollows).where(or(eq(archivedFollows.followerId, id), eq(archivedFollows.followeeId, id))).orderBy(desc(archivedFollows.createdAt)),
+    db.select({ f: archivedFollows, ownerId: corners.ownerUserId }).from(archivedFollows).innerJoin(corners, eq(corners.id, archivedFollows.cornerId))
+      .where(or(eq(archivedFollows.followerId, id), eq(corners.ownerUserId, id))).orderBy(desc(archivedFollows.createdAt)),
     db.select({ i: archivedCrewInvites, crewName: crews.name }).from(archivedCrewInvites).innerJoin(crews, eq(crews.id, archivedCrewInvites.crewId))
       .where(or(eq(archivedCrewInvites.inviteeId, id), eq(archivedCrewInvites.inviterId, id))).orderBy(desc(archivedCrewInvites.createdAt)),
   ]);
-  const otherIds = [...follows.map((f) => (f.followerId === id ? f.followeeId : f.followerId)), ...invites.map(({ i }) => (i.inviteeId === id ? i.inviterId : i.inviteeId))];
+  const otherIds = [...follows.map(({ f, ownerId }) => (f.followerId === id ? ownerId : f.followerId)), ...invites.map(({ i }) => (i.inviteeId === id ? i.inviterId : i.inviteeId))];
   const others = new Map((otherIds.length ? await db.select().from(users).where(inArray(users.id, otherIds)) : []).map((u) => [u.id, adminUserRow(u)]));
   return {
-    archivedFollows: follows.map((f) => ({
-      direction: f.followerId === id ? "following" as const : "follower" as const, user: others.get(f.followerId === id ? f.followeeId : f.followerId)!,
+    archivedFollows: follows.map(({ f, ownerId }) => ({
+      direction: f.followerId === id ? "following" as const : "follower" as const, user: others.get(f.followerId === id ? ownerId : f.followerId)!,
       followedAt: f.createdAt.toISOString(), archivedAt: f.archivedAt.toISOString(),
     })),
     archivedCrewInvites: invites.map(({ i, crewName }) => ({
@@ -132,12 +136,14 @@ export async function adminUsersRoutes(app: FastifyInstance) {
     const out = await banOrRequestBan(admin.id, id, reason);
     if ("banRequest" in out) return reply.code(202).send(adminBanRequestResponseSchema.parse(out));
     await publishBan(id);
+    await cornersAfterStandingChange(id);
     return userDetail(id);
   });
   app.post("/admin/users/ban-requests/:id/confirm", async (req) => {
     const admin = requireAdmin(req);
     const done = await confirmPaymentsAdminBan(admin.id, uuidParam(req));
     await publishBan(done.userId);
+    await cornersAfterStandingChange(done.userId);
     return { ...adminBanRequestResponseSchema.parse({ banRequest: done }), user: await userDetail(done.userId) };
   });
 
@@ -146,6 +152,7 @@ export async function adminUsersRoutes(app: FastifyInstance) {
     const { reason } = adminReasonBodySchema.parse(req.body);
     const id = uuidParam(req);
     await unbanUser(admin.id, id, reason);
+    await cornersAfterStandingChange(id);
     return userDetail(id);
   });
 }

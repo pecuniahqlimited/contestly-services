@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { and, eq } from "drizzle-orm";
-import { db, parties, follows, lineDeliveries, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
+import { db, parties, corners, cornerShown, follows, lineDeliveries, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
@@ -28,8 +28,10 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   const d = job.data;
   if (d.kind === "party_created") {
     const [p] = await db.select().from(parties).where(eq(parties.id, d.partyId));
-    const targets = await db.select({ id: follows.followerId }).from(follows).where(and(eq(follows.followeeId, d.hostId), eq(follows.notify, true)));
-    console.log(`[notify] "${p.title}" opened → ${targets.length} followers with alerts on`);
+    // The host's corner's followers with alerts on (ADR 0012); a host without a shown corner has none.
+    const targets = await db.select({ id: follows.followerId }).from(follows).innerJoin(corners, eq(corners.id, follows.cornerId))
+      .where(and(eq(corners.ownerUserId, d.hostId), cornerShown, eq(follows.notify, true)));
+    console.log(`[notify] "${p.title}" opened → ${targets.length} corner followers with alerts on`);
   } else if (d.kind === "party_invite") {
     console.log(`[notify] invites for party ${d.partyId} → ${d.toUserIds.length} users`);
   } else if (d.kind === "questions_failed") {

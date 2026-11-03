@@ -1,21 +1,21 @@
 /**
- * The social record (row 6b, ADR 0008): feed events written where things happen, party points written at
- * settlement, and the scores every friends and crew board is ranked from. API, worker and the Climb share
- * these so a rule lives once.
+ * The social record (row 6b, ADR 0008; ADR 0012 for who your people are): feed events written where things
+ * happen, party points and played-with written at settlement, your people, and the scores every friends and
+ * crew board is ranked from. API, worker and the Climb share these so a rule lives once.
  */
-import { and, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { isBraggingRights, lagosDay, partyPointsFor, weekOf, type BoardPeriod, type ChatMessage, type ClimbDay, type FeedData, type FeedKind } from "@contestly/shared";
 import type { SocialScore } from "@contestly/game";
 import { db, type Tx } from "./client.js";
-import { chatThreads, climbDays, climbRuns, crewMembers, crews, feedEvents, partyDays, users, type Party } from "./schema.js";
+import { chatThreads, climbDays, climbRuns, contactMatches, crewMembers, crews, feedEvents, partyDays, partyPlayers, playedWith, users, type Party } from "./schema.js";
 import { getSocialConfig } from "./config.js";
 import { systemLineIn } from "./chat.js";
 
 type Conn = Tx | typeof db;
 
 /** Append a feed event. A party's finish is written once per player. */
-export async function addFeedEvent<K extends FeedKind>(q: Conn, userId: string, kind: K, data: FeedData<K>, partyId?: string) {
-  await q.insert(feedEvents).values({ userId, kind, data, partyId }).onConflictDoNothing();
+export async function addFeedEvent<K extends FeedKind>(q: Conn, userId: string, kind: K, data: FeedData<K>, ref: { partyId?: string; cornerPostId?: string } = {}) {
+  await q.insert(feedEvents).values({ userId, kind, data, ...ref }).onConflictDoNothing();
 }
 
 export interface FinishedSeat { userId: string; rank: number | null; isGuest: boolean; bannedAt: Date | null }
@@ -29,7 +29,7 @@ export async function recordPartyFinish(tx: Tx, party: Party, seats: FinishedSea
   const cfg = await getSocialConfig();
   for (const s of seats) {
     if (s.isGuest) continue;
-    await addFeedEvent(tx, s.userId, "party_finished", { partyId: party.id, title: party.title, rank: s.rank, playerCount: seats.length }, party.id);
+    await addFeedEvent(tx, s.userId, "party_finished", { partyId: party.id, title: party.title, rank: s.rank, playerCount: seats.length }, { partyId: party.id });
   }
   if (!isBraggingRights(party)) return;
   const day = lagosDay(endedAt);
@@ -44,6 +44,64 @@ export async function recordPartyFinish(tx: Tx, party: Party, seats: FinishedSea
       wins: sql`${partyDays.wins} + ${s.rank === 1 ? 1 : 0}`,
     }).where(and(eq(partyDays.userId, s.userId), eq(partyDays.day, day), lt(partyDays.parties, cfg.partyPointsDailyCap)));
   }
+}
+
+// ---- played with, contacts and your people (ADR 0012) ----------------------------------
+
+/**
+ * Every pair of signed-up players in a finished party played together: one statement, in settlement's
+ * transaction (which runs once per party), so a pair's count goes up once per party.
+ */
+export async function recordPlayedWith(tx: Tx, partyId: string, endedAt = new Date()) {
+  await tx.execute(sql`
+    insert into ${playedWith} (user_a, user_b, parties, last_played_at)
+    select a.user_id, b.user_id, 1, ${endedAt.toISOString()}::timestamptz
+    from ${partyPlayers} a join ${partyPlayers} b on b.party_id = a.party_id and a.user_id < b.user_id
+    join ${users} ua on ua.id = a.user_id join ${users} ub on ub.id = b.user_id
+    where a.party_id = ${partyId} and not ua.is_guest and not ub.is_guest
+    on conflict (user_a, user_b) do update set parties = ${playedWith.parties} + 1, last_played_at = greatest(${playedWith.lastPlayedAt}, excluded.last_played_at)`);
+}
+
+/** The ordered pair key played_with uses. */
+const pair = (a: string, b: string) => (a < b ? [a, b] : [b, a]);
+
+/** Whether two people have finished a party together, ever. */
+export async function playedTogether(q: Conn, a: string, b: string): Promise<boolean> {
+  const [x, y] = pair(a, b);
+  const [row] = await q.select({ n: playedWith.parties }).from(playedWith).where(and(eq(playedWith.userA, x), eq(playedWith.userB, y)));
+  return !!row;
+}
+
+/** Whether either has the other's number in their contacts. */
+export async function areContacts(q: Conn, a: string, b: string): Promise<boolean> {
+  const [row] = await q.select({ u: contactMatches.userId }).from(contactMatches)
+    .where(or(and(eq(contactMatches.userId, a), eq(contactMatches.contactUserId, b)), and(eq(contactMatches.userId, b), eq(contactMatches.contactUserId, a)))).limit(1);
+  return !!row;
+}
+
+/** Contacts matched just now: kept, so they count as your people and for DMs. */
+export async function recordContactMatches(userId: string, contactIds: string[]) {
+  if (contactIds.length) await db.insert(contactMatches).values(contactIds.map((contactUserId) => ({ userId, contactUserId }))).onConflictDoNothing();
+}
+
+/**
+ * Your people (ADR 0012): crew mates, matched contacts (either way), and people you've finished a party with
+ * in the last `yourPeopleDays`. Never you, never a deleted account. The one source for the friends boards,
+ * mutuals, the lobby's "who's in", the feed and (row 9) nudges.
+ */
+export async function yourPeople(userId: string, conn: Conn = db): Promise<Set<string>> {
+  const { yourPeopleDays } = await getSocialConfig(conn);
+  const since = new Date(Date.now() - yourPeopleDays * 86_400_000);
+  const rows = await conn.execute(sql`
+    select other from (
+      select b.user_id as other from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id
+        join ${crews} c on c.id = a.crew_id and c.archived_at is null where a.user_id = ${userId}
+      union select contact_user_id from ${contactMatches} where user_id = ${userId}
+      union select user_id from ${contactMatches} where contact_user_id = ${userId}
+      union select case when user_a = ${userId} then user_b else user_a end from ${playedWith}
+        where (user_a = ${userId} or user_b = ${userId}) and last_played_at >= ${since.toISOString()}::timestamptz
+    ) p join ${users} u on u.id = p.other where p.other <> ${userId} and u.deleted_at is null`);
+  return new Set((rows as unknown as { other: string }[]).map((r) => r.other));
 }
 
 /**
@@ -119,9 +177,13 @@ export async function recordRunEnded(tx: Tx, run: { id: string; userId: string; 
   return lines;
 }
 
-/** The newest feed events of these people, newest first, before a cursor (an event id). */
-export async function feedFor(userIds: string[], opts: { before?: string; limit: number; viewerId: string }) {
-  if (!userIds.length) return { rows: [], before: null as string | null };
+/**
+ * The newest feed events, newest first, before a cursor (an event id): what `userIds` did (finishes, Climb
+ * bests, streaks) and the posts of `cornerIds` (the corners the viewer follows, while they're shown).
+ */
+export async function feedFor(userIds: string[], opts: { before?: string; limit: number; viewerId: string; cornerIds?: string[] }) {
+  const cornerIds = opts.cornerIds ?? [];
+  if (!userIds.length && !cornerIds.length) return { rows: [], before: null as string | null };
   let cursor;
   if (opts.before) {
     const [b] = await db.select({ createdAt: feedEvents.createdAt }).from(feedEvents).where(eq(feedEvents.id, opts.before));
@@ -132,7 +194,13 @@ export async function feedFor(userIds: string[], opts: { before?: string; limit:
     or exists (select 1 from party_players v where v.party_id = p.id and v.user_id = ${opts.viewerId}))))`;
   // A deleted account's events leave the feed with it.
   const live = sql`not exists (select 1 from users d where d.id = ${feedEvents.userId} and d.deleted_at is not null)`;
-  const rows = await db.select().from(feedEvents).where(and(inArray(feedEvents.userId, userIds), cursor, visible, live))
+  const people = userIds.length ? and(ne(feedEvents.kind, "corner_post"), inArray(feedEvents.userId, userIds)) : undefined;
+  const posts = cornerIds.length
+    ? sql`(${feedEvents.kind} = 'corner_post' and exists (select 1 from corner_posts cp join corners c on c.id = cp.corner_id
+        where cp.id = ${feedEvents.cornerPostId} and cp.deleted_at is null and c.id in ${cornerIds} and c.status = 'unlocked' and c.archived_at is null
+        and not exists (select 1 from users o where o.id = c.owner_user_id and (o.banned_at is not null or o.deleted_at is not null))))`
+    : undefined;
+  const rows = await db.select().from(feedEvents).where(and(or(people, posts), cursor, visible, live))
     .orderBy(desc(feedEvents.createdAt)).limit(opts.limit + 1);
   const page = rows.slice(0, opts.limit);
   return { rows: page, before: rows.length > opts.limit ? page.at(-1)!.id : null };

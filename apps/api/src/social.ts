@@ -7,13 +7,13 @@ import { MAX_FRIENDS_NAMED, MAX_PARTY_FACES, MY_RECENT_DAYS, MY_RECENT_LIMIT, ty
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Faces: the host's first if they play, then everyone else by join time. Friends: the people the viewer
- * follows who are in it (never the viewer), named in join order.
+ * Faces: the host's first if they play, then everyone else by join time. Friends: the viewer's people
+ * (yourPeople) who are in it (never the viewer), named in join order.
  * `players` must already be in join order.
  */
-export function pickPartyPeople(players: Person[], hostId: string, following: ReadonlySet<string>, viewerId?: string): PartyPeople {
+export function pickPartyPeople(players: Person[], hostId: string, viewersPeople: ReadonlySet<string>, viewerId?: string): PartyPeople {
   const faces = [...players.filter((p) => p.id === hostId), ...players.filter((p) => p.id !== hostId)].slice(0, MAX_PARTY_FACES);
-  const friends = players.filter((p) => p.id !== viewerId && following.has(p.id));
+  const friends = players.filter((p) => p.id !== viewerId && viewersPeople.has(p.id));
   return { faces, friendsIn: { people: friends.slice(0, MAX_FRIENDS_NAMED), count: friends.length } };
 }
 

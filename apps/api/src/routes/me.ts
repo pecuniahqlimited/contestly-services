@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { and, count, desc, eq, max, ne, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
-import { canWithdraw, db, follows, liveUser, parties, partyPlayers, users, ledger } from "@contestly/db";
+import { and, desc, eq, or, sql } from "drizzle-orm";
+import { canWithdraw, db, liveUser, playedWith, users, ledger } from "@contestly/db";
 import { addEmailResponseSchema, addPhoneSchema, contactsMatchSchema, emailStartResponseSchema, emailStartSchema, emailVerifySchema, deleteAccountResponseSchema, deleteAccountSchema, deletionStatusSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
 import { requireSession, requireUser } from "../auth.js";
 import { httpError } from "../httpError.js";
@@ -84,27 +83,21 @@ export async function meRoutes(app: FastifyInstance) {
   /** Add (or replace) the optional number, verified by SMS. One account per number. */
   app.post("/me/phone", async (req) => addPhone(requireUser(req), addPhoneSchema.parse(req.body).idToken));
 
-  /** Which contacts are here: hashed numbers in, people who added a number out. Nothing sent is stored. */
+  /** Which contacts are here: hashed numbers in, people who added a number out. The hashes aren't stored; who matched is (your people). */
   app.post("/me/contacts/match", async (req) => matchContacts(requireUser(req), contactsMatchSchema.parse(req.body).hashes));
 
   /** Parties I host, play or am invited to, grouped invited / live / upcoming / recent, each with its last chat line. */
   app.get("/me/parties", async (req) => myParties(requireUser(req)));
 
-  /** People from finished parties I played, whom I don't follow yet: most parties together, then most recent. No ranking beyond that. */
+  /** People I've finished a party with (the played-with read model): most parties together, then most recent. */
   app.get("/me/played-with", async (req) => {
     const me = requireUser(req);
-    const mine = alias(partyPlayers, "mine");
-    const ended = sql<Date>`coalesce(${parties.endedAt}, ${parties.startsAt})`;
-    const rows = await db.select({ ...personColumns, partiesTogether: count(), lastPlayedAt: max(ended) })
-      .from(mine)
-      .innerJoin(parties, and(eq(parties.id, mine.partyId), eq(parties.status, "finished")))
-      .innerJoin(partyPlayers, and(eq(partyPlayers.partyId, mine.partyId), ne(partyPlayers.userId, me.id)))
-      .innerJoin(users, eq(users.id, partyPlayers.userId))
-      .where(and(eq(mine.userId, me.id), eq(users.isSystem, false), eq(users.isGuest, false), liveUser,
-        sql`not exists (select 1 from ${follows} f where f.follower_id = ${me.id} and f.followee_id = ${users.id})`))
-      .groupBy(users.id)
-      .orderBy(desc(count()), desc(max(ended)))
+    const other = sql<string>`case when ${playedWith.userA} = ${me.id} then ${playedWith.userB} else ${playedWith.userA} end`;
+    const rows = await db.select({ ...personColumns, partiesTogether: playedWith.parties, lastPlayedAt: playedWith.lastPlayedAt })
+      .from(playedWith).innerJoin(users, eq(users.id, other))
+      .where(and(or(eq(playedWith.userA, me.id), eq(playedWith.userB, me.id)), eq(users.isSystem, false), eq(users.isGuest, false), liveUser))
+      .orderBy(desc(playedWith.parties), desc(playedWith.lastPlayedAt))
       .limit(PLAYED_WITH_LIMIT);
-    return rows.map((r) => ({ ...r, partiesTogether: Number(r.partiesTogether), lastPlayedAt: new Date(r.lastPlayedAt as unknown as string).toISOString() }));
+    return rows.map((r) => ({ ...r, lastPlayedAt: r.lastPlayedAt.toISOString() }));
   });
 }

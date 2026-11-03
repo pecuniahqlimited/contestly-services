@@ -183,8 +183,8 @@ export const voicePlaybackResponseSchema = z.object({ url: z.string(), expiresAt
 export interface DmFacts {
   sender: { isGuest: boolean; isBrand: boolean; isSystem: boolean };
   recipient: { isGuest: boolean; isSystem: boolean; isDeleted: boolean };
-  /** The recipient follows the sender (mutual follows included): they opted in. */
-  recipientFollowsSender: boolean;
+  /** One has the other's number in their contacts (matched by hash, either way). */
+  contacts: boolean;
   /** Both played the same finished party. */
   playedTogether: boolean;
   /** Both are in the same crew. */
@@ -196,14 +196,14 @@ export interface DmFacts {
 /**
  * The one place the DM rule lives. Nobody writes to a deleted account. Guests and system accounts never DM. A brand writes only to people
  * who joined its parties, and never sends requests (no cold messages). Anyone else is direct when the
- * recipient follows them, they've finished a party together or share a crew; otherwise a request.
+ * two are contacts, they've finished a party together or share a crew; otherwise a request (ADR 0012).
  * Row 11's blocks refuse here too.
  */
 export function dmPermission(f: DmFacts): DmPermission {
   if (f.recipient.isDeleted) return "refused";
   if (f.sender.isGuest || f.recipient.isGuest || f.sender.isSystem || f.recipient.isSystem) return "refused";
   if (f.sender.isBrand) return f.joinedSendersParty ? "direct" : "refused";
-  if (f.recipientFollowsSender || f.playedTogether || f.shareCrew) return "direct";
+  if (f.contacts || f.playedTogether || f.shareCrew) return "direct";
   return "request";
 }
 
