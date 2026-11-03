@@ -96,7 +96,8 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    (their owed account and hold are locked before anything is read; logged with why); anything else, nothing changes
    (409 `provider_not_definite`). Either way the freeze lifts once nothing else is open for them;
    withdrawals stay blocked by `amount_owed` while anything is owed. A failure after a success is a critical
-   alert, never auto-fixed.
+   alert, never auto-fixed; so is the provider flipping again after a contradiction was worked out (a
+   success after a dissolve, a reversal after a resolve): critical alert, no money moves.
    **What's owed** (decided 2026-11-02): every new cash credit to that person (winnings, refunds, top-ups,
    anything `ledger.journal()` puts in their cash) repays it first, up to the credit, oldest contradiction's
    debt first, one journal per debt (`owed_repaid`, key `owed_repay:<user>:<the credit's key>:<contradiction>`,

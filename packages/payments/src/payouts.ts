@@ -209,7 +209,17 @@ export async function applyOutcome(payoutId: string, check: ProviderCheck, via: 
         // Never auto-fixed: the provider may have reversed it after paying. An admin works it out with the provider.
         await raiseAlert(tx, { severity: "critical", kind: "payout_failed_after_success", dedupeKey: `payout_contradiction:${p.id}:failed`, refType: "payout", refId: p.id, detail: { status: p.status, check: record } });
       }
-      if (p.status !== "succeeded" && check.status === "success") await freezeForContradiction(tx, p, record, now);
+      if (p.status !== "succeeded") {
+        const [c] = await tx.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, p.id));
+        // A contradiction already worked out, and now the provider says the opposite again: an admin looks. Nothing moves.
+        if (c?.status === "dissolved" && check.status === "success") {
+          await raiseAlert(tx, { severity: "critical", kind: "payout_success_after_dissolve", dedupeKey: `payout_success_after_dissolve:${p.id}`, refType: "payout", refId: p.id, detail: { contradictionId: c.id, check: record } });
+        } else if (c?.status === "resolved" && check.status === "failed") {
+          await raiseAlert(tx, { severity: "critical", kind: "payout_reversed_after_resolve", dedupeKey: `payout_reversed_after_resolve:${p.id}`, refType: "payout", refId: p.id, detail: { contradictionId: c.id, check: record } });
+        } else if (!c && check.status === "success") {
+          await freezeForContradiction(tx, p, record, now);
+        }
+      }
       return "unchanged";
     }
     if (p.status !== "submitted" && p.status !== "unknown") return "unchanged"; // not sent yet: nothing a provider says applies

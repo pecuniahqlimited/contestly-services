@@ -1079,6 +1079,32 @@ describe("contradictions: resolved by two admins", () => {
     expect(await findBreaches(db)).toEqual([]);
   });
 
+  it("a provider answer that flips again after a dissolve or a resolve raises a critical alert and moves nothing", async () => {
+    // Dissolved (the provider said reversed), then it says paid again.
+    const d = await contradicted("crlate1", kobo(10_000));
+    await resolve(admin, d.c.id);
+    const td = (await mock.getTransfer(d.payout.reference))!;
+    await mock.setTransfer(d.payout.reference, { ...td, state: "failed" });
+    expect((await confirmIt(admin2, d.c.id)).json().contradiction.status).toBe("dissolved");
+    const before = [await cash(d.u), await held(d.u), await ledger.owedKobo(db, d.u.id)];
+    await mock.setTransfer(d.payout.reference, { ...td, state: "success" });
+    await checkPayout(d.payout.id, "check");
+    expect((await alertsFor(d.payout.id)).find((a) => a.kind === "payout_success_after_dissolve")?.severity).toBe("critical");
+    expect([await cash(d.u), await held(d.u), await ledger.owedKobo(db, d.u.id)]).toEqual(before);
+    expect((await db.select().from(users).where(eq(users.id, d.u.id)))[0].withdrawalsFrozenAt).toBeNull();
+    // Resolved (still paid), then it says reversed.
+    const r = await contradicted("crlate2", kobo(10_000));
+    await resolve(admin, r.c.id);
+    expect((await confirmIt(admin2, r.c.id)).json().contradiction.status).toBe("resolved");
+    const cashBefore = await cash(r.u);
+    const tr = (await mock.getTransfer(r.payout.reference))!;
+    await mock.setTransfer(r.payout.reference, { ...tr, state: "failed" });
+    await checkPayout(r.payout.id, "check");
+    expect((await alertsFor(r.payout.id)).find((a) => a.kind === "payout_reversed_after_resolve")?.severity).toBe("critical");
+    expect(await cash(r.u)).toBe(cashBefore);
+    expect(await findBreaches(db)).toEqual([]);
+  });
+
   it("no waiver while a contradiction is open (request or confirm)", async () => {
     const { u, c } = await contradicted("crnowaive", 0);
     const asked = await app.inject({ method: "POST", url: `/admin/payments/users/${u.id}/owed/waive`, headers: as(admin), payload: { reason: "they're broke" } });
