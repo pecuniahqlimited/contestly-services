@@ -278,11 +278,14 @@ export type CornerProgress = z.infer<typeof cornerProgressSchema>;
 /** POST /me/corner/celebration-seen: when it was first seen (a repeat keeps the first time). */
 export const celebrationSeenSchema = z.object({ celebrationSeenAt: z.string().datetime() });
 
-/** The admin's view adds who made up N at unlock, and how a revoke went. */
+/** The admin's view adds who made up N at unlock, whether an admin granted it instead (ADR 0012 §4), and how a revoke went. */
 export const adminCornerViewSchema = cornerProgressSchema.extend({
   host: personSchema,
   unlockContributors: z.array(personSchema),
+  granted: z.object({ by: personSchema, at: z.string().datetime(), reason: z.string() }).nullable(),
   revoked: z.object({ by: personSchema, at: z.string().datetime(), reason: z.string() }).nullable(),
 });
+/** POST /admin/corners/grant: unlock a corner for a signed-up, unbanned account, whatever its progress. */
+export const adminCornerGrantSchema = z.object({ userId: z.string().uuid(), reason: z.string().trim().min(1).max(500) });
 export const adminCornerConfigSchema = cornerUnlockConfigSchema.extend({ version: z.number().int(), updatedAt: z.string().datetime() });
 export const adminCornerConfigBodySchema = z.object({ config: cornerUnlockConfigSchema, reason: z.string().trim().min(1).max(500) });

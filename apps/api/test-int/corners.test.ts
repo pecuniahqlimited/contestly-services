@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql as dsql } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, becomeMember, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
+  adminActions, adminAlerts, becomeMember, nudges, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
   follows, getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
@@ -385,6 +385,58 @@ describe("sim data", () => {
     expect(await tabIds(real)).not.toContain(p.id);
     expect(await tabIds()).not.toContain(p.id);
     expect(await tabIds(sim)).toContain(p.id);
+  });
+});
+
+describe("grant", () => {
+  const grant = (by: User, body: object) => app.inject({ method: "POST", url: "/admin/corners/grant", headers: as(by), payload: body });
+
+  it("unlocks a corner whatever the progress: made if missing, marked granted for admins only, logged, alerted, celebrated, nudged", async () => {
+    const host = await person("ghost");
+    expect((await grant(host, { userId: host.id, reason: "x" })).statusCode).toBe(403);
+    expect((await grant(admin, { userId: host.id })).statusCode).toBe(400);
+    const res = await grant(admin, { userId: host.id, reason: "launch partner" });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toMatchObject({ corner: { status: "unlocked", level: 1, celebrationSeenAt: null }, granted: { by: { id: admin.id }, reason: "launch partner" }, revoked: null });
+    const c = await cornerRow(host);
+    expect([c.name, c.color, c.lane]).toEqual([host.displayName, CORNER_COLORS[0], null]);
+    // Public responses don't say how it was unlocked.
+    const page = await app.inject({ url: `/corners/${c.id}` });
+    expect(page.statusCode).toBe(200);
+    expect(JSON.stringify(page.json())).not.toMatch(/grant/i);
+    expect((await app.inject({ url: "/me/corner/progress", headers: as(host) })).json().corner.celebrationSeenAt).toBeNull();
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.action, "corner.grant"), eq(adminActions.targetId, c.id)));
+    expect(log).toMatchObject({ adminUserId: admin.id, reason: "launch partner", before: { status: "locked" }, after: { status: "unlocked", ownerUserId: host.id } });
+    const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `corner_granted:${c.id}`));
+    expect(alert).toMatchObject({ kind: "corner.granted", severity: "info" });
+    expect((await db.select().from(nudges).where(and(eq(nudges.userId, host.id), eq(nudges.kind, "corner_open")))).length).toBe(1);
+
+    expect((await grant(admin, { userId: host.id, reason: "again" })).json().error).toBe("corner_already_unlocked");
+    // Revoke and restore as for any corner; a revoked one is restored, not granted.
+    await app.inject({ method: "POST", url: `/admin/corners/${c.id}/revoke`, headers: as(admin), payload: { reason: "test" } });
+    const revoked = await grant(admin, { userId: host.id, reason: "again" });
+    expect([revoked.statusCode, revoked.json().error]).toEqual([409, "corner_revoked"]);
+    expect(revoked.json().details.message).toMatch(/restore/);
+    const restored = await app.inject({ method: "POST", url: `/admin/corners/${c.id}/restore`, headers: as(admin), payload: { reason: "test" } });
+    expect(restored.json()).toMatchObject({ corner: { status: "unlocked" }, granted: { reason: "launch partner" } });
+  });
+
+  it("keeps tracking progress after a grant (a granted corner counts parties like any)", async () => {
+    const host = await person("gprog");
+    await grant(admin, { userId: host.id, reason: "early" });
+    await finish(host, [await person("gp1"), await person("gp2"), await person("gp3")]);
+    const progress = (await app.inject({ url: "/me/corner/progress", headers: as(host) })).json();
+    expect(progress.thresholds.partiesHosted.have).toBe(1);
+    expect(progress.corner.status).toBe("unlocked");
+  });
+
+  it("refuses guests, banned and unknown accounts, creating nothing", async () => {
+    const guest = await person("gguest", { extra: { isGuest: true } });
+    const banned = await person("gban", { extra: { bannedAt: new Date() } });
+    expect((await grant(admin, { userId: guest.id, reason: "x" })).json().error).toBe("guest_account");
+    expect((await grant(admin, { userId: banned.id, reason: "x" })).json().error).toBe("account_banned");
+    expect((await grant(admin, { userId: randomUUID(), reason: "x" })).statusCode).toBe(404);
+    expect(await db.select().from(corners).where(eq(corners.ownerUserId, guest.id))).toHaveLength(0);
   });
 });
 

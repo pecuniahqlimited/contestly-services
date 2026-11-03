@@ -1331,6 +1331,10 @@ export const corners = pgTable("corners", {
   revokedByUserId: uuid("revoked_by_user_id").references(() => users.id),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   revokedReason: text("revoked_reason"),
+  /** Granted by an admin rather than earned (ADR 0012 §4): who, when and why. Shown in admin views only. */
+  grantedByUserId: uuid("granted_by_user_id").references(() => users.id),
+  grantedAt: timestamp("granted_at", { withTimezone: true }),
+  grantedReason: text("granted_reason"),
   /** Its owner deleted their account (ADR 0010): archived, its follows moved to archived_follows. */
   archivedAt: timestamp("archived_at", { withTimezone: true }),
   /** A sim user's corner (users.is_sim): never suggested to real people. */

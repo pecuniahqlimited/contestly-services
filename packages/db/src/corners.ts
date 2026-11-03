@@ -292,6 +292,38 @@ export async function cornersAfterStandingChange(userId: string): Promise<void> 
 }
 
 /**
+ * An admin grants a corner (ADR 0012 §4): unlocked at level 1 for a signed-up, unbanned account whatever its
+ * progress, made if there isn't one (named after them, lane from their parties, the default colour). It's
+ * marked granted (admin views only), logged with the reason, and raises an info alert like an earned unlock;
+ * the host gets the celebration and "Your corner is open". Progress keeps being tracked. A revoked corner is
+ * restored, not granted (409 corner_revoked); an unlocked one is 409 corner_already_unlocked.
+ */
+export async function grantCorner(adminUserId: string, userId: string, reason: string, now = new Date()): Promise<Corner> {
+  return db.transaction(async (tx) => {
+    const [u] = await tx.select().from(users).where(eq(users.id, userId));
+    if (!u || u.deletedAt || u.isSystem) throw httpError(404, "not_found");
+    if (u.isGuest) throw httpError(409, "guest_account");
+    if (u.bannedAt) throw httpError(409, "account_banned");
+    const made = await ensureCorner(tx, userId);
+    const [c] = await tx.select().from(corners).where(eq(corners.id, made.id)).for("update");
+    if (c.status === "unlocked") throw httpError(409, "corner_already_unlocked");
+    if (c.status === "revoked") throw Object.assign(httpError(409, "corner_revoked"), { details: { message: "This corner was revoked: restore it instead (POST /admin/corners/:id/restore)." } });
+    if (c.archivedAt) throw httpError(409, "corner_archived");
+    await refreshDefaultLane(tx, userId);
+    const [after] = await tx.update(corners).set({
+      status: "unlocked", level: 1, unlockedAt: now, celebrationSeenAt: null, grantedByUserId: adminUserId, grantedAt: now, grantedReason: reason,
+    }).where(eq(corners.id, c.id)).returning();
+    await recordAdminAction(tx, { adminUserId, action: "corner.grant", targetType: "corner", targetId: c.id, reason, before: { status: c.status }, after: { status: after.status, ownerUserId: userId } });
+    await adminAlert({
+      kind: "corner.granted", severity: "info", subject: `@${u.handle}'s corner was granted by an admin`,
+      details: { hostId: userId, cornerId: c.id, grantedBy: adminUserId, reason }, dedupeKey: `corner_granted:${c.id}`, refType: "corner", refId: c.id,
+    }, tx);
+    await nudge(tx, { userId, kind: "corner_open", data: { cornerId: c.id }, ref: { type: "corner", id: c.id }, dedupeKey: `corner_open:${c.id}` }, now);
+    return after;
+  });
+}
+
+/**
  * An admin revokes an unlocked corner (a farmed unlock), with a reason, logged. It's hidden from then on; its
  * follows, posts, reactions and replies are kept untouched, so a restore brings everything back.
  */
