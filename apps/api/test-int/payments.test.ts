@@ -1121,6 +1121,37 @@ describe("contradictions: resolved by two admins", () => {
     expect(await findBreaches(db)).toEqual([]);
   });
 
+  it("deleting the account is blocked while money is owed or a contradiction is open, with plain messages", async () => {
+    const open = await contradicted("crdelopen", kobo(10_000)); // all held, nothing owed, still open
+    expect((await app.inject({ method: "GET", url: "/me/deletion", headers: as(open.u) })).json().blockers).toEqual(expect.arrayContaining([
+      { code: "payment_issue", message: "You have an open payment issue. Contact support" },
+    ]));
+    const { u } = await owing("crdelowe"); // resolved, ₦1,500.11 still owed
+    expect((await app.inject({ method: "GET", url: "/me/deletion", headers: as(u) })).json().blockers).toEqual([
+      { code: "amount_owed", message: "You owe money from a duplicate payout. Contact support" },
+    ]);
+  });
+
+  it("a new account with a deleted debtor's email or phone can't withdraw until an admin clears it", async () => {
+    const { u } = await owing("crreuse");
+    const phoneHmac = `hmac-${tag}-${u.id.slice(0, 8)}`;
+    await db.update(users).set({ phoneHmac }).where(eq(users.id, u.id));
+    const [old] = await db.select().from(users).where(eq(users.id, u.id));
+    await db.transaction((tx) => archiveAccount(tx, old, null)); // deleted before deletion checked for debts (or the debt came after)
+    // Same email, signed up again.
+    const again = await withdrawer("crreuse2", kobo(10_000), { email: old.email });
+    await expect(request((await db.select().from(users).where(eq(users.id, again.u.id)))[0], again.account.id, kobo(1500))).rejects.toMatchObject({ details: { reason: "linked_payment_issue" } });
+    expect((await app.inject({ method: "GET", url: "/me", headers: as(again.u) })).json().canWithdraw).toBe(false);
+    // Same phone, different email.
+    const byPhone = await withdrawer("crreuse3", kobo(10_000), { phoneHmac });
+    await expect(request((await db.select().from(users).where(eq(users.id, byPhone.u.id)))[0], byPhone.account.id, kobo(1500))).rejects.toMatchObject({ details: { reason: "linked_payment_issue" } });
+    // An admin checks and clears it (logged): then it can.
+    const cleared = await app.inject({ method: "POST", url: `/admin/payments/users/${again.u.id}/clear-linked-issue`, headers: as(admin), payload: { reason: "different person: checked ID with support" } });
+    expect(cleared.statusCode).toBe(200);
+    expect((await request((await db.select().from(users).where(eq(users.id, again.u.id)))[0], again.account.id, kobo(1500))).payout.status).toBe("requested");
+    expect((await db.select().from(adminActions).where(and(eq(adminActions.targetId, again.u.id), eq(adminActions.action, "payments.linked_issue_cleared")))).length).toBe(1);
+  });
+
   it("nobody resolves their own", async () => {
     const { u, c } = await contradicted("crown", kobo(10_000));
     await db.update(users).set({ isAdmin: true }).where(eq(users.id, u.id));

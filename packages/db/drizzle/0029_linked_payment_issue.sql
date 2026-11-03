@@ -1,0 +1,1 @@
+ALTER TABLE "users" ADD COLUMN "linked_payment_issue_cleared_at" timestamp with time zone;

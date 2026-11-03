@@ -19,7 +19,7 @@
  * person's withdrawals in the same transaction as its alert (payout_contradictions; contradictions.ts).
  */
 import { randomUUID } from "node:crypto";
-import { and, asc, count, eq, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { db, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
 import {
   ACCOUNT_UNRESOLVED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
@@ -40,6 +40,37 @@ export const payoutView = (p: Payout, a: Pick<PayoutAccount, "bankName" | "accou
   createdAt: p.createdAt.toISOString(), finalAt: p.finalAt?.toISOString() ?? null,
 });
 
+/**
+ * What withdrawBlockReason needs beyond the user row: what they owe, and whether a deleted account sharing
+ * their email or phone had a payment issue (owed money, held money, any contradiction) that an admin hasn't
+ * cleared for this account. Deleting frees the email and phone for a new sign-up (ADR 0010); this keeps a
+ * debt from leaving with the old account.
+ */
+export async function withdrawContext(conn: Tx | typeof db, user: Pick<User, "id" | "email" | "phoneHmac" | "linkedPaymentIssueClearedAt">) {
+  const owedKobo = await ledger.owedKobo(conn, user.id);
+  if (user.linkedPaymentIssueClearedAt || (!user.email && !user.phoneHmac)) return { owedKobo, linkedIssue: false };
+  const same = [user.email ? eq(users.archivedEmail, user.email) : undefined, user.phoneHmac ? eq(users.archivedPhoneHmac, user.phoneHmac) : undefined].filter((x) => x !== undefined);
+  const archived = await conn.select({ id: users.id }).from(users).where(and(isNotNull(users.deletedAt), ne(users.id, user.id), or(...same)));
+  for (const a of archived) {
+    const i = await ledger.paymentIssues(conn, a.id);
+    if (i.owedKobo > 0 || i.heldKobo !== 0 || i.everContradicted) return { owedKobo, linkedIssue: true };
+  }
+  return { owedKobo, linkedIssue: false };
+}
+
+/** An admin has checked a new account against a deleted one with a payment issue: it may withdraw again. Logged. */
+export async function clearLinkedPaymentIssue(adminUserId: string, userId: string, reason: string) {
+  return db.transaction(async (tx) => {
+    const u = await lockPerson(tx, userId);
+    if (!u) throw paymentsError(404, "not_found");
+    if (u.id === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
+    const now = new Date();
+    await tx.update(users).set({ linkedPaymentIssueClearedAt: now }).where(eq(users.id, userId));
+    await recordAdminAction(tx, { adminUserId, action: "payments.linked_issue_cleared", targetType: "user", targetId: userId, reason, before: { clearedAt: u.linkedPaymentIssueClearedAt?.toISOString() ?? null }, after: { clearedAt: now.toISOString() } });
+    return { clearedAt: now.toISOString() };
+  });
+}
+
 export interface WithdrawalRequest { amountKobo: number; bankAccountId: string; clientRequestId: string }
 
 /**
@@ -50,7 +81,7 @@ export interface WithdrawalRequest { amountKobo: number; bankAccountId: string; 
 export async function requestPayout(user: User, req: WithdrawalRequest, deps: PaymentsDeps, now = new Date()): Promise<{ payout: Payout; replayed: boolean }> {
   const [settings, cfg] = await Promise.all([currentSettings(), getPaymentsConfig()]);
   if (settings.payoutsPaused) throw paymentsError(503, PAYMENTS_PAUSED, { what: "payouts" });
-  const blocked = withdrawBlockReason(user, { owedKobo: await ledger.owedKobo(db, user.id) });
+  const blocked = withdrawBlockReason(user, await withdrawContext(db, user));
   if (blocked) throw paymentsError(403, WITHDRAW_NOT_ALLOWED, { reason: blocked });
   if (req.amountKobo < cfg.payout.minKobo) throw paymentsError(422, BELOW_MINIMUM, { minKobo: cfg.payout.minKobo });
   if (req.amountKobo > cfg.payout.maxKobo) throw paymentsError(422, LIMIT_REACHED, { limit: "payout_max", maxKobo: cfg.payout.maxKobo });
@@ -62,7 +93,7 @@ export async function requestPayout(user: User, req: WithdrawalRequest, deps: Pa
     const fresh = await lockPerson(tx, user.id);
     const [prior] = await tx.select().from(payouts).where(and(eq(payouts.userId, user.id), eq(payouts.clientRequestId, req.clientRequestId)));
     if (prior) return { payout: prior, replayed: true, hold: null as string | null, userHourCount: 0 };
-    const blockedNow = withdrawBlockReason(fresh, { owedKobo: await ledger.owedKobo(tx, user.id) });
+    const blockedNow = withdrawBlockReason(fresh, await withdrawContext(tx, fresh));
     if (blockedNow) throw paymentsError(403, WITHDRAW_NOT_ALLOWED, { reason: blockedNow });
 
     const [account] = await tx.select().from(payoutAccounts).where(and(eq(payoutAccounts.id, req.bankAccountId), eq(payoutAccounts.userId, user.id)));
@@ -277,7 +308,7 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
     const u = await lockPerson(tx, p.userId);
     const row = await lockPayout(tx, payoutId);
     if (row.status !== "requested") return false;
-    const blocked = withdrawBlockReason(u, { owedKobo: await ledger.owedKobo(tx, p.userId) });
+    const blocked = withdrawBlockReason(u, await withdrawContext(tx, u));
     if (blocked) {
       await tx.update(payouts).set({ status: "awaiting_approval", holdReason: `blocked:${blocked}`, updatedAt: now }).where(eq(payouts.id, p.id));
       await raiseAlert(tx, { severity: "warning", kind: "payout_held_blocked", dedupeKey: `payout_held_blocked:${p.id}`, refType: "payout", refId: p.id, detail: { reason: blocked } });

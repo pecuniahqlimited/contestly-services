@@ -22,8 +22,11 @@ export const isUnderPaymentReview = (u: Pick<User, "withdrawalsFrozenAt">) => !!
 
 type WithdrawFields = Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "deletedAt" | "phoneVerifiedAt" | "bannedAt" | "withdrawalsFrozenAt">;
 
-/** What the ledger knows that the user row doesn't: what they owe (ledger.owedKobo). */
-export interface WithdrawContext { owedKobo: number }
+/**
+ * What the user row doesn't say: what they owe (ledger.owedKobo), and whether a deleted account with their
+ * email or phone had a payment issue an admin hasn't cleared for this account (withdrawContext in payments).
+ */
+export interface WithdrawContext { owedKobo: number; linkedIssue?: boolean }
 
 /** Why this account can't withdraw, or null if it can. The app shows the reason (withdraw_not_allowed). */
 export function withdrawBlockReason(u: WithdrawFields, ctx: WithdrawContext): WithdrawBlockReason | null {
@@ -35,6 +38,7 @@ export function withdrawBlockReason(u: WithdrawFields, ctx: WithdrawContext): Wi
   if (isWalletFrozen(u)) return "frozen";
   if (isUnderPaymentReview(u)) return "payment_review";
   if (ctx.owedKobo > 0) return "amount_owed";
+  if (ctx.linkedIssue) return "linked_payment_issue";
   return null;
 }
 

@@ -10,6 +10,7 @@ import { myParties } from "../myParties.js";
 import { personColumns } from "../people.js";
 import { publicUser } from "./users.js";
 import { deleteAccount, deletionStatus } from "../accountDeletion.js";
+import { withdrawContext } from "@contestly/payments";
 
 /** People you've played with, at most this many. */
 const PLAYED_WITH_LIMIT = 20;
@@ -22,7 +23,7 @@ export async function meRoutes(app: FastifyInstance) {
     const u = requireSession(req);
     return {
       ...publicUser(u), isGuest: u.isGuest, isAdmin: u.isAdmin, email: u.email, phoneAdded: !!u.phoneVerifiedAt,
-      canWithdraw: canWithdraw(u, { owedKobo: await ledger.owedKobo(db, u.id) }), wallet: await ledger.balances(u.id),
+      canWithdraw: canWithdraw(u, await withdrawContext(db, u)), wallet: await ledger.balances(u.id),
     };
   });
 

@@ -6,7 +6,7 @@ import {
   adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, invariantAcknowledgmentSchema, acknowledgeBreachBodySchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
-  acknowledgeAlert, adminVerifyTopup, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
+  acknowledgeAlert, adminVerifyTopup, clearLinkedPaymentIssue, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
   listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectionSummary, rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
   confirmAcknowledgment, listAcknowledgments, requestAcknowledgment, confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
@@ -136,6 +136,13 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.post("/admin/payments/owed-waivers/:id/confirm", async (req) => {
     const admin = await requirePermission(req, "payments.finalize");
     return { waiver: owedWaiverSchema.parse(await confirmOwedWaiver(admin.id, uuidParam(req))) };
+  });
+
+  /** A new account matching a deleted one with a payment issue (same email or phone): an admin checked it; it may withdraw. */
+  app.post("/admin/payments/users/:id/clear-linked-issue", async (req) => {
+    const admin = await requirePermission(req, "payments.finalize");
+    const { reason } = adminReasonBodySchema.parse(req.body);
+    return clearLinkedPaymentIssue(admin.id, uuidParam(req), reason);
   });
 
   /** Run the invariant checks now (they also run hourly). A breach that repeats alerts and pauses payouts. */
