@@ -21,7 +21,10 @@ const codeHmac = (email: string, code: string) => hmac("EMAIL_CODE_SECRET", `${e
 /** Who a code is bound to: the session's user, or nobody. */
 const boundTo = (session: User | null) => session?.id ?? "";
 
-export async function startEmailCode(session: User | null, email: string, ip: string, limits: Limits) {
+/** What a code is for: signing in, or adding the email to the signed-in account (/me/email). One can't be used as the other. */
+export type CodePurpose = "sign_in" | "add_email";
+
+export async function startEmailCode(session: User | null, email: string, ip: string, limits: Limits, purpose: CodePurpose = "sign_in") {
   await limit("email-start:ip", ip, limits.codeSendsPerIpPerHour, HOUR, TOO_MANY_CODES);
   const sentAt = Number(await valkey().hget(codeKey(email), "sentAt"));
   const sinceSent = Date.now() - sentAt;
@@ -31,7 +34,7 @@ export async function startEmailCode(session: User | null, email: string, ip: st
   const code = String(randomInt(0, 10 ** EMAIL_CODE_LENGTH)).padStart(EMAIL_CODE_LENGTH, "0");
   await valkey().multi()
     .del(codeKey(email))
-    .hset(codeKey(email), { hmac: codeHmac(email, code), attempts: 0, sessionUserId: boundTo(session), sentAt: Date.now() })
+    .hset(codeKey(email), { hmac: codeHmac(email, code), attempts: 0, sessionUserId: boundTo(session), purpose, sentAt: Date.now() })
     .expire(codeKey(email), EMAIL_CODE_TTL_SECONDS).exec();
   const sent = await sendSignInCode(email, code);
   if (!sent.deliveredBy) {
@@ -59,7 +62,7 @@ export async function watchCodeSends(threshold: number, hour = clockHour()): Pro
 }
 
 /** Checks the code. True once, then the code is gone; throws invalid_code / too_many_attempts otherwise. */
-export async function checkEmailCode(session: User | null, email: string, code: string, ip: string, limits: Limits): Promise<void> {
+export async function checkEmailCode(session: User | null, email: string, code: string, ip: string, limits: Limits, purpose: CodePurpose = "sign_in"): Promise<void> {
   await limit("email-check:ip", ip, limits.codeChecksPerIpPer10Min, TEN_MINUTES, TOO_MANY_ATTEMPTS);
   await limit("email-check:email", email, limits.codeChecksPerEmailPer10Min, TEN_MINUTES, TOO_MANY_ATTEMPTS);
   const key = codeKey(email);
@@ -70,7 +73,7 @@ export async function checkEmailCode(session: User | null, email: string, code: 
     await valkey().del(key);
     throw rateLimited(TOO_MANY_ATTEMPTS, EMAIL_CODE_TTL_SECONDS, "email-check:code-tries");
   }
-  const match = entry.sessionUserId === boundTo(session) && timingSafeEqual(Buffer.from(entry.hmac, "hex"), Buffer.from(codeHmac(email, code), "hex"));
+  const match = entry.sessionUserId === boundTo(session) && (entry.purpose ?? "sign_in") === purpose && timingSafeEqual(Buffer.from(entry.hmac, "hex"), Buffer.from(codeHmac(email, code), "hex"));
   if (!match) {
     if (attempts === EMAIL_CODE_MAX_ATTEMPTS) await valkey().del(key);
     throw httpError(400, "invalid_code");

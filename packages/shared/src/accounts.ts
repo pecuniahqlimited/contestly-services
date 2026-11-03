@@ -64,8 +64,18 @@ export const signInResultSchema = z.object({
 });
 export type SignInResult = z.infer<typeof signInResultSchema>;
 
-/** POST /auth/email/start. */
+/** POST /auth/email/start (and /me/email/start). */
 export const emailStartResponseSchema = z.object({ sent: z.literal(true), expiresInSeconds: z.number().int(), resendAfterSeconds: z.number().int() });
+
+/**
+ * Adding an email to a signed-up account that has no verified one (POST /me/email/start and /verify, the
+ * same code flow and limits as sign-in). 409 email_in_use: another account has it (whose isn't said).
+ * 409 email_already_verified: changing a verified email isn't possible yet.
+ */
+export const EMAIL_IN_USE = "email_in_use";
+export const EMAIL_ALREADY_VERIFIED = "email_already_verified";
+export const addEmailResponseSchema = z.object({ email: emailSchema, emailVerifiedAt: z.string() });
+export type AddEmailResponse = z.infer<typeof addEmailResponseSchema>;
 
 // ---------------------------------------------------------------- Google and Apple (system browser + one-time code)
 

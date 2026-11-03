@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, count, desc, eq, max, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { canWithdraw, db, follows, liveUser, parties, partyPlayers, users, ledger } from "@contestly/db";
-import { addPhoneSchema, contactsMatchSchema, deleteAccountResponseSchema, deleteAccountSchema, deletionStatusSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
+import { addEmailResponseSchema, addPhoneSchema, contactsMatchSchema, emailStartResponseSchema, emailStartSchema, emailVerifySchema, deleteAccountResponseSchema, deleteAccountSchema, deletionStatusSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
 import { requireSession, requireUser } from "../auth.js";
 import { httpError } from "../httpError.js";
 import { addPhone, matchContacts } from "../phone.js";
@@ -11,6 +11,8 @@ import { personColumns } from "../people.js";
 import { publicUser } from "./users.js";
 import { deleteAccount, deletionStatus } from "../accountDeletion.js";
 import { withdrawContext } from "@contestly/payments";
+import { startAddEmail, verifyAddEmail } from "../signin/addEmail.js";
+import { watchCodeSends } from "../signin/emailCode.js";
 
 /** People you've played with, at most this many. */
 const PLAYED_WITH_LIMIT = 20;
@@ -63,6 +65,20 @@ export async function meRoutes(app: FastifyInstance) {
     const { displayName } = guestNameSchema.parse(req.body);
     const [u] = await db.update(users).set({ displayName }).where(eq(users.id, me.id)).returning();
     return { ...publicUser(u), isGuest: true };
+  });
+
+  /**
+   * Add an email to a signed-up account that has no verified one: a 6-digit code (the sign-in flow and its
+   * limits), then the code. 409 email_in_use (another account's; never whose), email_already_verified.
+   */
+  app.post("/me/email/start", async (req) => {
+    const sent = await startAddEmail(requireUser(req), emailStartSchema.parse(req.body).email, req.clientIp, app.limits);
+    await watchCodeSends(app.limits.codeSendsAlertPerHour);
+    return emailStartResponseSchema.parse(sent);
+  });
+  app.post("/me/email/verify", async (req) => {
+    const { email, code } = emailVerifySchema.parse(req.body);
+    return addEmailResponseSchema.parse(await verifyAddEmail(requireUser(req), email, code, req.clientIp, app.limits));
   });
 
   /** Add (or replace) the optional number, verified by SMS. One account per number. */
