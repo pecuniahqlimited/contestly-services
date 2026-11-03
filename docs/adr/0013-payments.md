@@ -140,7 +140,9 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    applies at once with one admin, except `payments.config`: taking it from one of the last two holders
    waits for a second admin (the holder may agree to it themselves), and the last holder can't lose it at
    all (409 `last_config_holder`), so one admin can't strip everyone else and leave payouts paused with
-   nobody able to un-pause. Dev sessions and seeded dev admins hold all four. **Who is an admin at
+   nobody able to un-pause. Only unbanned, undeleted admins count as holders, and banning an admin who
+   holds any `payments.*` permission takes a second admin (`admin_ban_requests`; neither may be the admin
+   being banned), so a ban isn't a way round the floor. Dev sessions and seeded dev admins hold all four. **Who is an admin at
    all** (`ADMIN_EMAILS`, and `DEV_ADMIN_HANDLES` in dev) **is controlled by whoever controls the
    environment**: none of these controls protect against them, so production secrets and deploys need
    their own two-person rule.

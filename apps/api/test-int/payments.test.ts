@@ -1444,6 +1444,35 @@ describe("permissions", () => {
     }
   });
 
+  it("banning a payments admin takes a second admin; a banned holder doesn't count toward the config floor", async () => {
+    const target = await makeUser(nextName("bantgt"), { isAdmin: true });
+    await db.insert(adminPermissions).values({ userId: target.id, permission: "payments.config" });
+    const third = await makeUser(nextName("banthird"), { isAdmin: true });
+    const asked = await app.inject({ method: "POST", url: `/admin/users/${target.id}/ban`, headers: as(admin), payload: { reason: "suspicious activity" } });
+    expect(asked.statusCode).toBe(202);
+    expect((await db.select().from(users).where(eq(users.id, target.id)))[0].bannedAt).toBeNull();
+    const confirm = (who: User) => app.inject({ method: "POST", url: `/admin/users/ban-requests/${asked.json().banRequest.id}/confirm`, headers: as(who) });
+    expect((await confirm(admin)).json().error).toBe("second_admin_required");
+    expect((await confirm(target)).json().error).toBe("own_transaction");
+    expect((await confirm(third)).statusCode).toBe(200);
+    expect((await db.select().from(users).where(eq(users.id, target.id)))[0].bannedAt).not.toBeNull();
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, target.id), eq(adminActions.action, "user.ban")));
+    expect(log.adminUserId).toBe(third.id);
+    // An admin with no payments permission is still banned by one admin at once.
+    const plainAdmin = await makeUser(nextName("banplain"), { isAdmin: true });
+    expect((await app.inject({ method: "POST", url: `/admin/users/${plainAdmin.id}/ban`, headers: as(admin), payload: { reason: "spam" } })).statusCode).toBe(200);
+    // The floor: with holders narrowed to admin and admin2, a banned admin2 doesn't count, so admin is the last.
+    const others = await db.select().from(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
+    await db.delete(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
+    await db.update(users).set({ bannedAt: new Date(), banReason: "test" }).where(eq(users.id, admin2.id));
+    try {
+      await expect(setPermissions(third.id, admin.id, ["payments.view"], "rota change")).rejects.toMatchObject({ message: "last_config_holder" });
+    } finally {
+      await db.update(users).set({ bannedAt: null, banReason: null }).where(eq(users.id, admin2.id));
+      if (others.length) await db.insert(adminPermissions).values(others.map((o) => ({ userId: o.userId, permission: o.permission }))).onConflictDoNothing();
+    }
+  });
+
   it("a grantee can't confirm their own grant (one admin can't make a second admin)", async () => {
     const accomplice = await makeUser(nextName("permacc"), { isAdmin: true });
     await db.insert(adminPermissions).values({ userId: accomplice.id, permission: "payments.config" });

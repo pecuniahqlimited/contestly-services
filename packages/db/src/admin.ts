@@ -45,15 +45,18 @@ const banState = (u: User) => ({ bannedAt: u.bannedAt?.toISOString() ?? null, ba
 
 /** Ban: the account can't sign in, join, host or play from now on. Admins can't ban themselves. */
 export async function banUser(adminUserId: string, userId: string, reason: string): Promise<User> {
+  return db.transaction((tx) => banUserIn(tx, adminUserId, userId, reason));
+}
+
+/** The ban, in the caller's transaction (a payments admin's ban is confirmed by a second admin: packages/payments). */
+export async function banUserIn(tx: Tx, adminUserId: string, userId: string, reason: string): Promise<User> {
   if (adminUserId === userId) throw httpError(409, "cannot_ban_self");
-  return db.transaction(async (tx) => {
-    const [u] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
-    if (!u || u.isSystem) throw httpError(404, "not_found");
-    if (u.bannedAt) return u; // already banned: nothing changes, nothing logged
-    const [after] = await tx.update(users).set({ bannedAt: new Date(), banReason: reason }).where(eq(users.id, userId)).returning();
-    await recordAdminAction(tx, { adminUserId, action: "user.ban", targetType: "user", targetId: userId, reason, before: banState(u), after: banState(after) });
-    return after;
-  });
+  const [u] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
+  if (!u || u.isSystem) throw httpError(404, "not_found");
+  if (u.bannedAt) return u; // already banned: nothing changes, nothing logged
+  const [after] = await tx.update(users).set({ bannedAt: new Date(), banReason: reason }).where(eq(users.id, userId)).returning();
+  await recordAdminAction(tx, { adminUserId, action: "user.ban", targetType: "user", targetId: userId, reason, before: banState(u), after: banState(after) });
+  return after;
 }
 
 export async function unbanUser(adminUserId: string, userId: string, reason: string): Promise<User> {

@@ -10,7 +10,7 @@
  * admin at all (ADMIN_EMAILS) is outside this: whoever controls the environment controls that list.
  */
 import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { adminPermissions, db, paymentPermissionGrants, recordAdminAction, users, type PaymentPermissionGrant, type Tx } from "@contestly/db";
+import { adminBanRequests, adminPermissions, banUserIn, db, paymentPermissionGrants, recordAdminAction, users, type AdminBanRequest, type PaymentPermissionGrant, type Tx } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED, type PaymentPermission } from "@contestly/shared";
 import { paymentsError } from "./common.js";
 
@@ -34,10 +34,10 @@ async function currentOf(tx: Tx, userId: string) {
 
 /** Serialises every permission change, so two revocations can't both see two config holders. */
 const lockPermissions = (tx: Tx) => tx.execute(sql`select pg_advisory_xact_lock(hashtext('payments_permissions'))`);
-/** Live admins holding payments.config. */
+/** Admins holding payments.config who can still act: not deleted, not banned. */
 async function configHolders(tx: Tx) {
   const [{ n }] = await tx.select({ n: count() }).from(adminPermissions).innerJoin(users, eq(users.id, adminPermissions.userId))
-    .where(and(eq(adminPermissions.permission, "payments.config"), eq(users.isAdmin, true), isNull(users.deletedAt)));
+    .where(and(eq(adminPermissions.permission, "payments.config"), eq(users.isAdmin, true), isNull(users.deletedAt), isNull(users.bannedAt)));
   return Number(n);
 }
 const CONFIG = "payments.config";
@@ -125,4 +125,44 @@ export async function confirmPermissionGrant(adminUserId: string, grantId: strin
 
 export async function listPermissionGrants(limit: number) {
   return (await db.select().from(paymentPermissionGrants).orderBy(desc(paymentPermissionGrants.createdAt)).limit(limit)).map(permissionGrantView);
+}
+
+// ---- Banning a payments admin: two admins ----
+
+const banRequestView = (b: AdminBanRequest) => ({
+  id: b.id, userId: b.userId, reason: b.reason, status: b.status, requestedBy: b.requestedByUserId, confirmedBy: b.confirmedByUserId,
+  createdAt: b.createdAt.toISOString(), appliedAt: iso(b.appliedAt),
+});
+
+/** Whether a ban of this account needs a second admin: it holds any payments permission. */
+export async function holdsPaymentPermission(userId: string) {
+  return (await permissionsOf(userId)).length > 0;
+}
+
+/** Ask to ban an admin who holds payments permissions. Nothing changes until a different admin confirms. */
+export async function requestPaymentsAdminBan(adminUserId: string, userId: string, reason: string) {
+  if (adminUserId === userId) throw paymentsError(409, "cannot_ban_self");
+  return db.transaction(async (tx) => {
+    const [target] = await tx.select().from(users).where(eq(users.id, userId)).for("no key update");
+    if (!target || target.isSystem) throw paymentsError(404, "not_found");
+    const [open] = await tx.select({ id: adminBanRequests.id }).from(adminBanRequests).where(and(eq(adminBanRequests.userId, userId), eq(adminBanRequests.status, "awaiting_second_admin")));
+    if (open) throw paymentsError(409, "ban_pending", { banRequestId: open.id });
+    const [b] = await tx.insert(adminBanRequests).values({ userId, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
+    await recordAdminAction(tx, { adminUserId, action: "user.ban_requested", targetType: "user", targetId: userId, reason, before: null, after: { banRequestId: b.id, permissions: await currentOf(tx, userId) } });
+    return banRequestView(b);
+  });
+}
+
+/** A second admin confirms: not whoever asked, not the admin being banned. The ban is main's banUserIn, in this transaction. */
+export async function confirmPaymentsAdminBan(adminUserId: string, banRequestId: string, now = new Date()) {
+  return db.transaction(async (tx) => {
+    const [b] = await tx.select().from(adminBanRequests).where(eq(adminBanRequests.id, banRequestId)).for("update");
+    if (!b) throw paymentsError(404, "not_found");
+    if (b.status !== "awaiting_second_admin") throw paymentsError(409, "ban_not_pending", { status: b.status });
+    if (b.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);
+    if (b.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
+    await banUserIn(tx, adminUserId, b.userId, b.reason);
+    const [done] = await tx.update(adminBanRequests).set({ status: "applied", confirmedByUserId: adminUserId, appliedAt: now }).where(eq(adminBanRequests.id, b.id)).returning();
+    return banRequestView(done);
+  });
 }

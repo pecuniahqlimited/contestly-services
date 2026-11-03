@@ -873,6 +873,22 @@ export const invariantAcknowledgments = pgTable("invariant_acknowledgments", {
 }, (t) => [index("invariant_acknowledgments_kind_idx").on(t.kind)]);
 
 /**
+ * Banning an admin who holds any payments permission (ADR 0013): one admin asks with a reason, a different
+ * one confirms, neither of them the admin being banned. Otherwise a ban could lock out the other payments
+ * admins (the config-holder floor counts only unbanned ones). Never edited after.
+ */
+export const adminBanRequests = pgTable("admin_ban_requests", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["awaiting_second_admin", "applied"] }).notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+}, (t) => [uniqueIndex("admin_ban_requests_one_open").on(t.userId).where(sql`status = 'awaiting_second_admin'`)]);
+
+/**
  * Clearing linked_payment_issue for an account (ADR 0013) is loosening: one admin with payments.finalize
  * asks with a reason, a different one confirms; neither may be the account holder. Never edited after.
  */
@@ -1294,6 +1310,7 @@ export type PaymentConfigChange = typeof paymentConfigChanges.$inferSelect;
 export type OwedWaiver = typeof owedWaivers.$inferSelect;
 export type PaymentPermissionGrant = typeof paymentPermissionGrants.$inferSelect;
 export type LinkedIssueClearance = typeof linkedIssueClearances.$inferSelect;
+export type AdminBanRequest = typeof adminBanRequests.$inferSelect;
 export type InvariantAcknowledgment = typeof invariantAcknowledgments.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;

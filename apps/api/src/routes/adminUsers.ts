@@ -12,6 +12,7 @@ import { requireAdmin, uuidParam } from "../auth.js";
 import { adminUserRow } from "../adminViews.js";
 import { httpError } from "../httpError.js";
 import { valkey } from "../redis.js";
+import { confirmPaymentsAdminBan, holdsPaymentPermission, requestPaymentsAdminBan } from "@contestly/payments";
 
 const SEARCH_LIMIT = 20;
 const RECENT_LIMIT = 20;
@@ -88,6 +89,12 @@ async function userDetail(id: string) {
   });
 }
 
+/** Rooms drop a banned user (after the ban has committed). */
+async function publishBan(userId: string) {
+  const ev: AdminEvent = { kind: "user_banned", userId };
+  await valkey().publish(ADMIN_EVENTS_CHANNEL, JSON.stringify(ev));
+}
+
 export async function adminUsersRoutes(app: FastifyInstance) {
   app.get("/admin/users", async (req) => {
     requireAdmin(req);
@@ -114,15 +121,24 @@ export async function adminUsersRoutes(app: FastifyInstance) {
     return adminLedgerPageSchema.parse({ entries: page.entries.map((e) => ({ ...e, createdAt: e.createdAt.toISOString() })), nextBefore: page.nextBefore });
   });
 
-  /** Ban: they can't sign in, join, host or play, and any room they're in drops them now. */
-  app.post("/admin/users/:id/ban", async (req) => {
+  /**
+   * Ban: they can't sign in, join, host or play, and any room they're in drops them now. An admin who holds
+   * payments permissions is banned only when a second admin confirms (202 with the request; ADR 0013).
+   */
+  app.post("/admin/users/:id/ban", async (req, reply) => {
     const admin = requireAdmin(req);
     const { reason } = adminReasonBodySchema.parse(req.body);
     const id = uuidParam(req);
+    if (await holdsPaymentPermission(id)) return reply.code(202).send({ banRequest: await requestPaymentsAdminBan(admin.id, id, reason) });
     await banUser(admin.id, id, reason);
-    const ev: AdminEvent = { kind: "user_banned", userId: id };
-    await valkey().publish(ADMIN_EVENTS_CHANNEL, JSON.stringify(ev));
+    await publishBan(id);
     return userDetail(id);
+  });
+  app.post("/admin/users/ban-requests/:id/confirm", async (req) => {
+    const admin = requireAdmin(req);
+    const done = await confirmPaymentsAdminBan(admin.id, uuidParam(req));
+    await publishBan(done.userId);
+    return { banRequest: done, user: await userDetail(done.userId) };
   });
 
   app.post("/admin/users/:id/unban", async (req) => {
