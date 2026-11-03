@@ -301,3 +301,30 @@ export const payoutContradictionSchema = z.object({
   /** In lists: where the disputed amount came from and where its debt stands. */
   debt: z.object({ heldFromCashKobo: z.number().int(), owedKobo: z.number().int(), repaidKobo: z.number().int(), waivedKobo: z.number().int(), outstandingKobo: z.number().int() }).optional(),
 });
+
+// ---------------------------------------------------------------- waiting for a second admin
+
+/** Every kind of two-admin request (ADR 0013). */
+export const PENDING_REQUEST_KINDS = [
+  "finalization", "owed_waiver", "contradiction_resolution", "permission_grant", "config_change", "admin_ban", "linked_issue_clearance", "invariant_acknowledgment",
+] as const;
+export type PendingRequestKind = (typeof PENDING_REQUEST_KINDS)[number];
+
+export const adminPendingQuerySchema = z.object({ kind: z.enum(PENDING_REQUEST_KINDS).optional() });
+export const adminPendingItemSchema = z.object({
+  kind: z.enum(PENDING_REQUEST_KINDS),
+  /** The request's id (what its confirm route takes). */
+  id: z.string().uuid(),
+  requestedBy: z.object({ id: z.string().uuid(), handle: z.string() }),
+  reason: z.string(),
+  requestedAt: z.string(),
+  /** What it acts on: a payout, a top-up, a user, the payments config or settings, an invariant kind. */
+  target: z.object({ type: z.enum(["payout", "topup", "user", "config", "settings", "invariant"]), id: z.string() }),
+  /** Where a second admin confirms it. */
+  confirm: z.object({ method: z.literal("POST"), path: z.string() }),
+  /** What confirming takes (null: any admin). */
+  permission: z.enum(PAYMENT_PERMISSIONS).nullable(),
+});
+export type AdminPendingItem = z.infer<typeof adminPendingItemSchema>;
+/** GET /admin/payments/pending: oldest first; only what the viewer could confirm, never what they asked for themselves. */
+export const adminPendingResponseSchema = z.object({ pending: z.array(adminPendingItemSchema) });

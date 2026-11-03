@@ -15,6 +15,7 @@ export * from "./contradictions.js";
 export * from "./controls.js";
 export * from "./owed.js";
 export * from "./limits.js";
+export * from "./pending.js";
 export { allowListedWebhookIps, assertPaymentsEnv, paymentsDevTools, closeProviders, configuredProviderNames, defaultProviderName, knownProviderNames, mockControlsOrNull, providerNamed, resetProviders } from "./providers/index.js";
 export { paystackProvider, paystackTransferFeeKobo, PAYSTACK, PAYSTACK_TRANSFER_FEE_TIERS, type Fetch } from "./providers/paystack.js";
 export { mockProvider, MOCK, type MockControls, type MockDelivery } from "./providers/mock.js";

@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, notInArray, sql as sqlRaw } from "drizzle-orm";
 import {
-  accountHasPaymentIssue, adminActions, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  accountHasPaymentIssue, adminActions, adminBanRequests, linkedIssueClearances, owedWaivers, paymentFinalizations, paymentPermissionGrants, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, systemActorId, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -1685,6 +1685,66 @@ describe("permissions", () => {
     expect([(await ack(viewer)).statusCode, (await ack(viewer)).json().details.permission]).toEqual([403, "payments.finalize"]);
     expect((await ack(admin)).statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: `/admin/alerts/${other.id}/ack`, headers: as(plain), payload: { note: "fine" } })).statusCode).toBe(200);
+  });
+
+  it("GET /admin/payments/pending: every open two-admin request, only what the viewer's permissions cover, never their own, filterable by kind", async () => {
+    const all = ["payments.view", "payments.approve", "payments.finalize", "payments.config"] as const;
+    const withPerms = async (name: string, perms: readonly (typeof all)[number][]) => {
+      const u = await makeUser(nextName(name), { isAdmin: true });
+      await db.insert(adminPermissions).values(perms.map((permission) => ({ userId: u.id, permission })));
+      return u;
+    };
+    const asker = await withPerms("pendask", all);
+    const finalizer = await withPerms("pendfin", ["payments.view", "payments.finalize"]);
+    const configurer = await withPerms("pendcfg", ["payments.view", "payments.config"]);
+    const someone = await makeUser(nextName("pendsub"));
+    const viewOnlyAdmin = await withPerms("pendban", ["payments.view"]);
+    const { u: payer, account } = await withdrawer("pendpay");
+    const { payout } = await request(payer, account.id, kobo(1500));
+    const base = { reason: "pending list test", status: "awaiting_second_admin" as const, requestedByUserId: asker.id };
+    // TEST-ONLY: one open request of each kind, written straight to their tables.
+    const [fin] = await db.insert(paymentFinalizations).values({ ...base, targetType: "payout", targetId: payout.id, outcome: "failed", providerCheck: {} }).returning();
+    const [waiver] = await db.insert(owedWaivers).values({ ...base, userId: someone.id, amountKobo: 100 }).returning();
+    const [contra] = await db.insert(payoutContradictions).values({ payoutId: payout.id, userId: payer.id, amountKobo: payout.amountKobo, status: "awaiting_second_admin", providerCheck: {}, requestedByUserId: asker.id, requestReason: "pending list test", requestedAt: new Date() }).returning();
+    const [grant] = await db.insert(paymentPermissionGrants).values({ ...base, userId: someone.id, permissions: ["payments.view"] }).returning();
+    const [aboutConfigurer] = await db.insert(paymentPermissionGrants).values({ ...base, userId: configurer.id, permissions: ["payments.approve"] }).returning();
+    const openChange = (await db.select().from(paymentConfigChanges).where(and(eq(paymentConfigChanges.kind, "settings"), eq(paymentConfigChanges.status, "awaiting_second_admin"))))[0];
+    const [change] = openChange ? [openChange] : await db.insert(paymentConfigChanges).values({ ...base, kind: "settings", before: {}, proposed: {}, loosens: ["test"] }).returning();
+    const [ban] = await db.insert(adminBanRequests).values({ ...base, userId: viewOnlyAdmin.id }).returning();
+    const [clear] = await db.insert(linkedIssueClearances).values({ ...base, userId: someone.id, coveredUserIds: [payer.id] }).returning();
+    const [ack] = await db.insert(invariantAcknowledgments).values({ ...base, kind: "test_pending", items: {}, detail: {} }).returning();
+    const mine = new Set([fin.id, waiver.id, contra.id, grant.id, aboutConfigurer.id, change.id, ban.id, clear.id, ack.id]);
+    const pending = async (who: User, q = "") => {
+      const res = await app.inject({ method: "GET", url: `/admin/payments/pending${q}`, headers: as(who) });
+      expect(res.statusCode).toBe(200);
+      return (res.json().pending as { id: string; kind: string }[]).filter((p) => mine.has(p.id));
+    };
+    try {
+      expect(await pending(asker)).toEqual([]); // their own: hidden
+      expect((await pending(finalizer)).map((p) => p.kind).sort()).toEqual(["admin_ban", "contradiction_resolution", "finalization", "linked_issue_clearance", "owed_waiver"]);
+      const forConfig = await pending(configurer);
+      expect(forConfig.map((p) => p.kind).sort()).toEqual(["admin_ban", "config_change", "invariant_acknowledgment", "permission_grant"]);
+      expect(forConfig.some((p) => p.id === aboutConfigurer.id)).toBe(false); // a grant to them: never theirs to confirm
+      const [item] = (await pending(finalizer, "?kind=finalization"));
+      expect(item).toMatchObject({
+        kind: "finalization", id: fin.id, requestedBy: { id: asker.id, handle: asker.handle }, reason: "pending list test",
+        target: { type: "payout", id: payout.id }, confirm: { method: "POST", path: `/admin/payments/finalizations/${fin.id}/confirm` }, permission: "payments.finalize",
+      });
+      expect((await app.inject({ method: "GET", url: "/admin/payments/pending", headers: as(await makeUser(nextName("pendplain"), { isAdmin: true })) })).statusCode).toBe(403);
+      // The confirm route it names works.
+      const banItem = (await pending(finalizer, "?kind=admin_ban"))[0] as unknown as { confirm: { path: string } };
+      expect((await app.inject({ method: "POST", url: banItem.confirm.path, headers: as(finalizer) })).statusCode).toBe(200);
+    } finally {
+      // TEST-ONLY: close what this test opened, so no other test finds it pending.
+      await db.update(paymentFinalizations).set({ status: "superseded" }).where(eq(paymentFinalizations.id, fin.id));
+      await db.update(owedWaivers).set({ status: "superseded" }).where(eq(owedWaivers.id, waiver.id));
+      await db.update(payoutContradictions).set({ status: "dissolved" }).where(eq(payoutContradictions.id, contra.id));
+      await db.update(paymentPermissionGrants).set({ status: "superseded" }).where(inArray(paymentPermissionGrants.id, [grant.id, aboutConfigurer.id]));
+      if (!openChange) await db.update(paymentConfigChanges).set({ status: "superseded" }).where(eq(paymentConfigChanges.id, change.id));
+      await db.update(linkedIssueClearances).set({ status: "applied" }).where(eq(linkedIssueClearances.id, clear.id));
+      await db.update(invariantAcknowledgments).set({ status: "applied" }).where(eq(invariantAcknowledgments.id, ack.id));
+      await db.update(users).set({ bannedAt: null, banReason: null }).where(eq(users.id, viewOnlyAdmin.id));
+    }
   });
 
   it("a grantee can't confirm their own grant (one admin can't make a second admin)", async () => {

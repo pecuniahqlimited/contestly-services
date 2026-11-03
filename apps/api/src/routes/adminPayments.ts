@@ -2,16 +2,16 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPaymentsConfig } from "@contestly/db";
 import {
-  adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
+  PAYMENT_PERMISSIONS, type PaymentPermission, adminPendingQuerySchema, adminPendingResponseSchema, adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
   adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, invariantAcknowledgmentSchema, acknowledgeBreachBodySchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
   adminVerifyTopup, confirmLinkedIssueClearance, requestLinkedIssueClearance, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
-  listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
+  listContradictions, listControlChanges, listPayouts, pendingForViewer, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectionSummary, rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
   confirmAcknowledgment, listAcknowledgments, requestAcknowledgment, confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
 } from "@contestly/payments";
-import { requirePermission, uuidParam } from "../auth.js";
+import { holdsPermission, requirePermission, uuidParam } from "../auth.js";
 import { paymentsDeps } from "../payments.js";
 
 const checkView = (c: Awaited<ReturnType<typeof freshCheck>>) => providerCheckSchema.parse({ status: c.status, providerStatus: c.providerStatus, amountKobo: c.amountKobo, checkedAt: c.checkedAt, error: c.error });
@@ -29,6 +29,14 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.get("/admin/payments", async (req) => {
     await requirePermission(req, "payments.view");
     return paymentsOverview();
+  });
+  /** Everything waiting for a second admin that this admin could confirm (?kind=), oldest first. */
+  app.get("/admin/payments/pending", async (req) => {
+    const admin = await requirePermission(req, "payments.view");
+    const { kind } = adminPendingQuerySchema.parse(req.query);
+    const holds = new Set<PaymentPermission>();
+    for (const p of PAYMENT_PERMISSIONS) if (await holdsPermission(req, p)) holds.add(p);
+    return adminPendingResponseSchema.parse({ pending: await pendingForViewer(admin.id, holds, kind) });
   });
   app.get("/admin/payments/topups", async (req) => {
     await requirePermission(req, "payments.view");
