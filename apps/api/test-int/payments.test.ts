@@ -17,6 +17,7 @@ import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
   approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
+import { partyQueue } from "@contestly/queue";
 import { buildApp } from "../src/app.js";
 import { settle } from "../../worker/src/partySettle.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -1325,6 +1326,15 @@ describe("the lock order: the person's row, then transaction rows, then the pers
     let tries = 0;
     await expect(moneyTransaction(async () => { tries++; throw Object.assign(new Error("deadlock detected"), { code: "40P01" }); }, { attempts: 3 })).rejects.toThrow("deadlock detected");
     expect(tries).toBe(3);
+  });
+
+  it("settle and refund jobs (the party queue) retry with exponential backoff; the deadlock retry above reads Postgres' code through drizzle (an upgrade that wraps errors would fail it)", async () => {
+    const q = partyQueue();
+    try {
+      expect((q as unknown as { opts: { defaultJobOptions: unknown } }).opts.defaultJobOptions).toMatchObject({ attempts: 5, backoff: { type: "exponential" } });
+    } finally {
+      await q.close();
+    }
   });
 
   it("an alert raised in a transaction that's retried is recorded once and logged once, after the commit", async () => {

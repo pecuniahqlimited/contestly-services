@@ -308,7 +308,11 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   opposite orders (the party row serialises one party, not two). Those cycles are possible; Postgres breaks
   one by aborting a side, which rolls back whole (no money moves), and money transactions in payments run in
   `moneyTransaction`, which retries a deadlock or serialization failure up to 3 times with jitter, logging
-  each retry. Settlement and refunds (main's party code) don't use it yet; their jobs are retried by BullMQ.
+  each retry. Settlement and refunds (main's party code) don't use it; their jobs are retried by BullMQ with
+  exponential backoff (5 attempts from 2 s; every party job is idempotent). The retry reads Postgres' error
+  code from the error drizzle throws (`e.code`, drizzle-orm 0.38); newer drizzle wraps database errors (the
+  code moves to `.cause`), which would quietly turn retries off. The integration test that forces a real
+  deadlock through drizzle fails if that happens: keep it, and check it on any drizzle upgrade.
   Inside a retried transaction only rows are written (an alert is a row, committed or rolled back with it);
   anything that leaves the process (a log line, later a push) goes through `afterCommit` and runs once,
   after the commit. Audit (2026-11-03), every place a user row is locked:
