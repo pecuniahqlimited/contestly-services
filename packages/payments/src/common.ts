@@ -1,7 +1,7 @@
 /** Small pieces every payments module uses: typed HTTP errors, the Lagos day, alerts, and the job hook. */
 import { lagosDay, type PaymentsJob } from "@contestly/shared";
 import { eq } from "drizzle-orm";
-import { afterCommit, db, paymentAlerts, users, type Tx } from "@contestly/db";
+import { db, users, type Tx } from "@contestly/db";
 
 export type Conn = Tx | typeof db;
 
@@ -28,17 +28,12 @@ export interface PaymentsDeps {
 export const lagosDayStart = (at: Date) => new Date(`${lagosDay(at)}T00:00:00+01:00`);
 export const lagosDayRange = (day: string) => ({ from: new Date(`${day}T00:00:00+01:00`), to: new Date(new Date(`${day}T00:00:00+01:00`).getTime() + 24 * 3600_000) });
 
-export interface AlertInput { severity: "warning" | "critical"; kind: string; dedupeKey: string; refType?: string; refId?: string; detail: Record<string, unknown> }
 /**
- * Raise something an admin must look at; the same dedupe key raises it once. Critical means money may be wrong.
- * Delivery to admins' phones is row 9 (nudges); until then the console's alert list and the log.
+ * Payments alerts go through main's adminAlert() (packages/db/src/alerts.ts), kinds prefixed "payments.", always
+ * with the transaction they belong to, so a freeze or a pause and its alert commit together. A key that's
+ * about one thing (a payout, a top-up, a webhook) is raised once for good: this window, not the 24-hour default.
  */
-export async function raiseAlert(conn: Conn, a: AlertInput) {
-  const [row] = await conn.insert(paymentAlerts).values({ ...a, refType: a.refType ?? null, refId: a.refId ?? null }).onConflictDoNothing().returning({ id: paymentAlerts.id });
-  // The row commits (or rolls back) with the transaction; the log line goes out once, after it commits.
-  if (row) afterCommit(conn, () => console.error(`[payments] ${a.severity.toUpperCase()} ${a.kind} ${a.refType ?? ""}:${a.refId ?? ""} ${JSON.stringify(a.detail)}`));
-  return !!row;
-}
+export const ONCE_PER_THING_SECONDS = 10 * 365 * 24 * 3600;
 
 /** The next check for something still unresolved: first after `firstSeconds`, then doubling, never longer than `maxSeconds`. */
 export const backoffMs = (checksSoFar: number, firstSeconds: number, maxSeconds: number) =>

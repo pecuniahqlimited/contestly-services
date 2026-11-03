@@ -27,9 +27,9 @@
  * pauses payouts; one that doesn't is a warning.
  */
 import { and, desc, eq, gte, sql } from "drizzle-orm";
-import { db, getPaymentsConfig, invariantAcknowledgments, recordAdminAction, type InvariantAcknowledgment, type Tx } from "@contestly/db";
+import { db, getPaymentsConfig, invariantAcknowledgments, recordAdminAction, type InvariantAcknowledgment, type Tx, adminAlert } from "@contestly/db";
 import { PAYOUT_OPEN_STATUSES, SECOND_ADMIN_REQUIRED } from "@contestly/shared";
-import { paymentsError, raiseAlert } from "./common.js";
+import { paymentsError, ONCE_PER_THING_SECONDS } from "./common.js";
 import { pausePayoutsBySystem } from "./settings.js";
 
 /**
@@ -203,9 +203,9 @@ export async function runInvariants(conn?: Tx, now = new Date()): Promise<{ brea
   const breaches = repeated.breaches.filter((b) => !acknowledged.includes(b));
   const hour = now.toISOString().slice(0, 13);
   const act = async (tx: Tx) => {
-    for (const kind of transient) await raiseAlert(tx, { severity: "warning", kind: "invariant_transient", dedupeKey: `invariant_transient:${kind}:${hour}`, detail: { kind, first: first.find((b) => b.kind === kind)?.detail } });
+    for (const kind of transient) await adminAlert({ severity: "warning", kind: "payments.invariant_transient", subject: "An invariant breach didn't repeat in a second snapshot", dedupeKey: `invariant_transient:${kind}:${hour}`, details: { kind, first: first.find((b) => b.kind === kind)?.detail } }, tx);
     if (!breaches.length) return false;
-    for (const b of breaches) await raiseAlert(tx, { severity: "critical", kind: `invariant_${b.kind}`, dedupeKey: `invariant:${b.kind}:${hour}`, detail: b.detail });
+    for (const b of breaches) await adminAlert({ severity: "critical", kind: `payments.invariant_${b.kind}`, subject: `Invariant breach: ${b.kind}`, dedupeKey: `invariant:${b.kind}:${hour}`, details: b.detail }, tx);
     return pausePayoutsBySystem(tx, `invariant breach: ${breaches.map((b) => b.kind).join(", ")}`);
   };
   const paused = await (conn ? act(conn) : db.transaction(act));

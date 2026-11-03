@@ -6,8 +6,8 @@ import {
   adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, invariantAcknowledgmentSchema, acknowledgeBreachBodySchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
-  acknowledgeAlert, adminVerifyTopup, confirmLinkedIssueClearance, requestLinkedIssueClearance, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
-  listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
+  adminVerifyTopup, confirmLinkedIssueClearance, requestLinkedIssueClearance, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
+  listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectionSummary, rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
   confirmAcknowledgment, listAcknowledgments, requestAcknowledgment, confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
 } from "@contestly/payments";
@@ -41,11 +41,6 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.get("/admin/payments/webhooks", async (req) => {
     await requirePermission(req, "payments.view");
     return { webhooks: await listWebhooks(limitQuery.parse(req.query).limit), rejections: await rejectionSummary() };
-  });
-  app.get("/admin/payments/alerts", async (req) => {
-    await requirePermission(req, "payments.view");
-    const q = limitQuery.parse(req.query);
-    return { alerts: await listAlerts(q.open !== "false", q.limit) };
   });
   app.get("/admin/payments/reconciliation", async (req) => {
     await requirePermission(req, "payments.view");
@@ -85,10 +80,6 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
     const admin = await requirePermission(req, "payments.finalize");
     const { reason } = adminReasonBodySchema.parse(req.body);
     return { outcome: await adminVerifyTopup(admin.id, uuidParam(req), reason) };
-  });
-  app.post("/admin/payments/alerts/:id/ack", async (req) => {
-    const admin = await requirePermission(req, "payments.finalize");
-    return { alert: await acknowledgeAlert(admin.id, uuidParam(req)) };
   });
   app.post("/admin/payments/reconciliation/items/:id/resolve", async (req) => {
     const admin = await requirePermission(req, "payments.finalize");

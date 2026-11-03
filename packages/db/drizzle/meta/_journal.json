@@ -253,6 +253,13 @@
       "when": 1793665865869,
       "tag": "0035_admin_ban_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1793666107641,
+      "tag": "0036_drop_payment_alerts",
+      "breakpoints": true
     }
   ]
 }

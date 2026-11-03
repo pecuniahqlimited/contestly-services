@@ -961,20 +961,6 @@ export const paymentConfigChanges = pgTable("payment_config_changes", {
   appliedAt: timestamp("applied_at", { withTimezone: true }),
 }, (t) => [uniqueIndex("payment_config_changes_one_open").on(t.kind).where(sql`status = 'awaiting_second_admin'`)]);
 
-/** Something an admin must look at (critical: money may be wrong). Deduped by key; acknowledged, never deleted. */
-export const paymentAlerts = pgTable("payment_alerts", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  severity: text("severity", { enum: ["warning", "critical"] }).notNull(),
-  kind: text("kind").notNull(),
-  dedupeKey: text("dedupe_key").notNull(),
-  refType: text("ref_type"),
-  refId: text("ref_id"),
-  detail: jsonb("detail").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  acknowledgedByUserId: uuid("acknowledged_by_user_id").references(() => users.id),
-  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
-}, (t) => [uniqueIndex("payment_alerts_dedupe").on(t.dedupeKey), index("payment_alerts_open_idx").on(t.createdAt).where(sql`acknowledged_at is null`)]);
-
 /** A nightly comparison of our records with one provider's for one Lagos day. */
 export const paymentReconRuns = pgTable("payment_recon_runs", {
   id: uuid("id").primaryKey().defaultRandom(),

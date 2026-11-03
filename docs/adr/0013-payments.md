@@ -188,8 +188,16 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
 8. **Reconciliation and alerts.** Nightly per provider: our day's top-ups and withdrawals against the
    provider's lists; differences (missing ours, missing theirs, amount, status) go to a table and the
    console; nothing is fixed automatically (a confirmed missed top-up is replayed by an admin through the
-   normal verify). Velocity alerts on withdrawals per hour (all, and per person). Alerts are rows deduped by
-   key; pushing them to admins' phones is row 9.
+   normal verify). Velocity alerts on withdrawals per hour (all, and per person). Alerts go through the
+   admin alert module (`adminAlert()`, packages/db/src/alerts.ts), kinds prefixed `payments.`, always with
+   the transaction they belong to so they commit or roll back with it; the worker delivers them by
+   severity. Critical: contradictions (a success after a reversal, a flip after a dissolve or a resolve, a
+   failure after a success), a payout amount that differs, invariant breaches, payouts paused by the system.
+   Warning: everything else (an unknown payout past its cutoff, top-up mismatches, webhook rejections over
+   the threshold, dead-lettered webhooks, reconciliation, velocity). Keys about one thing (a payout, a
+   top-up, a webhook) use a ten-year dedupe window so they're raised once, not again after a day or an
+   acknowledge. `payments.*` alerts need `payments.view` to list and `payments.finalize` to acknowledge on
+   `/admin/alerts`; the old `payment_alerts` table and `/admin/payments/alerts` are gone.
 9. **Webhooks** at `POST /webhooks/:provider`: authenticate first (Paystack: HMAC-SHA512 of the raw body
    in `x-paystack-signature`), store the raw event (one row per event; redeliveries counted), acknowledge,
    process in the worker. Exempt from the per-IP rate limit only. An optional allow-list of the provider's

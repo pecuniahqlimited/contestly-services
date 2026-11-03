@@ -20,11 +20,11 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { db, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
+import { db, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User, adminAlert } from "@contestly/db";
 import {
   ACCOUNT_UNRESOLVED, normaliseEmail, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
-import { backoffMs, lagosDayStart, lockPerson, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
+import { backoffMs, lagosDayStart, lockPerson, paymentsError, ONCE_PER_THING_SECONDS, type PaymentsDeps } from "./common.js";
 import { currentSettings } from "./settings.js";
 import { providerNamed } from "./providers/index.js";
 import { unknownCheck, type ProviderCheck, type WebhookEvent } from "./types.js";
@@ -192,8 +192,8 @@ export async function requestPayout(user: User, req: WithdrawalRequest, deps: Pa
 async function velocityAlerts(p: Payout, userHourCount: number, v: { payoutsPerHour: number; userPayoutsPerHour: number }, now: Date) {
   const hour = now.toISOString().slice(0, 13);
   const [all] = await db.select({ n: count() }).from(payouts).where(gte(payouts.createdAt, new Date(now.getTime() - HOUR_MS)));
-  if (Number(all.n) > v.payoutsPerHour) await raiseAlert(db, { severity: "warning", kind: "payout_velocity", dedupeKey: `payout_velocity:${hour}`, detail: { lastHour: Number(all.n), threshold: v.payoutsPerHour } });
-  if (userHourCount > v.userPayoutsPerHour) await raiseAlert(db, { severity: "warning", kind: "user_payout_velocity", dedupeKey: `user_payout_velocity:${p.userId}:${hour}`, refType: "user", refId: p.userId, detail: { lastHour: userHourCount, threshold: v.userPayoutsPerHour, payoutId: p.id } });
+  if (Number(all.n) > v.payoutsPerHour) await adminAlert({ severity: "warning", kind: "payments.payout_velocity", subject: "Withdrawals per hour are above the threshold", dedupeKey: `payout_velocity:${hour}`, details: { lastHour: Number(all.n), threshold: v.payoutsPerHour } });
+  if (userHourCount > v.userPayoutsPerHour) await adminAlert({ severity: "warning", kind: "payments.user_payout_velocity", subject: "One person's withdrawals per hour are above the threshold", dedupeKey: `user_payout_velocity:${p.userId}:${hour}`, refType: "user", refId: p.userId, details: { lastHour: userHourCount, threshold: v.userPayoutsPerHour, payoutId: p.id } });
 }
 
 // ---- The locked transitions: every path (send, check, webhook, admin) ends in one of these. ----
@@ -261,15 +261,15 @@ export async function applyOutcome(payoutId: string, check: ProviderCheck, via: 
     if (isFinal(p)) {
       if (p.status === "succeeded" && check.status === "failed") {
         // Never auto-fixed: the provider may have reversed it after paying. An admin works it out with the provider.
-        await raiseAlert(tx, { severity: "critical", kind: "payout_failed_after_success", dedupeKey: `payout_contradiction:${p.id}:failed`, refType: "payout", refId: p.id, detail: { status: p.status, check: record } });
+        await adminAlert({ severity: "critical", kind: "payments.payout_failed_after_success", subject: "A settled payout is now reported failed", dedupeKey: `payout_contradiction:${p.id}:failed`, refType: "payout", refId: p.id, details: { status: p.status, check: record }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
       }
       if (p.status !== "succeeded") {
         const [c] = await tx.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, p.id));
         // A contradiction already worked out, and now the provider says the opposite again: an admin looks. Nothing moves.
         if (c?.status === "dissolved" && check.status === "success") {
-          await raiseAlert(tx, { severity: "critical", kind: "payout_success_after_dissolve", dedupeKey: `payout_success_after_dissolve:${p.id}`, refType: "payout", refId: p.id, detail: { contradictionId: c.id, check: record } });
+          await adminAlert({ severity: "critical", kind: "payments.payout_success_after_dissolve", subject: "A payout is reported paid again after its contradiction dissolved", dedupeKey: `payout_success_after_dissolve:${p.id}`, refType: "payout", refId: p.id, details: { contradictionId: c.id, check: record }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
         } else if (c?.status === "resolved" && check.status === "failed") {
-          await raiseAlert(tx, { severity: "critical", kind: "payout_reversed_after_resolve", dedupeKey: `payout_reversed_after_resolve:${p.id}`, refType: "payout", refId: p.id, detail: { contradictionId: c.id, check: record } });
+          await adminAlert({ severity: "critical", kind: "payments.payout_reversed_after_resolve", subject: "A payout is reported reversed after its contradiction was resolved", dedupeKey: `payout_reversed_after_resolve:${p.id}`, refType: "payout", refId: p.id, details: { contradictionId: c.id, check: record }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
         } else if (!c && check.status === "success") {
           await freezeForContradiction(tx, p, record, now);
         }
@@ -278,7 +278,7 @@ export async function applyOutcome(payoutId: string, check: ProviderCheck, via: 
     }
     if (p.status !== "submitted" && p.status !== "unknown") return "unchanged"; // not sent yet: nothing a provider says applies
     if (check.status === "success" && check.amountKobo !== null && check.amountKobo !== p.sentKobo) {
-      await raiseAlert(tx, { severity: "critical", kind: "payout_amount_differs", dedupeKey: `payout_amount_differs:${p.id}`, refType: "payout", refId: p.id, detail: { sentKobo: p.sentKobo, check: record } });
+      await adminAlert({ severity: "critical", kind: "payments.payout_amount_differs", subject: "The provider reports a different payout amount", dedupeKey: `payout_amount_differs:${p.id}`, refType: "payout", refId: p.id, details: { sentKobo: p.sentKobo, check: record }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
       return markUnknown(tx, p, record, cfg, now);
     }
     if (check.status === "success") {
@@ -325,10 +325,8 @@ async function freezeForContradiction(tx: Tx, p: Payout, record: Record<string, 
   if (owed > 0) legs.push({ account: ledger.owedAccount(p.userId), amountKobo: -owed });
   await ledger.journal(tx, { type: "contradiction_held", refType: "contradiction", refId: c.id, idempotencyKey: `contradiction_hold:${p.id}`, legs });
   await tx.update(payoutContradictions).set({ recoveredKobo: held, owedKobo: owed }).where(eq(payoutContradictions.id, c.id));
-  await raiseAlert(tx, {
-    severity: "critical", kind: "payout_success_after_reversal", dedupeKey: `payout_contradiction:${p.id}:success`, refType: "payout", refId: p.id,
-    detail: { status: p.status, check: record, withdrawalsFrozen: true, heldFromCashKobo: held, owedKobo: owed, reversedUnsent: unsent.map((q) => q.id), inFlight },
-  });
+  await adminAlert({ severity: "critical", kind: "payments.payout_success_after_reversal", subject: "Duplicate payout: a reversed withdrawal was paid; withdrawals frozen", dedupeKey: `payout_contradiction:${p.id}:success`, refType: "payout", refId: p.id,
+    details: { status: p.status, check: record, withdrawalsFrozen: true, heldFromCashKobo: held, owedKobo: owed, reversedUnsent: unsent.map((q) => q.id), inFlight }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
 }
 
 /** Only a first send can be definitely refused: a refusal of a resend says nothing about the first send, so it's unknown. */
@@ -342,7 +340,7 @@ async function markUnknown(tx: Tx, p: Payout, record: Record<string, unknown>, c
   await tx.update(payouts).set({ status: "unknown", lastCheck: record, checks, nextCheckAt: new Date(now.getTime() + backoffMs(checks, cfg.checks.payoutFirstCheckSeconds, cfg.checks.payoutMaxBackoffSeconds)), updatedAt: now }).where(eq(payouts.id, p.id));
   const since = p.submittedAt ?? p.createdAt;
   if (now.getTime() - since.getTime() > cfg.checks.unknownAlertAfterMinutes * 60_000) {
-    await raiseAlert(tx, { severity: "critical", kind: "payout_unknown_too_long", dedupeKey: `payout_unknown_too_long:${p.id}`, refType: "payout", refId: p.id, detail: { since: since.toISOString(), checks, lastCheck: record } });
+    await adminAlert({ severity: "warning", kind: "payments.payout_unknown_too_long", subject: "A payout is still unknown past the cutoff", dedupeKey: `payout_unknown_too_long:${p.id}`, refType: "payout", refId: p.id, details: { since: since.toISOString(), checks, lastCheck: record }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
   }
   return "unknown";
 }
@@ -375,7 +373,7 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
     const blocked = withdrawBlockReason(u, await withdrawContext(tx, u));
     if (blocked) {
       await tx.update(payouts).set({ status: "awaiting_approval", holdReason: `blocked:${blocked}`, updatedAt: now }).where(eq(payouts.id, p.id));
-      await raiseAlert(tx, { severity: "warning", kind: "payout_held_blocked", dedupeKey: `payout_held_blocked:${p.id}`, refType: "payout", refId: p.id, detail: { reason: blocked } });
+      await adminAlert({ severity: "warning", kind: "payments.payout_held_blocked", subject: "A withdrawal is held: the account can't withdraw", dedupeKey: `payout_held_blocked:${p.id}`, refType: "payout", refId: p.id, details: { reason: blocked }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
       return false;
     }
     await tx.update(payouts).set({ status: "submitted", submittedAt: row.submittedAt ?? now, sendAttempts: row.sendAttempts + 1, lastSentAt: now, nextCheckAt: new Date(now.getTime() + 60_000), updatedAt: now }).where(eq(payouts.id, p.id));
@@ -401,7 +399,7 @@ export async function checkPayout(payoutId: string, via: "check" | "webhook", no
   const [p] = await db.select().from(payouts).where(eq(payouts.id, payoutId));
   if (!p) return "unchanged";
   if (claim && claim.amountKobo !== null && claim.amountKobo !== p.sentKobo) {
-    await raiseAlert(db, { severity: "warning", kind: "payout_webhook_amount_differs", dedupeKey: `payout_webhook_amount_differs:${p.id}`, refType: "payout", refId: p.id, detail: { sentKobo: p.sentKobo, claim } });
+    await adminAlert({ severity: "warning", kind: "payments.payout_webhook_amount_differs", subject: "A transfer webhook claims a different amount", dedupeKey: `payout_webhook_amount_differs:${p.id}`, refType: "payout", refId: p.id, details: { sentKobo: p.sentKobo, claim }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS });
   }
   if (p.status !== "submitted" && p.status !== "unknown" && !isFinal(p)) return "unchanged";
   const check = await queryProvider(p);
@@ -413,7 +411,7 @@ export async function checkPayout(payoutId: string, via: "check" | "webhook", no
   const [account] = await db.select().from(payoutAccounts).where(eq(payoutAccounts.id, p.payoutAccountId));
   if (!account || account.removedAt || account.userId !== p.userId) {
     // The person removed the account since the first send: never send there again. It stays unknown for an admin.
-    await raiseAlert(db, { severity: "critical", kind: "payout_resend_account_removed", dedupeKey: `payout_resend_account_removed:${p.id}`, refType: "payout", refId: p.id, detail: { payoutAccountId: p.payoutAccountId, check } });
+    await adminAlert({ severity: "warning", kind: "payments.payout_resend_account_removed", subject: "A payout wasn't resent: the recipient account was removed", dedupeKey: `payout_resend_account_removed:${p.id}`, refType: "payout", refId: p.id, details: { payoutAccountId: p.payoutAccountId, check }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS });
     return applyOutcome(payoutId, unknownCheck(p.reference, "not resent: the recipient account was removed", "not_resent"), via, now);
   }
   const resend = await moneyTransaction(async (tx) => {

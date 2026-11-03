@@ -6,8 +6,8 @@
  * freezes the person's withdrawals if the provider confirms it.
  */
 import { and, eq, gte, lt } from "drizzle-orm";
-import { db, paymentReconItems, paymentReconRuns, payouts, topups } from "@contestly/db";
-import { lagosDayRange, raiseAlert } from "./common.js";
+import { db, paymentReconItems, paymentReconRuns, payouts, topups, adminAlert } from "@contestly/db";
+import { lagosDayRange, ONCE_PER_THING_SECONDS } from "./common.js";
 import { providerNamed } from "./providers/index.js";
 import { checkPayout } from "./payouts.js";
 import type { ProviderRecord } from "./types.js";
@@ -61,7 +61,7 @@ export async function reconcileDay(providerName: string, day: string) {
     if (items.length) await db.insert(paymentReconItems).values(items.map((i) => ({ runId: run.id, provider: providerName, object: i.object, kind: i.kind, reference: i.reference, ours: i.ours, theirs: i.theirs })));
     const counts = Object.fromEntries((["missing_ours", "missing_theirs", "amount_differs", "status_differs"] as const).map((k) => [k, items.filter((i) => i.kind === k).length]));
     await db.update(paymentReconRuns).set({ finishedAt: new Date(), counts }).where(eq(paymentReconRuns.id, run.id));
-    if (items.length) await raiseAlert(db, { severity: "warning", kind: "reconciliation_differences", dedupeKey: `recon:${providerName}:${day}:${run.id}`, refType: "recon_run", refId: run.id, detail: { provider: providerName, day, counts } });
+    if (items.length) await adminAlert({ severity: "warning", kind: "payments.reconciliation_differences", subject: "Reconciliation found differences", dedupeKey: `recon:${providerName}:${day}:${run.id}`, refType: "recon_run", refId: run.id, details: { provider: providerName, day, counts }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS });
     // A withdrawal we gave back that the provider lists as paid: ask the provider now, so a confirmed
     // contradiction freezes the person's withdrawals tonight rather than whenever a webhook comes.
     for (const i of items) {
@@ -72,7 +72,7 @@ export async function reconcileDay(providerName: string, day: string) {
     return { runId: run.id, items };
   } catch (e) {
     await db.update(paymentReconRuns).set({ finishedAt: new Date(), error: (e as Error).message }).where(eq(paymentReconRuns.id, run.id));
-    await raiseAlert(db, { severity: "warning", kind: "reconciliation_failed", dedupeKey: `recon_failed:${providerName}:${day}`, refType: "recon_run", refId: run.id, detail: { error: (e as Error).message } });
+    await adminAlert({ severity: "warning", kind: "payments.reconciliation_failed", subject: "Reconciliation failed", dedupeKey: `recon_failed:${providerName}:${day}`, refType: "recon_run", refId: run.id, details: { error: (e as Error).message } });
     throw e;
   }
 }

@@ -4,7 +4,7 @@
  * provider that created it (ADR 0013).
  */
 import { desc } from "drizzle-orm";
-import { db, paymentSettings, type Tx } from "@contestly/db";
+import { adminAlert, db, paymentSettings, type Tx } from "@contestly/db";
 import type { PaymentSettingsView } from "@contestly/shared";
 import { configuredProviderNames, defaultProviderName } from "./providers/index.js";
 import { paymentsError, type Conn } from "./common.js";
@@ -37,5 +37,6 @@ export async function pausePayoutsBySystem(tx: Tx, reason: string) {
   const now = await currentSettings(tx);
   if (now.payoutsPaused) return false;
   await tx.insert(paymentSettings).values({ collections: now.collections, payouts: now.payouts, topupsPaused: now.topupsPaused, payoutsPaused: true, changedBy: "system", reason });
+  await adminAlert({ severity: "critical", kind: "payments.payouts_paused", subject: "Payouts paused by the system", details: { reason }, dedupeKey: `payments.payouts_paused:${new Date().toISOString()}` }, tx);
   return true;
 }

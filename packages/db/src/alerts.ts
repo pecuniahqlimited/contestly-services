@@ -11,6 +11,7 @@ import { ALERT_SEVERITIES, ALERT_TEST_KIND, type AlertSeverity } from "@contestl
 import { db, type Tx } from "./client.js";
 import { adminAlertDeliveries, adminAlerts, users, type User } from "./schema.js";
 import { recordAdminAction } from "./admin.js";
+import { afterCommit } from "./retry.js";
 
 type Conn = Tx | typeof db;
 export type AdminAlertRow = typeof adminAlerts.$inferSelect;
@@ -40,7 +41,7 @@ export interface RaisedAlert {
   count: number;
 }
 
-const consoleFor: Record<AlertSeverity, (line: string) => void> = { info: console.log, warning: console.warn, critical: console.error };
+const consoleFor: Record<AlertSeverity, (line: string) => void> = { info: (l) => console.log(l), warning: (l) => console.warn(l), critical: (l) => console.error(l) };
 
 /**
  * Record an alert. Pass the transaction it belongs to (a freeze and its alert commit together); without
@@ -49,9 +50,10 @@ const consoleFor: Record<AlertSeverity, (line: string) => void> = { info: consol
 export async function adminAlert(a: AdminAlertInput, conn: Conn = db): Promise<RaisedAlert> {
   const raised = "rollback" in conn ? await raiseIn(conn, a) : await db.transaction((tx) => raiseIn(tx, a));
   // A new alert is logged; a repeat only at ×10, ×100, ×1000…, so a storm doesn't flood the log either.
-  if (raised.isNew || Number.isInteger(Math.log10(raised.count))) {
+  // Inside a money transaction the line waits for the commit (afterCommit), so a retried attempt doesn't repeat it.
+  if (raised.isNew || Number.isInteger(Math.log10(raised.count))) afterCommit(conn, () => {
     consoleFor[a.severity](`[alert] ${a.severity.toUpperCase()} ${a.kind}${raised.isNew ? "" : ` (×${raised.count})`}: ${a.subject} ${JSON.stringify(a.details)}`);
-  }
+  });
   return raised;
 }
 
@@ -79,6 +81,8 @@ async function raiseIn(tx: Tx, a: AdminAlertInput): Promise<RaisedAlert> {
 export interface AlertFilter {
   severity?: AlertSeverity;
   kind?: string;
+  /** Leave out kinds starting with this (payments.* for an admin without payments.view). */
+  excludeKindPrefix?: string;
   state: "open" | "acknowledged" | "all";
   before?: string;
   limit: number;
@@ -88,6 +92,7 @@ export async function listAdminAlerts(f: AlertFilter): Promise<{ alert: AdminAle
   const where: SQL[] = [];
   if (f.severity) where.push(eq(adminAlerts.severity, f.severity));
   if (f.kind) where.push(eq(adminAlerts.kind, f.kind));
+  if (f.excludeKindPrefix) where.push(sql`not starts_with(${adminAlerts.kind}, ${f.excludeKindPrefix})`);
   if (f.state === "open") where.push(isNull(adminAlerts.acknowledgedAt));
   if (f.state === "acknowledged") where.push(isNotNull(adminAlerts.acknowledgedAt));
   if (f.before) where.push(lt(adminAlerts.lastSeenAt, new Date(f.before)));

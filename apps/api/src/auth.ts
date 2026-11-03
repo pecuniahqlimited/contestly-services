@@ -80,8 +80,14 @@ export function requireAdmin(req: FastifyRequest): User {
  */
 export async function requirePermission(req: FastifyRequest, permission: PaymentPermission): Promise<User> {
   const admin = requireAdmin(req);
-  if (req.auth!.via === "dev" || (await hasPermission(admin.id, permission))) return admin;
+  if (await holdsPermission(req, permission)) return admin;
   throw Object.assign(new Error(MISSING_PERMISSION), { statusCode: 403, details: { permission } });
+}
+
+/** Whether this admin's session holds a payments permission (dev sessions hold them all). Doesn't throw. */
+export async function holdsPermission(req: FastifyRequest, permission: PaymentPermission): Promise<boolean> {
+  const admin = requireAdmin(req);
+  return req.auth!.via === "dev" || hasPermission(admin.id, permission);
 }
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;

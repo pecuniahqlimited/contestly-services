@@ -1,7 +1,7 @@
 /** What the admin console reads about payments, and its small writes (each logged). */
 import { and, count, desc, eq, isNull, type SQL } from "drizzle-orm";
 import {
-  db, getPaymentsConfig, paymentAlerts, paymentFinalizations, paymentReconItems, paymentReconRuns, paymentWebhookEvents, payoutAccounts, payouts, recordAdminAction, topups,
+  db, getPaymentsConfig, paymentFinalizations, paymentReconItems, paymentReconRuns, paymentWebhookEvents, payoutAccounts, payouts, recordAdminAction, topups,
 } from "@contestly/db";
 import { paymentsError } from "./common.js";
 import { configuredProviderNames, knownProviderNames } from "./providers/index.js";
@@ -12,18 +12,16 @@ import { listAcknowledgments } from "./invariants.js";
 const iso = (d: Date | null) => d?.toISOString() ?? null;
 
 export async function paymentsOverview() {
-  const [settings, config, topupCounts, payoutCounts, [alerts], acknowledged] = await Promise.all([
+  const [settings, config, topupCounts, payoutCounts, acknowledged] = await Promise.all([
     currentSettings(), getPaymentsConfig(),
     db.select({ status: topups.status, n: count() }).from(topups).groupBy(topups.status),
     db.select({ status: payouts.status, n: count() }).from(payouts).groupBy(payouts.status),
-    db.select({ n: count() }).from(paymentAlerts).where(isNull(paymentAlerts.acknowledgedAt)),
     listAcknowledgments(50),
   ]);
   return {
     settings, config, providers: { known: knownProviderNames(), configured: configuredProviderNames() },
     topups: Object.fromEntries(topupCounts.map((r) => [r.status, Number(r.n)])),
     payouts: Object.fromEntries(payoutCounts.map((r) => [r.status, Number(r.n)])),
-    openAlerts: Number(alerts.n),
     /** Breaches admins acknowledged (and ones waiting for a second admin): shown on the payments page. */
     acknowledgedBreaches: acknowledged,
   };
@@ -64,11 +62,6 @@ export async function listWebhooks(limit: number) {
   }));
 }
 
-export async function listAlerts(open: boolean, limit: number) {
-  const rows = await db.select().from(paymentAlerts).where(open ? isNull(paymentAlerts.acknowledgedAt) : undefined).orderBy(desc(paymentAlerts.createdAt)).limit(limit);
-  return rows.map((a) => ({ id: a.id, severity: a.severity, kind: a.kind, refType: a.refType, refId: a.refId, detail: a.detail, createdAt: a.createdAt.toISOString(), acknowledgedBy: a.acknowledgedByUserId, acknowledgedAt: iso(a.acknowledgedAt) }));
-}
-
 export async function listReconciliation(limit: number) {
   const runs = await db.select().from(paymentReconRuns).orderBy(desc(paymentReconRuns.startedAt)).limit(limit);
   const items = await db.select().from(paymentReconItems).orderBy(desc(paymentReconItems.createdAt)).limit(limit * 20);
@@ -79,17 +72,6 @@ export async function listReconciliation(limit: number) {
 }
 
 export const finalizationsFor = (targetId: string) => db.select().from(paymentFinalizations).where(eq(paymentFinalizations.targetId, targetId)).orderBy(desc(paymentFinalizations.createdAt));
-
-export async function acknowledgeAlert(adminUserId: string, id: string) {
-  return db.transaction(async (tx) => {
-    const [a] = await tx.select().from(paymentAlerts).where(eq(paymentAlerts.id, id)).for("update");
-    if (!a) throw paymentsError(404, "not_found");
-    if (a.acknowledgedAt) return a;
-    const [after] = await tx.update(paymentAlerts).set({ acknowledgedByUserId: adminUserId, acknowledgedAt: new Date() }).where(eq(paymentAlerts.id, id)).returning();
-    await recordAdminAction(tx, { adminUserId, action: "payments.alert_ack", targetType: "payment_alert", targetId: id, before: { acknowledgedAt: null }, after: { kind: a.kind } });
-    return after;
-  });
-}
 
 /** An admin's note on a reconciliation difference: what they found and did. It changes nothing else. */
 export async function resolveReconItem(adminUserId: string, id: string, note: string) {

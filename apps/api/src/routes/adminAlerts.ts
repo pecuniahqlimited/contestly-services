@@ -1,7 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { acknowledgeAdminAlert, listAdminAlerts, openAlertCounts, raiseTestAlert, type AdminAlertRow, type User } from "@contestly/db";
+import { eq } from "drizzle-orm";
+import { acknowledgeAdminAlert, adminAlerts, db, listAdminAlerts, openAlertCounts, raiseTestAlert, type AdminAlertRow, type User } from "@contestly/db";
+
+/** Alerts raised by payments (ADR 0013): payments.view to see them, payments.finalize to acknowledge them. */
+const PAYMENTS_ALERT_PREFIX = "payments.";
 import { adminAlertAckResponseSchema, adminAlertAckSchema, adminAlertSchema, adminAlertTestResponseSchema, adminAlertTestSchema, type AlertSeverity, adminAlertsQuerySchema, adminAlertsResponseSchema, adminAlertsSummarySchema, type AdminAlert } from "@contestly/shared";
-import { requireAdmin, uuidParam } from "../auth.js";
+import { holdsPermission, requireAdmin, requirePermission, uuidParam } from "../auth.js";
 import { toPerson } from "../people.js";
 import { httpError } from "../httpError.js";
 
@@ -23,7 +27,11 @@ export async function adminAlertsRoutes(app: FastifyInstance) {
   /** Newest first by last seen; ?severity=&kind=&state=open|acknowledged|all&before=&limit=. */
   app.get("/admin/alerts", async (req) => {
     requireAdmin(req);
-    const rows = await listAdminAlerts(adminAlertsQuerySchema.parse(req.query));
+    const q = adminAlertsQuerySchema.parse(req.query);
+    // Payments alerts (kind payments.*) are for admins with payments.view (ADR 0013); everyone else's list leaves them out.
+    const seesPayments = await holdsPermission(req, "payments.view");
+    if (q.kind?.startsWith(PAYMENTS_ALERT_PREFIX) && !seesPayments) await requirePermission(req, "payments.view");
+    const rows = await listAdminAlerts({ ...q, excludeKindPrefix: seesPayments ? undefined : PAYMENTS_ALERT_PREFIX });
     return adminAlertsResponseSchema.parse({ alerts: rows.map((r) => alertView(r.alert, r.ackedBy)) });
   });
 
@@ -45,6 +53,9 @@ export async function adminAlertsRoutes(app: FastifyInstance) {
   app.post("/admin/alerts/:id/ack", async (req) => {
     const admin = requireAdmin(req);
     const id = uuidParam(req);
+    // Acknowledging a payments alert takes payments.finalize.
+    const [target] = await db.select({ kind: adminAlerts.kind }).from(adminAlerts).where(eq(adminAlerts.id, id));
+    if (target?.kind.startsWith(PAYMENTS_ALERT_PREFIX)) await requirePermission(req, "payments.finalize");
     const { note } = adminAlertAckSchema.parse(req.body);
     const done = await acknowledgeAdminAlert(admin.id, id, note);
     if (!done) throw httpError(404, "not_found");

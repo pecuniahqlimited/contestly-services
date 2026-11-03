@@ -5,8 +5,8 @@
  * (payouts) as every other path, so a forged, replayed or wrong webhook can't move money on its own.
  */
 import { and, count, desc, eq, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
-import { db, getPaymentsConfig, paymentWebhookEvents, paymentWebhookRejections, payouts, topups } from "@contestly/db";
-import { backoffMs, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
+import { db, getPaymentsConfig, paymentWebhookEvents, paymentWebhookRejections, payouts, topups, adminAlert } from "@contestly/db";
+import { backoffMs, paymentsError, ONCE_PER_THING_SECONDS, type PaymentsDeps } from "./common.js";
 import { allowListedWebhookIps, configuredProviderNames, knownProviderNames, providerNamed } from "./providers/index.js";
 import { confirmTopup } from "./topups.js";
 import { checkPayout } from "./payouts.js";
@@ -76,7 +76,7 @@ async function retryLater(row: typeof paymentWebhookEvents.$inferSelect, outcome
   if (attempts >= maxAttempts) {
     await db.transaction(async (tx) => {
       await tx.update(paymentWebhookEvents).set({ outcome, attempts, nextAttemptAt: null, deadLetteredAt: now }).where(eq(paymentWebhookEvents.id, row.id));
-      await raiseAlert(tx, { severity: "warning", kind: "webhook_dead_lettered", dedupeKey: `webhook_dead_lettered:${row.id}`, refType: "webhook", refId: row.id, detail: { provider: row.provider, reference: row.reference, attempts, lastOutcome: outcome } });
+      await adminAlert({ severity: "warning", kind: "payments.webhook_dead_lettered", subject: "A webhook was dead-lettered after its retries", dedupeKey: `webhook_dead_lettered:${row.id}`, refType: "webhook", refId: row.id, details: { provider: row.provider, reference: row.reference, attempts, lastOutcome: outcome }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
     });
     return "dead_lettered";
   }
@@ -118,7 +118,7 @@ export async function dueWebhookEvents(now: Date, limit: number) {
 }
 
 async function unknownReference(provider: string, object: string, reference: string, eventId: string) {
-  await raiseAlert(db, { severity: "warning", kind: "webhook_unknown_reference", dedupeKey: `webhook_unknown_reference:${provider}:${reference}`, refType: "webhook", refId: eventId, detail: { provider, object, reference } });
+  await adminAlert({ severity: "warning", kind: "payments.webhook_unknown_reference", subject: "A webhook names a reference we don't have", dedupeKey: `webhook_unknown_reference:${provider}:${reference}`, refType: "webhook", refId: eventId, details: { provider, object, reference }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS });
   return "unknown_reference";
 }
 
@@ -186,7 +186,7 @@ export async function recordRejection(provider: string, sourceIp: string, reason
   await db.insert(paymentWebhookRejections).values({ provider: provider.slice(0, 50), sourceIp: sourceIp.slice(0, 64), reason, head, createdAt: now });
   const threshold = (await getPaymentsConfig()).webhooks.rejectionsAlertPerHour;
   if (refusalsThisHour >= threshold) {
-    await raiseAlert(db, { severity: "warning", kind: "webhook_rejections", dedupeKey: `webhook_rejections:${now.toISOString().slice(0, 13)}`, detail: { thisHour: refusalsThisHour, threshold, latest: { provider, reason, sourceIp } } });
+    await adminAlert({ severity: "warning", kind: "payments.webhook_rejections", subject: "Rejected webhooks this hour are above the threshold", dedupeKey: `webhook_rejections:${now.toISOString().slice(0, 13)}`, details: { thisHour: refusalsThisHour, threshold, latest: { provider, reason, sourceIp } } });
   }
 }
 

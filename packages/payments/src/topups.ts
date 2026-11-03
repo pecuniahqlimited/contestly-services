@@ -12,9 +12,9 @@
  */
 import { randomBytes } from "node:crypto";
 import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
-import { db, moneyTransaction, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User } from "@contestly/db";
+import { db, moneyTransaction, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User, adminAlert } from "@contestly/db";
 import { BELOW_MINIMUM, CURRENCY, EMAIL_REQUIRED, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, TOPUP_REFUSED, type TopupView } from "@contestly/shared";
-import { backoffMs, lagosDayStart, paymentsError, raiseAlert } from "./common.js";
+import { backoffMs, lagosDayStart, paymentsError, ONCE_PER_THING_SECONDS } from "./common.js";
 import { currentSettings } from "./settings.js";
 import { providerNamed } from "./providers/index.js";
 import { ProviderRefusal, unknownCheck, type ProviderCheck, type WebhookEvent } from "./types.js";
@@ -169,7 +169,7 @@ export async function confirmTopup(topupId: string, via: ConfirmVia, claim: Webh
       if (check.status === "success") {
         // We called it failed and the provider now says paid: never auto-credited; an admin looks.
         await tx.update(topups).set({ status: "mismatch", problem: { reason: "success_after_failed", check: record }, lastCheck: record, updatedAt: now }).where(eq(topups.id, t.id));
-        await raiseAlert(tx, { severity: "critical", kind: "topup_success_after_failed", dedupeKey: `topup_success_after_failed:${t.id}`, refType: "topup", refId: t.id, detail: { reference: t.reference, check: record } });
+        await adminAlert({ severity: "warning", kind: "payments.topup_success_after_failed", subject: "A top-up was paid after we marked it failed", dedupeKey: `topup_success_after_failed:${t.id}`, refType: "topup", refId: t.id, details: { reference: t.reference, check: record }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
         return "mismatch";
       }
       return "failed";
@@ -179,7 +179,7 @@ export async function confirmTopup(topupId: string, via: ConfirmVia, claim: Webh
       const problems = topupProblems(t, check, claim);
       if (problems.length) {
         await tx.update(topups).set({ status: "mismatch", problem: { problems, check: record, claim }, lastCheck: record, nextCheckAt: null, updatedAt: now }).where(eq(topups.id, t.id));
-        await raiseAlert(tx, { severity: "critical", kind: "topup_mismatch", dedupeKey: `topup_mismatch:${t.id}`, refType: "topup", refId: t.id, detail: { reference: t.reference, problems } });
+        await adminAlert({ severity: "warning", kind: "payments.topup_mismatch", subject: "A top-up doesn't match the provider's record", dedupeKey: `topup_mismatch:${t.id}`, refType: "topup", refId: t.id, details: { reference: t.reference, problems }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
         return "mismatch";
       }
       await tx.update(topups).set({ lastCheck: record }).where(eq(topups.id, t.id));

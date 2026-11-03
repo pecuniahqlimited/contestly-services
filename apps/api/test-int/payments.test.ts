@@ -9,13 +9,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  adminActions, adminAlert, adminAlerts, adminPermissions, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, raiseAlert, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -67,7 +67,8 @@ async function processWebhooks(reference: string) {
   const rows = await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.reference, reference));
   return Promise.all(rows.map((r) => processWebhookEvent(r.id)));
 }
-const alertsFor = (refId: string) => db.select().from(paymentAlerts).where(eq(paymentAlerts.refId, refId));
+/** A thing's alerts (main's admin_alerts, kinds "payments.…"). */
+const alertsFor = (refId: string) => db.select().from(adminAlerts).where(eq(adminAlerts.refId, refId));
 
 beforeAll(async () => {
   // Never a real provider here, whatever .env holds (a Paystack test key for paystack:check, say).
@@ -164,7 +165,7 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
       expect(row.status, why).toBe("mismatch");
       expect(JSON.stringify(row.problem)).toContain(why);
       expect(await cash(u)).toBe(0);
-      expect((await alertsFor(row.id)).map((a) => a.kind)).toContain("topup_mismatch");
+      expect((await alertsFor(row.id)).map((a) => a.kind)).toContain("payments.topup_mismatch");
       expect(await confirmTopup(row.id, "check")).toBe("held_for_admin");
     }
     // The provider's verify agrees, but the (validly signed) webhook claims another amount.
@@ -309,7 +310,7 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
       expect(jobIds.length).toBe(3);
       const [dead] = await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.id, ev.id));
       expect([dead.deadLetteredAt !== null, dead.processedAt, dead.nextAttemptAt]).toEqual([true, null, null]);
-      expect((await alertsFor(ev.id)).find((a) => a.kind === "webhook_dead_lettered")?.severity).toBe("warning");
+      expect((await alertsFor(ev.id)).find((a) => a.kind === "payments.webhook_dead_lettered")?.severity).toBe("warning");
       jobIds.length = 0;
       await sweepDue(recorder, later(24 * 3600_000));
       expect(jobIds).toEqual([]);
@@ -330,7 +331,7 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
       expect(rows.map((r) => [r.provider, r.reason]).sort()).toEqual([["mock", "invalid_signature"], ["mock", "invalid_signature"], ["nosuchprovider", "not_found"]]);
       expect(rows.every((r) => r.head.length === 500 && r.sourceIp.length > 0)).toBe(true);
       expect(await db.select().from(paymentWebhookEvents).where(eq(paymentWebhookEvents.reference, `tp-rej-${tag}`))).toHaveLength(0);
-      expect((await db.select().from(paymentAlerts).where(like(paymentAlerts.dedupeKey, "webhook_rejections:%"))).length).toBeGreaterThan(0);
+      expect((await db.select().from(adminAlerts).where(eq(adminAlerts.kind, "payments.webhook_rejections"))).length).toBeGreaterThan(0);
       const page = (await app.inject({ method: "GET", url: "/admin/payments/webhooks", headers: as(viewer) })).json();
       expect(page.rejections.lastHour).toBeGreaterThanOrEqual(3);
       // Kept 30 days.
@@ -490,7 +491,7 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     await postWebhook(d);
     await processWebhooks(payout.reference);
     const alerts = await alertsFor(payout.id);
-    const alert = alerts.find((a) => a.kind === "payout_success_after_reversal")!;
+    const alert = alerts.find((a) => a.kind === "payments.payout_success_after_reversal")!;
     expect(alert.severity).toBe("critical");
     const [frozen] = await db.select().from(users).where(eq(users.id, u.id));
     expect(frozen.withdrawalsFrozenAt).not.toBeNull();
@@ -507,7 +508,7 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     // Heard again: still one contradiction, one alert.
     await checkPayout(payout.id, "check");
     expect(await db.select().from(payoutContradictions).where(eq(payoutContradictions.payoutId, payout.id))).toHaveLength(1);
-    expect((await alertsFor(payout.id)).filter((a) => a.kind === "payout_success_after_reversal")).toHaveLength(1);
+    expect((await alertsFor(payout.id)).filter((a) => a.kind === "payments.payout_success_after_reversal")).toHaveLength(1);
   });
 
   it("a send sees a freeze committing at the same moment: the person's row is locked first, so it's held, never sent", async () => {
@@ -544,7 +545,7 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     await mock.setTransfer(payout.reference, { ...t, hidden: false });
     expect(await checkPayout(payout.id, "check", later(2 * DEFAULT_PAYMENTS_CONFIG.checks.resendAfterNotFoundSeconds * 1000))).toBe("succeeded");
     expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 31));
-    expect((await alertsFor(payout.id)).map((a) => a.kind)).not.toContain("payout_success_after_reversal");
+    expect((await alertsFor(payout.id)).map((a) => a.kind)).not.toContain("payments.payout_success_after_reversal");
   });
 
   it("a resend never goes to an account the person removed: it stays unknown and alerts", async () => {
@@ -557,7 +558,7 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     const p = await reload(payout.id);
     expect([p.status, p.sendAttempts]).toEqual(["unknown", 1]);
     expect(await mock.getTransfer(payout.reference)).toBeNull();
-    expect((await alertsFor(payout.id)).find((a) => a.kind === "payout_resend_account_removed")?.severity).toBe("critical");
+    expect((await alertsFor(payout.id)).find((a) => a.kind === "payments.payout_resend_account_removed")?.severity).toBe("warning");
     expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 15));
   });
 
@@ -575,7 +576,7 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     await mock.setTransfer(b.reference, { amountKobo: b.sentKobo, recipientCode: wrong.account.recipientCode, state: "success", createdAt: Date.now(), queries: 0 });
     for (const d of await mock.transferWebhooks(b.reference)) await postWebhook(d);
     await processWebhooks(b.reference);
-    expect((await alertsFor(b.id)).map((x) => x.kind)).toContain("payout_webhook_amount_differs");
+    expect((await alertsFor(b.id)).map((x) => x.kind)).toContain("payments.payout_webhook_amount_differs");
     expect((await reload(b.id)).status).toBe("succeeded"); // settled on the provider's own answer, which matches
 
     const bad = await withdrawer("powhsig");
@@ -591,7 +592,7 @@ describe("withdrawals: debit first, reverse only on a definite failure", () => {
     await db.update(payouts).set({ status: "submitted", submittedAt: new Date(), lastSentAt: new Date(), sendAttempts: 1 }).where(eq(payouts.id, payout.id));
     const unknown = { status: "unknown" as const, providerStatus: "timeout", reference: payout.reference, amountKobo: null, currency: null, userId: null, feeKobo: null, error: "timeout" };
     expect(await applyOutcome(payout.id, unknown, "check", later((DEFAULT_PAYMENTS_CONFIG.checks.unknownAlertAfterMinutes + 1) * MIN))).toBe("unknown");
-    expect((await alertsFor(payout.id)).find((a) => a.kind === "payout_unknown_too_long")?.severity).toBe("critical");
+    expect((await alertsFor(payout.id)).find((a) => a.kind === "payments.payout_unknown_too_long")?.severity).toBe("warning");
     expect((await reload(payout.id)).status).toBe("unknown");
     expect(await cash(u)).toBe(kobo(10_000) - (kobo(1500) + 14));
   });
@@ -924,8 +925,8 @@ describe("contradictions: resolved by two admins", () => {
     expect([q.status, q.finalVia, q.holdReason]).toEqual(["rejected", "contradiction", "contradiction"]);
     expect(await mock.getTransfer(queued.reference)).toBeNull(); // never sent
     expect([await held(u), await ledger.owedKobo(db, u.id), await cash(u)]).toEqual([payout.amountKobo, 0, kobo(10_000) - payout.amountKobo]);
-    const alert = (await alertsFor(payout.id)).find((a) => a.kind === "payout_success_after_reversal")!;
-    expect(alert.detail).toMatchObject({ reversedUnsent: [queued.id], heldFromCashKobo: payout.amountKobo });
+    const alert = (await alertsFor(payout.id)).find((a) => a.kind === "payments.payout_success_after_reversal")!;
+    expect(alert.details).toMatchObject({ reversedUnsent: [queued.id], heldFromCashKobo: payout.amountKobo });
     expect(await findBreaches(db)).toEqual([]);
   });
 
@@ -946,8 +947,8 @@ describe("contradictions: resolved by two admins", () => {
     });
     expect((await reload(inFlight!.id)).status).toBe("unknown"); // untouched by the freeze
     expect(c.owedKobo).toBe(payout.amountKobo);
-    const alert = (await alertsFor(payout.id)).find((a) => a.kind === "payout_success_after_reversal")!;
-    expect((alert.detail as { inFlight: { id: string }[] }).inFlight.map((x) => x.id)).toEqual([inFlight!.id]);
+    const alert = (await alertsFor(payout.id)).find((a) => a.kind === "payments.payout_success_after_reversal")!;
+    expect((alert.details as { inFlight: { id: string }[] }).inFlight.map((x) => x.id)).toEqual([inFlight!.id]);
     let out = await checkPayout(inFlight!.id, "check");
     while (out === "unknown") out = await checkPayout(inFlight!.id, "check");
     expect(out).toBe("failed");
@@ -1098,7 +1099,7 @@ describe("contradictions: resolved by two admins", () => {
     const before = [await cash(d.u), await held(d.u), await ledger.owedKobo(db, d.u.id)];
     await mock.setTransfer(d.payout.reference, { ...td, state: "success" });
     await checkPayout(d.payout.id, "check");
-    expect((await alertsFor(d.payout.id)).find((a) => a.kind === "payout_success_after_dissolve")?.severity).toBe("critical");
+    expect((await alertsFor(d.payout.id)).find((a) => a.kind === "payments.payout_success_after_dissolve")?.severity).toBe("critical");
     expect([await cash(d.u), await held(d.u), await ledger.owedKobo(db, d.u.id)]).toEqual(before);
     expect((await db.select().from(users).where(eq(users.id, d.u.id)))[0].withdrawalsFrozenAt).toBeNull();
     // Resolved (still paid), then it says reversed.
@@ -1109,7 +1110,7 @@ describe("contradictions: resolved by two admins", () => {
     const tr = (await mock.getTransfer(r.payout.reference))!;
     await mock.setTransfer(r.payout.reference, { ...tr, state: "failed" });
     await checkPayout(r.payout.id, "check");
-    expect((await alertsFor(r.payout.id)).find((a) => a.kind === "payout_reversed_after_resolve")?.severity).toBe("critical");
+    expect((await alertsFor(r.payout.id)).find((a) => a.kind === "payments.payout_reversed_after_resolve")?.severity).toBe("critical");
     expect(await cash(r.u)).toBe(cashBefore);
     expect(await findBreaches(db)).toEqual([]);
   });
@@ -1326,17 +1327,17 @@ describe("the lock order: the person's row, then transaction rows, then the pers
   });
 
   it("an alert raised in a transaction that's retried is recorded once and logged once, after the commit", async () => {
-    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logged = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       let attempt = 0;
       const key = `t:retry-alert:${tag}`;
       await moneyTransaction(async (tx) => {
         attempt++;
-        await raiseAlert(tx, { severity: "warning", kind: "test_retry_alert", dedupeKey: key, detail: { attempt } });
+        await adminAlert({ severity: "warning", kind: "payments.test_retry_alert", subject: "test", dedupeKey: key, details: { attempt } }, tx);
         if (attempt === 1) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
       });
       expect(attempt).toBe(2);
-      expect(await db.select().from(paymentAlerts).where(eq(paymentAlerts.dedupeKey, key))).toHaveLength(1);
+      expect(await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, key))).toHaveLength(1);
       expect(logged.mock.calls.filter((c) => String(c[0]).includes("test_retry_alert"))).toHaveLength(1);
     } finally {
       logged.mockRestore();
@@ -1489,6 +1490,21 @@ describe("permissions", () => {
       await db.update(users).set({ bannedAt: null, banReason: null }).where(eq(users.id, admin2.id));
       if (others.length) await db.insert(adminPermissions).values(others.map((o) => ({ userId: o.userId, permission: o.permission }))).onConflictDoNothing();
     }
+  });
+
+  it("payments alerts on the admin alerts page: payments.view to see them, payments.finalize to acknowledge them", async () => {
+    const { id } = await adminAlert({ severity: "warning", kind: "payments.test_visibility", subject: "visibility test", details: {}, dedupeKey: `t:vis:${tag}` });
+    const other = await adminAlert({ severity: "info", kind: "test_visibility_other", subject: "not payments", details: {}, dedupeKey: `t:vis2:${tag}` });
+    const plain = await makeUser(nextName("alertplain"), { isAdmin: true });
+    const list = async (who: User) => ((await app.inject({ method: "GET", url: "/admin/alerts?state=all&limit=200", headers: as(who) })).json().alerts as { id: string }[]).map((a) => a.id);
+    expect(await list(plain)).not.toContain(id);
+    expect(await list(plain)).toContain(other.id);
+    expect((await app.inject({ method: "GET", url: "/admin/alerts?kind=payments.test_visibility", headers: as(plain) })).json().error).toBe("missing_permission");
+    expect(await list(viewer)).toContain(id);
+    const ack = (who: User) => app.inject({ method: "POST", url: `/admin/alerts/${id}/ack`, headers: as(who), payload: { note: "looked at it" } });
+    expect([(await ack(viewer)).statusCode, (await ack(viewer)).json().details.permission]).toEqual([403, "payments.finalize"]);
+    expect((await ack(admin)).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/admin/alerts/${other.id}/ack`, headers: as(plain), payload: { note: "fine" } })).statusCode).toBe(200);
   });
 
   it("a grantee can't confirm their own grant (one admin can't make a second admin)", async () => {
