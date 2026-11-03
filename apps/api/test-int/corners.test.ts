@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql as dsql } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, becomeMember, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
+  adminActions, adminAlerts, becomeMember, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
   follows, getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
@@ -396,6 +396,45 @@ describe("revoke", () => {
     expect((await app.inject({ method: "POST", url: `/admin/corners/${cornerId}/revoke`, headers: as(admin), payload: { reason: "again" } })).json().error).toBe("corner_not_unlocked");
     await finish(host, [await person("ve"), await person("vf"), await person("vg")]);
     expect((await cornerRow(host)).status).toBe("revoked");
+  });
+});
+
+describe("restore (undo a revoke)", () => {
+  it("revoking keeps follows, posts, reactions and replies; a restore (admins only, with a reason, logged) brings them all back", async () => {
+    const owner = await person("rsown");
+    const fan = await person("rsfan");
+    const c = await unlockedCorner(owner);
+    const restore = (who: User, payload: object) => app.inject({ method: "POST", url: `/admin/corners/${c.id}/restore`, headers: as(who), payload });
+    await app.inject({ method: "POST", url: `/corners/${c.id}/follow`, headers: as(fan) });
+    const post = (await app.inject({ method: "POST", url: `/corners/${c.id}/posts`, headers: as(owner), payload: { text: "Friday, 8pm." } })).json();
+    await app.inject({ method: "PUT", url: `/corner-posts/${post.id}/reaction`, headers: as(fan), payload: { emoji: "🔥" } });
+    await app.inject({ method: "POST", url: `/corner-posts/${post.id}/replies`, headers: as(fan), payload: { text: "I'm in", clientMsgId: randomUUID() } });
+    const before = (await app.inject({ url: `/corners/${c.id}`, headers: as(fan) })).json();
+    expect(before.posts.posts[0]).toMatchObject({ id: post.id, replyCount: 1, reactions: [{ emoji: "🔥", count: 1 }] });
+
+    expect((await restore(admin, { reason: "not revoked" })).json().error).toBe("corner_not_revoked");
+    await app.inject({ method: "POST", url: `/admin/corners/${c.id}/revoke`, headers: as(admin), payload: { reason: "looked farmed" } });
+    // Revoked: hidden, nothing deleted.
+    expect((await app.inject({ url: `/corners/${c.id}` })).statusCode).toBe(404);
+    expect((await app.inject({ url: "/me/follows", headers: as(fan) })).json()).toEqual([]);
+    expect(await db.select().from(follows).where(eq(follows.cornerId, c.id))).toHaveLength(1);
+    expect(await db.select().from(cornerPosts).where(eq(cornerPosts.cornerId, c.id))).toHaveLength(1);
+    expect(await db.select().from(cornerPostReactions).where(eq(cornerPostReactions.postId, post.id))).toHaveLength(1);
+    expect(await db.select().from(cornerPostReplies).where(eq(cornerPostReplies.postId, post.id))).toHaveLength(1);
+
+    expect((await restore(owner, { reason: "x" })).statusCode).toBe(403);
+    expect((await restore(admin, {})).statusCode).toBe(400);
+    const res = await restore(admin, { reason: "a real crowd after all" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ corner: { status: "unlocked" }, revoked: null });
+    const after = (await app.inject({ url: `/corners/${c.id}`, headers: as(fan) })).json();
+    expect(after.corner).toMatchObject({ status: "unlocked", followerCount: before.corner.followerCount, level: before.corner.level });
+    expect(after.viewer).toMatchObject({ following: true, notify: true });
+    expect(after.posts).toEqual(before.posts);
+    expect((await app.inject({ url: "/me/follows", headers: as(fan) })).json().map((f: any) => f.corner.id)).toEqual([c.id]);
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.action, "corner.restore"), eq(adminActions.targetId, c.id)));
+    expect(log).toMatchObject({ adminUserId: admin.id, reason: "a real crowd after all", before: { status: "revoked", revokedByUserId: admin.id, revokedReason: "looked farmed" }, after: { status: "unlocked" } });
+    expect((await restore(admin, { reason: "again" })).json().error).toBe("corner_not_revoked");
   });
 });
 

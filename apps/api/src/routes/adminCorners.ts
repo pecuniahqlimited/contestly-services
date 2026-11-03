@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { eq, inArray } from "drizzle-orm";
-import { cornerOf, currentCornerConfig, db, recordAdminAction, revokeCorner, saveCornerConfig, users } from "@contestly/db";
+import { cornerOf, currentCornerConfig, db, recordAdminAction, restoreCorner, revokeCorner, saveCornerConfig, users } from "@contestly/db";
 import { adminCornerConfigBodySchema, adminCornerConfigSchema, adminCornerViewSchema } from "@contestly/shared";
 import { requireAdmin, uuidParam } from "../auth.js";
 import { progressOf } from "../corners.js";
@@ -56,6 +56,14 @@ export async function adminCornersRoutes(app: FastifyInstance) {
     const admin = requireAdmin(req);
     const { reason } = adminCornerConfigBodySchema.pick({ reason: true }).parse(req.body);
     const corner = await revokeCorner(admin.id, uuidParam(req), reason);
+    return hostView(corner.ownerUserId);
+  });
+
+  /** Undo a revoke, with a reason (logged): unlocked again, its follows and posts as they were. */
+  app.post("/admin/corners/:id/restore", async (req) => {
+    const admin = requireAdmin(req);
+    const { reason } = adminCornerConfigBodySchema.pick({ reason: true }).parse(req.body);
+    const corner = await restoreCorner(admin.id, uuidParam(req), reason);
     return hostView(corner.ownerUserId);
   });
 }

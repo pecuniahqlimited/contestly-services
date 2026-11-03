@@ -288,7 +288,10 @@ export async function cornersAfterStandingChange(userId: string): Promise<void> 
   }
 }
 
-/** An admin revokes an unlocked corner (a farmed unlock), with a reason, logged. It's hidden from then on. */
+/**
+ * An admin revokes an unlocked corner (a farmed unlock), with a reason, logged. It's hidden from then on; its
+ * follows, posts, reactions and replies are kept untouched, so a restore brings everything back.
+ */
 export async function revokeCorner(adminUserId: string, cornerId: string, reason: string, now = new Date()): Promise<Corner> {
   return db.transaction(async (tx) => {
     const [c] = await tx.select().from(corners).where(eq(corners.id, cornerId)).for("update");
@@ -296,6 +299,26 @@ export async function revokeCorner(adminUserId: string, cornerId: string, reason
     if (c.status !== "unlocked") throw httpError(409, "corner_not_unlocked");
     const [after] = await tx.update(corners).set({ status: "revoked", revokedByUserId: adminUserId, revokedAt: now, revokedReason: reason }).where(eq(corners.id, cornerId)).returning();
     await recordAdminAction(tx, { adminUserId, action: "corner.revoke", targetType: "corner", targetId: cornerId, reason, before: { status: c.status }, after: { status: after.status } });
+    return after;
+  });
+}
+
+/**
+ * An admin undoes a revoke, with a reason, logged (the revoke's who, when and why go into the log's `before`).
+ * The corner is unlocked again at the level it had, with its follows and posts as they were; its unlock
+ * record (config version, who made up N) is unchanged.
+ */
+export async function restoreCorner(adminUserId: string, cornerId: string, reason: string): Promise<Corner> {
+  return db.transaction(async (tx) => {
+    const [c] = await tx.select().from(corners).where(eq(corners.id, cornerId)).for("update");
+    if (!c) throw httpError(404, "not_found");
+    if (c.status !== "revoked") throw httpError(409, "corner_not_revoked");
+    const [after] = await tx.update(corners).set({ status: "unlocked", revokedByUserId: null, revokedAt: null, revokedReason: null }).where(eq(corners.id, cornerId)).returning();
+    await recordAdminAction(tx, {
+      adminUserId, action: "corner.restore", targetType: "corner", targetId: cornerId, reason,
+      before: { status: c.status, revokedByUserId: c.revokedByUserId, revokedAt: c.revokedAt?.toISOString(), revokedReason: c.revokedReason },
+      after: { status: after.status },
+    });
     return after;
   });
 }
