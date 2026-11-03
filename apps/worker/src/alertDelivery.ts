@@ -8,13 +8,17 @@
  * A channel's failure is recorded and retried after `retryMinutes`; the other channel isn't held up.
  * Channels are a registry: email (the admin's email provider switch, to ADMIN_ALERT_EMAILS) and an optional
  * Slack-compatible webhook. Adding one is a function returning an AlertChannel.
+ *
+ * Payments alerts (kinds payments.*: ids, amounts, provider responses) carry full details only on the
+ * payments channels (ADMIN_ALERT_PAYMENTS_EMAILS, ADMIN_ALERT_PAYMENTS_WEBHOOK_URL), which carry nothing
+ * else. On the general channels they read as their subject and a link to the console.
  */
 import {
   lastAlertDelivery, logEmailSend, markAlertsDelivered, recordAlertDelivery, undeliveredAlerts, withAlertDeliveryLock,
   type AdminAlertRow, type Tx, type UndeliveredAlert,
 } from "@contestly/db";
 import { sendWithFallback, type EmailSender } from "@contestly/email";
-import type { AlertSeverity, EmailProviderName } from "@contestly/shared";
+import { isPaymentsAlert, type AlertSeverity, type EmailProviderName } from "@contestly/shared";
 
 export interface AlertMessage {
   mode: "immediate" | "digest";
@@ -24,8 +28,12 @@ export interface AlertMessage {
   text: string;
 }
 
+/** general: every alert, payments ones as subject and link only. payments: payments alerts only, in full. */
+export type AlertAudience = "general" | "payments";
+
 export interface AlertChannel {
   readonly name: string;
+  readonly audience: AlertAudience;
   /** Which severities it delivers: critical at once; warning (if listed) in the digest. Never info. */
   readonly severities: readonly ("warning" | "critical")[];
   /** Resolves when delivered; throws otherwise (it's recorded and retried). */
@@ -37,6 +45,8 @@ export interface AlertDeliveryConfig {
   throttleMinutes: number;
   listMax: number;
   retryMinutes: number;
+  /** The admin console's base URL, for the link a general channel gets in place of a payments alert's details. */
+  consoleUrl: string;
 }
 
 const int = (env: NodeJS.ProcessEnv, name: string, fallback: number) => {
@@ -53,6 +63,7 @@ export const alertDeliveryConfigFromEnv = (env = process.env): AlertDeliveryConf
   throttleMinutes: int(env, "ADMIN_ALERT_THROTTLE_MINUTES", 10),
   listMax: int(env, "ADMIN_ALERT_LIST_MAX", 5),
   retryMinutes: int(env, "ADMIN_ALERT_RETRY_MINUTES", 1),
+  consoleUrl: (env.ADMIN_CONSOLE_URL?.trim() || `${(env.PUBLIC_WEB_URL ?? "").trim().replace(/\/$/, "")}/admin`).replace(/\/$/, ""),
 });
 
 /** How often the worker looks for something to send: "critical at once" means within this. */
@@ -64,6 +75,7 @@ export const ALERT_DELIVERY_EVERY_MS = 15_000;
 export function emailChannel(o: {
   /** Its name in the delivery records (default "email"); tests give their own so their clocks start clean. */
   name?: string;
+  audience?: AlertAudience;
   recipients: readonly string[];
   senders: Partial<Record<EmailProviderName, EmailSender>>;
   primary: () => Promise<EmailProviderName>;
@@ -72,6 +84,7 @@ export function emailChannel(o: {
   const log = o.log ?? logEmailSend;
   return {
     name: o.name ?? "email",
+    audience: o.audience ?? "general",
     severities: ["warning", "critical"],
     async send(m) {
       const primary = await o.primary();
@@ -87,10 +100,11 @@ export function emailChannel(o: {
 }
 
 /** A Slack-compatible incoming webhook ({ text }), which most chat tools accept. Critical only unless configured. */
-export function webhookChannel(o: { name?: string; url: string; severities: AlertChannel["severities"]; fetch?: typeof fetch; timeoutMs?: number }): AlertChannel {
+export function webhookChannel(o: { name?: string; audience?: AlertAudience; url: string; severities: AlertChannel["severities"]; fetch?: typeof fetch; timeoutMs?: number }): AlertChannel {
   const post = o.fetch ?? fetch;
   return {
     name: o.name ?? "webhook",
+    audience: o.audience ?? "general",
     severities: o.severities,
     async send(m) {
       const res = await post(o.url, {
@@ -104,18 +118,23 @@ export function webhookChannel(o: { name?: string; url: string; severities: Aler
 
 /**
  * The channels from env: email when ADMIN_ALERT_EMAILS is set; the webhook when ADMIN_ALERT_WEBHOOK_URL is,
- * for critical only unless ADMIN_ALERT_WEBHOOK_SEVERITY=warning (then the digest too).
+ * for critical only unless ADMIN_ALERT_WEBHOOK_SEVERITY=warning (then the digest too). The payments
+ * channels likewise from ADMIN_ALERT_PAYMENTS_EMAILS and ADMIN_ALERT_PAYMENTS_WEBHOOK_URL (same severity rule).
  */
 export function alertChannelsFromEnv(env: NodeJS.ProcessEnv, email: Omit<Parameters<typeof emailChannel>[0], "recipients">): AlertChannel[] {
+  const floor = env.ADMIN_ALERT_WEBHOOK_SEVERITY?.trim() || "critical";
+  if (floor !== "critical" && floor !== "warning") throw new Error(`ADMIN_ALERT_WEBHOOK_SEVERITY must be critical or warning (got "${floor}")`);
+  const hookSeverities: AlertChannel["severities"] = floor === "warning" ? ["warning", "critical"] : ["critical"];
+  const list = (v: string | undefined) => (v ?? "").split(",").map((e) => e.trim()).filter(Boolean);
   const channels: AlertChannel[] = [];
-  const recipients = (env.ADMIN_ALERT_EMAILS ?? "").split(",").map((e) => e.trim()).filter(Boolean);
-  if (recipients.length) channels.push(emailChannel({ ...email, recipients }));
-  const url = env.ADMIN_ALERT_WEBHOOK_URL?.trim();
-  if (url) {
-    const floor = env.ADMIN_ALERT_WEBHOOK_SEVERITY?.trim() || "critical";
-    if (floor !== "critical" && floor !== "warning") throw new Error(`ADMIN_ALERT_WEBHOOK_SEVERITY must be critical or warning (got "${floor}")`);
-    channels.push(webhookChannel({ url, severities: floor === "warning" ? ["warning", "critical"] : ["critical"] }));
-  }
+  const add = (audience: AlertAudience, emails: string | undefined, url: string | undefined) => {
+    const prefix = audience === "payments" ? "payments_" : "";
+    const recipients = list(emails);
+    if (recipients.length) channels.push(emailChannel({ ...email, name: `${prefix}email`, audience, recipients }));
+    if (url?.trim()) channels.push(webhookChannel({ name: `${prefix}webhook`, audience, url: url.trim(), severities: hookSeverities }));
+  };
+  add("general", env.ADMIN_ALERT_EMAILS, env.ADMIN_ALERT_WEBHOOK_URL);
+  add("payments", env.ADMIN_ALERT_PAYMENTS_EMAILS, env.ADMIN_ALERT_PAYMENTS_WEBHOOK_URL);
   return channels;
 }
 
@@ -125,34 +144,44 @@ const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const ACK_LINE = "Acknowledge it in the admin console under Alerts.";
 
-function alertLines(a: AdminAlertRow, pending: number): string[] {
+/** How a message shows each alert: in full, or (a payments alert on a general channel) its subject and a console link. */
+export interface MessageView {
+  listMax: number;
+  /** Set on general channels: payments alerts show only their subject and this console link. */
+  redactPaymentsTo?: string;
+}
+
+function alertLines(a: AdminAlertRow, pending: number, view: MessageView): string[] {
   const times = a.count > 1 ? ` (${pending === a.count ? `×${a.count}` : `${pending} new, ${a.count} in all`})` : "";
+  if (view.redactPaymentsTo !== undefined && isPaymentsAlert(a.kind)) {
+    return [`• ${a.subject}${times}`, `  Details in the console (payments.view): ${view.redactPaymentsTo}/alerts?kind=${encodeURIComponent(a.kind)}`];
+  }
   const ref = a.refType ? `  ${a.refType}: ${a.refId}` : null;
   return [`• ${a.subject}${times}`, ...(ref ? [ref] : []), `  ${JSON.stringify(a.details)}`, `  first ${a.firstSeenAt.toISOString()}, last ${a.lastSeenAt.toISOString()}`];
 }
 
 /** Up to `listMax` alerts, then "and N more" (the occurrences not listed). */
-function listed(rows: readonly UndeliveredAlert[], listMax: number): string[] {
-  const shown = rows.slice(0, listMax);
-  const rest = rows.slice(listMax).reduce((n, r) => n + r.pending, 0);
-  return [...shown.flatMap((r) => alertLines(r.alert, r.pending)), ...(rest ? [`…and ${rest} more`] : [])];
+function listed(rows: readonly UndeliveredAlert[], view: MessageView): string[] {
+  const shown = rows.slice(0, view.listMax);
+  const rest = rows.slice(view.listMax).reduce((n, r) => n + r.pending, 0);
+  return [...shown.flatMap((r) => alertLines(r.alert, r.pending, view)), ...(rest ? [`…and ${rest} more`] : [])];
 }
 
 const occurrences = (rows: readonly UndeliveredAlert[]) => rows.reduce((n, r) => n + r.pending, 0);
 
 /** Critical, one kind: a single alert reads as itself; several read as the kind with a count. */
-export function immediateMessage(kind: string, rows: readonly UndeliveredAlert[], listMax: number): AlertMessage {
+export function immediateMessage(kind: string, rows: readonly UndeliveredAlert[], view: MessageView): AlertMessage {
   const total = occurrences(rows);
   const title = rows.length === 1 && total === 1 ? `[Contestly] CRITICAL: ${rows[0].alert.subject}` : `[Contestly] CRITICAL: ${kind} (${total} new)`;
-  return { mode: "immediate", severity: "critical", title, text: [`${kind}: ${plural(total, "occurrence")}`, "", ...listed(rows, listMax), "", ACK_LINE].join("\n") };
+  return { mode: "immediate", severity: "critical", title, text: [`${kind}: ${plural(total, "occurrence")}`, "", ...listed(rows, view), "", ACK_LINE].join("\n") };
 }
 
 /** Warnings, every kind, grouped by kind (most occurrences first). */
-export function digestMessage(rows: readonly UndeliveredAlert[], listMax: number): AlertMessage {
+export function digestMessage(rows: readonly UndeliveredAlert[], view: MessageView): AlertMessage {
   const byKind = new Map<string, UndeliveredAlert[]>();
   for (const r of rows) byKind.set(r.alert.kind, [...(byKind.get(r.alert.kind) ?? []), r]);
   const kinds = [...byKind.entries()].sort((a, b) => occurrences(b[1]) - occurrences(a[1]));
-  const sections = kinds.flatMap(([kind, kr]) => [`${kind}: ${plural(occurrences(kr), "occurrence")}`, ...listed(kr, listMax), ""]);
+  const sections = kinds.flatMap(([kind, kr]) => [`${kind}: ${plural(occurrences(kr), "occurrence")}`, ...listed(kr, view), ""]);
   return { mode: "digest", severity: "warning", title: `[Contestly] Warnings: ${plural(occurrences(rows), "occurrence")} of ${plural(kinds.length, "kind")}`, text: [...sections, ACK_LINE].join("\n") };
 }
 
@@ -187,6 +216,10 @@ export async function deliverAlerts(channels: readonly AlertChannel[], cfg: Aler
 async function deliverOn(tx: Tx, channel: AlertChannel, cfg: AlertDeliveryConfig, now: Date, kindPrefix?: string): Promise<DeliveryReport[]> {
   const reports: DeliveryReport[] = [];
   const t = now.getTime();
+  const view: MessageView = { listMax: cfg.listMax, ...(channel.audience === "general" ? { redactPaymentsTo: cfg.consoleUrl } : {}) };
+  /** A payments channel carries payments alerts and nothing else. */
+  const pending = async (severity: "warning" | "critical") =>
+    (await undeliveredAlerts(channel.name, [severity], tx, kindPrefix)).filter((r) => channel.audience === "general" || isPaymentsAlert(r.alert.kind));
   /** Not inside the retry wait after a failed send (unless something sent since). */
   const notRetrying = (last: { ok: Date | null; failed: Date | null }) =>
     !last.failed || (last.ok !== null && last.ok >= last.failed) || t - last.failed.getTime() >= cfg.retryMinutes * MIN;
@@ -207,23 +240,23 @@ async function deliverOn(tx: Tx, channel: AlertChannel, cfg: AlertDeliveryConfig
   };
 
   if (channel.severities.includes("critical")) {
-    const critical = await undeliveredAlerts(channel.name, ["critical"], tx, kindPrefix);
+    const critical = await pending("critical");
     const byKind = new Map<string, UndeliveredAlert[]>();
     for (const r of critical) byKind.set(r.alert.kind, [...(byKind.get(r.alert.kind) ?? []), r]);
     for (const [kind, rows] of byKind) {
       const last = await lastAlertDelivery(channel.name, "immediate", kind, tx);
       const throttled = last.ok !== null && t - last.ok.getTime() < cfg.throttleMinutes * MIN;
       if (throttled || !notRetrying(last)) continue;
-      await send("immediate", kind, rows, immediateMessage(kind, rows, cfg.listMax));
+      await send("immediate", kind, rows, immediateMessage(kind, rows, view));
     }
   }
 
   if (channel.severities.includes("warning")) {
-    const warnings = await undeliveredAlerts(channel.name, ["warning"], tx, kindPrefix);
+    const warnings = await pending("warning");
     if (warnings.length) {
       const last = await lastAlertDelivery(channel.name, "digest", null, tx);
       const anchor = Math.max(last.ok?.getTime() ?? 0, Math.min(...warnings.map(pendingSince)));
-      if (t - anchor >= cfg.digestMinutes * MIN && notRetrying(last)) await send("digest", null, warnings, digestMessage(warnings, cfg.listMax));
+      if (t - anchor >= cfg.digestMinutes * MIN && notRetrying(last)) await send("digest", null, warnings, digestMessage(warnings, view));
     }
   }
   return reports;

@@ -10,10 +10,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { adminActions, adminAlert, adminAlerts, db, sql, type User } from "@contestly/db";
 import type { EmailMessage, EmailSender } from "@contestly/email";
-import { deliverAlerts, emailChannel, webhookChannel, type AlertDeliveryConfig, type DeliveryReport } from "../../worker/src/alertDelivery.js";
+import { alertChannelsFromEnv, deliverAlerts, emailChannel, webhookChannel, type AlertDeliveryConfig, type DeliveryReport } from "../../worker/src/alertDelivery.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
-const CFG: AlertDeliveryConfig = { digestMinutes: 30, throttleMinutes: 10, listMax: 5, retryMinutes: 1 };
+const CFG: AlertDeliveryConfig = { digestMinutes: 30, throttleMinutes: 10, listMax: 5, retryMinutes: 1, consoleUrl: "https://admin.example.test" };
 const MIN = 60_000;
 const PREFIX = `t${tag}_`;
 let seq = 0;
@@ -125,6 +125,45 @@ describe("adminAlert(): stored and deduped", () => {
       tx.rollback();
     }).catch(() => {});
     expect(await rowsOf(k)).toEqual([]);
+  });
+});
+
+describe("payments alerts: full details only on the payments channels", () => {
+  it("the payments email and webhook get payments alerts in full and nothing else; the general ones get the subject and a console link, no ids, amounts or provider answers", async () => {
+    const f = fakes();
+    const pay = fakes();
+    const payEmail = emailChannel({ name: `payemail-${tag}-${seq}`, audience: "payments", recipients: ["payments@example.test"], senders: { zeptomail: { name: "zeptomail", send: async (m) => { pay.mail.push(m); } } }, primary: async () => "zeptomail", log: async () => {} });
+    const payHook = webhookChannel({ name: `payhook-${tag}-${seq}`, audience: "payments", url: "https://hooks.example.test/pay", severities: ["critical"], fetch: (async (_u: string, init: RequestInit) => { pay.hooks.push(JSON.parse(String(init.body))); return new Response("ok"); }) as typeof fetch });
+    const scope = { prefix: `payments.${f.prefix}` }; // payments kinds start with "payments."; scoped to this test
+    const payoutId = "5b0e5c1e-0000-4000-8000-000000000001";
+    await adminAlert({ kind: `payments.${f.prefix}amount_differs`, severity: "critical", subject: "The provider reports a different payout amount", details: { sentKobo: 1234500, check: { providerStatus: "success", amountKobo: 1300000 } }, dedupeKey: key(), refType: "payout", refId: payoutId });
+    await adminAlert({ kind: `payments.${f.prefix}unknown`, severity: "warning", subject: "A payout is still unknown past the cutoff", details: { checks: 7, lastCheck: { raw: "transfer pending" } }, dedupeKey: key(), refType: "payout", refId: payoutId });
+    await adminAlert({ kind: `${f.prefix}not_payments`, severity: "critical", subject: "Something else", details: {}, dedupeKey: key() });
+
+    const due = later(CFG.digestMinutes * MIN + MIN);
+    await deliver(scope, [f.email, f.webhook(), payEmail, payHook], new Date());
+    await deliver(scope, [f.email, f.webhook(), payEmail, payHook], due);
+    await deliver(f, [payEmail, payHook], due); // the non-payments alert never reaches a payments channel
+
+    // General: subject and a link, nothing more.
+    const general = [...f.mail.map((m) => m.text), ...f.hooks.map((h) => h.text)].join("\n");
+    expect(f.mail.map((m) => m.subject)).toEqual(["[Contestly] CRITICAL: The provider reports a different payout amount", "[Contestly] Warnings: 1 occurrence of 1 kind"]);
+    expect(general).toContain(`Details in the console (payments.view): https://admin.example.test/alerts?kind=payments.${f.prefix}amount_differs`);
+    for (const secret of [payoutId, "1234500", "1300000", "transfer pending", "providerStatus"]) expect(general).not.toContain(secret);
+    // Payments: everything, and only payments.
+    const full = [...pay.mail.map((m) => m.text), ...pay.hooks.map((h) => h.text)].join("\n");
+    expect(pay.mail.map((m) => m.to)).toEqual(["payments@example.test", "payments@example.test"]);
+    expect(pay.hooks).toHaveLength(1);
+    for (const detail of [payoutId, "1234500", "transfer pending"]) expect(full).toContain(detail);
+    expect(full).not.toContain("Something else");
+  });
+
+  it("from env: the payments channels exist only when set; the webhook only with its URL", () => {
+    const deps = { senders: {}, primary: async () => "zeptomail" as const };
+    const names = (env: NodeJS.ProcessEnv) => alertChannelsFromEnv(env, deps).map((c) => `${c.name}:${c.audience}`);
+    expect(names({ ADMIN_ALERT_EMAILS: "a@x.test" })).toEqual(["email:general"]);
+    expect(names({ ADMIN_ALERT_EMAILS: "a@x.test", ADMIN_ALERT_PAYMENTS_EMAILS: "p@x.test" })).toEqual(["email:general", "payments_email:payments"]);
+    expect(names({ ADMIN_ALERT_PAYMENTS_EMAILS: "p@x.test", ADMIN_ALERT_PAYMENTS_WEBHOOK_URL: "https://h.test/p" })).toEqual(["payments_email:payments", "payments_webhook:payments"]);
   });
 });
 

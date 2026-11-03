@@ -1596,6 +1596,11 @@ describe("permissions", () => {
     expect(await list(plain)).toContain(other.id);
     expect((await app.inject({ method: "GET", url: "/admin/alerts?kind=payments.test_visibility", headers: as(plain) })).json().error).toBe("missing_permission");
     expect(await list(viewer)).toContain(id);
+    // The home's counts: payments alerts count only for payments.view.
+    const critical = async (who: User) => (await app.inject({ method: "GET", url: "/admin/alerts/summary", headers: as(who) })).json().open.critical as number;
+    const [plainBefore, viewerBefore] = [await critical(plain), await critical(viewer)];
+    await adminAlert({ severity: "critical", kind: "payments.test_visibility_count", subject: "count test", details: {}, dedupeKey: `t:vis3:${tag}` });
+    expect([await critical(plain), await critical(viewer)]).toEqual([plainBefore, viewerBefore + 1]);
     const ack = (who: User) => app.inject({ method: "POST", url: `/admin/alerts/${id}/ack`, headers: as(who), payload: { note: "looked at it" } });
     expect([(await ack(viewer)).statusCode, (await ack(viewer)).json().details.permission]).toEqual([403, "payments.finalize"]);
     expect((await ack(admin)).statusCode).toBe(200);

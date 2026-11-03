@@ -204,6 +204,13 @@ export const adminAlertAckSchema = z.object({ note: reasonSchema });
 /** POST /admin/alerts/test: a test alert of this severity, delivered like any other (checks each channel). */
 export const adminAlertTestSchema = z.object({ severity: z.enum(ALERT_SEVERITIES) });
 export const ALERT_TEST_KIND = "test_alert";
+/**
+ * Alerts raised by payments (ADR 0013) have kinds starting with this. Only admins with payments.view see them
+ * in the console and its counts; full details go only to the payments channels; the general ones get the
+ * subject and a console link.
+ */
+export const PAYMENTS_ALERT_PREFIX = "payments.";
+export const isPaymentsAlert = (kind: string) => kind.startsWith(PAYMENTS_ALERT_PREFIX);
 
 export const adminAlertSchema = z.object({
   id: uuid, kind: z.string(), severity: z.enum(ALERT_SEVERITIES), subject: z.string(), details: z.record(z.unknown()),

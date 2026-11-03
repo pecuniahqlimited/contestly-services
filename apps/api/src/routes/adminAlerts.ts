@@ -1,10 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { acknowledgeAdminAlert, adminAlerts, db, listAdminAlerts, openAlertCounts, raiseTestAlert, type AdminAlertRow, type User } from "@contestly/db";
-
-/** Alerts raised by payments (ADR 0013): payments.view to see them, payments.finalize to acknowledge them. */
-const PAYMENTS_ALERT_PREFIX = "payments.";
-import { adminAlertAckResponseSchema, adminAlertAckSchema, adminAlertSchema, adminAlertTestResponseSchema, adminAlertTestSchema, type AlertSeverity, adminAlertsQuerySchema, adminAlertsResponseSchema, adminAlertsSummarySchema, type AdminAlert } from "@contestly/shared";
+import { PAYMENTS_ALERT_PREFIX, adminAlertAckResponseSchema, adminAlertAckSchema, adminAlertSchema, adminAlertTestResponseSchema, adminAlertTestSchema, type AlertSeverity, adminAlertsQuerySchema, adminAlertsResponseSchema, adminAlertsSummarySchema, type AdminAlert } from "@contestly/shared";
 import { holdsPermission, requireAdmin, requirePermission, uuidParam } from "../auth.js";
 import { toPerson } from "../people.js";
 import { httpError } from "../httpError.js";
@@ -35,10 +32,11 @@ export async function adminAlertsRoutes(app: FastifyInstance) {
     return adminAlertsResponseSchema.parse({ alerts: rows.map((r) => alertView(r.alert, r.ackedBy)) });
   });
 
-  /** Open alerts by severity, for the admin home (it shows the critical count). */
+  /** Open alerts by severity, for the admin home (it shows the critical count). Payments alerts count only for payments.view. */
   app.get("/admin/alerts/summary", async (req) => {
     requireAdmin(req);
-    return adminAlertsSummarySchema.parse({ open: await openAlertCounts() });
+    const seesPayments = await holdsPermission(req, "payments.view");
+    return adminAlertsSummarySchema.parse({ open: await openAlertCounts({ excludeKindPrefix: seesPayments ? undefined : PAYMENTS_ALERT_PREFIX }) });
   });
 
   /** A test alert of this severity through the normal delivery path, to check each channel. Logged. */

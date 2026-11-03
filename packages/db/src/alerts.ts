@@ -116,10 +116,10 @@ export async function listAdminAlerts(f: AlertFilter): Promise<{ alert: AdminAle
   return rows;
 }
 
-/** Open (unacknowledged) alerts by severity: the admin home shows the critical count. */
-export async function openAlertCounts(): Promise<Record<AlertSeverity, number>> {
+/** Open (unacknowledged) alerts by severity: the admin home shows the critical count. Without a prefix's kinds when given (what the viewer can't see). */
+export async function openAlertCounts(opts: { excludeKindPrefix?: string } = {}): Promise<Record<AlertSeverity, number>> {
   const rows = await db.select({ severity: adminAlerts.severity, n: sql<number>`count(*)::int` }).from(adminAlerts)
-    .where(isNull(adminAlerts.acknowledgedAt)).groupBy(adminAlerts.severity);
+    .where(and(isNull(adminAlerts.acknowledgedAt), opts.excludeKindPrefix ? sql`not starts_with(${adminAlerts.kind}, ${opts.excludeKindPrefix})` : undefined)).groupBy(adminAlerts.severity);
   const counts = Object.fromEntries(ALERT_SEVERITIES.map((s) => [s, 0])) as Record<AlertSeverity, number>;
   for (const r of rows) counts[r.severity] = r.n;
   return counts;
