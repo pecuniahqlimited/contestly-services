@@ -52,8 +52,8 @@ export const cornerShown = and(
 
 /** The account's corner, made locked (named after them) the first time it's needed. */
 export async function ensureCorner(q: Conn, ownerUserId: string): Promise<Corner> {
-  const [owner] = await q.select({ displayName: users.displayName }).from(users).where(eq(users.id, ownerUserId));
-  await q.insert(corners).values({ ownerUserId, name: owner.displayName }).onConflictDoNothing({ target: corners.ownerUserId });
+  const [owner] = await q.select({ displayName: users.displayName, isSim: users.isSim }).from(users).where(eq(users.id, ownerUserId));
+  await q.insert(corners).values({ ownerUserId, name: owner.displayName, isSim: owner.isSim }).onConflictDoNothing({ target: corners.ownerUserId });
   const [row] = await q.select().from(corners).where(eq(corners.ownerUserId, ownerUserId));
   return row;
 }

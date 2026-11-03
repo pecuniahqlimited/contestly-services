@@ -367,6 +367,27 @@ describe("suggested corners (interim)", () => {
   });
 });
 
+describe("sim data", () => {
+  it("a sim's corner and parties are never suggested to real people, only to sims", async () => {
+    const simHost = await person("simh", { extra: { isSim: true } });
+    const c = await unlockedCorner(simHost);
+    await db.update(corners).set({ lane: "Maths", isSim: true }).where(eq(corners.id, c.id));
+    const [p] = await db.insert(parties).values({
+      createdByUserId: simHost.id, title: "sim party", category: "Maths", maxPlayers: 6, funding: "pooled", split: [100],
+      startsAt: new Date(Date.now() + 30 * 60_000), isSim: true,
+    }).returning();
+    const real = await person("simr", { extra: { interests: ["Maths"] } });
+    const sim = await person("sims", { extra: { interests: ["Maths"], isSim: true } });
+    const suggestedIds = async (u: User) => suggestedCornersSchema.parse((await app.inject({ url: "/corners/suggested?limit=30", headers: as(u) })).json()).corners.map((x) => x.corner.id);
+    const tabIds = async (u?: User) => ((await app.inject({ url: "/parties", headers: u ? as(u) : {} })).json() as { id: string }[]).map((x) => x.id);
+    expect(await suggestedIds(real)).not.toContain(c.id);
+    expect(await suggestedIds(sim)).toContain(c.id);
+    expect(await tabIds(real)).not.toContain(p.id);
+    expect(await tabIds()).not.toContain(p.id);
+    expect(await tabIds(sim)).toContain(p.id);
+  });
+});
+
 describe("revoke", () => {
   let host: User, cornerId: string;
   beforeAll(async () => {

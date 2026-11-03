@@ -17,7 +17,7 @@ import { eq, desc } from "drizzle-orm";
 import { climbAwards, db, emailSends, sql, users } from "@contestly/db";
 import { makeRedis } from "@contestly/queue";
 import { SIGN_UP_REQUIRED, aboutVersionSchema, kobo, phoneHash, type AboutConfig, type AboutVersion } from "@contestly/shared";
-import { API, api, failureCount, ok, putBack, putBackLater, sleep } from "./sim-lib.js";
+import { API, api, simHeaders, failureCount, ok, putBack, putBackLater, sleep } from "./sim-lib.js";
 
 const EMULATOR = process.env.FIREBASE_AUTH_EMULATOR_HOST;
 const PROJECT = process.env.FIREBASE_PROJECT_ID ?? "demo-contestly";
@@ -63,7 +63,7 @@ async function phoneCheckToken(phone: string): Promise<string> {
 async function http<T = any>(s: Session | null, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
   const res = await fetch(`${API}${path}`, {
     method, redirect: "manual",
-    headers: { ...(s ? { authorization: `Bearer ${s.token}` } : {}), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { ...(s ? { authorization: `Bearer ${s.token}` } : {}), ...simHeaders(), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as T };

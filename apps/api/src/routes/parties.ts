@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers } from "@contestly/db";
+import { db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo } from "@contestly/db";
 import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
 import { notifyQueue, PARTY_EVENTS_CHANNEL } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
@@ -27,7 +27,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const me = req.auth?.user;
     const { filter } = (req.query ?? {}) as { filter?: string };
     const rows = await db.select().from(parties)
-      .where(and(inArray(parties.status, ["open", "live"]), eq(parties.visibility, "public")))
+      .where(and(inArray(parties.status, ["open", "live"]), eq(parties.visibility, "public"), simVisibleTo(me, parties.isSim)))
       .orderBy(asc(parties.startsAt)).limit(50);
     let cards = await partySummaries(rows, me?.id);
     if (filter === "brands") cards = cards.filter((c) => c.host.isBrand);

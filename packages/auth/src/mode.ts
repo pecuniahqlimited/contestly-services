@@ -5,6 +5,9 @@
 export const AUTH_MODES = ["dev", "firebase"] as const;
 export type AuthMode = (typeof AUTH_MODES)[number];
 
+/** Sent by the sims (AUTH_MODE=dev only, ignored otherwise): the account is a sim's (users.is_sim). */
+export const DEV_SIM_HEADER = "x-dev-sim";
+
 export const authMode = (env: NodeJS.ProcessEnv = process.env): AuthMode => (env.AUTH_MODE ?? "dev") as AuthMode;
 
 /** Secrets every sign-in path needs in production. */

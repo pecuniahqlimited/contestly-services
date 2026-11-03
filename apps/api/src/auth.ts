@@ -1,6 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyRequest } from "fastify";
-import { assertNotBanned, NoCredentials, resolveUser, Unauthorized, type Session } from "@contestly/auth";
+import { assertNotBanned, DEV_SIM_HEADER, NoCredentials, resolveUser, Unauthorized, type Session } from "@contestly/auth";
 import { SIGN_UP_REQUIRED, TOO_MANY_GUESTS, MISSING_PERMISSION, type PaymentPermission } from "@contestly/shared";
 import { limit } from "./redis.js";
 import { noteSignals } from "./signals.js";
@@ -21,7 +21,7 @@ export type SessionResolver = (req: FastifyRequest) => Promise<Session>;
 /** A brand-new anonymous session becomes a guest row at most guestsPerIpPerHour times per client IP. */
 const fromCredentials: SessionResolver = (req) =>
   resolveUser({
-    authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined,
+    authorization: req.headers.authorization, devUser: req.headers["x-dev-user"] as string | undefined, sim: req.headers[DEV_SIM_HEADER] === "1",
     beforeNewGuest: () => limit("guest-create:ip", req.clientIp, req.server.limits.guestsPerIpPerHour, 3600, TOO_MANY_GUESTS),
   });
 

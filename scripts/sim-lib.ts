@@ -6,6 +6,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { climbRounds, contactMatches, db, ledgerAccounts, ledgerEntries, parties, users } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
+import { DEV_SIM_HEADER } from "@contestly/auth";
 import { SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
 
 export const API = process.env.API_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
@@ -73,11 +74,19 @@ export function waitForProgress(partyId: string) {
   }, { tries: 60, everyMs: 500 });
 }
 
+/**
+ * Every request a sim sends marks its account as sim data (DEV_SIM_HEADER), so the parties and corners it makes
+ * stay out of real people's suggestions. dev:bots calls leaveUnmarked(): its bots play with real dev accounts.
+ */
+let marksSim = true;
+export const leaveUnmarked = () => void (marksSim = false);
+export const simHeaders = (): Record<string, string> => (marksSim ? { [DEV_SIM_HEADER]: "1" } : {});
+
 /** Calls the API as a dev user. Returns { status, body } so callers can assert on refusals too. */
 export async function call<T = any>(handle: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
   const res = await fetch(`${API}${path}`, {
     method,
-    headers: { "x-dev-user": handle, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { "x-dev-user": handle, ...simHeaders(), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = res.status === 204 ? ({} as T) : ((await res.json().catch(() => ({}))) as T);
@@ -88,7 +97,7 @@ export async function call<T = any>(handle: string, method: string, path: string
 export async function sendFile<T = any>(handle: string, partyId: string, file: { filename: string; contentType: string; bytes: Uint8Array<ArrayBuffer> }): Promise<{ status: number; body: T }> {
   const form = new FormData();
   form.append(SOURCE_FILE_FIELD, new Blob([file.bytes], { type: file.contentType }), file.filename);
-  const res = await fetch(`${API}/parties/${partyId}/files`, { method: "PUT", headers: { "x-dev-user": handle }, body: form });
+  const res = await fetch(`${API}/parties/${partyId}/files`, { method: "PUT", headers: { "x-dev-user": handle, ...simHeaders() }, body: form });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as T };
 }
 

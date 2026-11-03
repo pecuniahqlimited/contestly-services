@@ -24,7 +24,7 @@ import { adminAlerts, db, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { INSTALL_ID_HEADER, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { API, RT, correctAnswer, failureCount, inMinutes, ok, putBack, putBackLater, sleep, waitFor, waitForProgress } from "./sim-lib.js";
+import { API, RT, simHeaders, correctAnswer, failureCount, inMinutes, ok, putBack, putBackLater, sleep, waitFor, waitForProgress } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const h = (name: string) => `cs${tag}_${name}`;
@@ -35,7 +35,7 @@ const installOf = (handle: string) => installs.get(handle) ?? installs.set(handl
 /** Like sim-lib's call(), with the player's install id on every request (signed out when handle is null). */
 async function call<T = any>(handle: string | null, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
   const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" };
-  if (handle) Object.assign(headers, { "x-dev-user": handle, [INSTALL_ID_HEADER]: installOf(handle) });
+  if (handle) Object.assign(headers, { "x-dev-user": handle, [INSTALL_ID_HEADER]: installOf(handle), ...simHeaders() });
   const res = await fetch(`${API}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, body: (await res.json().catch(() => ({}))) as T };
 }

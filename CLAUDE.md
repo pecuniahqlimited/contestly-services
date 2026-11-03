@@ -209,7 +209,7 @@ npm run sim             # the sims against the running stack (each puts back any
 npm run paystack:check  # OPT-IN, needs a Paystack sk_test_ key: the adapter against Paystack's test API (test card, a test transfer)
 ```
 
-Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev only; refused in production, ignored in firebase mode). Unknown handles are auto-created as signed-up accounts with a verified dev email. Real sessions: a Firebase ID token as `Authorization: Bearer` (the emulator locally). Mail lands in Mailpit; Google/Apple use a stand-in page in dev.
+Dev identity: send header `x-dev-user: <handle>` (AUTH_MODE=dev only; refused in production, ignored in firebase mode). Unknown handles are auto-created as signed-up accounts with a verified dev email. The sims also send `x-dev-sim: 1` (`simHeaders()` in `scripts/sim-lib.ts`; dev only), which marks the account `is_sim`, and with it the parties it creates and its corner: suggested corners, the Parties tab and nudge targeting show sim data only to sim accounts. `dev:bots` leaves its bots unmarked. Real sessions: a Firebase ID token as `Authorization: Bearer` (the emulator locally). Mail lands in Mailpit; Google/Apple use a stand-in page in dev.
 
 ## Non-negotiable rules
 

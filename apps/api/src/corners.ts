@@ -7,7 +7,7 @@
 import { and, asc, count, desc, eq, inArray, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   cornerMutes, cornerNewPlayers, cornerParties, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, currentCornerConfig, db, follows, getChatConfig,
-  getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, refreshDefaultLane, type Corner, type User,
+  getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, refreshDefaultLane, simVisibleTo, type Corner, type User,
 } from "@contestly/db";
 import { valkeyCounter } from "@contestly/queue";
 import {
@@ -134,7 +134,7 @@ const SUGGESTION_POOL = 500;
 export async function suggestedCorners(viewer: User | undefined, limit: number): Promise<SuggestedCorners> {
   const n = sql<number>`(select count(*) from ${follows} f join ${users} fu on fu.id = f.follower_id and fu.deleted_at is null where f.corner_id = ${corners.id})`.mapWith(Number);
   const pool = await db.select({ c: corners, owner: personColumns, followers: n }).from(corners).innerJoin(users, eq(users.id, corners.ownerUserId))
-    .where(cornerShown).orderBy(desc(n), asc(corners.unlockedAt), asc(corners.id)).limit(SUGGESTION_POOL);
+    .where(and(cornerShown, simVisibleTo(viewer, corners.isSim))).orderBy(desc(n), asc(corners.unlockedAt), asc(corners.id)).limit(SUGGESTION_POOL);
   const followed = new Set(viewer ? (await db.select({ id: follows.cornerId }).from(follows).where(eq(follows.followerId, viewer.id))).map((r) => r.id) : []);
   const lanes = new Set<string>(viewer?.interests ?? []);
   const open = pool.filter((r) => r.c.ownerUserId !== viewer?.id && !followed.has(r.c.id));

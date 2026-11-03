@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { db, guestForFirebaseUid, identityWasDisabled, isBanned, ledger, userByIdentity, users, type User } from "@contestly/db";
+import { db, guestForFirebaseUid, identityWasDisabled, isBanned, ledger, markSimUser, userByIdentity, users, type User } from "@contestly/db";
 import { ACCOUNT_BANNED, ACCOUNT_GONE, UNAUTHORIZED } from "@contestly/shared";
 import { authMode } from "./mode.js";
 import { checkIdToken, firebaseUserActive, isAnonymousToken } from "./firebase.js";
@@ -52,8 +52,16 @@ async function devUser(raw: string): Promise<User> {
  *   rooms refuse, since a room only admits seats the API gave out).
  * - `x-dev-user: <handle>`: only with AUTH_MODE=dev, ignored entirely otherwise. Creates the user on
  *   first sight with the dev welcome coins.
+ * - `sim` (the x-dev-sim header): AUTH_MODE=dev only; marks the account as a sim's.
  */
-export async function resolveUser(h: { authorization?: string; devUser?: string; beforeNewGuest?: () => Promise<void> }): Promise<Session> {
+export async function resolveUser(h: { authorization?: string; devUser?: string; sim?: boolean; beforeNewGuest?: () => Promise<void> }): Promise<Session> {
+  const session = await resolveCredentials(h);
+  // A sim's account (AUTH_MODE=dev only): what it makes stays out of real people's suggestions.
+  if (h.sim && authMode() === "dev") session.user = await markSimUser(session.user);
+  return session;
+}
+
+async function resolveCredentials(h: { authorization?: string; devUser?: string; beforeNewGuest?: () => Promise<void> }): Promise<Session> {
   const token = h.authorization?.replace(/^Bearer\s+/i, "").trim();
   if (!token) {
     if (authMode() === "dev" && h.devUser?.trim()) return { user: await devUser(h.devUser), via: "dev" };

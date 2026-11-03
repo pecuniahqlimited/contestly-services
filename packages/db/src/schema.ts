@@ -68,6 +68,8 @@ export const users = pgTable("users", {
   isVerified: boolean("is_verified").notNull().default(false),
   /** Internal accounts (the rake treasury). Never shown in discovery, never plays. */
   isSystem: boolean("is_system").notNull().default(false),
+  /** Made by a sim (the dev-only x-dev-sim header). Suggestions, the Parties tab and nudge targeting leave sim data out for everyone else. */
+  isSim: boolean("is_sim").notNull().default(false),
   streakDays: integer("streak_days").notNull().default(0),
   /** The longest streak they've ever had (profiles, crew records). */
   bestStreakDays: integer("best_streak_days").notNull().default(0),
@@ -284,6 +286,8 @@ export const parties = pgTable("parties", {
   crewId: uuid("crew_id").references((): AnyPgColumn => crews.id, { onDelete: "set null" }),
   /** The party this one is a rematch of. One rematch per party: everyone who taps Rematch lands in it. */
   rematchOf: uuid("rematch_of").unique().references((): AnyPgColumn => parties.id, { onDelete: "set null" }),
+  /** Created by a sim user (users.is_sim): kept out of the Parties tab and suggestions for real people. */
+  isSim: boolean("is_sim").notNull().default(false),
   status: partyStatus("status").notNull().default("open"),
   startsAt: timestamp("starts_at", { withTimezone: true }).notNull(),
   /** When the party went live; the worker's watchdog cancels if no set lands within the generation timeout. */
@@ -1323,6 +1327,8 @@ export const corners = pgTable("corners", {
   revokedReason: text("revoked_reason"),
   /** Its owner deleted their account (ADR 0010): archived, its follows moved to archived_follows. */
   archivedAt: timestamp("archived_at", { withTimezone: true }),
+  /** A sim user's corner (users.is_sim): never suggested to real people. */
+  isSim: boolean("is_sim").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("corners_status_idx").on(t.status)]);
 

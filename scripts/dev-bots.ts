@@ -21,12 +21,14 @@ import { and, desc, eq } from "drizzle-orm";
 import { db, parties, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, kobo, type QuestionFormat } from "@contestly/shared";
-import { RT, api, call, correctAnswer, inMinutes, sleep, wrongAnswer } from "./sim-lib.js";
+import { RT, api, call, correctAnswer, inMinutes, leaveUnmarked, sleep, wrongAnswer } from "./sim-lib.js";
 
 if (process.env.AUTH_MODE !== "dev") {
   console.error("dev:bots only runs with AUTH_MODE=dev.");
   process.exit(1);
 }
+// Bots play with real dev accounts, so their parties show in the Parties tab like anyone's.
+leaveUnmarked();
 
 const BOT_NAMES = ["Bisi", "Chuks", "Funmi", "Musa", "Ngozi", "Tobi"];
 /**
