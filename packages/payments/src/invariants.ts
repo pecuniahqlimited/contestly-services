@@ -17,15 +17,17 @@
  *    prize_funding, platform_funds, payout_owed) at or below zero, money held or out (pots, payout_pending,
  *    payout_settled, payout_fees, contradiction holds, forfeited entries) at or above; fee_variance either way.
  *
- * Admins can acknowledge a breach (payments.config and a second admin, with a reason): one of the same kind,
- * on the same items, no larger, then doesn't pause payouts again. A new or growing one does.
+ * Admins can acknowledge a breach (payments.config and a second admin, with a reason): for
+ * invariants.acknowledgmentDays (default 7), one of the same kind with exactly the same items and signed
+ * values doesn't pause payouts again. Any change either way, a new item, or an expired acknowledgment does.
+ * A check with more items than it reports (ITEM_CAP) is never acknowledged.
  *
  * All reads run in one REPEATABLE READ snapshot, so a transaction committing mid-check can't look like a
  * breach. A breach is checked again in a fresh snapshot before anything is paused: only one that repeats
  * pauses payouts; one that doesn't is a warning.
  */
-import { desc, eq, sql } from "drizzle-orm";
-import { db, invariantAcknowledgments, recordAdminAction, type InvariantAcknowledgment, type Tx } from "@contestly/db";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { db, getPaymentsConfig, invariantAcknowledgments, recordAdminAction, type InvariantAcknowledgment, type Tx } from "@contestly/db";
 import { PAYOUT_OPEN_STATUSES, SECOND_ADMIN_REQUIRED } from "@contestly/shared";
 import { paymentsError, raiseAlert } from "./common.js";
 import { pausePayoutsBySystem } from "./settings.js";
@@ -34,28 +36,39 @@ import { pausePayoutsBySystem } from "./settings.js";
  * A breach: its kind, what it found, and the items it's about (account, party, provider, payout…) with how
  * far off each is, which is what an acknowledgment covers.
  */
-export interface Breach { kind: string; detail: Record<string, unknown>; items: Record<string, number> }
+export interface Breach {
+  kind: string; detail: Record<string, unknown>;
+  /** Item → its signed value (how far off, which way). An acknowledgment must match these exactly. */
+  items: Record<string, number>;
+  /** More items than a check reports (ITEM_CAP): never acknowledgeable, so it always pauses and alerts. */
+  overflow?: boolean;
+}
 type Row = Record<string, unknown>;
 
 const num = (v: unknown) => Number(v ?? 0);
 const rows = async (conn: Tx | typeof db, q: ReturnType<typeof sql>) => (await conn.execute(q)) as unknown as Row[];
 const openList = sql.raw(PAYOUT_OPEN_STATUSES.map((s) => `'${s}'`).join(", "));
-/** How many items a check reports (enough that an acknowledged set doesn't hide a new one). */
-const LIMIT = sql.raw("200");
-const itemsOf = (rs: Row[], key: string, magnitude: (r: Row) => number) => Object.fromEntries(rs.map((r) => [String(r[key]), Math.abs(magnitude(r))]));
+/**
+ * How many items a check reports. Queries are ordered, and fetch one more than this: a check that finds more
+ * is marked overflow and fails closed (never covered by an acknowledgment).
+ */
+export const ITEM_CAP = 200;
+const LIMIT = sql.raw(String(ITEM_CAP + 1));
+const itemsOf = (rs: Row[], key: string, value: (r: Row) => number) => Object.fromEntries(rs.slice(0, ITEM_CAP).map((r) => [String(r[key]), value(r)]));
+const overflowed = (rs: Row[]) => (rs.length > ITEM_CAP ? { overflow: true } : {});
 
 export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
   const out: Breach[] = [];
 
-  const unbalanced = await rows(conn, sql`select journal_id, sum(amount_kobo)::bigint as total from ledger_entries where journal_id is not null group by journal_id having sum(amount_kobo) <> 0 limit ${LIMIT}`);
-  if (unbalanced.length) out.push({ kind: "unbalanced_journal", detail: { journals: unbalanced.map((r) => ({ journalId: r.journal_id, total: num(r.total) })) }, items: itemsOf(unbalanced, "journal_id", (r) => num(r.total)) });
+  const unbalanced = await rows(conn, sql`select journal_id, sum(amount_kobo)::bigint as total from ledger_entries where journal_id is not null group by journal_id having sum(amount_kobo) <> 0 order by journal_id limit ${LIMIT}`);
+  if (unbalanced.length) out.push({ kind: "unbalanced_journal", detail: { journals: unbalanced.map((r) => ({ journalId: r.journal_id, total: num(r.total) })) }, items: itemsOf(unbalanced, "journal_id", (r) => num(r.total)), ...overflowed(unbalanced) });
 
-  const outside = await rows(conn, sql`select id, idempotency_key from ledger_entries where journal_id is null and created_at > (select min(created_at) from ledger_entries where journal_id is not null) limit ${LIMIT}`);
-  if (outside.length) out.push({ kind: "entry_outside_journal", detail: { entries: outside.map((r) => ({ id: r.id, key: r.idempotency_key })) }, items: itemsOf(outside, "id", () => 1) });
+  const outside = await rows(conn, sql`select id, idempotency_key, amount_kobo::bigint as amount from ledger_entries where journal_id is null and created_at > (select min(created_at) from ledger_entries where journal_id is not null) order by id limit ${LIMIT}`);
+  if (outside.length) out.push({ kind: "entry_outside_journal", detail: { entries: outside.map((r) => ({ id: r.id, key: r.idempotency_key })) }, items: itemsOf(outside, "id", (r) => num(r.amount)), ...overflowed(outside) });
 
   const drift = await rows(conn, sql`select a.id, a.kind, a.scope, a.balance_kobo::bigint as balance, coalesce(sum(e.amount_kobo), 0)::bigint as entries
-    from ledger_accounts a left join ledger_entries e on e.account_id = a.id group by a.id having a.balance_kobo <> coalesce(sum(e.amount_kobo), 0) limit ${LIMIT}`);
-  if (drift.length) out.push({ kind: "balance_drift", detail: { accounts: drift.map((r) => ({ id: r.id, kind: r.kind, scope: r.scope, balance: num(r.balance), entries: num(r.entries) })) }, items: itemsOf(drift, "id", (r) => num(r.balance) - num(r.entries)) });
+    from ledger_accounts a left join ledger_entries e on e.account_id = a.id group by a.id having a.balance_kobo <> coalesce(sum(e.amount_kobo), 0) order by a.id limit ${LIMIT}`);
+  if (drift.length) out.push({ kind: "balance_drift", detail: { accounts: drift.map((r) => ({ id: r.id, kind: r.kind, scope: r.scope, balance: num(r.balance), entries: num(r.entries) })) }, items: itemsOf(drift, "id", (r) => num(r.balance) - num(r.entries)), ...overflowed(drift) });
 
   // 3. The payment accounts against the rows they stand for, per provider.
   const accounts = await rows(conn, sql`select kind, scope, balance_kobo::bigint as balance from ledger_accounts where kind in ('topup_in', 'payout_pending', 'payout_settled', 'payout_fees')`);
@@ -74,7 +87,7 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
     const expect = { topup_in: -num(t?.credited), payout_pending: num(po?.pending), payout_settled: num(po?.settled), payout_fees: num(po?.fees) };
     for (const [kind, want] of Object.entries(expect)) {
       const got = balance(kind, p);
-      if (got !== want) out.push({ kind: `provider_${kind}`, detail: { provider: p, ledger: got, records: want }, items: { [p]: Math.abs(got - want) } });
+      if (got !== want) out.push({ kind: `provider_${kind}`, detail: { provider: p, ledger: got, records: want }, items: { [p]: got - want } });
     }
   }
 
@@ -86,10 +99,11 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
       count(e.id) filter (where e.idempotency_key = 'payout_debit:' || p.id) as debits,
       count(e.id) filter (where e.idempotency_key = 'payout_final:' || p.id) as finals,
       count(e.id) filter (where a.kind = 'payout_settled' and e.type <> 'withdrawal_recovered') as settled_legs,
-      count(e.id) filter (where e.idempotency_key = 'payout_recovery:' || p.id) as recoveries
+      count(e.id) filter (where e.idempotency_key = 'payout_recovery:' || p.id) as recoveries,
+      coalesce(string_agg(e.id::text, ',' order by e.id), '') as entry_ids
     from payouts p left join payout_contradictions c on c.payout_id = p.id
       left join ledger_entries e on e.ref_type = 'payout' and e.ref_id = p.id::text left join ledger_accounts a on a.id = e.account_id
-    group by p.id, c.status`);
+    group by p.id, c.status order by p.id`);
   const bad = shapes.filter((r) => {
     const reversed = r.status === "failed" || r.status === "rejected";
     const final = reversed || r.status === "succeeded";
@@ -98,7 +112,8 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
       || num(r.settled_legs) !== (r.status === "succeeded" ? 1 : 0)
       || num(r.recoveries) !== (r.resolved === true ? 1 : 0) || (r.resolved === true && !reversed);
   });
-  if (bad.length) out.push({ kind: "payout_entries", items: itemsOf(bad, "id", () => 1), detail: { payouts: bad.slice(0, 20).map((r) => ({ id: r.id, status: r.status, cashLegs: num(r.cash_legs), cashSum: num(r.cash_sum), debits: num(r.debits), finals: num(r.finals), settledLegs: num(r.settled_legs), recoveries: num(r.recoveries) })) } });
+  // Each item is the payout and its exact entries: a later settle, reversal or recovery on it is a new item.
+  if (bad.length) out.push({ kind: "payout_entries", items: Object.fromEntries(bad.slice(0, ITEM_CAP).map((r) => [`${r.id}:${r.entry_ids}`, num(r.cash_sum)])), ...overflowed(bad), detail: { payouts: bad.slice(0, 20).map((r) => ({ id: r.id, status: r.status, cashLegs: num(r.cash_legs), cashSum: num(r.cash_sum), debits: num(r.debits), finals: num(r.finals), settledLegs: num(r.settled_legs), recoveries: num(r.recoveries) })) } });
 
   // 3b. What people were booked as owing at their freezes is exactly what the contradictions recorded
   // (repayments, releases and waivers move it on from there); each person's hold is exactly the disputed
@@ -106,32 +121,32 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
   const [owed] = await rows(conn, sql`select
       coalesce((select sum(e.amount_kobo) from ledger_entries e join ledger_accounts a on a.id = e.account_id where a.kind = 'payout_owed' and e.type = 'contradiction_held'), 0)::bigint as booked,
       coalesce((select sum(owed_kobo) from payout_contradictions), 0)::bigint as recorded`);
-  if (num(owed.booked) !== -num(owed.recorded)) out.push({ kind: "owed_recorded", detail: { ledger: num(owed.booked), contradictions: -num(owed.recorded) }, items: { all: Math.abs(num(owed.booked) + num(owed.recorded)) } });
+  if (num(owed.booked) !== -num(owed.recorded)) out.push({ kind: "owed_recorded", detail: { ledger: num(owed.booked), contradictions: -num(owed.recorded) }, items: { all: num(owed.booked) + num(owed.recorded) } });
   // No contradiction's debt is paid down past zero (repaid, waived or released beyond what was booked).
   const overpaid = await rows(conn, sql`select e.ref_id as contradiction_id, sum(e.amount_kobo)::bigint as net from ledger_entries e join ledger_accounts a on a.id = e.account_id
     where a.kind = 'payout_owed' and e.ref_type = 'contradiction' group by e.ref_id having sum(e.amount_kobo) > 0 order by e.ref_id limit ${LIMIT}`);
-  if (overpaid.length) out.push({ kind: "contradiction_debt", detail: { contradictions: overpaid.map((r) => ({ id: r.contradiction_id, net: num(r.net) })) }, items: itemsOf(overpaid, "contradiction_id", (r) => num(r.net)) });
+  if (overpaid.length) out.push({ kind: "contradiction_debt", detail: { contradictions: overpaid.map((r) => ({ id: r.contradiction_id, net: num(r.net) })) }, items: itemsOf(overpaid, "contradiction_id", (r) => num(r.net)), ...overflowed(overpaid) });
   const holds = await rows(conn, sql`select coalesce(a.scope, c.user_id::text) as user_id, coalesce(a.balance_kobo, 0)::bigint as held, coalesce(c.open, 0)::bigint as open
     from (select scope, balance_kobo from ledger_accounts where kind = 'contradiction_hold') a
     full join (select user_id, sum(amount_kobo) as open from payout_contradictions where status in ('open', 'awaiting_second_admin') group by user_id) c on c.user_id::text = a.scope
-    where coalesce(a.balance_kobo, 0) <> coalesce(c.open, 0) limit ${LIMIT}`);
-  if (holds.length) out.push({ kind: "contradiction_hold", detail: { people: holds.map((r) => ({ userId: r.user_id, held: num(r.held), open: num(r.open) })) }, items: itemsOf(holds, "user_id", (r) => num(r.held) - num(r.open)) });
+    where coalesce(a.balance_kobo, 0) <> coalesce(c.open, 0) order by 1 limit ${LIMIT}`);
+  if (holds.length) out.push({ kind: "contradiction_hold", detail: { people: holds.map((r) => ({ userId: r.user_id, held: num(r.held), open: num(r.open) })) }, items: itemsOf(holds, "user_id", (r) => num(r.held) - num(r.open)), ...overflowed(holds) });
 
   // 5. Closed parties' pots are empty (parties with pre-double-entry entries left out; ADR 0013 lists them).
   const pots = await rows(conn, sql`select a.scope as party_id, pa.status, a.balance_kobo::bigint as balance
     from ledger_accounts a join parties pa on pa.id::text = a.scope
     where a.kind = 'party_pot' and pa.status in ('finished', 'cancelled') and a.balance_kobo <> 0
       and not exists (select 1 from ledger_entries e where e.ref_type = 'party' and e.ref_id = a.scope and e.journal_id is null)
-    limit ${LIMIT}`);
-  if (pots.length) out.push({ kind: "closed_party_pot", detail: { parties: pots.map((r) => ({ partyId: r.party_id, status: r.status, balance: num(r.balance) })) }, items: itemsOf(pots, "party_id", (r) => num(r.balance)) });
+    order by a.scope limit ${LIMIT}`);
+  if (pots.length) out.push({ kind: "closed_party_pot", detail: { parties: pots.map((r) => ({ partyId: r.party_id, status: r.status, balance: num(r.balance) })) }, items: itemsOf(pots, "party_id", (r) => num(r.balance)), ...overflowed(pots) });
 
   // 6. Platform accounts in their expected direction.
   const wrongWay = await rows(conn, sql`select a.id, a.kind, a.scope, a.balance_kobo::bigint as balance from ledger_accounts a
     where (a.kind in (${inList(PLATFORM_AT_MOST_ZERO)}) and a.balance_kobo > 0)
        or (a.kind in (${inList(PLATFORM_AT_LEAST_ZERO)}) and a.balance_kobo < 0
            and not (a.kind = 'party_pot' and exists (select 1 from ledger_entries e where e.ref_type = 'party' and e.ref_id = a.scope and e.journal_id is null)))
-    limit ${LIMIT}`);
-  if (wrongWay.length) out.push({ kind: "platform_direction", detail: { accounts: wrongWay.map((r) => ({ id: r.id, kind: r.kind, scope: r.scope, balance: num(r.balance) })) }, items: itemsOf(wrongWay, "id", (r) => num(r.balance)) });
+    order by a.id limit ${LIMIT}`);
+  if (wrongWay.length) out.push({ kind: "platform_direction", detail: { accounts: wrongWay.map((r) => ({ id: r.id, kind: r.kind, scope: r.scope, balance: num(r.balance) })) }, items: itemsOf(wrongWay, "id", (r) => num(r.balance)), ...overflowed(wrongWay) });
   return out;
 }
 
@@ -152,15 +167,21 @@ export function repeatedBreaches(first: Breach[], again: Breach[]) {
 /** One consistent read of the books: every check in a single REPEATABLE READ, read-only snapshot. */
 const snapshot = () => db.transaction((tx) => findBreaches(tx), { isolationLevel: "repeatable read", accessMode: "read only" });
 
-/** Covered by an acknowledgment: every item it's about was acknowledged for this kind, at no smaller magnitude. */
+/**
+ * Covered by an acknowledgment: one acknowledgment of this kind whose items are exactly these, every value
+ * equal with its sign (any change, either way, is a new breach). Never when the check overflowed.
+ */
 export function isAcknowledged(b: Breach, acknowledged: Record<string, number>[]) {
-  const covered = new Map<string, number>();
-  for (const items of acknowledged) for (const [k, v] of Object.entries(items)) covered.set(k, Math.max(covered.get(k) ?? 0, v));
-  return Object.entries(b.items).every(([k, v]) => covered.has(k) && v <= covered.get(k)!);
+  if (b.overflow) return false;
+  const keys = Object.keys(b.items);
+  return acknowledged.some((items) => Object.keys(items).length === keys.length && keys.every((k) => items[k] === b.items[k]));
 }
 
-async function appliedAcknowledgments(conn: Tx | typeof db) {
-  const rows = await conn.select({ kind: invariantAcknowledgments.kind, items: invariantAcknowledgments.items }).from(invariantAcknowledgments).where(eq(invariantAcknowledgments.status, "applied"));
+/** Acknowledgments confirmed within the last invariants.acknowledgmentDays: an older one has expired. */
+async function appliedAcknowledgments(conn: Tx | typeof db, now: Date) {
+  const days = (await getPaymentsConfig()).invariants.acknowledgmentDays;
+  const rows = await conn.select({ kind: invariantAcknowledgments.kind, items: invariantAcknowledgments.items }).from(invariantAcknowledgments)
+    .where(and(eq(invariantAcknowledgments.status, "applied"), gte(invariantAcknowledgments.appliedAt, new Date(now.getTime() - days * 24 * 3600_000))));
   const byKind = new Map<string, Record<string, number>[]>();
   for (const r of rows) byKind.set(r.kind, [...(byKind.get(r.kind) ?? []), r.items as Record<string, number>]);
   return byKind;
@@ -177,7 +198,7 @@ export async function runInvariants(conn?: Tx, now = new Date()): Promise<{ brea
   if (!first.length) return { breaches: [], paused: false, transient: [], acknowledged: [] };
   const repeated = repeatedBreaches(first, await read());
   const transient = repeated.transient;
-  const acks = await appliedAcknowledgments(conn ?? db);
+  const acks = await appliedAcknowledgments(conn ?? db, now);
   const acknowledged = repeated.breaches.filter((b) => isAcknowledged(b, acks.get(b.kind) ?? []));
   const breaches = repeated.breaches.filter((b) => !acknowledged.includes(b));
   const hour = now.toISOString().slice(0, 13);
@@ -204,6 +225,7 @@ export const acknowledgmentView = (a: InvariantAcknowledgment) => ({
 export async function requestAcknowledgment(adminUserId: string, kind: string, reason: string) {
   const breach = (await snapshot()).find((b) => b.kind === kind);
   if (!breach) throw paymentsError(409, "no_such_breach", { kind });
+  if (breach.overflow) throw paymentsError(409, "breach_too_large", { kind, itemCap: ITEM_CAP });
   return db.transaction(async (tx) => {
     const [a] = await tx.insert(invariantAcknowledgments).values({ kind, items: breach.items, detail: breach.detail, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
     await recordAdminAction(tx, { adminUserId, action: "payments.invariant_ack_requested", targetType: "invariant", targetId: a.id, reason, before: null, after: { kind, items: breach.items } });

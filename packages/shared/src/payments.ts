@@ -103,6 +103,10 @@ export const paymentsConfigSchema = z.object({
   }),
   /** Alerts (and, per user, approval) above these. */
   velocity: z.object({ payoutsPerHour: z.number().int().positive(), userPayoutsPerHour: z.number().int().positive() }),
+  invariants: z.object({
+    /** An acknowledged breach stops pausing payouts for this many days; after that it pauses again if it's still there. */
+    acknowledgmentDays: z.number().int().positive(),
+  }).default({ acknowledgmentDays: 7 }),
   webhooks: z.object({
     /** A stored webhook still unprocessed after this many attempts is dead-lettered, with an alert. */
     maxAttempts: z.number().int().positive(),
@@ -135,6 +139,7 @@ export const DEFAULT_PAYMENTS_CONFIG: PaymentsConfig = {
   payout: { minKobo: 100_000, maxKobo: 50_000_000, dailyAmountKobo: 50_000_000, dailyCount: 5, approvalThresholdKobo: 10_000_000, userDailyApprovalCeilingKobo: 20_000_000, feeBearer: "platform" },
   finalize: { secondAdminThresholdKobo: 5_000_000, quietAfterSendMinutes: 30 },
   velocity: { payoutsPerHour: 500, userPayoutsPerHour: 3 },
+  invariants: { acknowledgmentDays: 7 },
   webhooks: { maxAttempts: 50, rejectionsAlertPerHour: 20 },
   checks: { topupFirstCheckSeconds: 60, topupCutoffMinutes: 24 * 60, payoutFirstCheckSeconds: 30, payoutMaxBackoffSeconds: 3600, unknownAlertAfterMinutes: 24 * 60, resendAfterNotFoundSeconds: 30 * 60 },
 };

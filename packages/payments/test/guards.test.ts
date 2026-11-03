@@ -171,13 +171,16 @@ describe("invariant breaches", () => {
 });
 
 describe("acknowledged breaches", () => {
-  const b = (items: Record<string, number>) => ({ kind: "closed_party_pot", detail: {}, items });
-  it("cover the same items at no larger magnitude; a new item or a bigger one isn't covered", () => {
-    const acks = [{ p1: 500, p2: 100 }, { p3: 50 }];
-    expect(isAcknowledged(b({ p1: 500 }), acks)).toBe(true);
-    expect(isAcknowledged(b({ p1: 400, p3: 50 }), acks)).toBe(true);
-    expect(isAcknowledged(b({ p1: 501 }), acks)).toBe(false);
-    expect(isAcknowledged(b({ p1: 500, p4: 1 }), acks)).toBe(false);
-    expect(isAcknowledged(b({ p1: 1 }), [])).toBe(false);
+  const b = (items: Record<string, number>, overflow = false) => ({ kind: "closed_party_pot", detail: {}, items, ...(overflow ? { overflow } : {}) });
+  it("cover exactly the same items with the same signed values; any change either way, a new item or a missing one isn't covered", () => {
+    const acks = [{ p1: 500, p2: -100 }, { p3: 50 }];
+    expect(isAcknowledged(b({ p1: 500, p2: -100 }), acks)).toBe(true);
+    expect(isAcknowledged(b({ p3: 50 }), acks)).toBe(true);
+    expect(isAcknowledged(b({ p1: 400, p2: -100 }), acks)).toBe(false); // smaller is a change too
+    expect(isAcknowledged(b({ p1: 500, p2: 100 }), acks)).toBe(false); // the other way
+    expect(isAcknowledged(b({ p1: 500 }), acks)).toBe(false); // one fixed, the set changed
+    expect(isAcknowledged(b({ p1: 500, p2: -100, p4: 1 }), acks)).toBe(false);
+    expect(isAcknowledged(b({ p1: 500, p3: 50 }), acks)).toBe(false); // never stitched from two acknowledgments
+    expect(isAcknowledged(b({ p3: 50 }, true), acks)).toBe(false); // an overflowing check never
   });
 });

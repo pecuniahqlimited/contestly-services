@@ -170,9 +170,12 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
      fee comes from `platform_funds`. Settles and resolved contradictions book fees through one function.
    - *Acknowledging.* An admin with `payments.config` can acknowledge a breach as it stands, with a reason; a
      second admin confirms (`invariant_acknowledgments`, logged). Each breach lists the items it's about
-     (accounts, parties, providers, payouts) and how far off each is; one of the same kind whose items were
-     all acknowledged at no smaller magnitude doesn't alert or pause again; a new item or a larger one
-     does. Acknowledged breaches show on the payments page.
+     with their signed values (how far off, which way): accounts, parties, providers, contradictions, and for
+     `payout_entries` each payout together with its exact entry ids. An acknowledgment covers only a breach
+     of the same kind with exactly those items and values, for `invariants.acknowledgmentDays` (default 7):
+     any change in either direction, an item added or gone, or an expired acknowledgment pauses again. Every
+     check is ordered and reports at most 200 items; one that finds more is marked overflow and can never be
+     acknowledged (it fails closed: alert and pause). Acknowledged breaches show on the payments page.
 8. **Reconciliation and alerts.** Nightly per provider: our day's top-ups and withdrawals against the
    provider's lists; differences (missing ours, missing theirs, amount, status) go to a table and the
    console; nothing is fixed automatically (a confirmed missed top-up is replayed by an admin through the

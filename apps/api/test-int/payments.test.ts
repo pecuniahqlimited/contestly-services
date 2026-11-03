@@ -9,13 +9,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, archiveAccount, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  adminActions, adminPermissions, archiveAccount, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, confirmFinalization, confirmOwedWaiver, permissionsOf, pruneRejections, rejectPayout, requestFinalization, requestOwedWaiver, recordRejection, REJECTIONS_KEPT_DAYS, REJECTIONS_PER_HOUR_CAP, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, recordRejection, REJECTIONS_KEPT_DAYS, REJECTIONS_PER_HOUR_CAP, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -1576,7 +1576,7 @@ describe("guardrails", () => {
       expect((await runInvariants()).paused).toBe(true);
       await settings({});
       const ask = await app.inject({ method: "POST", url: "/admin/payments/invariants/acknowledge", headers: as(admin), payload: { kind: "provider_topup_in", reason: "ticket 7: record corrected upstream" } });
-      expect(ask.json().acknowledgment).toMatchObject({ status: "awaiting_second_admin", items: { mock: kobo(1) } });
+      expect(ask.json().acknowledgment).toMatchObject({ status: "awaiting_second_admin", items: { mock: -kobo(1) } }); // signed: the ledger is ₦1 past the records
       expect((await app.inject({ method: "POST", url: `/admin/payments/invariant-acknowledgments/${ask.json().acknowledgment.id}/confirm`, headers: as(admin) })).json().error).toBe("second_admin_required");
       expect((await runInvariants()).paused).toBe(true); // asked, not yet confirmed: still pauses
       await settings({});
@@ -1586,7 +1586,19 @@ describe("guardrails", () => {
       expect((await currentPause()).payoutsPaused).toBe(false);
       const page = (await app.inject({ method: "GET", url: "/admin/payments", headers: as(viewer) })).json();
       expect(page.acknowledgedBreaches.some((a: { id: string }) => a.id === ask.json().acknowledgment.id)).toBe(true);
+      // It changes the other way (a new error pulling the gap toward zero, say): a new breach, payouts pause again.
+      await db.update(topups).set({ creditedKobo: kobo(500) + 50 }).where(eq(topups.id, t.id));
+      const flipped = await runInvariants();
+      expect([flipped.paused, flipped.breaches.map((b) => b.kind)]).toEqual([true, ["provider_topup_in"]]);
+      await settings({});
+      // Back to exactly what was acknowledged: quiet again, until the acknowledgment expires.
+      await db.update(topups).set({ creditedKobo: kobo(499) }).where(eq(topups.id, t.id));
+      expect((await runInvariants()).paused).toBe(false);
+      await db.update(invariantAcknowledgments).set({ appliedAt: new Date(Date.now() - (DEFAULT_PAYMENTS_CONFIG.invariants.acknowledgmentDays * 24 + 1) * 3600_000) }).where(eq(invariantAcknowledgments.id, ask.json().acknowledgment.id));
+      expect((await runInvariants()).paused).toBe(true);
+      await settings({});
       // It grows: payouts pause again.
+      await db.update(invariantAcknowledgments).set({ appliedAt: new Date() }).where(eq(invariantAcknowledgments.id, ask.json().acknowledgment.id));
       await db.update(topups).set({ creditedKobo: kobo(490) }).where(eq(topups.id, t.id));
       const grown = await runInvariants();
       expect([grown.paused, grown.breaches.map((b) => b.kind)]).toEqual([true, ["provider_topup_in"]]);
@@ -1595,6 +1607,25 @@ describe("guardrails", () => {
       await settings({});
     }
     expect((await runInvariants()).breaches).toEqual([]);
+  });
+
+  it("a check with more items than it reports overflows and is never acknowledged, even by one covering everything it shows", async () => {
+    const victim = await makeUser(nextName("invover"));
+    await fund(victim, kobo(10));
+    let out: Awaited<ReturnType<typeof runInvariants>> | undefined;
+    let shown: Breach | undefined;
+    await db.transaction(async (tx) => {
+      const [acct] = await tx.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, victim.id), eq(ledgerAccounts.kind, "cash")));
+      await tx.insert(ledgerEntries).values(Array.from({ length: ITEM_CAP + 5 }, (_, i) => ({ journalId: null, accountId: acct.id, amountKobo: 1, type: "topup", idempotencyKey: `t:over:${tag}:${i}` })));
+      shown = (await findBreaches(tx)).find((b) => b.kind === "entry_outside_journal");
+      // An applied acknowledgment of everything the check shows:
+      await tx.insert(invariantAcknowledgments).values({ kind: "entry_outside_journal", items: shown!.items, detail: {}, reason: "test", status: "applied", requestedByUserId: admin.id, confirmedByUserId: admin2.id, appliedAt: new Date() });
+      out = await runInvariants(tx);
+      tx.rollback();
+    }).catch((e) => { if (!/rollback/i.test(String(e?.message ?? e))) throw e; });
+    expect([shown!.overflow, Object.keys(shown!.items).length]).toEqual([true, ITEM_CAP]);
+    expect(out!.breaches.map((b) => b.kind)).toContain("entry_outside_journal");
+    expect(out!.paused).toBe(true);
   });
 
   it("for real: one REPEATABLE READ snapshot, a breach that repeats pauses payouts; clearing it takes two admins", async () => {
