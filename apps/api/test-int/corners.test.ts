@@ -14,7 +14,7 @@ import {
   getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
-import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, lagosDay, weekOf } from "@contestly/shared";
+import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, lagosDay, myContactsSchema, weekOf } from "@contestly/shared";
 import { setWeekPoints } from "../src/climb/boards.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
@@ -437,6 +437,22 @@ describe("your people replaced follows", () => {
     await setSocialConfig({ ...DEFAULT_SOCIAL_CONFIG, yourPeopleDays: 60 });
     expect((await yourPeople(me.id)).has(longAgo.id)).toBe(true);
     await setSocialConfig(DEFAULT_SOCIAL_CONFIG);
+  });
+
+  it("GET /me/contacts: matched contacts either way, played or not, never a deleted or banned one; and they can be invited to a crew", async () => {
+    const banned = await person("ybanned", { extra: { bannedAt: new Date() } });
+    await contact(me, banned);
+    const res = await app.inject({ url: "/me/contacts", headers: as(me) });
+    expect(res.statusCode).toBe(200);
+    const ids = myContactsSchema.parse(res.json()).contacts.map((p) => p.id).sort();
+    expect(ids).toEqual([theirContact.id, myContact.id].sort()); // not the crew mate or who I played with
+    expect((await app.inject({ url: "/me/contacts", headers: as(stranger) })).json()).toEqual({ contacts: [] });
+    expect((await app.inject({ url: "/me/contacts" })).statusCode).toBe(401);
+    // myContact has never played or scored: still invitable.
+    const crew = (await app.inject({ method: "POST", url: "/crews", headers: as(me), payload: { name: "Contacts crew" } })).json();
+    const inv = await app.inject({ method: "POST", url: `/crews/${crew.id}/invites`, headers: as(me), payload: { userIds: [myContact.id] } });
+    expect(inv.statusCode).toBe(201);
+    expect(inv.json().invited).toBe(1);
   });
 
   it("make up the friends board (Climb plus party points)", async () => {

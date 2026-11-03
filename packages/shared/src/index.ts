@@ -418,6 +418,12 @@ export const guestResponseSchema = publicUserSchema.extend({ isGuest: z.literal(
 
 /** POST /me/contacts/match: people among the viewer's contacts who added a number. They become your people (ADR 0012). */
 export const contactsMatchResponseSchema = z.object({ matches: z.array(personSchema) });
+/**
+ * GET /me/contacts: your matched contacts who are on Contestly, either way (you have their number or they have
+ * yours), whether or not they've ever played; for crew invites and "your people". By name.
+ */
+export const myContactsSchema = z.object({ contacts: z.array(personSchema) });
+export type MyContacts = z.infer<typeof myContactsSchema>;
 
 /** GET /me/played-with: people from finished parties I played, most parties together first, then most recent. */
 export const playedWithEntrySchema = personSchema.extend({ partiesTogether: z.number().int(), lastPlayedAt: z.string().datetime() });

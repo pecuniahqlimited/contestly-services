@@ -3,8 +3,8 @@
  * that ID token; never linked to the account, never a way to sign in, never shown. Contacts are matched
  * by HMAC over the app's SHA-256 of each number, against people who added a number; nothing sent is kept.
  */
-import { and, eq, inArray, ne } from "drizzle-orm";
-import { db, liveUser, recordContactMatches, userByIdentity, users, type User } from "@contestly/db";
+import { and, asc, eq, inArray, isNull, ne, or } from "drizzle-orm";
+import { contactMatches, db, liveUser, recordContactMatches, userByIdentity, users, type User } from "@contestly/db";
 import { deleteFirebaseUser, verifyIdToken } from "@contestly/auth";
 import { CONTACT_HASHES_PER_DAY, CONTACT_SYNCS_PER_DAY, lagosDay, normalisePhone, phoneHash } from "@contestly/shared";
 import { httpError } from "./httpError.js";
@@ -44,4 +44,17 @@ export async function matchContacts(me: User, hashes: string[]) {
   // Kept (not the numbers sent, only who matched): contacts are your people and can message you directly (ADR 0012).
   await recordContactMatches(me.id, rows.map((r) => r.id));
   return { matches: rows };
+}
+
+/**
+ * Your matched contacts on Contestly, either way, played or not (GET /me/contacts). Never a deleted or banned
+ * account: this list is who you can invite.
+ */
+export async function myContacts(me: User) {
+  const theirs = db.select({ id: contactMatches.contactUserId }).from(contactMatches).where(eq(contactMatches.userId, me.id));
+  const mine = db.select({ id: contactMatches.userId }).from(contactMatches).where(eq(contactMatches.contactUserId, me.id));
+  const contacts = await db.select(personColumns).from(users)
+    .where(and(or(inArray(users.id, theirs), inArray(users.id, mine)), ne(users.id, me.id), eq(users.isGuest, false), liveUser, isNull(users.bannedAt)))
+    .orderBy(asc(users.displayName), asc(users.handle));
+  return { contacts };
 }

@@ -4,7 +4,7 @@ import { canWithdraw, db, liveUser, playedWith, users, ledger } from "@contestly
 import { addEmailResponseSchema, addPhoneSchema, contactsMatchSchema, emailStartResponseSchema, emailStartSchema, emailVerifySchema, deleteAccountResponseSchema, deleteAccountSchema, deletionStatusSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
 import { requireSession, requireUser } from "../auth.js";
 import { httpError } from "../httpError.js";
-import { addPhone, matchContacts } from "../phone.js";
+import { addPhone, matchContacts, myContacts } from "../phone.js";
 import { myParties } from "../myParties.js";
 import { personColumns } from "../people.js";
 import { publicUser } from "./users.js";
@@ -85,6 +85,8 @@ export async function meRoutes(app: FastifyInstance) {
 
   /** Which contacts are here: hashed numbers in, people who added a number out. The hashes aren't stored; who matched is (your people). */
   app.post("/me/contacts/match", async (req) => matchContacts(requireUser(req), contactsMatchSchema.parse(req.body).hashes));
+  /** The contacts matched so far (either way), played or not: who a crew invite can reach. */
+  app.get("/me/contacts", async (req) => myContacts(requireUser(req)));
 
   /** Parties I host, play or am invited to, grouped invited / live / upcoming / recent, each with its last chat line. */
   app.get("/me/parties", async (req) => myParties(requireUser(req)));
