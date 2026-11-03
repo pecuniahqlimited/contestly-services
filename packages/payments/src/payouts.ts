@@ -20,7 +20,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { db, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User, adminAlert } from "@contestly/db";
+import { db, hasPaymentIssue, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User, adminAlert } from "@contestly/db";
 import {
   ACCOUNT_UNRESOLVED, normaliseEmail, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
@@ -43,21 +43,16 @@ export const payoutView = (p: Payout, a: Pick<PayoutAccount, "bankName" | "accou
 type Linkable = Pick<User, "id" | "email" | "phoneHmac">;
 
 /**
- * Deleted accounts sharing this person's email (normalised) or phone hash that carry a payment issue: owed
- * money, money held, a contradiction open, or one resolved as a real duplicate payout (a dissolved one, where
- * the transfer came back, isn't held against anyone). Two indexed lookups, not an OR.
+ * Deleted accounts sharing this person's email (normalised) or phone hash that carry a payment issue, by the
+ * one rule retention keeps archives on (hasPaymentIssue: money owed, money held, a contradiction open; one
+ * resolved and fully repaid, or dissolved, blocks nobody). Two indexed lookups, not an OR.
  */
 export async function linkedIssueAccounts(conn: Tx | typeof db, user: Linkable): Promise<string[]> {
   if (!user.email && !user.phoneHmac) return [];
-  const deleted = and(isNotNull(users.deletedAt), ne(users.id, user.id));
-  const byEmail = user.email ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedEmailKey, normaliseEmail(user.email)), deleted)) : [];
-  const byPhone = user.phoneHmac ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedPhoneHmac, user.phoneHmac), deleted)) : [];
-  const out: string[] = [];
-  for (const id of new Set([...byEmail, ...byPhone].map((a) => a.id))) {
-    const i = await ledger.paymentIssues(conn, id);
-    if (i.owedKobo > 0 || i.heldKobo !== 0 || i.openContradiction || i.resolvedContradiction) out.push(id);
-  }
-  return out.sort();
+  const matched = and(isNotNull(users.deletedAt), ne(users.id, user.id), hasPaymentIssue(users.id));
+  const byEmail = user.email ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedEmailKey, normaliseEmail(user.email)), matched)) : [];
+  const byPhone = user.phoneHmac ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedPhoneHmac, user.phoneHmac), matched)) : [];
+  return [...new Set([...byEmail, ...byPhone].map((a) => a.id))].sort();
 }
 
 /** The deleted accounts admins have cleared this person against (applied clearances). */

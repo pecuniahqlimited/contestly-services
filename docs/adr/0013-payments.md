@@ -249,12 +249,13 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
 - **A deleted account's email and phone can be reused** (ADR 0010 frees them for a new sign-up; checked
   2026-11-03: the live email, phone and phone HMAC are cleared and kept only in the archive columns). Emails
   match by `normaliseEmail()` on both sides (`users.archived_email_key`: Gmail dots and +tags dropped,
-  googlemail folded in); phones by the E.164 hash. Each is its own indexed lookup. The archive retention job
-  keeps those fields while the deleted account still owes, has money held, or has a contradiction open. So a
-  debt could leave with a deleted account (one deleted before this rule, or a contradiction heard after the
-  delete). A new account whose verified email or phone HMAC matches a deleted account that owes, has money
-  held, or has a contradiction open or resolved as a real duplicate payout can't withdraw
-  (`linked_payment_issue`). A dissolved contradiction (the transfer came back) counts against nobody:
+  googlemail folded in); phones by the E.164 hash. Each is its own indexed lookup. **One rule** decides both
+  ends (`hasPaymentIssue()` in packages/db): a deleted account carries a payment issue while it owes, has
+  money held, or has a contradiction open. The archive retention job keeps its email and phone fields while
+  that holds, and a new account whose verified email or phone HMAC matches such an account can't withdraw
+  (`linked_payment_issue`). (A debt can still leave with a deleted account: one deleted before deletion
+  checked for debts, or a contradiction heard after the delete.) A contradiction resolved and fully repaid
+  blocks nobody: nothing is left to recover, and retention would have cleared the match anyway. A dissolved contradiction (the transfer came back) counts against nobody:
   carriers reassign numbers, and a stranger with the old number did nothing. Clearing it is loosening and
   so maker-checker like the rest: an admin with `payments.finalize` checks it and asks with a reason, a
   different `payments.finalize` admin confirms (`linked_issue_clearances`); neither may be the account

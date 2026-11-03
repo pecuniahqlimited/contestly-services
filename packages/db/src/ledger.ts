@@ -203,14 +203,12 @@ export async function outstandingDebts(tx: Tx, userId: string) {
  * deleted account blocks withdrawals on a new account with its email or phone (ADR 0013).
  */
 export async function paymentIssues(conn: Tx | typeof db, userId: string) {
-  const [owed, [open], [any], held] = await Promise.all([
+  const [owed, [open], held] = await Promise.all([
     owedKobo(conn, userId),
     conn.select({ id: payoutContradictions.id }).from(payoutContradictions).where(and(eq(payoutContradictions.userId, userId), inArray(payoutContradictions.status, ["open", "awaiting_second_admin"]))).limit(1),
-    conn.select({ id: payoutContradictions.id }).from(payoutContradictions).where(and(eq(payoutContradictions.userId, userId), eq(payoutContradictions.status, "resolved"))).limit(1),
     conn.select({ b: ledgerAccounts.balanceKobo }).from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "contradiction_hold"), eq(ledgerAccounts.scope, userId))),
   ]);
-  // resolvedContradiction: a duplicate payout confirmed paid. A dissolved one (the transfer came back) isn't held against anyone.
-  return { owedKobo: owed, openContradiction: !!open, resolvedContradiction: !!any, heldKobo: held[0]?.b ?? 0 };
+  return { owedKobo: owed, openContradiction: !!open, heldKobo: held[0]?.b ?? 0 };
 }
 
 /** Lock what's kept per person (their owed account and hold), by id, before reading either to size a journal. */

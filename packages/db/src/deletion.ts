@@ -6,7 +6,7 @@
  * their archive tables; pending party invites are dismissed; Climb prizes not yet paid are voided (each
  * logged) and a run in progress ends as abandoned. Crew hand-over and the Firebase user are the API's part.
  */
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, or, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, PAYOUT_OPEN_STATUSES, leaveWindow, normaliseEmail, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import {
@@ -130,20 +130,31 @@ async function voidUnpaidAwards(tx: Tx, userId: string) {
 /**
  * The retention job: deleted accounts older than `before` lose their archived personal fields (email,
  * phone and its hash, name, face, bio, About you answers). The row, its id, the handle it had and the
- * ledger stay. Returns how many were cleared. An account that still has a payment issue (money owed, money
- * held, a contradiction not yet worked out) keeps them: they're how a new account with the same email or
- * phone is matched to the debt (ADR 0013). It's cleared on a later run once the issue is gone.
+ * ledger stay. Returns how many were cleared. An account that still has a payment issue (hasPaymentIssue:
+ * money owed, money held, a contradiction still open) keeps them: they're how a new account with the same
+ * email or phone is matched to the debt (ADR 0013). It's cleared on a later run once the issue is gone.
  */
 export async function clearExpiredArchives(before: Date): Promise<number> {
   const rows = await db.update(users).set({
     archivedEmail: null, archivedEmailKey: null, archivedPhone: null, archivedPhoneHmac: null, archivedDisplayName: null, archivedAvatarEmoji: null, archivedBio: null,
     aboutAnswers: null, archiveClearedAt: sql`now()`,
-  }).where(and(isNotNull(users.deletedAt), lt(users.deletedAt, before), isNull(users.archiveClearedAt), sql`not ${hasPaymentIssue}`)).returning({ id: users.id });
+  }).where(and(isNotNull(users.deletedAt), lt(users.deletedAt, before), isNull(users.archiveClearedAt), sql`not ${hasPaymentIssue(users.id)}`)).returning({ id: users.id });
   return rows.length;
 }
 
-/** In SQL, for users: owes (payout_owed below zero), has money held, or a contradiction still open. */
-const hasPaymentIssue = sql`(
-  exists (select 1 from ledger_accounts a where a.scope = ${users.id}::text and ((a.kind = 'payout_owed' and a.balance_kobo < 0) or (a.kind = 'contradiction_hold' and a.balance_kobo <> 0)))
-  or exists (select 1 from payout_contradictions c where c.user_id = ${users.id} and c.status in ('open', 'awaiting_second_admin'))
+/**
+ * The one rule for a deleted account's payment issue (ADR 0013): money owed (payout_owed below zero), money
+ * held, or a contradiction still open. A contradiction resolved and fully repaid, or dissolved, is no issue.
+ * It decides both what keeps a deleted account's archive past retention and what blocks a new account
+ * matched to it from withdrawing (linkedIssueAccounts in payments), so the two never disagree.
+ */
+export const hasPaymentIssue = (userId: SQL | AnyColumn) => sql`(
+  exists (select 1 from ledger_accounts a where a.scope = ${userId}::text and ((a.kind = 'payout_owed' and a.balance_kobo < 0) or (a.kind = 'contradiction_hold' and a.balance_kobo <> 0)))
+  or exists (select 1 from payout_contradictions c where c.user_id = ${userId} and c.status in ('open', 'awaiting_second_admin'))
 )`;
+
+/** hasPaymentIssue for one account. */
+export async function accountHasPaymentIssue(conn: Conn, userId: string): Promise<boolean> {
+  const [row] = await conn.execute<{ issue: boolean }>(sql`select ${hasPaymentIssue(sql`${userId}::uuid`)} as issue`);
+  return row.issue;
+}

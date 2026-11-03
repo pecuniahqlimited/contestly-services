@@ -9,13 +9,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, notInArray, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  accountHasPaymentIssue, adminActions, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, systemActorId, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, breakGlassGrantConfig, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, breakGlassGrantConfig, linkedIssueAccounts, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { partyQueue } from "@contestly/queue";
 import { buildApp } from "../src/app.js";
@@ -1254,6 +1254,48 @@ describe("contradictions: resolved by two admins", () => {
     expect(await ledger.owedKobo(db, u.id)).toBe(0);
     await clearExpiredArchives(new Date(Date.now() + 3600_000));
     expect((await db.select().from(users).where(eq(users.id, u.id)))[0].archivedPhoneHmac).toBeNull();
+  });
+
+  it("one rule: a deleted account blocks a matched new account exactly while retention keeps its archive (owed, held, open; not resolved-and-repaid, not dissolved)", async () => {
+    const cases: [string, () => Promise<User>, boolean][] = [
+      ["owes", async () => (await owing("rule1")).u, true],
+      ["open, money held", async () => (await contradicted("rule2", kobo(10_000))).u, true],
+      ["resolved, the hold recovered in full", async () => {
+        const { u, c } = await contradicted("rule3", kobo(10_000));
+        await resolve(admin, c.id);
+        await confirmIt(admin2, c.id);
+        return u;
+      }, false],
+      ["resolved, owed, then repaid in full", async () => {
+        const { u } = await owing("rule4");
+        await db.transaction((tx) => ledger.journal(tx, { type: "topup", idempotencyKey: `t:rule:repay:${u.id}`, legs: [{ account: { system: "dev_mint" }, amountKobo: -(kobo(1500) + 11) }, { account: { userId: u.id, kind: "cash" }, amountKobo: kobo(1500) + 11 }] }));
+        expect(await ledger.owedKobo(db, u.id)).toBe(0);
+        return u;
+      }, false],
+      ["dissolved", async () => {
+        const { u, payout, c } = await contradicted("rule5", kobo(10_000));
+        await resolve(admin, c.id);
+        await mock.setTransfer(payout.reference, { ...(await mock.getTransfer(payout.reference))!, state: "failed" });
+        expect((await confirmIt(admin2, c.id)).json().contradiction.status).toBe("dissolved");
+        return u;
+      }, false],
+      ["never had one", async () => (await withdrawer("rule6")).u, false],
+    ];
+    const accounts: [string, User, string, boolean][] = [];
+    for (const [what, make, issue] of cases) {
+      const u = await make();
+      const phoneHmac = `hmac-rule-${tag}-${u.id.slice(0, 8)}`;
+      await db.update(users).set({ phoneHmac }).where(eq(users.id, u.id));
+      await db.transaction(async (tx) => archiveAccount(tx, (await tx.select().from(users).where(eq(users.id, u.id)))[0], null));
+      accounts.push([what, u, phoneHmac, issue]);
+    }
+    await clearExpiredArchives(new Date(Date.now() + 3600_000));
+    for (const [what, u, phoneHmac, issue] of accounts) {
+      const blocks = (await linkedIssueAccounts(db, { id: randomUUID(), email: null, phoneHmac })).includes(u.id);
+      const [row] = await db.select().from(users).where(eq(users.id, u.id));
+      const kept = row.archiveClearedAt === null;
+      expect([what, blocks, kept, await accountHasPaymentIssue(db, u.id)]).toEqual([what, issue, issue, issue]);
+    }
   });
 
   it("nobody resolves their own", async () => {
