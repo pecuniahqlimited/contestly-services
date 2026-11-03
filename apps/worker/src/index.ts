@@ -1,13 +1,12 @@
 import { Worker } from "bullmq";
-import { and, asc, eq } from "drizzle-orm";
-import { db, parties, partyPlayers, partyPrizes, follows, users, prizeFulfilments, systemLine, lineDeliveries, recordPartyFinish, ledger, getPartyConfig, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig, type Party, type Tx } from "@contestly/db";
+import { and, eq } from "drizzle-orm";
+import { db, parties, follows, lineDeliveries, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
-import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, isGoods, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
-import { computeSettlement, goodsAwards } from "@contestly/game";
+import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
-import { GENERATION_FAILED_MESSAGE, allQuestionsPlayed, refundParty as refundPartyWith, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
+import { allQuestionsPlayed, cancelFailedGeneration, refundInterrupted, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { selectTranscriber } from "./transcribe/index.js";
 import { sendersFromEnv } from "@contestly/email";
@@ -53,21 +52,6 @@ async function adminCancel(partyId: string) {
 
 
 /**
- * A live party's set couldn't be made playable (the start-time re-check, or a build that was still
- * running at start, exhausted its retries): fail closed, refund and cancel, unless the set became
- * ready in the meantime. Money only ever moves here, never in questions.
- */
-async function cancelGenerationFailed(partyId: string) {
-  await db.transaction(async (tx) => {
-    const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "live") return; // before start a failed set never cancels: the host retries
-    if (p.questionsStatus === "ready") return; // a retry made the set playable after all; let the round run
-    const refunded = await refundParty(tx, p, GENERATION_FAILED_MESSAGE);
-    console.log(`[party] ${p.title}: question generation failed, cancelled and ${refunded} refunded`);
-  });
-}
-
-/**
  * A live round whose room heartbeat disappeared (process crash, deploy) is cancelled and refunded.
  * Also the belt-and-braces for generation: a live party still waiting for its question set past
  * the generation timeout is cancelled the same way (a dead questions process never fails its job).
@@ -94,13 +78,7 @@ async function watchdog(partyId: string) {
     console.log(`[party] ${p.title}: room gone after the last question → ${out ?? "already ended"} from the recorded scores`);
     return;
   }
-  await db.transaction(async (tx) => {
-    const [locked] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!locked || locked.status !== "live") return;
-    const message = generationStalled ? GENERATION_FAILED_MESSAGE : "The round was interrupted. Everyone has been refunded.";
-    const refunded = await refundParty(tx, locked, message);
-    console.log(`[party] ${locked.title}: ${generationStalled ? "generation stalled" : "room disappeared mid-round"}, cancelled and ${refunded} refunded`);
-  });
+  await refundInterrupted(startDeps, partyId, generationStalled);
 }
 
 /** Starts, cancels and the sweep (partyStart.ts) reach the rest of the system through these. */
@@ -111,7 +89,6 @@ const startDeps: StartDeps = {
     : questionJobs.add("generate_set", { kind, partyId }, { jobId: `generate-set-${partyId}-start` }),
   queueWatchdog: (partyId) => partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 }),
 };
-const refundParty = (tx: Tx, p: Party, message: string) => refundPartyWith(startDeps, tx, p, message);
 const settleDeps: SettleDeps = {
   emit, publishLine,
   queueRecordPlay: (partyId) => questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId: `record-play-${partyId}` }),
@@ -133,7 +110,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(startDeps, d.partyId);
   if (d.kind === "settle") return settle(d.partyId);
   if (d.kind === "watchdog") return watchdog(d.partyId);
-  if (d.kind === "cancel_generation_failed") return cancelGenerationFailed(d.partyId);
+  if (d.kind === "cancel_generation_failed") return cancelFailedGeneration(startDeps, d.partyId);
   if (d.kind === "admin_cancel") return adminCancel(d.partyId);
 }, { connection, prefix: QUEUE_PREFIX });
 await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "sweep", data: { kind: "sweep" } });

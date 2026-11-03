@@ -21,11 +21,48 @@ export interface StartDeps {
 
 export const GENERATION_FAILED_MESSAGE = "We couldn't build the questions for this party. Everyone has been refunded.";
 
-/** Refund and cancel (packages/db, the one cancel path), then tell the room. */
-export async function refundParty(deps: Pick<StartDeps, "emit">, tx: Tx, p: Party, message: string) {
-  const { players: refunded } = await refundAndCancel(tx, p, message);
-  await deps.emit({ partyId: p.id, status: "cancelled" });
-  return refunded;
+/**
+ * Tell the room and the chat a party was cancelled: only once the cancel's transaction has committed, so
+ * a cancel that rolls back (a deadlock at commit, say) never closes a room whose party then goes on.
+ */
+export async function announceCancelled(deps: Pick<StartDeps, "emit" | "publishLine">, partyId: string, line: ChatMessage) {
+  await deps.publishLine(line);
+  await deps.emit({ partyId, status: "cancelled" });
+}
+
+/**
+ * A live party's set couldn't be made playable (the start-time re-check, or a build still running at
+ * start, exhausted its retries): fail closed, refund and cancel, unless the set became ready meanwhile.
+ * Money only ever moves here, never in questions. True when this call cancelled it.
+ */
+export async function cancelFailedGeneration(deps: Pick<StartDeps, "emit" | "publishLine">, partyId: string): Promise<boolean> {
+  const line = await db.transaction(async (tx) => {
+    const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+    if (!p || p.status !== "live") return null; // before start a failed set never cancels: the host retries
+    if (p.questionsStatus === "ready") return null; // a retry made the set playable after all; let the round run
+    const out = await refundAndCancel(tx, p, GENERATION_FAILED_MESSAGE);
+    console.log(`[party] ${p.title}: question generation failed, cancelled and ${out.players} refunded`);
+    return out.line;
+  });
+  if (!line) return false;
+  await announceCancelled(deps, partyId, line);
+  return true;
+}
+
+export const INTERRUPTED_MESSAGE = "The round was interrupted. Everyone has been refunded.";
+
+/** The watchdog's refund: the room vanished mid-round, or the set never arrived. True when this call cancelled it. */
+export async function refundInterrupted(deps: Pick<StartDeps, "emit" | "publishLine">, partyId: string, generationStalled: boolean): Promise<boolean> {
+  const line = await db.transaction(async (tx) => {
+    const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+    if (!p || p.status !== "live") return null;
+    const out = await refundAndCancel(tx, p, generationStalled ? GENERATION_FAILED_MESSAGE : INTERRUPTED_MESSAGE);
+    console.log(`[party] ${p.title}: ${generationStalled ? "generation stalled" : "room disappeared mid-round"}, cancelled and ${out.players} refunded`);
+    return out.line;
+  });
+  if (!line) return false;
+  await announceCancelled(deps, partyId, line);
+  return true;
 }
 
 /** A curate party may start only when its whole play order exists and every question in it was approved. */
@@ -55,25 +92,20 @@ export type StartOutcome = "live" | "cancelled" | "skipped";
 export async function startOrCancel(deps: StartDeps, partyId: string): Promise<StartOutcome> {
   const cfg = await getPartyConfig();
   let line: ChatMessage | undefined;
+  // Cancelling: refund, and remember the line; the room hears it only after the commit.
+  const cancel = async (tx: Tx, p: Party, message: string, why: string) => {
+    const out = await refundAndCancel(tx, p, message);
+    line = out.line;
+    console.log(`[party] ${p.title}: ${why}, cancelled and ${out.players} refunded`);
+    return "cancelled" as const;
+  };
   const started = await db.transaction(async (tx): Promise<StartFollowUp | StartOutcome> => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p || p.status !== "open") return "skipped";
     const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
-    if (Number(n) < cfg.minPlayers) {
-      const refunded = await refundParty(deps, tx, p, "Not enough players joined. Everyone has been refunded.");
-      console.log(`[party] ${p.title} cancelled, ${refunded} refunded`);
-      return "cancelled";
-    }
-    if (p.mode === "curate" && !(await curateSetApproved(tx, p))) {
-      const refunded = await refundParty(deps, tx, p, "The host didn't finish reviewing the questions. Everyone has been refunded.");
-      console.log(`[party] ${p.title}: curate set not approved at start, cancelled and ${refunded} refunded`);
-      return "cancelled";
-    }
-    if (p.mode === "sealed" && p.questionsStatus === "failed") {
-      const refunded = await refundParty(deps, tx, p, GENERATION_FAILED_MESSAGE);
-      console.log(`[party] ${p.title}: question set still failed at start, cancelled and ${refunded} refunded`);
-      return "cancelled";
-    }
+    if (Number(n) < cfg.minPlayers) return cancel(tx, p, "Not enough players joined. Everyone has been refunded.", `${n} player(s), fewer than ${cfg.minPlayers}`);
+    if (p.mode === "curate" && !(await curateSetApproved(tx, p))) return cancel(tx, p, "The host didn't finish reviewing the questions. Everyone has been refunded.", "curate set not approved at start");
+    if (p.mode === "sealed" && p.questionsStatus === "failed") return cancel(tx, p, GENERATION_FAILED_MESSAGE, "question set still failed at start");
     const followUp = await sealedFollowUp(p);
     await tx.update(parties).set({
       status: "live",
@@ -84,7 +116,11 @@ export async function startOrCancel(deps: StartDeps, partyId: string): Promise<S
     console.log(`[party] ${p.title} is live with ${n} players${followUp === "reseal" ? "; swapping questions a player has already seen" : ""}`);
     return followUp;
   });
-  if (started === "skipped" || started === "cancelled") return started;
+  if (started === "skipped") return started;
+  if (started === "cancelled") {
+    await announceCancelled(deps, partyId, line!);
+    return started;
+  }
   if (line) await deps.publishLine(line);
   // After commit, so the room never reads the set's state from before this transaction.
   await deps.emit({ partyId, status: "live" });
@@ -241,7 +277,6 @@ async function endStalled(deps: Pick<StallDeps, "emit" | "publishLine">, partyId
     return (await refundAndCancel(tx, p, STALLED_MESSAGE, { by: "system" })).line;
   });
   if (!line) return null;
-  await deps.publishLine(line);
-  await deps.emit({ partyId, status: "cancelled" });
+  await announceCancelled(deps, partyId, line);
   return "cancelled";
 }
