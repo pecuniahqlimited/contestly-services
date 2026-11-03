@@ -17,6 +17,7 @@ export * from "./corners.js";
 export * from "./partyLeave.js";
 export * from "./rateLimits.js";
 export * from "./payments.js";
+export * from "./nudges.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { CORNER_STATUSES, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
@@ -290,6 +291,8 @@ export const MSG = {
   chatAck: "chat:ack",
   /** Inbox room: a line landed in one of the user's DM or crew threads (inboxUpdateSchema). */
   inbox: "inbox",
+  /** Inbox room: an in-app banner, the same content and deep link as the push it replaces (nudgeMessageSchema). */
+  nudge: "nudge",
   presence: "presence",
   /** Lobby: the seat count changed (someone joined or left): { partyId, taken, max }. */
   seats: "seats",
@@ -327,19 +330,29 @@ export type PaymentsJob =
  * closed and write its pending weekly awards.
  */
 export type ClimbJob = { kind: "day_start" } | { kind: "week_close" };
-/** A public party opened: its host's corner followers with alerts on hear about it (row 9 delivers). */
+/** A public party opened: its host's corner followers with alerts on hear about it (the corner_party nudge). */
 export type NotifyFollowersJob = { kind: "party_created"; partyId: string; hostId: string };
 export type NotifyInviteJob = { kind: "party_invite"; partyId: string; fromUserId: string; toUserIds: string[] };
 /** The host's question set couldn't be built; they can retry or edit the brief. */
 export type NotifyQuestionsFailedJob = { kind: "questions_failed"; partyId: string; hostId: string; reason: string };
-/** People were @-mentioned in a chat line (only real members of the thread; never the author). Delivery is row 9's nudge. */
+/** People were @-mentioned in a chat line (only real members of the thread; never the author): the mention nudge, batched per thread. */
 export type NotifyMentionJob = { kind: "chat_mention"; threadId: string; messageId: string; fromUserId: string; toUserIds: string[] };
 /**
- * A party was cancelled by its host. The hook for row 9's nudge ("your party was cancelled, your entry is back"):
+ * A party was cancelled by its host: the host_cancelled nudge ("The host cancelled <party>").
  * `toUserIds` are the seated players other than the host, as they were when it was cancelled.
  */
 export type NotifyPartyCancelledJob = { kind: "party_cancelled"; partyId: string; by: "host"; hostId: string; toUserIds: string[]; refunded: boolean };
-export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob | NotifyMentionJob | NotifyPartyCancelledJob;
+/** Someone (signed up) joined a party: the host and seated players they're one of the people of hear it (row 9). */
+export type NotifyPartyJoinedJob = { kind: "party_joined"; partyId: string; userId: string };
+/** A (not muted) reply to a corner post: the host hears it, and anyone @mentioned in it. */
+export type NotifyCornerReplyJob = { kind: "corner_reply"; postId: string; replyId: string; fromUserId: string };
+/**
+ * The nudge engine's clock (row 9), repeatable: `deliver_nudges` every few seconds sends what's due;
+ * `nudge_minute` records the time-based party nudges (starts in 5 / in a minute, is live, filling up);
+ * `nudge_hourly` streaks at risk, guest follow-ups and win-backs, each at its local hour.
+ */
+export type NudgeClockJob = { kind: "deliver_nudges" } | { kind: "nudge_minute" } | { kind: "nudge_hourly" };
+export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob | NotifyMentionJob | NotifyPartyCancelledJob | NotifyPartyJoinedJob | NotifyCornerReplyJob | NudgeClockJob;
 /** Chat jobs in the worker: transcribe a voice note into the moderation queue. */
 export type ChatJob = { kind: "transcribe_voice"; voiceNoteId: string };
 /**

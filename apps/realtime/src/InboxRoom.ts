@@ -3,13 +3,15 @@
  * lines to DMs, crews, and party threads from Chats › Parties (when the party allows it from outside its
  * room), delivers inbox updates for the user's DM and crew threads, and streams a thread's lines while it's
  * open on screen (watch / unwatch). History is HTTP (GET /chats/:id/messages). Guests have no inbox: they
- * chat in their party's room only.
+ * chat in their party's room only. It also carries the user's nudges as in-app banners (MSG.nudge): while this
+ * room is up, the worker sends a banner instead of a push (its subscription is how the worker knows).
  */
 import type { Client } from "colyseus";
 import { eq } from "drizzle-orm";
 import { canReadThread, db, getChatConfig, parties, threadById, type ChatSender, type ChatThread } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
 import { MSG, SIGN_UP_REQUIRED, chatThreadChannel, chatUserChannel, inboxSendSchema, partyChatFromOutside, watchThreadSchema } from "@contestly/shared";
+import { nudgeChannel } from "@contestly/queue";
 import { SafeRoom } from "./SafeRoom.js";
 import { firstSighting, parsePublished, sendLine } from "./chat.js";
 import type { ChatMessage } from "@contestly/shared";
@@ -29,6 +31,7 @@ export class InboxRoom extends SafeRoom {
   }
 
   private onInbox = (raw: unknown) => this.run("inbox update", () => this.broadcast(MSG.inbox, parsePublished(raw)));
+  private onNudge = (raw: unknown) => this.run("nudge", () => this.broadcast(MSG.nudge, parsePublished(raw)));
 
   onCreate(options: { userId?: string }) {
     if (!options?.userId || typeof options.userId !== "string") throw new Error("userId required");
@@ -37,6 +40,7 @@ export class InboxRoom extends SafeRoom {
     this.autoDispose = true;
 
     this.presence.subscribe(chatUserChannel(this.userId), this.onInbox);
+    this.presence.subscribe(nudgeChannel(this.userId), this.onNudge);
     this.listenForAdminEvents();
 
     this.handle(MSG.chat, async (client, raw) => {
@@ -80,6 +84,7 @@ export class InboxRoom extends SafeRoom {
   /** Subscriptions outlive a room unless dropped. */
   onDispose() {
     this.presence.unsubscribe(chatUserChannel(this.userId), this.onInbox);
+    this.presence.unsubscribe(nudgeChannel(this.userId), this.onNudge);
     for (const [threadId, w] of this.watching) this.presence.unsubscribe(chatThreadChannel(threadId), w.listener);
     this.watching.clear();
   }

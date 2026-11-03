@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   cornerFollowAlertSchema, cornerFollowersQuerySchema, cornerMuteBodySchema, cornerPageQuerySchema, cornerPostBodySchema, cornerReactionBodySchema, cornerReplyBodySchema,
-  cornerReportBodySchema, cornerUpdateSchema, suggestedCornersQuerySchema,
+  cornerReportBodySchema, cornerUpdateSchema, followerInviteOptionsSchema, followerInviteResultSchema, followerInviteSchema, suggestedCornersQuerySchema,
 } from "@contestly/shared";
+import { askToFollow, followAskOptions } from "@contestly/db";
 import { requireUser, uuidParam } from "../auth.js";
 import {
   cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postsPage, progressOf, react, reply, repliesPage, reportReply, setAlerts, shownCorner,
@@ -64,4 +65,9 @@ export async function cornersRoutes(app: FastifyInstance) {
   app.patch("/me/corner", async (req) => updateMyCorner(requireUser(req), cornerUpdateSchema.parse(req.body)));
   /** The unlock celebration has been shown; the progress view's celebrationSeenAt is set from then on. */
   app.post("/me/corner/celebration-seen", async (req) => celebrationSeen(requireUser(req)));
+
+  /** Ask recent players of your parties to follow your corner (row 9): who you can ask, then ask them. */
+  app.get("/me/corner/invite-followers", async (req) => followerInviteOptionsSchema.parse(await followAskOptions(requireUser(req))));
+  app.post("/me/corner/invite-followers", async (req) =>
+    followerInviteResultSchema.parse(await askToFollow(requireUser(req), followerInviteSchema.parse(req.body).userIds)));
 }

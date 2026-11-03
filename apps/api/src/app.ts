@@ -14,6 +14,7 @@ import { configRoutes } from "./routes/config.js";
 import type { PublicEnvConfig } from "@contestly/shared";
 import { rateLimited, valkey } from "./redis.js";
 import { meRoutes } from "./routes/me.js";
+import { notificationsRoutes } from "./routes/notifications.js";
 import { usersRoutes } from "./routes/users.js";
 import { partiesRoutes } from "./routes/parties.js";
 import { walletRoutes } from "./routes/wallet.js";
@@ -113,6 +114,7 @@ export async function buildApp(opts: AppOptions = {}) {
 
   app.get("/health", async () => ({ ok: true, service: "api", time: new Date().toISOString() }));
   await app.register(meRoutes);
+  await app.register(notificationsRoutes);
   await app.register(usersRoutes);
   await app.register(partiesRoutes);
   await app.register(walletRoutes);

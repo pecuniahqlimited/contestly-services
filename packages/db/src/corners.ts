@@ -10,6 +10,7 @@ import {
   type CornerCounts, type CornerUnlockConfig,
 } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
+import { nudge } from "./nudges/record.js";
 import {
   cornerConfigs, cornerNewPlayers, cornerParties, cornerPartyPlayers, corners, parties, partyAnswers, partyPlayers, userSignals, users, type Corner, type Party,
 } from "./schema.js";
@@ -244,6 +245,8 @@ export async function checkUnlock(tx: Tx, hostId: string, now = new Date()): Pro
   const contributors = await countedNewPlayers(tx, hostId);
   await tx.update(corners).set({ status: "unlocked", level: 1, unlockedAt: now, unlockConfigVersion: cfg.version, unlockContributors: contributors.map((c) => c.id) })
     .where(eq(corners.id, corner.id));
+  // "Your corner is open": a push only (in the app, the celebration says it).
+  await nudge(tx, { userId: hostId, kind: "corner_open", data: { cornerId: corner.id }, ref: { type: "corner", id: corner.id }, dedupeKey: `corner_open:${corner.id}` }, now);
 
   const [host] = await tx.select({ handle: users.handle }).from(users).where(eq(users.id, hostId));
   const ids = contributors.map((c) => c.id);

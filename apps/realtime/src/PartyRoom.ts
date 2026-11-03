@@ -15,7 +15,7 @@ import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
 import { PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue } from "@contestly/queue";
-import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, partyHereKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member extends ChatSender {
@@ -200,6 +200,7 @@ export class PartyRoom extends SafeRoom {
     const me = client.auth as Member;
     this.removed.delete(me.id); // seated again after leaving (a banned or deleted user never gets past onAuth)
     this.members.set(client.sessionId, me);
+    this.markHere(me.id, 1);
     if (me.plays) this.match?.addPlayer(me.id);
     this.broadcastPresence();
     this.sendSnapshot(client);
@@ -208,18 +209,26 @@ export class PartyRoom extends SafeRoom {
   async onLeave(client: Client, consented: boolean) {
     await this.guarded("leave", async () => {
       this.members.delete(client.sessionId);
+      this.markHere((client.auth as Member).id, -1);
       this.broadcastPresence();
       if (consented || this.removed.has((client.auth as Member).id) || this.phase === "finished" || this.phase === "cancelled") return;
       // Past the grace the player stays in the match and scores 0 until they rejoin.
       if (!(await this.reconnected(client, this.cfg.reconnectGraceSeconds))) return;
       this.members.set(client.sessionId, client.auth as Member);
+      this.markHere((client.auth as Member).id, 1);
       this.broadcastPresence();
       this.sendSnapshot(client);
     });
   }
 
+  /** Who's connected, for the worker's "not in the room" (party nudges): connections per user in partyHereKey. */
+  private markHere(userId: string, delta: 1 | -1) {
+    this.run("presence: here", () => this.presence.hincrby(partyHereKey(this.partyId), userId, delta));
+  }
+
   onDispose() {
     this.heartbeat?.clear();
+    this.run("presence: here", () => this.presence.del(partyHereKey(this.partyId)));
     if (this.thread) this.presence.unsubscribe(chatThreadChannel(this.thread.id), this.onLine);
   }
 

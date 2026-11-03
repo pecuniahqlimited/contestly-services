@@ -155,6 +155,8 @@ export async function partiesRoutes(app: FastifyInstance) {
     });
     if (line) await publishLine(line);
     if (seats) await publishPartyEvent({ partyId: id, status: "player_joined", userId: me.id, seats } satisfies SeatsChangedEvent);
+    // "One of your people joined your party" (row 9); guests aren't anyone's people.
+    if (seats && !me.isGuest) await notify.add("party_joined", { kind: "party_joined", partyId: id, userId: me.id });
     req.log.info({ partyId: id, userId: me.id, status: result.status }, "party join");
     return reply.code(result.status).send(result.body);
   });

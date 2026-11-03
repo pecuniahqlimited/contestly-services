@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -74,6 +74,12 @@ export const users = pgTable("users", {
   /** The longest streak they've ever had (profiles, crew records). */
   bestStreakDays: integer("best_streak_days").notNull().default(0),
   lastPlayedOn: text("last_played_on"), // YYYY-MM-DD, used for streaks
+  /** IANA zone from the app (PUT /me/device, PATCH /me/notifications): quiet hours and "a day" for nudge caps. */
+  timeZone: text("time_zone").notNull().default(DEFAULT_TIME_ZONE),
+  /** Nudge categories this person turned off (NUDGE_CATEGORIES); everything else is on. */
+  nudgesOff: text("nudges_off").array().notNull().default(sql`'{}'::text[]`),
+  /** The last request the API saw from them (written at most every few minutes): win-back counts days from here. */
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   /**
    * Deleted by its owner (ADR 0010): a soft delete. The row and its id stay, with the ledger and every
@@ -1462,6 +1468,67 @@ export type PayoutAccount = typeof payoutAccounts.$inferSelect;
 export type PaymentWebhookEvent = typeof paymentWebhookEvents.$inferSelect;
 export type PaymentFinalization = typeof paymentFinalizations.$inferSelect;
 export type PayoutContradiction = typeof payoutContradictions.$inferSelect;
+/**
+ * A device the app runs on (one per account and install id): its push token, once the person allowed push,
+ * and the OS's permission state either way. A token belongs to one row only; FCM's "not registered" clears it.
+ * Sign-out and account deletion remove the rows.
+ */
+export const deviceTokens = pgTable("device_tokens", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  installId: text("install_id").notNull(),
+  platform: text("platform").$type<"ios" | "android" | "web">().notNull(),
+  token: text("token").unique(),
+  appVersion: text("app_version").notNull(),
+  permission: text("permission").$type<"granted" | "denied" | "prompt">().notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("device_tokens_user_install").on(t.userId, t.installId)]);
+
+/**
+ * Nudges (row 9): one record per recipient, written by whatever caused it (often in the same transaction) as
+ * pending with a due time; the worker decides each when it's due and records what happened: sent (as a push or
+ * a banner), skipped and why, or withdrawn (its party was cancelled, they left). The app reports opened and
+ * dismissed. `dedupeKey` makes a once-only nudge once (per recipient); a pending row with a `batchKey` absorbs
+ * later ones (their actors), so one goes out per batch.
+ */
+export const nudges = pgTable("nudges", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind").$type<NudgeKind>().notNull(),
+  category: text("category").$type<NudgeCategory>().notNull(),
+  /** What it's about: a party, a corner, a thread, a post (for per-thing caps and withdrawals). */
+  refType: text("ref_type"),
+  refId: uuid("ref_id"),
+  data: jsonb("data").$type<Record<string, unknown>>().notNull(),
+  actors: jsonb("actors").$type<NudgeActor[]>().notNull().default(sql`'[]'::jsonb`),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  deepLink: text("deep_link").notNull(),
+  reason: text("reason").notNull(),
+  dedupeKey: text("dedupe_key"),
+  batchKey: text("batch_key"),
+  status: text("status").$type<NudgeStatus>().notNull().default("pending"),
+  dueAt: timestamp("due_at", { withTimezone: true }).notNull().defaultNow(),
+  /** When the worker decided it (sent, skipped, withdrawn). */
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  channel: text("channel").$type<NudgeChannel>(),
+  skipReason: text("skip_reason").$type<NudgeSkipReason>(),
+  /** Pushes accepted by the provider (one per device). */
+  pushes: integer("pushes").notNull().default(0),
+  openedAt: timestamp("opened_at", { withTimezone: true }),
+  dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("nudges_due_idx").on(t.dueAt).where(sql`status = 'pending'`),
+  index("nudges_user_decided_idx").on(t.userId, t.decidedAt),
+  index("nudges_ref_idx").on(t.refId),
+  uniqueIndex("nudges_user_dedupe").on(t.userId, t.dedupeKey).where(sql`dedupe_key is not null`),
+  uniqueIndex("nudges_user_batch_pending").on(t.userId, t.batchKey).where(sql`batch_key is not null and status = 'pending'`),
+]);
+
+export type DeviceToken = typeof deviceTokens.$inferSelect;
+export type NudgeRow = typeof nudges.$inferSelect;
 export type PaymentConfigChange = typeof paymentConfigChanges.$inferSelect;
 export type OwedWaiver = typeof owedWaivers.$inferSelect;
 export type PaymentPermissionGrant = typeof paymentPermissionGrants.$inferSelect;

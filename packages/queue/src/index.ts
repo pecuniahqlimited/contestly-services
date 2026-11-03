@@ -1,7 +1,7 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import type { WindowCounter } from "@contestly/shared";
-import { ADMIN_EVENTS_CHANNEL as ADMIN_EVENTS, PARTY_EVENTS_CHANNEL as PARTY_EVENTS, QUEUES, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL as ADMIN_EVENTS, PARTY_EVENTS_CHANNEL as PARTY_EVENTS, QUEUES, nudgeUserChannel, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
 
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 /** BullMQ's key prefix. Every Queue and Worker passes it, so two stacks on one Valkey never share jobs. */
@@ -18,6 +18,8 @@ export const PUBSUB_PREFIX = process.env.PUBSUB_PREFIX ?? "";
 export const pubsubChannel = (name: string) => (PUBSUB_PREFIX ? `${PUBSUB_PREFIX}:${name}` : name);
 export const PARTY_EVENTS_CHANNEL = pubsubChannel(PARTY_EVENTS);
 export const ADMIN_EVENTS_CHANNEL = pubsubChannel(ADMIN_EVENTS);
+/** A user's in-app banners (row 9): the worker publishes, their inbox room subscribes. */
+export const nudgeChannel = (userId: string) => pubsubChannel(nudgeUserChannel(userId));
 
 let connection: Redis | undefined;
 const conn = () => (connection ??= makeRedis());

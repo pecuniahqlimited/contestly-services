@@ -9,7 +9,7 @@ import {
   cornerMutes, cornerNewPlayers, cornerParties, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, currentCornerConfig, db, follows, getChatConfig,
   getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, refreshDefaultLane, simVisibleTo, type Corner, type User,
 } from "@contestly/db";
-import { valkeyCounter } from "@contestly/queue";
+import { notifyQueue, valkeyCounter } from "@contestly/queue";
 import {
   CORNER_REGULARS_SHOWN, CORNER_UP_NEXT_SHOWN, CORNER_WINNERS_SHOWN, POST_REPLIES_INLINE, YOUR_PEOPLE_FACES, chatRateCheck, isBraggingRights, lagosDay, maskProfanity,
   partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerProgress, type CornerReaction, type CornerUpdate, type Person, type SuggestedCorners,
@@ -247,6 +247,9 @@ let counter: ReturnType<typeof valkeyCounter> | undefined;
  * line), the profanity mask, and the client message id (a repeat returns the first). A muted follower's reply
  * is kept and shown back to them only.
  */
+let notifications: ReturnType<typeof notifyQueue> | undefined;
+const notifyJobs = () => (notifications ??= notifyQueue());
+
 export async function reply(me: User, postId: string, text: string, clientMsgId: string) {
   const post = await livePost(postId);
   await assertMayTakePart(me, post.cornerId);
@@ -258,6 +261,8 @@ export async function reply(me: User, postId: string, text: string, clientMsgId:
   const [row] = await db.insert(cornerPostReplies).values({ postId, userId: me.id, text: maskProfanity(text), clientMsgId, muted })
     .onConflictDoNothing().returning();
   const id = row?.id ?? (await db.select().from(cornerPostReplies).where(and(eq(cornerPostReplies.userId, me.id), eq(cornerPostReplies.clientMsgId, clientMsgId))))[0].id;
+  // The host hears about it, and anyone @mentioned (row 9); a muted follower's reply reaches nobody.
+  if (row && !muted) await notifyJobs().add("corner_reply", { kind: "corner_reply", postId, replyId: row.id, fromUserId: me.id });
   return { reply: await replyView(id), duplicate: !row };
 }
 

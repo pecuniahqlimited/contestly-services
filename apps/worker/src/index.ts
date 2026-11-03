@@ -1,9 +1,11 @@
 import { Worker } from "bullmq";
-import { and, eq } from "drizzle-orm";
-import { db, parties, corners, recordPartyProgress, cornerShown, follows, lineDeliveries, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
-import { climbQueue, housekeepingQueue, makeRedis, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
+import { eq } from "drizzle-orm";
+import {
+  db, parties, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
+  emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
+import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
-import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
+import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyHereKey, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
 import { allQuestionsPlayed, announceCancelled, cancelFailedGeneration, refundInterrupted, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
@@ -11,6 +13,7 @@ import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { selectTranscriber } from "./transcribe/index.js";
 import { sendersFromEnv } from "@contestly/email";
 import { ALERT_DELIVERY_EVERY_MS, alertChannelsFromEnv, alertDeliveryConfigFromEnv, deliverAlerts } from "./alertDelivery.js";
+import { selectPushSender } from "./push/index.js";
 import "./payments.js";
 
 const connection = makeRedis();
@@ -23,26 +26,58 @@ async function publishLine(line: ChatMessage) {
   for (const d of await lineDeliveries(line)) await pub.publish(d.channel, JSON.stringify(d.payload));
 }
 
-/** Push notifications. Locally this logs; wire FCM/APNs here (device tokens table + firebase-admin messaging). */
+/**
+ * Nudges (row 9). Events become pending nudge records (packages/db/src/nudges/emitters.ts); the clock below
+ * delivers what's due: a banner through the user's inbox room when it's up (its subscription to their nudge
+ * channel is how we know), else a push.
+ */
+const push = selectPushSender();
+const nudgeDeps: DeliveryDeps = {
+  push,
+  connected: async (userId) => {
+    const [, subscribers] = (await pub.pubsub("NUMSUB", nudgeChannel(userId))) as [string, number];
+    return Number(subscribers) > 0;
+  },
+  banner: async (userId, message) => (await pub.publish(nudgeChannel(userId), JSON.stringify(message))) > 0,
+  inPartyRoom: async (partyId, userId) => Number(await pub.hget(partyHereKey(partyId), userId)) > 0,
+};
+
 const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   const d = job.data;
-  if (d.kind === "party_created") {
-    const [p] = await db.select().from(parties).where(eq(parties.id, d.partyId));
-    // The host's corner's followers with alerts on (ADR 0012); a host without a shown corner has none.
-    const targets = await db.select({ id: follows.followerId }).from(follows).innerJoin(corners, eq(corners.id, follows.cornerId))
-      .where(and(eq(corners.ownerUserId, d.hostId), cornerShown, eq(follows.notify, true)));
-    console.log(`[notify] "${p.title}" opened → ${targets.length} corner followers with alerts on`);
+  if (d.kind === "deliver_nudges") {
+    const out = await deliverDueNudges(nudgeDeps);
+    if (out.length) console.log(`[nudges] ${out.map((o) => `${o.kind}→${o.status}${o.channel ? `:${o.channel}` : ""}${o.skipReason ? `(${o.skipReason})` : ""}`).join(", ")}`);
+  } else if (d.kind === "nudge_minute") {
+    const [starting, live, filling] = [await emitPartyStarting(), await emitRecentlyLive(), await emitFillingUp()];
+    if (starting + live + filling) console.log(`[nudges] recorded: ${starting} starting, ${live} live, ${filling} filling up`);
+  } else if (d.kind === "nudge_hourly") {
+    const [streaks, guests, winBacks] = [await emitStreakRisk(), await emitGuestFollowUps(), await emitWinBack()];
+    if (streaks + guests + winBacks) console.log(`[nudges] recorded: ${streaks} streak, ${guests} guest follow-up, ${winBacks} win-back`);
+  } else if (d.kind === "party_created") {
+    await emitCornerParty(d.partyId, d.hostId);
+  } else if (d.kind === "party_joined") {
+    await emitPeopleJoined(d.partyId, d.userId);
+  } else if (d.kind === "chat_mention") {
+    await emitMentions(d.threadId, d.fromUserId, d.toUserIds);
+  } else if (d.kind === "corner_reply") {
+    const [r] = await db.select({ text: cornerPostReplies.text }).from(cornerPostReplies).where(eq(cornerPostReplies.id, d.replyId));
+    if (r) await emitCornerReply(d.postId, d.fromUserId, r.text);
+  } else if (d.kind === "party_cancelled") {
+    await emitHostCancelled(d.partyId, d.toUserIds, d.refunded);
   } else if (d.kind === "party_invite") {
-    console.log(`[notify] invites for party ${d.partyId} → ${d.toUserIds.length} users`);
+    console.log(`[notify] invites for party ${d.partyId} → ${d.toUserIds.length} users (no nudge for invites yet)`);
   } else if (d.kind === "questions_failed") {
     console.log(`[notify] host ${d.hostId}: questions for party ${d.partyId} couldn't be made — "${d.reason}" (retry or edit the brief)`);
-  } else if (d.kind === "party_cancelled") {
-    // Row 9's nudge: "<host> cancelled <party>; your entry is back" to each seat. Logged until pushes exist.
-    console.log(`[notify] party ${d.partyId} cancelled by its host → ${d.toUserIds.length} player(s)${d.refunded ? ", entries refunded" : ""}`);
-  } else if (d.kind === "chat_mention") {
-    console.log(`[notify] @mention in thread ${d.threadId} → ${d.toUserIds.length} user(s) (batched per thread from row 9)`);
   }
 }, { connection, prefix: QUEUE_PREFIX });
+const notifyJobs = notifyQueue();
+/** How often due nudges go out; batched kinds wait their own gaps on top. */
+const DELIVER_NUDGES_EVERY_MS = 5_000;
+const NUDGE_MINUTE_EVERY_MS = 60_000;
+await notifyJobs.upsertJobScheduler("deliver_nudges", { every: DELIVER_NUDGES_EVERY_MS }, { name: "deliver_nudges", data: { kind: "deliver_nudges" }, opts: { attempts: 1 } });
+await notifyJobs.upsertJobScheduler("nudge_minute", { every: NUDGE_MINUTE_EVERY_MS }, { name: "nudge_minute", data: { kind: "nudge_minute" } });
+/** On the hour: each person's local hour is what the streak, guest and win-back nudges look at. */
+await notifyJobs.upsertJobScheduler("nudge_hourly", { pattern: "0 * * * *", tz: "UTC" }, { name: "nudge_hourly", data: { kind: "nudge_hourly" } });
 
 /** An admin cancelled a scheduled or live party. Idempotent: a party already over is left alone. */
 async function adminCancel(partyId: string) {
@@ -123,7 +158,12 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
     if (failed.length) throw new AggregateError(failed, "party sweep failed");
     return;
   }
-  if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(startDeps, d.partyId);
+  if (d.kind === "start" || d.kind === "cancel_if_empty") {
+    const out = await startOrCancel(startDeps, d.partyId);
+    // Seated players who aren't in the room hear it's live (the minute sweep is the backstop).
+    if (out === "live" || out === "replayed") await emitPartyLive(d.partyId);
+    return out;
+  }
   if (d.kind === "settle") return settle(d.partyId);
   if (d.kind === "record_progress") return recordPartyProgress(d.partyId);
   if (d.kind === "watchdog") return watchdog(d.partyId, job.id);

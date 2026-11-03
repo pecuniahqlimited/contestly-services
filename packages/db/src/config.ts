@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
-  DEFAULT_ABOUT, DEFAULT_ACCOUNTS_CONFIG, DEFAULT_CHAT_CONFIG, DEFAULT_PAYMENTS_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_SOCIAL_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG,
+  DEFAULT_ABOUT, DEFAULT_ACCOUNTS_CONFIG, DEFAULT_CHAT_CONFIG, DEFAULT_PAYMENTS_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_SOCIAL_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG, DEFAULT_NUDGE_CONFIG, nudgeConfigSchema,
   aboutConfigSchemaFor, accountsConfigSchema, chatConfigSchema, paymentsConfigSchema, climbSettingsSchema, socialConfigSchema, partyConfigSchema, questionsConfigSchema,
   type AboutAudience, type AboutConfig,
 } from "@contestly/shared";
@@ -64,6 +64,11 @@ export const setPaymentsConfig = payments.set;
 const social = configEntry("social", socialConfigSchema, DEFAULT_SOCIAL_CONFIG);
 export const getSocialConfig = social.get;
 export const setSocialConfig = social.set;
+
+/** Nudges (row 9): the daily push cap, quiet hours, batching gaps and each kind's knobs. */
+const nudgeCfg = configEntry("nudges", nudgeConfigSchema, DEFAULT_NUDGE_CONFIG);
+export const getNudgeConfig = nudgeCfg.get;
+export const setNudgeConfig = nudgeCfg.set;
 
 export interface AboutConfigRow { audience: AboutAudience; version: number; config: AboutConfig; createdAt: Date }
 const asRow = (r: typeof aboutConfigs.$inferSelect): AboutConfigRow => ({ audience: r.audience as AboutAudience, version: r.version, config: r.config, createdAt: r.createdAt });

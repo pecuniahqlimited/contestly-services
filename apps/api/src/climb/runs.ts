@@ -7,7 +7,7 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { FastifyBaseLogger } from "fastify";
 import {
-  activeWordsFor, climbRounds, climbRuns, currentLadder, db, getClimbSettings, ladderAt, recordRunEnded, recordRunPoints, recordRunStarted, users,
+  activeWordsFor, climbRounds, climbRuns, currentLadder, db, getClimbSettings, ladderAt, recordRunEnded, recordRunPoints, recordRunStarted, users, emitClimbRivals,
   type ClimbRoundRow, type ClimbRunRow, type Tx, type User,
 } from "@contestly/db";
 import {
@@ -110,6 +110,7 @@ async function advance(c: Ctx, run: ClimbRunRow, round: ClimbRoundRow, decidedAt
   if (step.ended) {
     // A new personal best goes in the feed; beating every crewmate's climb is a crew record.
     c.lines.push(...await recordRunEnded(c.tx, next, c.ladder.stages.length));
+    await emitClimbRivals(c.tx, next);
     return { run: next, step, nextOpensAtMs: null };
   }
   const at = nextOpensAt(decidedAtMs, step.outcome, c.settings);

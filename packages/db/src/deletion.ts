@@ -10,9 +10,10 @@ import { and, eq, inArray, isNotNull, isNull, lt, or, sql, type AnyColumn, type 
 import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, PAYOUT_OPEN_STATUSES, leaveWindow, normaliseEmail, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import {
-  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, corners, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
+  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, corners, crewInvites, follows, ledgerAccounts, nudges, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
 } from "./schema.js";
 import * as ledger from "./ledger.js";
+import { removeDevicesOf } from "./nudges/devices.js";
 import { isConfigHolderAtFloor, recordAdminAction, systemActorId } from "./admin.js";
 
 type Conn = Tx | typeof db;
@@ -98,7 +99,9 @@ export async function archiveAccount(tx: Tx, user: User, reason: string | null, 
   await tx.update(partyInvites).set({ status: "dismissed", respondedAt: now }).where(and(eq(partyInvites.inviteeId, user.id), eq(partyInvites.status, "pending")));
   await voidUnpaidAwards(tx, user.id);
   await tx.update(climbRuns).set({ status: "abandoned", endedAt: now }).where(and(eq(climbRuns.userId, user.id), eq(climbRuns.status, "active")));
-  // Device tokens arrive with row 9 (nudges); they're deleted here then.
+  // No more pushes to the account's devices; nudges still pending are withdrawn.
+  await removeDevicesOf(tx, user.id);
+  await tx.update(nudges).set({ status: "withdrawn", decidedAt: now }).where(and(eq(nudges.userId, user.id), eq(nudges.status, "pending")));
 
   return { firebaseUids: disabled.filter((i) => i.provider === "firebase").map((i) => i.externalId), forfeitedBonusKobo };
 }
