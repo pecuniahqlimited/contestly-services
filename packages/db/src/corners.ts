@@ -155,7 +155,7 @@ export async function decideNewPlayer(q: Conn, userId: string, now = new Date())
 export interface CornerSeat { userId: string; isGuest: boolean; bannedAt: Date | null }
 
 /**
- * A party finished (inside settlement's transaction, which runs once per party): record it for its host's
+ * A party finished (in record_progress's transaction after settlement, partyProgress.ts): record it for its host's
  * progress with its real players (signed in, answered at least once, not the host, not banned), attribute and
  * decide any new players among them, and unlock whichever corners that completes. Idempotent on the party.
  */

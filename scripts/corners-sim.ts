@@ -22,7 +22,7 @@ import { adminAlerts, db, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { INSTALL_ID_HEADER, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { API, RT, correctAnswer, failureCount, inMinutes, ok, sleep, waitFor } from "./sim-lib.js";
+import { API, RT, correctAnswer, failureCount, inMinutes, ok, sleep, waitFor, waitForProgress } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const h = (name: string) => `cs${tag}_${name}`;
@@ -73,7 +73,7 @@ async function play(partyId: string, players: string[]) {
   await (await partyQueue().getJob(`start-${partyId}`))?.promote();
   await Promise.race([done, sleep(150_000)]);
   for (const r of rooms) await r.leave().catch(() => {});
-  return waitFor(async () => (await api(players[0], "GET", `/parties/${partyId}`)).status === "finished" || null, { tries: 60, everyMs: 500 });
+  return waitForProgress(partyId);
 }
 
 const [HOST, OTHER_HOST, P1, P2, UNVERIFIED, SAME_DEVICE, BROUGHT, Q2, FAN, MUTED] =

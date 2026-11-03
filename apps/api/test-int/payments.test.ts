@@ -2187,7 +2187,7 @@ describe("guardrails", () => {
     // emit reads the party from another connection: it sees only what has committed.
     const deps = {
       emit: async (ev: { partyId: string; status: string }) => { heard.push({ status: ev.status, committed: (await db.select().from(parties).where(eq(parties.id, ev.partyId)))[0].status }); },
-      publishLine: async () => {}, queueRecordPlay: async () => {},
+      publishLine: async () => {}, queueRecordPlay: async () => {}, queueRecordProgress: async () => {},
     };
     expect(await settle(deps, party.id)).toBe(false);
     expect(heard).toEqual([{ status: "cancelled", committed: "cancelled" }]);

@@ -274,6 +274,13 @@
       "when": 1793714232923,
       "tag": "0038_corners",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1793721260689,
+      "tag": "0039_party_progress_job",
+      "breakpoints": true
     }
   ]
 }

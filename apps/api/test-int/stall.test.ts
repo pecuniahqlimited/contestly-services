@@ -23,7 +23,7 @@ const QUESTION_SECONDS = 10;
 const events: { partyId: string; status: string }[] = [];
 const lines: ChatMessage[] = [];
 const base = { emit: async (ev: { partyId: string; status: string }) => events.push(ev), publishLine: async (l: ChatMessage) => lines.push(l) };
-const settleDeps = { ...base, queueRecordPlay: async () => undefined };
+const settleDeps = { ...base, queueRecordPlay: async () => undefined, queueRecordProgress: async () => undefined };
 /** The worker's real settle path; the room's settle job runs exactly this. */
 const deps = { ...base, settle: (partyId: string) => settle(settleDeps, partyId) };
 const at = (base: Date, seconds: number) => new Date(base.getTime() + seconds * 1000);

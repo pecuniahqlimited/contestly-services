@@ -307,6 +307,8 @@ export const parties = pgTable("parties", {
   startFollowUp: text("start_follow_up", { enum: ["reseal", "generate"] }),
   /** Set when record_play has folded this party's answer stats into the bank (job idempotency). */
   playStatsRecordedAt: timestamp("play_stats_recorded_at", { withTimezone: true }),
+  /** Set when record_progress has written who played whom and the host's corner progress (job idempotency). */
+  progressRecordedAt: timestamp("progress_recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("parties_status_starts_idx").on(t.status, t.startsAt)]);
 

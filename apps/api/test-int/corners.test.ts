@@ -8,10 +8,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, inArray, sql as dsql } from "drizzle-orm";
+import { and, eq, sql as dsql } from "drizzle-orm";
 import {
   adminActions, adminAlerts, becomeMember, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, corners, crewMembers, crews, db, dmPermissionBetween, feedEvents,
-  getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPlayedWith, recordSignals, saveCornerConfig,
+  getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
 import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, lagosDay, weekOf } from "@contestly/shared";
@@ -35,7 +35,7 @@ async function person(name: string, o: { install?: string | null; ip?: string; e
 
 /**
  * A party `host` hosted, finished now: these seats (in rank order), one question, an answer from everyone in
- * `answered` (default: all seated), then what settlement records for corners and played-with.
+ * `answered` (default: all seated), then the worker's record_progress job (corners and played-with).
  */
 async function finish(host: User, seated: User[], o: { answered?: User[]; at?: Date } = {}): Promise<Party> {
   const at = o.at ?? new Date();
@@ -46,11 +46,7 @@ async function finish(host: User, seated: User[], o: { answered?: User[]; at?: D
   const [q] = await db.insert(partyQuestions).values({ partyId: p.id, idx: 0, format: "pick_one", payload: {}, seconds: 10 }).returning();
   const answered = o.answered ?? seated;
   if (answered.length) await db.insert(partyAnswers).values(answered.map((u) => ({ partyId: p.id, questionId: q.id, userId: u.id, answer: { choice: 0 }, answeredMs: 900 })));
-  const seats = seated.length ? await db.select({ userId: users.id, isGuest: users.isGuest, bannedAt: users.bannedAt }).from(users).where(inArray(users.id, seated.map((u) => u.id))) : [];
-  await db.transaction(async (tx) => {
-    await recordPlayedWith(tx, p.id, at);
-    await recordCornerProgress(tx, p, seats, at);
-  });
+  await recordPartyProgress(p.id);
   return p;
 }
 
@@ -102,7 +98,7 @@ describe("counting a party (R)", () => {
     expect((await db.select().from(cornerPartyPlayers).where(eq(cornerPartyPlayers.partyId, p.id))).map((r) => r.userId).sort()).toEqual(players.map((u) => u.id).sort());
   });
 
-  it("records a party once, however often settlement's step runs", async () => {
+  it("records a party once, however often its corner step runs", async () => {
     const host = await person("r3host");
     const p = await finish(host, [await person("r3a"), await person("r3b"), await person("r3c")]);
     const seats = await db.select({ userId: partyPlayers.userId, isGuest: users.isGuest, bannedAt: users.bannedAt }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, p.id));

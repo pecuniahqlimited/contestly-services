@@ -18,7 +18,7 @@ import { and, eq } from "drizzle-orm";
 import { climbWeekResults, crews, db, partyDays } from "@contestly/db";
 import { climbQueue, partyQueue } from "@contestly/queue";
 import { INBOX_ROOM, MSG, PARTY_ROOM, addDays, lagosDay, weekOf } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, nextClimbRound, ok, rightClimbAnswer, sleep, waitFor, wrongClimbAnswer } from "./sim-lib.js";
+import { RT, api, call, failureCount, inMinutes, nextClimbRound, ok, rightClimbAnswer, sleep, waitFor, waitForProgress, wrongClimbAnswer } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const [A, B, C] = ["ada", "bayo", "chi"].map((n) => `ss${tag}_${n}`);
@@ -43,7 +43,7 @@ async function playParty(partyId: string, players: string[]) {
   await (await partyQueue().getJob(`start-${partyId}`))?.promote();
   await Promise.race([done, sleep(120_000)]);
   for (const r of rooms) await r.leave().catch(() => {});
-  return waitFor(async () => (await api(players[0], "GET", `/parties/${partyId}`)).status === "finished" || null, { tries: 60, everyMs: 500 });
+  return waitForProgress(partyId);
 }
 
 const freeParty = (title: string, extra: Record<string, unknown> = {}) => ({

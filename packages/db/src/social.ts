@@ -1,6 +1,6 @@
 /**
  * The social record (row 6b, ADR 0008; ADR 0012 for who your people are): feed events written where things
- * happen, party points and played-with written at settlement, your people, and the scores every friends and
+ * happen, party points written at settlement, played-with by the worker's record_progress after it, your people, and the scores every friends and
  * crew board is ranked from. API, worker and the Climb share these so a rule lives once.
  */
 import { and, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
@@ -49,8 +49,8 @@ export async function recordPartyFinish(tx: Tx, party: Party, seats: FinishedSea
 // ---- played with, contacts and your people (ADR 0012) ----------------------------------
 
 /**
- * Every pair of signed-up players in a finished party played together: one statement, in settlement's
- * transaction (which runs once per party), so a pair's count goes up once per party.
+ * Every pair of signed-up players in a finished party played together: one statement, in record_progress's
+ * transaction (which runs once per party, partyProgress.ts), so a pair's count goes up once per party.
  */
 export async function recordPlayedWith(tx: Tx, partyId: string, endedAt = new Date()) {
   await tx.execute(sql`

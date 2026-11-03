@@ -349,6 +349,8 @@ export type ChatJob = { kind: "transcribe_voice"; voiceNoteId: string };
  */
 export type PartyJob =
   | { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string }
+  /** After a settle commits: who played whom and the host's corner progress (ADR 0012). Never part of settlement. */
+  | { kind: "record_progress"; partyId: string }
   /** An admin cancelled the party: refund and cancel through the same path as every other cancel. */
   | { kind: "admin_cancel"; partyId: string; reason: string }
   /** Every minute: starts or cancels any open party past its startsAt whose start job was lost. */

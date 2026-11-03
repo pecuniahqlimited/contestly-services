@@ -18,7 +18,7 @@ import { eq } from "drizzle-orm";
 import { db, moderationItems } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { DEFAULT_CHAT_CONFIG, INBOX_ROOM, MSG, PARTY_ROOM } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, makeContacts, ok, sleep, waitFor } from "./sim-lib.js";
+import { RT, api, call, failureCount, inMinutes, makeContacts, ok, sleep, waitFor, waitForProgress } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const [A, B, C] = ["ada", "bayo", "chi"].map((n) => `cs${tag}_${n}`);
@@ -173,7 +173,7 @@ await sleep(500);
 ok(seen[A].some((m) => m.sticker === "🔥") && seen[B].some((m) => m.text === "Lobby's open, who's ready?"), "everyone in the room gets each line");
 for (const r of Object.values(rooms)) await r.leave().catch(() => {});
 
-await waitFor(async () => (await api(A, "GET", `/parties/${party.id}`)).status === "finished" || null, { tries: 60, everyMs: 500 });
+await waitForProgress(party.id);
 const after = await inboxes[A].send({ threadId: detail.threadId, text: "gg all, rematch soon" });
 ok(acked(after), "after the party, its chat is open from Chats › Parties");
 const mine = await api(B, "GET", "/me/parties");

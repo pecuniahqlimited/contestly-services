@@ -4,7 +4,7 @@
  * Nothing like this exists in the product.
  */
 import { and, eq, sql } from "drizzle-orm";
-import { climbRounds, contactMatches, db, ledgerAccounts, ledgerEntries, users } from "@contestly/db";
+import { climbRounds, contactMatches, db, ledgerAccounts, ledgerEntries, parties, users } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
 import { SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
 
@@ -30,6 +30,17 @@ export async function waitFor<T>(probe: () => Promise<T | null | undefined | fal
     await sleep(everyMs);
   }
   return null;
+}
+
+/**
+ * A party settled and the worker's record_progress job after it has run (who played whom, corner progress):
+ * what anything reading "your people" or a host's progress right after a party needs to wait for.
+ */
+export function waitForProgress(partyId: string) {
+  return waitFor(async () => {
+    const [p] = await db.select({ status: parties.status, at: parties.progressRecordedAt }).from(parties).where(eq(parties.id, partyId));
+    return p?.status === "finished" && !!p.at;
+  }, { tries: 60, everyMs: 500 });
 }
 
 /** Calls the API as a dev user. Returns { status, body } so callers can assert on refusals too. */

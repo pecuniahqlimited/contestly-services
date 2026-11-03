@@ -4,14 +4,15 @@
  * deadlock injected at commit with a deferred trigger, after the point where the old code emitted) tells
  * nobody anything, and the retry announces it once. And a job that fails after its commit (the event or the
  * line couldn't be sent) finishes on its retry: the event again, the same chat line again (written once per
- * party and key), and its follow-up jobs under fixed ids.
+ * party and key), and its follow-up jobs under fixed ids. And record_progress, queued after a settle, can fail
+ * without touching the settle, and catches up on its retry.
  */
 import { afterAll, describe, expect, it } from "vitest";
 import { and, eq, isNull, sql as sqlRaw } from "drizzle-orm";
-import { adminCancelParty, chatMessages, chatThreads, db, ledger, parties, partyPlayers, sql, users, type Party, type User } from "@contestly/db";
+import { adminCancelParty, chatMessages, chatThreads, cornerParties, db, ledger, parties, partyPlayers, playedWith, recordPartyProgress, sql, users, type Party, type User } from "@contestly/db";
 import { kobo, type ChatMessage } from "@contestly/shared";
 import { cancelFailedGeneration, refundInterrupted, startJobIds, startOrCancel, type StartDeps } from "../../worker/src/partyStart.js";
-import { recordPlayJobId, settle, type SettleDeps } from "../../worker/src/partySettle.js";
+import { recordPlayJobId, recordProgressJobId, settle, type SettleDeps } from "../../worker/src/partySettle.js";
 import { makeUser, tag } from "./harness.js";
 
 const ENTRY = kobo(100);
@@ -38,6 +39,7 @@ function recorder(failOnce?: "emit" | "publishLine") {
     queueQuestions: async (_kind, _id, jobId) => jobs.push(jobId),
     queueWatchdog: async (_id, jobId) => jobs.push(jobId),
     queueRecordPlay: async (_id, jobId) => jobs.push(jobId),
+    queueRecordProgress: async (_id, jobId) => jobs.push(jobId),
   };
   return { deps, events, lines, jobs };
 }
@@ -140,7 +142,7 @@ describe("a job that fails after its commit finishes on its retry", () => {
     expect(lines.map((l) => l.id)).toEqual((await systemLines(p.id)).map((l) => l.id));
   });
 
-  it("settle: the retry emits finished, republishes the wrap line and queues record_play under its id; no money moves twice", async () => {
+  it("settle: the retry emits finished, republishes the wrap line and queues record_play and record_progress under their ids; no money moves twice", async () => {
     const [a, b] = [await makeUser(`fxset${++n}`), await makeUser(`fxset${++n}`)];
     const p = await party("live", [a, b]);
     await db.update(partyPlayers).set({ rank: 1 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, a.id)));
@@ -153,7 +155,7 @@ describe("a job that fails after its commit finishes on its retry", () => {
     expect(await settle(deps, p.id)).toBe(false); // settled by the first run
     expect(events).toEqual([{ partyId: p.id, status: "finished" }]);
     expect(lines).toHaveLength(1);
-    expect(jobs).toEqual([recordPlayJobId(p.id)]);
+    expect(jobs).toEqual([recordPlayJobId(p.id), recordProgressJobId(p.id)]);
     expect(await ledger.balances(a.id)).toEqual(paid);
     expect(await systemLines(p.id)).toHaveLength(1);
   });
@@ -194,5 +196,54 @@ describe("a job that fails after its commit finishes on its retry", () => {
     const again = await db.transaction((tx) => adminCancelParty(tx, p.id));
     expect([first.cancelled, again.cancelled, again.refunded, again.line?.id]).toEqual([true, false, 0, first.line?.id]);
     expect(await ledger.balances(u.id)).toEqual({ cashKobo: ENTRY, bonusKobo: 0 });
+  });
+});
+
+/** TEST-ONLY: recording this party's corner progress fails (a trigger on its corner_parties insert). Returns the undo. */
+async function progressThrows(partyId: string) {
+  const name = `t_fx_progress_${partyId.replace(/-/g, "")}`;
+  await db.execute(sqlRaw.raw(`create function ${name}() returns trigger language plpgsql as $$ begin raise exception 'injected: corner progress failed'; end $$`));
+  await db.execute(sqlRaw.raw(`create trigger ${name} before insert on corner_parties for each row when (new.party_id = '${partyId}') execute function ${name}()`));
+  return async () => {
+    await db.execute(sqlRaw.raw(`drop trigger ${name} on corner_parties`));
+    await db.execute(sqlRaw.raw(`drop function ${name}()`));
+  };
+}
+
+describe("record_progress runs after settlement, never inside it", () => {
+  it("progress throws: the party still settles and pays; the job's retry catches up, once", async () => {
+    const [a, b] = [await makeUser(`fxprog${++n}`), await makeUser(`fxprog${++n}`)];
+    const p = await party("live", [a, b]);
+    await db.update(partyPlayers).set({ rank: 1 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, a.id)));
+    await db.update(partyPlayers).set({ rank: 2 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, b.id)));
+    const [x, y] = a.id < b.id ? [a.id, b.id] : [b.id, a.id];
+    const pairRow = async () => (await db.select().from(playedWith).where(and(eq(playedWith.userA, x), eq(playedWith.userB, y))))[0];
+    const progressAt = async () => (await db.select({ at: parties.progressRecordedAt }).from(parties).where(eq(parties.id, p.id)))[0].at;
+    const { deps, jobs } = recorder();
+    const undo = await progressThrows(p.id);
+    try {
+      expect(await settle(deps, p.id)).toBe(true);
+      expect(await statusOf(p.id)).toBe("finished");
+      expect((await ledger.balances(a.id)).cashKobo).toBeGreaterThan(0); // the winner was paid
+      expect(jobs).toEqual([recordPlayJobId(p.id), recordProgressJobId(p.id)]);
+      await expect(recordPartyProgress(p.id)).rejects.toThrow(/injected/); // the job fails; BullMQ retries it
+      expect([await progressAt(), await pairRow()]).toEqual([null, undefined]); // nothing half-written
+    } finally {
+      await undo();
+    }
+    const paid = await ledger.balances(a.id);
+    expect(await recordPartyProgress(p.id)).toBe(true); // the retry
+    expect(await progressAt()).not.toBeNull();
+    expect((await pairRow())?.parties).toBe(1);
+    expect(await db.select().from(cornerParties).where(eq(cornerParties.partyId, p.id))).toHaveLength(1);
+    expect(await recordPartyProgress(p.id)).toBe(false); // a repeat records nothing twice
+    expect((await pairRow())?.parties).toBe(1);
+    expect(await ledger.balances(a.id)).toEqual(paid);
+  });
+
+  it("does nothing for a party that hasn't finished", async () => {
+    const p = await party("live", [await makeUser(`fxprog${++n}`)]);
+    expect(await recordPartyProgress(p.id)).toBe(false);
+    expect(await db.select().from(cornerParties).where(eq(cornerParties.partyId, p.id))).toEqual([]);
   });
 });

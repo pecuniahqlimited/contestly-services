@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { and, eq } from "drizzle-orm";
-import { db, parties, corners, cornerShown, follows, lineDeliveries, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
+import { db, parties, corners, recordPartyProgress, cornerShown, follows, lineDeliveries, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
@@ -107,6 +107,7 @@ const startDeps: StartDeps = {
 const settleDeps: SettleDeps = {
   emit, publishLine,
   queueRecordPlay: (partyId, jobId) => questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId }),
+  queueRecordProgress: (partyId, jobId) => partyJobs.add("record_progress", { kind: "record_progress", partyId }, { jobId }),
 };
 const settle = (partyId: string) => settleWith(settleDeps, partyId);
 
@@ -124,6 +125,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   }
   if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(startDeps, d.partyId);
   if (d.kind === "settle") return settle(d.partyId);
+  if (d.kind === "record_progress") return recordPartyProgress(d.partyId);
   if (d.kind === "watchdog") return watchdog(d.partyId, job.id);
   if (d.kind === "cancel_generation_failed") return cancelFailedGeneration(startDeps, d.partyId);
   if (d.kind === "admin_cancel") return adminCancel(d.partyId);
