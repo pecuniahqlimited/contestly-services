@@ -218,6 +218,20 @@ export const cornerFollowersPageSchema = z.object({
 });
 export const cornerFollowersQuerySchema = z.object({ before: z.string().max(100).optional(), limit: z.coerce.number().int().min(1).max(100).default(50) });
 
+/**
+ * GET /corners/suggested (interim until recommendations, row 7): unlocked corners in the viewer's lanes, most
+ * followed first, then the most-followed others, never one they follow or their own; if that leaves none
+ * (they follow every corner), the most followed anyway. Empty only when no corner is unlocked at all.
+ * `reason` is why it's there, for the UI to say ("Football, your lane" / "popular").
+ */
+export const CORNER_SUGGESTION_REASONS = ["your_lane", "popular"] as const;
+export const SUGGESTED_CORNERS_DEFAULT = 10;
+export const suggestedCornersQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(30).default(SUGGESTED_CORNERS_DEFAULT) });
+export const suggestedCornersSchema = z.object({
+  corners: z.array(z.object({ corner: cornerRefSchema, reason: z.enum(CORNER_SUGGESTION_REASONS), following: z.boolean() })),
+});
+export type SuggestedCorners = z.infer<typeof suggestedCornersSchema>;
+
 /** GET /me/follows: the corners you follow, newest first. */
 export const myFollowsSchema = z.array(z.object({ corner: cornerRefSchema, notify: z.boolean(), followedAt: z.string().datetime() }));
 

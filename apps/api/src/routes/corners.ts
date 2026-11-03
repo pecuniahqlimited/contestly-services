@@ -2,18 +2,21 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   cornerFollowAlertSchema, cornerFollowersQuerySchema, cornerMuteBodySchema, cornerPageQuerySchema, cornerPostBodySchema, cornerReactionBodySchema, cornerReplyBodySchema,
-  cornerReportBodySchema, cornerUpdateSchema,
+  cornerReportBodySchema, cornerUpdateSchema, suggestedCornersQuerySchema,
 } from "@contestly/shared";
 import { requireUser, uuidParam } from "../auth.js";
 import {
   cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postsPage, progressOf, react, reply, repliesPage, reportReply, setAlerts, shownCorner,
-  unfollow, unmute, unreact, updateMyCorner, celebrationSeen,
+  unfollow, unmute, unreact, updateMyCorner, celebrationSeen, suggestedCorners,
 } from "../corners.js";
 
 const userIdParam = (params: unknown) => z.object({ userId: z.string().uuid() }).parse(params).userId;
 
 /** Corners (ADR 0012): a host's page, follows, the public follower list, posts, reactions, replies and mutes. */
 export async function cornersRoutes(app: FastifyInstance) {
+  /** Corners to follow, for onboarding and Home (interim until row 7): your lanes first, then the most followed. Public. */
+  app.get("/corners/suggested", async (req) => suggestedCorners(req.auth?.user, suggestedCornersQuerySchema.parse(req.query ?? {}).limit));
+
   /** Up next, winners, this week's Regulars, followers and posts. Public. */
   app.get("/corners/:id", async (req) => cornerPage(uuidParam(req), req.auth?.user));
 

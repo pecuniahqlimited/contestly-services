@@ -10,11 +10,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql as dsql } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, becomeMember, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, corners, crewMembers, crews, db, dmPermissionBetween, feedEvents,
-  getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
+  adminActions, adminAlerts, becomeMember, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
+  follows, getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
-import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, CORNER_COLORS, celebrationSeenSchema, lagosDay, myContactsSchema, myCornerSchema, weekOf } from "@contestly/shared";
+import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, CORNER_COLORS, celebrationSeenSchema, lagosDay, myContactsSchema, myCornerSchema, suggestedCornersSchema, weekOf } from "@contestly/shared";
 import { setWeekPoints } from "../src/climb/boards.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
@@ -309,6 +309,61 @@ describe("corner setup: lane and colour", () => {
     const h = await person("lnone");
     await finish(h, [await person("lx")], { category: "Something else" });
     expect((await cornerRow(h)).lane).toBeNull();
+  });
+});
+
+describe("suggested corners (interim)", () => {
+  let viewer: User, big: { id: string }, small: { id: string }, followedOne: { id: string }, own: { id: string }, offLane: { id: string };
+  const suggested = (u?: User, q = "") => app.inject({ url: `/corners/suggested${q}`, headers: u ? as(u) : {} });
+  /** An unlocked corner in a lane with this many followers. */
+  async function laneCorner(name: string, lane: string, followers: number, owner?: User) {
+    const o = owner ?? (await person(name));
+    const c = await unlockedCorner(o);
+    await db.update(corners).set({ lane: lane as never }).where(eq(corners.id, c.id));
+    for (let i = 0; i < followers; i++) await db.insert(follows).values({ followerId: (await person(`${name}f`)).id, cornerId: c.id });
+    return c;
+  }
+  beforeAll(async () => {
+    viewer = await person("sview", { extra: { interests: ["Maths", "Geography"] } });
+    big = await laneCorner("sb", "Maths", 3);
+    small = await laneCorner("ss", "Geography", 1);
+    followedOne = await laneCorner("sw", "Maths", 5);
+    await db.insert(follows).values({ followerId: viewer.id, cornerId: followedOne.id });
+    own = await laneCorner("so", "Maths", 2, viewer);
+    offLane = await laneCorner("sx", "Fashion", 9);
+  });
+
+  it("your lanes first by followers, then the most followed others; never yours or one you follow", async () => {
+    const res = await suggested(viewer, "?limit=30");
+    expect(res.statusCode).toBe(200);
+    const list = suggestedCornersSchema.parse(res.json()).corners;
+    const lane = list.filter((x) => x.reason === "your_lane");
+    expect(list.slice(0, lane.length)).toEqual(lane); // lane matches lead
+    expect(lane.map((x) => x.corner.lane).every((l) => l === "Maths" || l === "Geography")).toBe(true);
+    const ids = list.map((x) => x.corner.id);
+    expect(ids.indexOf(big.id)).toBeLessThan(ids.indexOf(small.id));
+    expect(ids).not.toContain(followedOne.id);
+    expect(ids).not.toContain(own.id);
+    const popular = list.filter((x) => x.reason === "popular");
+    expect(popular.map((x) => x.corner.followerCount)).toEqual(popular.map((x) => x.corner.followerCount).sort((a, b) => b - a));
+    expect(list.every((x) => !x.following)).toBe(true);
+    expect(list.find((x) => x.corner.id === offLane.id)?.reason ?? "popular").toBe("popular");
+  });
+
+  it("signed out (or no lanes): the most followed", async () => {
+    const list = suggestedCornersSchema.parse((await suggested()).json()).corners;
+    expect(list.length).toBeGreaterThan(0);
+    expect(list.every((x) => x.reason === "popular")).toBe(true);
+    expect(list.map((x) => x.corner.followerCount)).toEqual(list.map((x) => x.corner.followerCount).sort((a, b) => b - a));
+    expect((await suggested(undefined, "?limit=2")).json().corners).toHaveLength(2);
+  });
+
+  it("never empty: following every corner still gets the most followed back", async () => {
+    const fan = await person("sfan");
+    const all = await db.select({ id: corners.id }).from(corners).where(cornerShown);
+    await db.insert(follows).values(all.map((c) => ({ followerId: fan.id, cornerId: c.id }))).onConflictDoNothing();
+    const list = suggestedCornersSchema.parse((await suggested(fan)).json()).corners;
+    expect(list.length).toBeGreaterThan(0);
   });
 });
 

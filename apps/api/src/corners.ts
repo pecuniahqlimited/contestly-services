@@ -12,7 +12,7 @@ import {
 import { valkeyCounter } from "@contestly/queue";
 import {
   CORNER_REGULARS_SHOWN, CORNER_UP_NEXT_SHOWN, CORNER_WINNERS_SHOWN, POST_REPLIES_INLINE, YOUR_PEOPLE_FACES, chatRateCheck, isBraggingRights, lagosDay, maskProfanity,
-  partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerProgress, type CornerReaction, type CornerUpdate, type Person,
+  partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerProgress, type CornerReaction, type CornerUpdate, type Person, type SuggestedCorners,
 } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { peopleOf, personColumns } from "./people.js";
@@ -123,6 +123,31 @@ async function followerCounts(ids: string[]) {
 }
 
 const cornerRef = (c: Corner, owner: Person, followerCount: number) => ({ id: c.id, name: c.name, owner, level: c.level, followerCount, lane: c.lane, color: c.color });
+
+/** Most corners the interim suggestions look at; plenty while corners are few, and row 7 replaces it. */
+const SUGGESTION_POOL = 500;
+
+/**
+ * Corners to follow (interim, until row 7): shown corners in the viewer's lanes by followers, then the most
+ * followed others, leaving out their own and those they follow; never empty while any corner is shown.
+ */
+export async function suggestedCorners(viewer: User | undefined, limit: number): Promise<SuggestedCorners> {
+  const n = sql<number>`(select count(*) from ${follows} f join ${users} fu on fu.id = f.follower_id and fu.deleted_at is null where f.corner_id = ${corners.id})`.mapWith(Number);
+  const pool = await db.select({ c: corners, owner: personColumns, followers: n }).from(corners).innerJoin(users, eq(users.id, corners.ownerUserId))
+    .where(cornerShown).orderBy(desc(n), asc(corners.unlockedAt), asc(corners.id)).limit(SUGGESTION_POOL);
+  const followed = new Set(viewer ? (await db.select({ id: follows.cornerId }).from(follows).where(eq(follows.followerId, viewer.id))).map((r) => r.id) : []);
+  const lanes = new Set<string>(viewer?.interests ?? []);
+  const open = pool.filter((r) => r.c.ownerUserId !== viewer?.id && !followed.has(r.c.id));
+  const yours = (r: (typeof pool)[number]) => !!r.c.lane && lanes.has(r.c.lane);
+  const picked = [
+    ...open.filter(yours).map((r) => ({ r, reason: "your_lane" as const })),
+    ...open.filter((r) => !yours(r)).map((r) => ({ r, reason: "popular" as const })),
+  ];
+  const fallback = picked.length ? picked : pool.filter((r) => r.c.ownerUserId !== viewer?.id).map((r) => ({ r, reason: "popular" as const }));
+  return {
+    corners: fallback.slice(0, limit).map(({ r, reason }) => ({ corner: cornerRef(r.c, r.owner, r.followers), reason, following: followed.has(r.c.id) })),
+  };
+}
 
 /** The corners the viewer follows (for the feed and the Parties tab's "following" filter). */
 export async function followedCornerIds(viewerId: string) {
