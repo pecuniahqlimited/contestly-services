@@ -3,7 +3,7 @@
  * transaction (who, what, target, before, after, why). The log is append-only: nothing here or
  * anywhere updates or deletes it.
  */
-import { and, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, count, desc, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { db, type Tx } from "./client.js";
 import { adminActions, adminPermissions, paymentPermissionGrants, users, type AdminActionRow, type User } from "./schema.js";
 import { treasuryUserId } from "./ledger.js";
@@ -66,6 +66,22 @@ export async function banUserIn(tx: Tx, adminUserId: string, userId: string, rea
  * two of them can't both count the same payments.config holders. Taken before the person's row.
  */
 export const lockPaymentPermissions = (tx: Tx) => tx.execute(sql`select pg_advisory_xact_lock(hashtext('payments_permissions'))`);
+
+/** The fewest unbanned payments.config holders the console may have: every loosening confirm needs two (ADR 0013). */
+export const CONFIG_HOLDER_FLOOR = 2;
+
+/** payments.config held by admins who can still act: not deleted, not banned. One userId: just theirs (0 or 1). */
+export async function configHolderCount(conn: Conn, userId?: string) {
+  const [{ n }] = await conn.select({ n: count() }).from(adminPermissions).innerJoin(users, eq(users.id, adminPermissions.userId))
+    .where(and(eq(adminPermissions.permission, "payments.config"), eq(users.isAdmin, true), isNull(users.deletedAt), isNull(users.bannedAt), userId ? eq(users.id, userId) : undefined));
+  return Number(n);
+}
+
+/** Whether losing this admin would leave fewer than CONFIG_HOLDER_FLOOR config holders (what stops their account being deleted). */
+export async function isConfigHolderAtFloor(conn: Conn, userId: string) {
+  if (!(await configHolderCount(conn, userId))) return false;
+  return (await configHolderCount(conn)) - 1 < CONFIG_HOLDER_FLOOR;
+}
 
 /**
  * A ban takes every payments permission away in its transaction, logged, and supersedes any grant or

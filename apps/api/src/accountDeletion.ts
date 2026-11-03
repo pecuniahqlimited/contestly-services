@@ -5,7 +5,7 @@
  * the Firebase user.
  */
 import { eq } from "drizzle-orm";
-import { archiveAccount, blockingParties, db, deletionBlockers, users, type Tx, type User } from "@contestly/db";
+import { archiveAccount, blockingParties, db, deletionBlockers, lockPaymentPermissions, users, type Tx, type User } from "@contestly/db";
 import { disableFirebaseUser } from "@contestly/auth";
 import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
 import {
@@ -38,6 +38,7 @@ export async function deletionStatus(me: User): Promise<DeletionStatus> {
 export async function deleteAccount(me: User, reason: DeletionReason | undefined, log: FastifyBaseLogger) {
   if (!(await reverifiedUntil(me.id))) throw httpError(403, REVERIFY_REQUIRED);
   const { firebaseUids, lines } = await db.transaction(async (tx) => {
+    await lockPaymentPermissions(tx); // before the row, as every permissions change takes it: config_holder_floor counts under it
     const [locked] = await tx.select().from(users).where(eq(users.id, me.id)).for("update");
     if (locked.deletedAt) throw httpError(409, "already_deleted");
     const [blocker] = await deletionBlockers(tx, me.id);

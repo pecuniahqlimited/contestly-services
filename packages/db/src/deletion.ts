@@ -13,14 +13,14 @@ import {
   archivedCrewInvites, archivedFollows, climbAwards, climbRuns, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
 } from "./schema.js";
 import * as ledger from "./ledger.js";
-import { recordAdminAction, systemActorId } from "./admin.js";
+import { isConfigHolderAtFloor, recordAdminAction, systemActorId } from "./admin.js";
 
 type Conn = Tx | typeof db;
 
 /** A party that hasn't finished or been cancelled. */
 const unfinished = inArray(parties.status, ["open", "live"]);
 
-/** What stops a delete right now: cash in the wallet, a withdrawal not yet final, an unfinished party, money owed or an open payment issue. */
+/** What stops a delete right now: cash in the wallet, a withdrawal not yet final, an unfinished party, money owed, an open payment issue, or being one of the last payments admins. */
 export async function deletionBlockers(conn: Conn, userId: string): Promise<DeletionBlocker[]> {
   const [[cash], [withdrawing], [seated], [hosting]] = await Promise.all([
     conn.select({ balance: ledgerAccounts.balanceKobo }).from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, "cash"))),
@@ -36,6 +36,9 @@ export async function deletionBlockers(conn: Conn, userId: string): Promise<Dele
   const issues = await ledger.paymentIssues(conn, userId);
   if (issues.owedKobo > 0) blockers.push("amount_owed");
   if (issues.openContradiction || issues.heldKobo !== 0) blockers.push("payment_issue");
+  // One of the last unbanned payments.config holders: the console would be left stuck (ADR 0013). The
+  // delete takes the permissions lock first, so two holders can't both pass this.
+  if (await isConfigHolderAtFloor(conn, userId)) blockers.push("config_holder_floor");
   return blockers;
 }
 

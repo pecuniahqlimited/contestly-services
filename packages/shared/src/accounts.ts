@@ -163,6 +163,8 @@ export const ACTIVE_PARTY = "active_party";
 export const AMOUNT_OWED = "amount_owed";
 /** 409: a duplicate payout is still being worked out (a contradiction open, money held for it). */
 export const PAYMENT_ISSUE = "payment_issue";
+/** 409: one of the last two payments admins who can change payments settings (ADR 0013): another admin takes over first. */
+export const CONFIG_HOLDER_FLOOR_BLOCKER = "config_holder_floor";
 /** What the app shows for each blocker. */
 export const DELETION_BLOCKER_MESSAGES = {
   [CASH_BALANCE]: "Withdraw your cash first",
@@ -170,6 +172,7 @@ export const DELETION_BLOCKER_MESSAGES = {
   [ACTIVE_PARTY]: "Leave or cancel your open parties first",
   [AMOUNT_OWED]: "You owe money from a duplicate payout. Contact support",
   [PAYMENT_ISSUE]: "You have an open payment issue. Contact support",
+  [CONFIG_HOLDER_FLOOR_BLOCKER]: "You're one of the last two payments admins. Ask another admin to take over first",
 } as const;
 export type DeletionBlocker = keyof typeof DELETION_BLOCKER_MESSAGES;
 /** active_party when one of the parties can't be left right now (it starts within the lock, or is live). */
@@ -187,7 +190,7 @@ export const blockingPartySchema = z.object({
 export type BlockingParty = z.infer<typeof blockingPartySchema>;
 /** A blocker as GET /me/deletion lists it and DELETE /me's 409 carries it in `details`. */
 export const deletionBlockerViewSchema = z.object({
-  code: z.enum([CASH_BALANCE, WITHDRAWAL_IN_PROGRESS, ACTIVE_PARTY, AMOUNT_OWED, PAYMENT_ISSUE]), message: z.string(),
+  code: z.enum([CASH_BALANCE, WITHDRAWAL_IN_PROGRESS, ACTIVE_PARTY, AMOUNT_OWED, PAYMENT_ISSUE, CONFIG_HOLDER_FLOOR_BLOCKER]), message: z.string(),
   /** active_party only. */
   parties: z.array(blockingPartySchema).optional(),
 });

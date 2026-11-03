@@ -24,6 +24,7 @@ import { PAYSTACK_TRANSFER_FEE_TIERS, paystackTransferFeeKobo } from "@contestly
 import { partyQueue } from "@contestly/queue";
 import { buildApp } from "../src/app.js";
 import { settle } from "../../worker/src/partySettle.js";
+import { markReverified } from "../src/reverify.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
 let app: Awaited<ReturnType<typeof testApp>>["app"];
@@ -1662,6 +1663,23 @@ describe("permissions", () => {
     await withHolders([banned], async () => { // TEST-ONLY: holding it while banned, as a ban from before bans took permissions away would
       const res = await putPermissions(admin, banned, []);
       expect([res.statusCode, res.json().permissions, res.json().pendingGrant]).toEqual([200, [], null]);
+    });
+  });
+
+  it("one of the last two config holders can't delete their account (config_holder_floor) until another admin holds it", async () => {
+    const leaving = await makeUser(nextName("delholder"), { isAdmin: true });
+    const del = () => app.inject({ method: "DELETE", url: "/me", headers: as(leaving), payload: {} });
+    const blockerCodes = async () => ((await app.inject({ method: "GET", url: "/me/deletion", headers: as(leaving) })).json().blockers as { code: string; message: string }[]);
+    await withHolders([leaving], async () => {
+      expect(await blockerCodes()).toEqual([]); // three holders
+      await db.delete(adminPermissions).where(and(eq(adminPermissions.userId, admin2.id), eq(adminPermissions.permission, "payments.config"))); // TEST-ONLY: down to two
+      expect(await blockerCodes()).toEqual([{ code: "config_holder_floor", message: "You're one of the last two payments admins. Ask another admin to take over first" }]);
+      expect(await deletionBlockers(db, admin2.id)).not.toContain("config_holder_floor"); // not a holder now
+      await markReverified(leaving.id);
+      const refused = await del();
+      expect([refused.statusCode, refused.json().error]).toEqual([409, "config_holder_floor"]);
+      await db.insert(adminPermissions).values({ userId: admin2.id, permission: "payments.config" }); // TEST-ONLY: someone takes over
+      expect((await del()).json()).toEqual({ deleted: true });
     });
   });
 

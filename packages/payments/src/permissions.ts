@@ -20,9 +20,9 @@
  * that list.
  */
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
-  adminAlert, adminBanRequests, adminPermissions, banUserIn, db, liveUser, lockPaymentPermissions as lockPermissions, paymentPermissionGrants, recordAdminAction, systemActorId, users,
+  adminAlert, adminBanRequests, adminPermissions, banUserIn, CONFIG_HOLDER_FLOOR, configHolderCount, db, liveUser, lockPaymentPermissions as lockPermissions, paymentPermissionGrants, recordAdminAction, systemActorId, users,
   type AdminBanRequest, type PaymentPermissionGrant, type Tx, type User,
 } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED, type PaymentPermission } from "@contestly/shared";
@@ -46,15 +46,8 @@ async function currentOf(tx: Tx, userId: string) {
   return (await tx.select({ p: adminPermissions.permission }).from(adminPermissions).where(eq(adminPermissions.userId, userId))).map((r) => r.p).sort();
 }
 
-/** Admins holding payments.config who can still act: not deleted, not banned. */
-async function configHolders(tx: Tx) {
-  const [{ n }] = await tx.select({ n: count() }).from(adminPermissions).innerJoin(users, eq(users.id, adminPermissions.userId))
-    .where(and(eq(adminPermissions.permission, "payments.config"), eq(users.isAdmin, true), isNull(users.deletedAt), isNull(users.bannedAt)));
-  return Number(n);
-}
 const CONFIG = "payments.config";
-/** The fewest unbanned payments.config holders the console may have: every loosening confirm needs two. */
-export const CONFIG_HOLDER_FLOOR = 2;
+export { CONFIG_HOLDER_FLOOR };
 const floorError = (holders: number) => paymentsError(409, "config_holder_floor", { floor: CONFIG_HOLDER_FLOOR, holders });
 async function holdsIn(tx: Tx, userId: string, permission: PaymentPermission) {
   return (await currentOf(tx, userId)).includes(permission);
@@ -85,7 +78,7 @@ export async function setPermissions(byAdminId: string, targetUserId: string, pe
     // banned holder isn't counted, so taking it from one is just a revoke.
     let pendingRevoke = false;
     if (revoke.includes(CONFIG) && !target.bannedAt) {
-      const holders = await configHolders(tx);
+      const holders = await configHolderCount(tx);
       if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
       if (holders - 1 === CONFIG_HOLDER_FLOOR) { revoke = revoke.filter((p) => p !== CONFIG); pendingRevoke = true; }
     }
@@ -129,7 +122,7 @@ export async function confirmPermissionGrant(adminUserId: string, grantId: strin
     if (g.change === "grant" && g.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
     const before = await currentOf(tx, g.userId);
     if (g.change === "revoke") {
-      const holders = await configHolders(tx);
+      const holders = await configHolderCount(tx);
       if (before.includes(CONFIG) && !target.bannedAt && holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
       await tx.delete(adminPermissions).where(and(eq(adminPermissions.userId, g.userId), eq(adminPermissions.permission, CONFIG)));
     }
@@ -176,7 +169,7 @@ async function requestBanIn(tx: Tx, adminUserId: string, userId: string, reason:
   if (!target || target.isSystem) throw paymentsError(404, "not_found");
   // Refused up front when it could never be confirmed; checked again at the confirm.
   if (held.includes(CONFIG) && !target.bannedAt) {
-    const holders = await configHolders(tx);
+    const holders = await configHolderCount(tx);
     if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
   }
   const [open] = await tx.select({ id: adminBanRequests.id }).from(adminBanRequests).where(and(eq(adminBanRequests.userId, userId), eq(adminBanRequests.status, "awaiting_second_admin")));
@@ -202,7 +195,7 @@ export async function confirmPaymentsAdminBan(adminUserId: string, banRequestId:
     const [target] = await tx.select().from(users).where(eq(users.id, b.userId)).for("no key update");
     if (target && !target.bannedAt && (await holdsIn(tx, b.userId, CONFIG))) {
       if (!(await holdsIn(tx, adminUserId, CONFIG))) throw paymentsError(403, "missing_permission", { permission: CONFIG });
-      const holders = await configHolders(tx);
+      const holders = await configHolderCount(tx);
       if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
     }
     await banUserIn(tx, adminUserId, b.userId, b.reason);
@@ -228,7 +221,7 @@ export async function breakGlassGrantConfig(handle: string, reason: string, osUs
     if (!target.isAdmin) throw paymentsError(409, "not_admin", { handle });
     if (target.bannedAt) throw paymentsError(409, "banned", { handle });
     const before = await currentOf(tx, target.id);
-    const holdersBefore = await configHolders(tx);
+    const holdersBefore = await configHolderCount(tx);
     if (before.includes(CONFIG)) return { user: target, granted: false, holders: holdersBefore };
     const system = await systemActorId(tx);
     await tx.insert(adminPermissions).values({ userId: target.id, permission: CONFIG, grantedByUserId: system });

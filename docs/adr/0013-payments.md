@@ -150,6 +150,8 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    `payments.permissions_removed_by_ban`) and supersedes any grant or revoke waiting on that admin; an
    unban gives nothing back, so they return only through the two-admin grant, and a banned admin can't be
    granted any. Since a banned holder isn't counted, taking `.config` from one never meets the floor.
+   Deleting an account is held to the floor too: one of the last two unbanned holders gets the deletion
+   blocker `config_holder_floor` until another admin holds `.config` (counted under the permissions lock).
    **Break-glass.** If the console is stuck anyway (holders left, lost their accounts), someone with server
    and database access runs `npm run payments:break-glass -- --grant-config <handle> --reason "…"`. It grants
    `payments.config` to that admin directly, writes an `admin_actions` row as the system (action
