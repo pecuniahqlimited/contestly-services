@@ -7,15 +7,15 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, like, notInArray, sql as sqlRaw } from "drizzle-orm";
 import {
   adminActions, adminAlert, adminAlerts, adminPermissions, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
-  payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
+  payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, systemActorId, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, breakGlassGrantConfig, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { partyQueue } from "@contestly/queue";
 import { buildApp } from "../src/app.js";
@@ -1448,59 +1448,124 @@ describe("permissions", () => {
     expect([revoked.statusCode, revoked.json().permissions, revoked.json().pendingGrant]).toEqual([200, ["payments.view"], null]);
   });
 
-  it("payments.config can't be stripped: from one of the last two holders it takes a second admin, the last holder can't lose it; other revokes are instant", async () => {
-    // Narrow the holders to admin and admin2 for this test (restored after).
-    const others = await db.select().from(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
-    await db.delete(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
-    const ops = await makeUser(nextName("permops"), { isAdmin: true }); // an admin without payments.config (dev sessions pass the route's check)
-    const put = (who: User, target: User, permissions: string[], reason = "rota change") => app.inject({ method: "PUT", url: `/admin/payments/permissions/${target.id}`, headers: as(who), payload: { permissions, reason } });
+  /** Narrow the config holders to admin, admin2 and `extra` for one test; restored (unbanned, re-granted) after. */
+  async function withHolders(extra: User[], fn: () => Promise<void>) {
+    const keep = [admin.id, admin2.id, ...extra.map((u) => u.id)];
+    const others = await db.select().from(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), notInArray(adminPermissions.userId, keep)));
+    await db.delete(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), notInArray(adminPermissions.userId, keep)));
+    if (extra.length) await db.insert(adminPermissions).values(extra.map((u) => ({ userId: u.id, permission: "payments.config" as const }))).onConflictDoNothing();
     try {
-      // Revoking anything else is instant.
-      const view = await put(admin, admin2, ["payments.approve", "payments.finalize", "payments.config"]);
-      expect([view.statusCode, view.json().permissions]).toEqual([200, ["payments.approve", "payments.config", "payments.finalize"]]);
-      // payments.config from one of the last two: waits for a second admin; the requester can't confirm; the holder can agree.
-      const asked = await put(admin, admin2, ["payments.approve", "payments.finalize"]);
-      expect([asked.statusCode, asked.json().pendingGrant.change, asked.json().permissions]).toEqual([202, "revoke", ["payments.approve", "payments.config", "payments.finalize"]]);
-      const confirm = (who: User) => app.inject({ method: "POST", url: `/admin/payments/permission-grants/${asked.json().pendingGrant.id}/confirm`, headers: as(who) });
-      expect((await confirm(admin)).json().error).toBe("second_admin_required");
-      expect((await confirm(admin2)).json().grant.status).toBe("applied");
-      expect(await permissionsOf(admin2.id)).not.toContain("payments.config");
-      // admin is now the last holder: nobody can take it (only reachable past the route's check: a dev session, or two revokes racing).
-      await expect(setPermissions(ops.id, admin.id, ["payments.view"], "rota change")).rejects.toMatchObject({ message: "last_config_holder" });
-      expect(await permissionsOf(admin.id)).toContain("payments.config");
+      await fn();
     } finally {
-      await db.insert(adminPermissions).values([{ userId: admin2.id, permission: "payments.config" }, { userId: admin2.id, permission: "payments.view" }]).onConflictDoNothing();
+      await db.update(users).set({ bannedAt: null, banReason: null }).where(inArray(users.id, [admin.id, admin2.id]));
+      await db.insert(adminPermissions).values([admin, admin2].flatMap((a) => (["payments.view", "payments.approve", "payments.finalize", "payments.config"] as const).map((permission) => ({ userId: a.id, permission })))).onConflictDoNothing();
       if (others.length) await db.insert(adminPermissions).values(others.map((o) => ({ userId: o.userId, permission: o.permission }))).onConflictDoNothing();
     }
+  }
+  const putPermissions = (who: User, target: User, permissions: string[], reason = "rota change") => app.inject({ method: "PUT", url: `/admin/payments/permissions/${target.id}`, headers: as(who), payload: { permissions, reason } });
+  const confirmGrantAs = (who: User, id: string) => app.inject({ method: "POST", url: `/admin/payments/permission-grants/${id}/confirm`, headers: as(who) });
+
+  it("payments.config never goes below two holders: from one of the last three it takes a second admin, from one of the last two it's refused, checked again at the confirm", async () => {
+    const third = await makeUser(nextName("permthird"), { isAdmin: true });
+    const ops = await makeUser(nextName("permops"), { isAdmin: true }); // no payments.config (dev sessions pass the route's check)
+    await withHolders([third], async () => {
+      // Revoking anything else is instant.
+      const view = await putPermissions(admin, admin2, ["payments.approve", "payments.finalize", "payments.config"]);
+      expect([view.statusCode, view.json().permissions]).toEqual([200, ["payments.approve", "payments.config", "payments.finalize"]]);
+      // Three holders: taking it from one waits for a second admin. Two such requests at once (different targets).
+      const fromThird = await putPermissions(admin, third, []);
+      expect([fromThird.statusCode, fromThird.json().pendingGrant.change, fromThird.json().permissions]).toEqual([202, "revoke", ["payments.config"]]);
+      const fromAdmin2 = await putPermissions(admin, admin2, ["payments.approve", "payments.finalize"]);
+      expect(fromAdmin2.statusCode).toBe(202);
+      expect((await confirmGrantAs(admin, fromThird.json().pendingGrant.id)).json().error).toBe("second_admin_required");
+      expect((await confirmGrantAs(third, fromThird.json().pendingGrant.id)).json().grant.status).toBe("applied"); // the holder agrees
+      // Now two: the other request, asked when there were three, is refused at its confirm.
+      const late = await confirmGrantAs(admin2, fromAdmin2.json().pendingGrant.id);
+      expect([late.statusCode, late.json().error, late.json().details]).toEqual([409, "config_holder_floor", { floor: 2, holders: 2 }]);
+      expect(await permissionsOf(admin2.id)).toContain("payments.config");
+      // And a fresh revoke from one of the last two is refused outright, by anyone.
+      expect((await putPermissions(admin, admin2, ["payments.view"])).json().error).toBe("config_holder_floor");
+      await expect(setPermissions(ops.id, admin.id, ["payments.view"], "rota change")).rejects.toMatchObject({ message: "config_holder_floor" });
+      expect(await permissionsOf(admin.id)).toContain("payments.config");
+    });
   });
 
-  it("banning a payments admin takes a second admin; a banned holder doesn't count toward the config floor", async () => {
+  it("banning a payments admin takes a second admin; banning a config holder takes a confirmer with payments.config and never goes below two holders", async () => {
     const target = await makeUser(nextName("bantgt"), { isAdmin: true });
-    await db.insert(adminPermissions).values({ userId: target.id, permission: "payments.config" });
-    const third = await makeUser(nextName("banthird"), { isAdmin: true });
-    const asked = await app.inject({ method: "POST", url: `/admin/users/${target.id}/ban`, headers: as(admin), payload: { reason: "suspicious activity" } });
-    expect(asked.statusCode).toBe(202);
-    expect((await db.select().from(users).where(eq(users.id, target.id)))[0].bannedAt).toBeNull();
-    const confirm = (who: User) => app.inject({ method: "POST", url: `/admin/users/ban-requests/${asked.json().banRequest.id}/confirm`, headers: as(who) });
-    expect((await confirm(admin)).json().error).toBe("second_admin_required");
-    expect((await confirm(target)).json().error).toBe("own_transaction");
-    expect((await confirm(third)).statusCode).toBe(200);
-    expect((await db.select().from(users).where(eq(users.id, target.id)))[0].bannedAt).not.toBeNull();
-    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, target.id), eq(adminActions.action, "user.ban")));
-    expect(log.adminUserId).toBe(third.id);
+    const plain1 = await makeUser(nextName("banplain1"), { isAdmin: true });
+    const plain2 = await makeUser(nextName("banplain2"), { isAdmin: true });
+    const ban = (who: User, u: User) => app.inject({ method: "POST", url: `/admin/users/${u.id}/ban`, headers: as(who), payload: { reason: "suspicious activity" } });
+    const confirm = (who: User, id: string) => app.inject({ method: "POST", url: `/admin/users/ban-requests/${id}/confirm`, headers: as(who) });
+    const bannedAt = async (u: User) => (await db.select().from(users).where(eq(users.id, u.id)))[0].bannedAt;
+    await withHolders([target], async () => {
+      // Three holders. Two plain admins ask to ban two of them.
+      const askTarget = await ban(plain1, target);
+      expect(askTarget.statusCode).toBe(202);
+      const askAdmin2 = await ban(plain1, admin2);
+      expect(askAdmin2.statusCode).toBe(202);
+      expect(await bannedAt(target)).toBeNull();
+      const t = askTarget.json().banRequest.id;
+      expect((await confirm(plain1, t)).json().error).toBe("second_admin_required");
+      expect((await confirm(target, t)).json().error).toBe("own_transaction");
+      // A second admin without payments.config can't confirm banning a config holder.
+      const noConfig = await confirm(plain2, t);
+      expect([noConfig.statusCode, noConfig.json().error, noConfig.json().details]).toEqual([403, "missing_permission", { permission: "payments.config" }]);
+      expect((await confirm(admin2, t)).statusCode).toBe(200);
+      expect(await bannedAt(target)).not.toBeNull();
+      const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, target.id), eq(adminActions.action, "user.ban")));
+      expect(log.adminUserId).toBe(admin2.id);
+      // Two holders now: the request asked when there were three is refused at the confirm, and a new one up front.
+      const late = await confirm(admin, askAdmin2.json().banRequest.id);
+      expect([late.statusCode, late.json().error]).toEqual([409, "config_holder_floor"]);
+      expect(await bannedAt(admin2)).toBeNull();
+      expect((await ban(plain2, admin)).json().error).toBe("config_holder_floor");
+    });
     // An admin with no payments permission is still banned by one admin at once.
     const plainAdmin = await makeUser(nextName("banplain"), { isAdmin: true });
-    expect((await app.inject({ method: "POST", url: `/admin/users/${plainAdmin.id}/ban`, headers: as(admin), payload: { reason: "spam" } })).statusCode).toBe(200);
-    // The floor: with holders narrowed to admin and admin2, a banned admin2 doesn't count, so admin is the last.
-    const others = await db.select().from(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
-    await db.delete(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
-    await db.update(users).set({ bannedAt: new Date(), banReason: "test" }).where(eq(users.id, admin2.id));
-    try {
-      await expect(setPermissions(third.id, admin.id, ["payments.view"], "rota change")).rejects.toMatchObject({ message: "last_config_holder" });
-    } finally {
-      await db.update(users).set({ bannedAt: null, banReason: null }).where(eq(users.id, admin2.id));
-      if (others.length) await db.insert(adminPermissions).values(others.map((o) => ({ userId: o.userId, permission: o.permission }))).onConflictDoNothing();
-    }
+    expect((await ban(admin, plainAdmin)).statusCode).toBe(200);
+  });
+
+  it("whether a ban needs a second admin is decided under the permissions lock: a grant committing meanwhile is seen", async () => {
+    const newcomer = await makeUser(nextName("banrace"), { isAdmin: true });
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((r) => { locked = r; });
+    // Stands in for a grant's confirm: holds the permissions lock and adds a permission, committing later.
+    const grant = db.transaction(async (tx) => {
+      await tx.execute(sqlRaw`select pg_advisory_xact_lock(hashtext('payments_permissions'))`);
+      await tx.insert(adminPermissions).values({ userId: newcomer.id, permission: "payments.view" });
+      locked();
+      await held;
+    });
+    await lockTaken;
+    let settled = false;
+    const banning = app.inject({ method: "POST", url: `/admin/users/${newcomer.id}/ban`, headers: as(admin), payload: { reason: "suspicious activity" } }).finally(() => { settled = true; });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(settled).toBe(false); // waiting on the lock, not deciding on a stale read
+    release();
+    await grant;
+    const res = await banning;
+    expect(res.statusCode).toBe(202);
+    expect((await db.select().from(users).where(eq(users.id, newcomer.id)))[0].bannedAt).toBeNull();
+  });
+
+  it("break-glass grants payments.config from the server: logged as the system with the reason and OS user, and a critical alert", async () => {
+    const stuck = await makeUser(nextName("glass"), { isAdmin: true });
+    const out = await breakGlassGrantConfig(stuck.handle, "both config holders left; OPS-1", "ops-oncall");
+    expect([out.granted, await permissionsOf(stuck.id)]).toEqual([true, ["payments.config"]]);
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, stuck.id), eq(adminActions.action, "payments.break_glass")));
+    expect(log.adminUserId).toBe(await db.transaction((tx) => systemActorId(tx)));
+    expect(log.reason).toBe("both config holders left; OPS-1");
+    expect(log.after).toMatchObject({ permissions: ["payments.config"], osUser: "ops-oncall" });
+    const [alert] = await alertsFor(stuck.id);
+    expect(alert).toMatchObject({ kind: "payments.break_glass", severity: "critical" });
+    // Again: nothing changes, nothing more logged. A non-admin, or a banned one, is refused.
+    expect((await breakGlassGrantConfig(stuck.handle, "again", "ops-oncall")).granted).toBe(false);
+    expect(await db.select().from(adminActions).where(and(eq(adminActions.targetId, stuck.id), eq(adminActions.action, "payments.break_glass")))).toHaveLength(1);
+    await expect(breakGlassGrantConfig((await makeUser(nextName("glassna"))).handle, "x y z", "ops")).rejects.toMatchObject({ message: "not_admin" });
+    await expect(breakGlassGrantConfig((await makeUser(nextName("glassban"), { isAdmin: true, bannedAt: new Date() })).handle, "x y z", "ops")).rejects.toMatchObject({ message: "banned" });
+    await db.delete(adminPermissions).where(eq(adminPermissions.userId, stuck.id)); // TEST-ONLY: keep the holder count as the other tests expect
   });
 
   it("payments alerts on the admin alerts page: payments.view to see them, payments.finalize to acknowledge them", async () => {

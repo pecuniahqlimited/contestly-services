@@ -23,3 +23,18 @@ with 0022, so they go out the same way. (Numbered after main's 0021_admin_alerts
 New env with this release (ADR 0013): `PAYSTACK_SECRET_KEY` (a `sk_test_…` key anywhere but production),
 `PAYMENTS_RETURN_URL`, optionally `PAYMENTS_WEBHOOK_IP_ALLOWLIST`. Staging and production leave
 `PAYMENTS_DEV_TOOLS` unset (and set `NODE_ENV=production` in production).
+
+## Operations: payments break-glass
+
+Not a migration, but it needs the same access. The payments console needs at least two unbanned
+`payments.config` holders (ADR 0013). If it ever has fewer and nobody can confirm a grant, someone with
+shell access to a box that can reach the production database runs, from the repo with production env:
+
+```bash
+npm run payments:break-glass -- --grant-config <handle> --reason "both config holders left; ticket OPS-123"
+```
+
+It grants `payments.config` to that admin (who must already be an admin, not banned or deleted), logs
+`payments.break_glass` in `admin_actions` as the system with the reason and the OS user, and raises a
+critical alert to the alert channels. Run it once per admin needed, then use the console's normal
+maker-checker flow for anything else. There is no API route for this, by design.

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
 import {
-  archivedCrewInvites, archivedFollows, banUser, climbAwards, crews, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
+  archivedCrewInvites, archivedFollows, climbAwards, crews, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
 } from "@contestly/db";
 import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
 import {
@@ -12,7 +12,7 @@ import { requireAdmin, uuidParam } from "../auth.js";
 import { adminUserRow } from "../adminViews.js";
 import { httpError } from "../httpError.js";
 import { valkey } from "../redis.js";
-import { confirmPaymentsAdminBan, holdsPaymentPermission, requestPaymentsAdminBan } from "@contestly/payments";
+import { banOrRequestBan, confirmPaymentsAdminBan } from "@contestly/payments";
 
 const SEARCH_LIMIT = 20;
 const RECENT_LIMIT = 20;
@@ -129,8 +129,8 @@ export async function adminUsersRoutes(app: FastifyInstance) {
     const admin = requireAdmin(req);
     const { reason } = adminReasonBodySchema.parse(req.body);
     const id = uuidParam(req);
-    if (await holdsPaymentPermission(id)) return reply.code(202).send({ banRequest: await requestPaymentsAdminBan(admin.id, id, reason) });
-    await banUser(admin.id, id, reason);
+    const out = await banOrRequestBan(admin.id, id, reason);
+    if ("banRequest" in out) return reply.code(202).send(out);
     await publishBan(id);
     return userDetail(id);
   });

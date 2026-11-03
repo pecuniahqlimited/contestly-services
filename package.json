@@ -34,7 +34,8 @@
     "sim:social": "tsx --env-file=.env scripts/social-sim.ts",
     "probe:firebase-custom-tokens": "tsx --env-file=.env scripts/firebase-custom-token-probe.ts",
     "sim:payments": "tsx --env-file=.env scripts/payments-sim.ts",
-    "paystack:check": "tsx --env-file=.env scripts/paystack-check.ts"
+    "paystack:check": "tsx --env-file=.env scripts/paystack-check.ts",
+    "payments:break-glass": "tsx --env-file-if-exists=.env scripts/payments-break-glass.ts"
   },
   "devDependencies": {
     "colyseus.js": "^0.15.0",

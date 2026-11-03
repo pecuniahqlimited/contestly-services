@@ -4,13 +4,23 @@
  *
  * Granting is loosening (ADR 0013), so it's maker-checker: a payments.config holder asks, a different one
  * confirms, and the grantee can never confirm their own grant. Otherwise one admin could make a second
- * account pass every second-admin check. Revoking applies at once, except payments.config: taking it from
- * one of the last two holders needs a second admin (the holder themselves may confirm), and the last holder
- * can't lose it at all, so nobody can strip the console of everyone who could un-pause or confirm. Who is an
- * admin at all (ADMIN_EMAILS) is outside this: whoever controls the environment controls that list.
+ * account pass every second-admin check. Revoking applies at once, except payments.config.
+ *
+ * The config floor: un-pausing, confirming a grant and confirming a config change each take two different
+ * payments.config holders, so the console never goes below two who can act (CONFIG_HOLDER_FLOOR). Taking
+ * payments.config from one of the last three needs a second admin (the holder themselves may confirm);
+ * from one of the last two it's refused. Banning a holder is held to the same floor, and whoever confirms
+ * that ban must hold payments.config. Every check runs at confirm time under the permissions lock. When
+ * the console is stuck anyway (holders left the company, say), `npm run payments:break-glass` grants
+ * payments.config from the server, never over the API (ADR 0013). Who is an admin at all (ADMIN_EMAILS)
+ * is outside this: whoever controls the environment controls that list.
  */
+import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { adminBanRequests, adminPermissions, banUserIn, db, paymentPermissionGrants, recordAdminAction, users, type AdminBanRequest, type PaymentPermissionGrant, type Tx } from "@contestly/db";
+import {
+  adminAlert, adminBanRequests, adminPermissions, banUserIn, db, liveUser, paymentPermissionGrants, recordAdminAction, systemActorId, users,
+  type AdminBanRequest, type PaymentPermissionGrant, type Tx, type User,
+} from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED, type PaymentPermission } from "@contestly/shared";
 import { paymentsError } from "./common.js";
 
@@ -41,6 +51,12 @@ async function configHolders(tx: Tx) {
   return Number(n);
 }
 const CONFIG = "payments.config";
+/** The fewest unbanned payments.config holders the console may have: every loosening confirm needs two. */
+export const CONFIG_HOLDER_FLOOR = 2;
+const floorError = (holders: number) => paymentsError(409, "config_holder_floor", { floor: CONFIG_HOLDER_FLOOR, holders });
+async function holdsIn(tx: Tx, userId: string, permission: PaymentPermission) {
+  return (await currentOf(tx, userId)).includes(permission);
+}
 
 async function lockAdminTarget(tx: Tx, userId: string) {
   const [target] = await tx.select().from(users).where(eq(users.id, userId)).for("no key update");
@@ -62,12 +78,12 @@ export async function setPermissions(byAdminId: string, targetUserId: string, pe
     const want = [...new Set(permissions)].sort();
     let revoke = before.filter((p) => !want.includes(p));
     const grant = want.filter((p) => !before.includes(p));
-    // payments.config: never from the last holder; from one of the last two, only with a second admin.
+    // payments.config: never below the floor; from one of the last floor + 1, only with a second admin.
     let pendingRevoke = false;
     if (revoke.includes(CONFIG)) {
-      const after = (await configHolders(tx)) - 1;
-      if (after < 1) throw paymentsError(409, "last_config_holder");
-      if (after < 2) { revoke = revoke.filter((p) => p !== CONFIG); pendingRevoke = true; }
+      const holders = await configHolders(tx);
+      if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
+      if (holders - 1 === CONFIG_HOLDER_FLOOR) { revoke = revoke.filter((p) => p !== CONFIG); pendingRevoke = true; }
     }
     if (pendingRevoke && grant.length) throw paymentsError(409, "one_change_at_a_time", { message: "revoke payments.config and grant the rest in two steps" });
     if (revoke.length) {
@@ -95,7 +111,7 @@ export async function setPermissions(byAdminId: string, targetUserId: string, pe
 
 /**
  * A second payments.config holder confirms: never whoever asked. A grant: never the grantee. A revoke of
- * payments.config: the holder themselves may agree to it, and it still never leaves nobody holding it.
+ * payments.config: the holder themselves may agree to it, and it never takes the holders below the floor.
  */
 export async function confirmPermissionGrant(adminUserId: string, grantId: string, now = new Date()) {
   return db.transaction(async (tx) => {
@@ -109,7 +125,8 @@ export async function confirmPermissionGrant(adminUserId: string, grantId: strin
     if (g.change === "grant" && g.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
     const before = await currentOf(tx, g.userId);
     if (g.change === "revoke") {
-      if (before.includes(CONFIG) && (await configHolders(tx)) - 1 < 1) throw paymentsError(409, "last_config_holder");
+      const holders = await configHolders(tx);
+      if (before.includes(CONFIG) && holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
       await tx.delete(adminPermissions).where(and(eq(adminPermissions.userId, g.userId), eq(adminPermissions.permission, CONFIG)));
     }
     const add = g.change === "grant" ? (g.permissions as PaymentPermission[]).filter((p) => !before.includes(p)) : [];
@@ -134,35 +151,92 @@ const banRequestView = (b: AdminBanRequest) => ({
   createdAt: b.createdAt.toISOString(), appliedAt: iso(b.appliedAt),
 });
 
-/** Whether a ban of this account needs a second admin: it holds any payments permission. */
-export async function holdsPaymentPermission(userId: string) {
-  return (await permissionsOf(userId)).length > 0;
-}
-
-/** Ask to ban an admin who holds payments permissions. Nothing changes until a different admin confirms. */
-export async function requestPaymentsAdminBan(adminUserId: string, userId: string, reason: string) {
+/**
+ * Ban an admin from the console's ban button. One that holds no payments permission is banned now (main's
+ * banUserIn); one that holds any becomes a request a different admin confirms. Decided inside the
+ * transaction under the permissions lock, so a grant confirmed at the same moment can't slip past it.
+ */
+export async function banOrRequestBan(adminUserId: string, userId: string, reason: string): Promise<{ banned: User } | { banRequest: ReturnType<typeof banRequestView> }> {
   if (adminUserId === userId) throw paymentsError(409, "cannot_ban_self");
   return db.transaction(async (tx) => {
-    const [target] = await tx.select().from(users).where(eq(users.id, userId)).for("no key update");
-    if (!target || target.isSystem) throw paymentsError(404, "not_found");
-    const [open] = await tx.select({ id: adminBanRequests.id }).from(adminBanRequests).where(and(eq(adminBanRequests.userId, userId), eq(adminBanRequests.status, "awaiting_second_admin")));
-    if (open) throw paymentsError(409, "ban_pending", { banRequestId: open.id });
-    const [b] = await tx.insert(adminBanRequests).values({ userId, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
-    await recordAdminAction(tx, { adminUserId, action: "user.ban_requested", targetType: "user", targetId: userId, reason, before: null, after: { banRequestId: b.id, permissions: await currentOf(tx, userId) } });
-    return banRequestView(b);
+    await lockPermissions(tx);
+    const held = await currentOf(tx, userId);
+    if (!held.length) return { banned: await banUserIn(tx, adminUserId, userId, reason) };
+    return { banRequest: await requestBanIn(tx, adminUserId, userId, reason, held) };
   });
 }
 
-/** A second admin confirms: not whoever asked, not the admin being banned. The ban is main's banUserIn, in this transaction. */
+/** Ask to ban an admin who holds payments permissions. Nothing changes until a different admin confirms. */
+async function requestBanIn(tx: Tx, adminUserId: string, userId: string, reason: string, held: PaymentPermission[]) {
+  const [target] = await tx.select().from(users).where(eq(users.id, userId)).for("no key update");
+  if (!target || target.isSystem) throw paymentsError(404, "not_found");
+  // Refused up front when it could never be confirmed; checked again at the confirm.
+  if (held.includes(CONFIG) && !target.bannedAt) {
+    const holders = await configHolders(tx);
+    if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
+  }
+  const [open] = await tx.select({ id: adminBanRequests.id }).from(adminBanRequests).where(and(eq(adminBanRequests.userId, userId), eq(adminBanRequests.status, "awaiting_second_admin")));
+  if (open) throw paymentsError(409, "ban_pending", { banRequestId: open.id });
+  const [b] = await tx.insert(adminBanRequests).values({ userId, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
+  await recordAdminAction(tx, { adminUserId, action: "user.ban_requested", targetType: "user", targetId: userId, reason, before: null, after: { banRequestId: b.id, permissions: held } });
+  return banRequestView(b);
+}
+
+/**
+ * A second admin confirms: not whoever asked, not the admin being banned. Banning a payments.config holder
+ * takes a confirmer who holds payments.config and never leaves fewer than the floor. All read under the
+ * permissions lock, at the confirm. The ban is main's banUserIn, in this transaction.
+ */
 export async function confirmPaymentsAdminBan(adminUserId: string, banRequestId: string, now = new Date()) {
   return db.transaction(async (tx) => {
+    await lockPermissions(tx);
     const [b] = await tx.select().from(adminBanRequests).where(eq(adminBanRequests.id, banRequestId)).for("update");
     if (!b) throw paymentsError(404, "not_found");
     if (b.status !== "awaiting_second_admin") throw paymentsError(409, "ban_not_pending", { status: b.status });
     if (b.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);
     if (b.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
+    const [target] = await tx.select().from(users).where(eq(users.id, b.userId)).for("no key update");
+    if (target && !target.bannedAt && (await holdsIn(tx, b.userId, CONFIG))) {
+      if (!(await holdsIn(tx, adminUserId, CONFIG))) throw paymentsError(403, "missing_permission", { permission: CONFIG });
+      const holders = await configHolders(tx);
+      if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
+    }
     await banUserIn(tx, adminUserId, b.userId, b.reason);
     const [done] = await tx.update(adminBanRequests).set({ status: "applied", confirmedByUserId: adminUserId, appliedAt: now }).where(eq(adminBanRequests.id, b.id)).returning();
     return banRequestView(done);
+  });
+}
+
+// ---- Break-glass ----
+
+/**
+ * Grant payments.config straight from the server when the console is stuck (fewer than two holders can
+ * act). Only from `npm run payments:break-glass`, which needs the server and the database: never an API
+ * route. Logged as the system with the reason and the OS user, and raised as a critical alert, in one
+ * transaction.
+ */
+export async function breakGlassGrantConfig(handle: string, reason: string, osUser: string) {
+  if (reason.trim().length < 3) throw paymentsError(400, "reason_required");
+  return db.transaction(async (tx) => {
+    await lockPermissions(tx);
+    const [target] = await tx.select().from(users).where(and(eq(users.handle, handle.replace(/^@/, "").toLowerCase()), liveUser)).for("no key update");
+    if (!target) throw paymentsError(404, "not_found", { handle });
+    if (!target.isAdmin) throw paymentsError(409, "not_admin", { handle });
+    if (target.bannedAt) throw paymentsError(409, "banned", { handle });
+    const before = await currentOf(tx, target.id);
+    const holdersBefore = await configHolders(tx);
+    if (before.includes(CONFIG)) return { user: target, granted: false, holders: holdersBefore };
+    const system = await systemActorId(tx);
+    await tx.insert(adminPermissions).values({ userId: target.id, permission: CONFIG, grantedByUserId: system });
+    const after = await currentOf(tx, target.id);
+    await recordAdminAction(tx, {
+      adminUserId: system, action: "payments.break_glass", targetType: "user", targetId: target.id, reason,
+      before, after: { permissions: after, osUser, holdersBefore },
+    });
+    await adminAlert({
+      kind: "payments.break_glass", severity: "critical", subject: `Break-glass: payments.config granted to @${target.handle} from the server`,
+      details: { handle: target.handle, reason, osUser, holdersBefore }, dedupeKey: `payments.break_glass:${randomUUID()}`, refType: "user", refId: target.id,
+    }, tx);
+    return { user: target, granted: true, holders: holdersBefore + 1 };
   });
 }
