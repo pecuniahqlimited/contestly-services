@@ -18,6 +18,7 @@ import {
   approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
+import { settle } from "../../worker/src/partySettle.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
 let app: Awaited<ReturnType<typeof testApp>>["app"];
@@ -1788,6 +1789,38 @@ describe("guardrails", () => {
     expect(await findBreaches(db)).toEqual([]);
     // Settling twice moves nothing.
     expect(await db.transaction(async (tx) => cancelIfUnplaceable(tx, (await tx.select().from(parties).where(eq(parties.id, party.id)))[0]))).toBeNull();
+  });
+
+  it("main's settle (partySettle.ts): every signed-up player banned mid-game cancels with an empty pot, no breach; the room hears it only after the commit", async () => {
+    const host = await makeUser(nextName("stlhost"));
+    const [a, b] = [await makeUser(nextName("stla")), await makeUser(nextName("stlb"))];
+    for (const u of [a, b]) await fund(u, kobo(1000));
+    const [party] = await db.insert(parties).values({ createdByUserId: host.id, title: `settle bans ${tag}`, category: "General knowledge", maxPlayers: 6, funding: "pooled", entryKobo: kobo(500), split: [100], startsAt: new Date(), status: "live" }).returning();
+    await db.transaction(async (tx) => { for (const u of [a, b]) await takeSeat(tx, party, u.id, kobo(500)); });
+    await db.update(partyPlayers).set({ rank: 1 }).where(and(eq(partyPlayers.partyId, party.id), eq(partyPlayers.userId, a.id)));
+    await db.update(partyPlayers).set({ rank: 2 }).where(and(eq(partyPlayers.partyId, party.id), eq(partyPlayers.userId, b.id)));
+    await db.update(users).set({ bannedAt: new Date(), banReason: "cheating" }).where(inArray(users.id, [a.id, b.id]));
+    const heard: { status: string; committed: string }[] = [];
+    // emit reads the party from another connection: it sees only what has committed.
+    const deps = {
+      emit: async (ev: { partyId: string; status: string }) => { heard.push({ status: ev.status, committed: (await db.select().from(parties).where(eq(parties.id, ev.partyId)))[0].status }); },
+      publishLine: async () => {}, queueRecordPlay: async () => {},
+    };
+    expect(await settle(deps, party.id)).toBe(false);
+    expect(heard).toEqual([{ status: "cancelled", committed: "cancelled" }]);
+    expect(await db.transaction((tx) => potBalance(tx, party.id))).toBe(0);
+    expect([await cash(a), await cash(b)]).toEqual([kobo(1000), kobo(1000)]);
+    expect(await findBreaches(db)).toEqual([]);
+    expect(await settle(deps, party.id)).toBe(false); // a replay: nothing more
+    expect(heard).toHaveLength(1);
+    // A normal finish is heard after its commit too.
+    const c = await makeUser(nextName("stlc"));
+    await fund(c, kobo(1000));
+    const [ok] = await db.insert(parties).values({ createdByUserId: host.id, title: `settle ok ${tag}`, category: "General knowledge", maxPlayers: 6, funding: "pooled", entryKobo: kobo(500), split: [100], startsAt: new Date(), status: "live" }).returning();
+    await db.transaction((tx) => takeSeat(tx, ok, c.id, kobo(500)));
+    await db.update(partyPlayers).set({ rank: 1 }).where(eq(partyPlayers.partyId, ok.id));
+    expect(await settle(deps, ok.id)).toBe(true);
+    expect(heard[1]).toEqual({ status: "finished", committed: "finished" });
   });
 
   it("a user-borne fee that comes in lower than estimated goes to fee_variance, not platform_funds: no breach", async () => {

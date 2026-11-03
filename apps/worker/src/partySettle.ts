@@ -24,6 +24,8 @@ export interface SettleDeps {
 export async function settle(deps: SettleDeps, partyId: string): Promise<boolean> {
   const cfg = await getPartyConfig();
   let line: ChatMessage | undefined;
+  // What the room hears, published only once the transaction has committed (never a state that rolled back).
+  let event: { partyId: string; status: "finished" | "cancelled" } | undefined;
   const settled = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p || p.status !== "live") return false; // already settled or cancelled
@@ -49,7 +51,7 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
       const out = await cancelIfUnplaceable(tx, p);
       if (out) {
         line = out.line;
-        await deps.emit({ partyId, status: "cancelled" });
+        event = { partyId, status: "cancelled" };
         console.log(`[party] ${p.title}: nobody could be placed; cancelled, ${out.players} seat(s) refunded (${out.bannedSeats} banned)`);
         return false;
       }
@@ -70,9 +72,10 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
     // The feed hears every finish; a bragging-rights party also earns party points (ADR 0008).
     await recordPartyFinish(tx, p, players);
     line = await systemLine(tx, partyId, "That's a wrap! Results are in.");
-    await deps.emit({ partyId, status: "finished" });
+    event = { partyId, status: "finished" };
     return true;
   });
+  if (event) await deps.emit(event);
   if (line) await deps.publishLine(line);
   // Fold this party's answer stats back into the question bank (idempotent via play_stats_recorded_at).
   if (settled) await deps.queueRecordPlay(partyId);
