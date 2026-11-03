@@ -1458,6 +1458,42 @@ describe("the lock order: the person's row, then transaction rows, then the pers
     }
   });
 
+  it("an after-commit effect that hangs holds the caller only for the timeout: logged and alerted, later effects still run", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const label = `test after-commit timeout ${tag}`;
+    const ran: string[] = [];
+    try {
+      const started = Date.now();
+      const out = await moneyTransaction(async (tx) => {
+        afterCommit(tx, () => new Promise(() => {})); // a provider that never answers
+        afterCommit(tx, async () => { ran.push("second"); });
+        return "committed";
+      }, { label, effectTimeoutMs: 200 });
+      const took = Date.now() - started;
+      expect([out, ran]).toEqual(["committed", ["second"]]);
+      expect(took).toBeGreaterThanOrEqual(200);
+      expect(took).toBeLessThan(1500);
+      const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `after_commit_effect_timeout:${label}`));
+      expect(alert).toMatchObject({ kind: "after_commit_effect_timeout", severity: "warning", details: { label, timeoutMs: 200 } });
+      expect(logged.mock.calls.some((c) => String(c[0]).includes("took over 200 ms"))).toBe(true);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("an effect that times out and fails later is still logged", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await moneyTransaction(async (tx) => {
+        afterCommit(tx, () => new Promise((_, reject) => setTimeout(() => reject(new Error("late failure")), 300)));
+      }, { label: `test after-commit late ${tag}`, effectTimeoutMs: 100 });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(logged.mock.calls.some((c) => String(c[0]).includes("failed after it timed out") && (c[1] as Error).message === "late failure")).toBe(true);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
   it("approve and reject take the person first", async () => {
     await config((c) => { c.payout.approvalThresholdKobo = kobo(2000); });
     try {

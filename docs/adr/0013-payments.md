@@ -331,7 +331,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   deadlock through drizzle fails if that happens: keep it, and check it on any drizzle upgrade.
   Inside a retried transaction only rows are written (an alert is a row, committed or rolled back with it);
   anything that leaves the process (a log line, later a push) goes through `afterCommit` and runs once,
-  after the commit. Audit (2026-11-03), every place a user row is locked:
+  after the commit. An effect never fails committed work: a throw is logged and alerted
+  (`after_commit_effect_failed`), and each effect holds the caller for `AFTER_COMMIT_EFFECT_TIMEOUT_MS`
+  (default 5 s) at most, then is logged and alerted (`after_commit_effect_timeout`) and left to finish on
+  its own. Audit (2026-11-03), every place a user row is locked:
   withdrawal request, send, every payout transition (applyOutcome, the freeze), approve, reject, finalize
   and its confirm, contradiction confirm, waiver request and confirm, top-up start, permission changes:
   person first, `NO KEY UPDATE` (changed in payments; tested). Account deletion and a guest's sign-up
