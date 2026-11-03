@@ -146,7 +146,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    banned); banning a `.config` holder is held to the same floor, and whoever confirms it must hold
    `.config`. Whether a ban needs a second admin, and the floor, are decided inside the ban's transaction
    under the permissions lock, at the confirm, so a grant or a revoke confirmed at the same moment can't slip
-   past either.
+   past either. The ban itself takes every `payments.*` permission away in its transaction (logged as
+   `payments.permissions_removed_by_ban`) and supersedes any grant or revoke waiting on that admin; an
+   unban gives nothing back, so they return only through the two-admin grant, and a banned admin can't be
+   granted any. Since a banned holder isn't counted, taking `.config` from one never meets the floor.
    **Break-glass.** If the console is stuck anyway (holders left, lost their accounts), someone with server
    and database access runs `npm run payments:break-glass -- --grant-config <handle> --reason "…"`. It grants
    `payments.config` to that admin directly, writes an `admin_actions` row as the system (action

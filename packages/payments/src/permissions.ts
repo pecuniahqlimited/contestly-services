@@ -10,15 +10,19 @@
  * payments.config holders, so the console never goes below two who can act (CONFIG_HOLDER_FLOOR). Taking
  * payments.config from one of the last three needs a second admin (the holder themselves may confirm);
  * from one of the last two it's refused. Banning a holder is held to the same floor, and whoever confirms
- * that ban must hold payments.config. Every check runs at confirm time under the permissions lock. When
- * the console is stuck anyway (holders left the company, say), `npm run payments:break-glass` grants
- * payments.config from the server, never over the API (ADR 0013). Who is an admin at all (ADMIN_EMAILS)
- * is outside this: whoever controls the environment controls that list.
+ * that ban must hold payments.config. Every check runs at confirm time under the permissions lock.
+ *
+ * A ban takes every payments permission away (banUserIn), and an unban gives none back: they return only
+ * through the two-admin grant, and a banned admin can't be granted any. A banned holder isn't counted, so
+ * revoking from one never meets the floor. When the console is stuck anyway (holders left the company,
+ * say), `npm run payments:break-glass` grants payments.config from the server, never over the API (ADR
+ * 0013). Who is an admin at all (ADMIN_EMAILS) is outside this: whoever controls the environment controls
+ * that list.
  */
 import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
-  adminAlert, adminBanRequests, adminPermissions, banUserIn, db, liveUser, paymentPermissionGrants, recordAdminAction, systemActorId, users,
+  adminAlert, adminBanRequests, adminPermissions, banUserIn, db, liveUser, lockPaymentPermissions as lockPermissions, paymentPermissionGrants, recordAdminAction, systemActorId, users,
   type AdminBanRequest, type PaymentPermissionGrant, type Tx, type User,
 } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED, type PaymentPermission } from "@contestly/shared";
@@ -42,8 +46,6 @@ async function currentOf(tx: Tx, userId: string) {
   return (await tx.select({ p: adminPermissions.permission }).from(adminPermissions).where(eq(adminPermissions.userId, userId))).map((r) => r.p).sort();
 }
 
-/** Serialises every permission change, so two revocations can't both see two config holders. */
-const lockPermissions = (tx: Tx) => tx.execute(sql`select pg_advisory_xact_lock(hashtext('payments_permissions'))`);
 /** Admins holding payments.config who can still act: not deleted, not banned. */
 async function configHolders(tx: Tx) {
   const [{ n }] = await tx.select({ n: count() }).from(adminPermissions).innerJoin(users, eq(users.id, adminPermissions.userId))
@@ -73,14 +75,16 @@ export async function setPermissions(byAdminId: string, targetUserId: string, pe
   if (byAdminId === targetUserId) throw paymentsError(409, "cannot_change_own_permissions");
   return db.transaction(async (tx) => {
     await lockPermissions(tx);
-    await lockAdminTarget(tx, targetUserId);
+    const target = await lockAdminTarget(tx, targetUserId);
     const before = await currentOf(tx, targetUserId);
     const want = [...new Set(permissions)].sort();
     let revoke = before.filter((p) => !want.includes(p));
     const grant = want.filter((p) => !before.includes(p));
-    // payments.config: never below the floor; from one of the last floor + 1, only with a second admin.
+    if (grant.length && target.bannedAt) throw paymentsError(409, "banned");
+    // payments.config: never below the floor; from one of the last floor + 1, only with a second admin. A
+    // banned holder isn't counted, so taking it from one is just a revoke.
     let pendingRevoke = false;
-    if (revoke.includes(CONFIG)) {
+    if (revoke.includes(CONFIG) && !target.bannedAt) {
       const holders = await configHolders(tx);
       if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
       if (holders - 1 === CONFIG_HOLDER_FLOOR) { revoke = revoke.filter((p) => p !== CONFIG); pendingRevoke = true; }
@@ -118,7 +122,7 @@ export async function confirmPermissionGrant(adminUserId: string, grantId: strin
     await lockPermissions(tx);
     const [pre] = await tx.select().from(paymentPermissionGrants).where(eq(paymentPermissionGrants.id, grantId));
     if (!pre) throw paymentsError(404, "not_found");
-    await lockAdminTarget(tx, pre.userId);
+    const target = await lockAdminTarget(tx, pre.userId);
     const [g] = await tx.select().from(paymentPermissionGrants).where(eq(paymentPermissionGrants.id, grantId)).for("update");
     if (g.status !== "awaiting_second_admin") throw paymentsError(409, "grant_not_pending", { status: g.status });
     if (g.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);
@@ -126,7 +130,7 @@ export async function confirmPermissionGrant(adminUserId: string, grantId: strin
     const before = await currentOf(tx, g.userId);
     if (g.change === "revoke") {
       const holders = await configHolders(tx);
-      if (before.includes(CONFIG) && holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
+      if (before.includes(CONFIG) && !target.bannedAt && holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
       await tx.delete(adminPermissions).where(and(eq(adminPermissions.userId, g.userId), eq(adminPermissions.permission, CONFIG)));
     }
     const add = g.change === "grant" ? (g.permissions as PaymentPermission[]).filter((p) => !before.includes(p)) : [];

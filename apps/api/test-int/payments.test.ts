@@ -1627,6 +1627,44 @@ describe("permissions", () => {
     expect((await ban(admin, plainAdmin)).statusCode).toBe(200);
   });
 
+  it("a ban takes every payments permission away, logged, and supersedes what was waiting; after an unban they come back only through the two-admin grant", async () => {
+    const holder = await makeUser(nextName("banstrip"), { isAdmin: true });
+    const ban = (who: User, u: User) => app.inject({ method: "POST", url: `/admin/users/${u.id}/ban`, headers: as(who), payload: { reason: "suspicious activity" } });
+    await withHolders([holder], async () => {
+      await db.insert(adminPermissions).values({ userId: holder.id, permission: "payments.view" }); // TEST-ONLY: a second permission to lose
+      const waiting = await putPermissions(admin, holder, ["payments.config", "payments.view", "payments.approve"]);
+      expect(waiting.statusCode).toBe(202);
+      const asked = await ban(admin, holder);
+      expect(asked.statusCode).toBe(202);
+      expect((await app.inject({ method: "POST", url: `/admin/users/ban-requests/${asked.json().banRequest.id}/confirm`, headers: as(admin2) })).statusCode).toBe(200);
+      expect(await permissionsOf(holder.id)).toEqual([]);
+      const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, holder.id), eq(adminActions.action, "payments.permissions_removed_by_ban")));
+      expect(log).toMatchObject({
+        adminUserId: admin2.id, reason: "suspicious activity",
+        before: { permissions: ["payments.config", "payments.view"] }, after: { permissions: [], supersededGrants: [waiting.json().pendingGrant.id] },
+      });
+      expect((await confirmGrantAs(admin2, waiting.json().pendingGrant.id)).json()).toMatchObject({ error: "grant_not_pending", details: { status: "superseded" } });
+      // Banned: nothing can be granted.
+      expect((await putPermissions(admin, holder, ["payments.view"])).json().error).toBe("banned");
+      // Unbanned: nothing comes back by itself; a grant takes two admins as for anyone.
+      expect((await app.inject({ method: "POST", url: `/admin/users/${holder.id}/unban`, headers: as(admin), payload: { reason: "cleared after review" } })).statusCode).toBe(200);
+      expect(await permissionsOf(holder.id)).toEqual([]);
+      const again = await putPermissions(admin, holder, ["payments.config"]);
+      expect([again.statusCode, again.json().permissions]).toEqual([202, []]);
+      expect((await confirmGrantAs(admin2, again.json().pendingGrant.id)).json().grant.status).toBe("applied");
+      expect(await permissionsOf(holder.id)).toEqual(["payments.config"]);
+    });
+    await db.delete(adminPermissions).where(eq(adminPermissions.userId, holder.id)); // TEST-ONLY: keep the holder count as the other tests expect
+  });
+
+  it("a banned holder isn't counted: taking payments.config from one is a plain revoke, never the floor", async () => {
+    const banned = await makeUser(nextName("banheld"), { isAdmin: true, bannedAt: new Date() });
+    await withHolders([banned], async () => { // TEST-ONLY: holding it while banned, as a ban from before bans took permissions away would
+      const res = await putPermissions(admin, banned, []);
+      expect([res.statusCode, res.json().permissions, res.json().pendingGrant]).toEqual([200, [], null]);
+    });
+  });
+
   it("whether a ban needs a second admin is decided under the permissions lock: a grant committing meanwhile is seen", async () => {
     const newcomer = await makeUser(nextName("banrace"), { isAdmin: true });
     let release!: () => void;

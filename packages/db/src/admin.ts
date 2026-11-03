@@ -3,9 +3,9 @@
  * transaction (who, what, target, before, after, why). The log is append-only: nothing here or
  * anywhere updates or deletes it.
  */
-import { and, desc, eq, type SQL } from "drizzle-orm";
+import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import { db, type Tx } from "./client.js";
-import { adminActions, users, type AdminActionRow, type User } from "./schema.js";
+import { adminActions, adminPermissions, paymentPermissionGrants, users, type AdminActionRow, type User } from "./schema.js";
 import { treasuryUserId } from "./ledger.js";
 
 type Conn = Tx | typeof db;
@@ -51,12 +51,36 @@ export async function banUser(adminUserId: string, userId: string, reason: strin
 /** The ban, in the caller's transaction (a payments admin's ban is confirmed by a second admin: packages/payments). */
 export async function banUserIn(tx: Tx, adminUserId: string, userId: string, reason: string): Promise<User> {
   if (adminUserId === userId) throw httpError(409, "cannot_ban_self");
+  await lockPaymentPermissions(tx);
   const [u] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
   if (!u || u.isSystem) throw httpError(404, "not_found");
   if (u.bannedAt) return u; // already banned: nothing changes, nothing logged
   const [after] = await tx.update(users).set({ bannedAt: new Date(), banReason: reason }).where(eq(users.id, userId)).returning();
   await recordAdminAction(tx, { adminUserId, action: "user.ban", targetType: "user", targetId: userId, reason, before: banState(u), after: banState(after) });
+  await removePaymentPermissions(tx, adminUserId, userId, reason);
   return after;
+}
+
+/**
+ * Serialises every change to who holds payments permissions (grants, revokes, bans, account deletion), so
+ * two of them can't both count the same payments.config holders. Taken before the person's row.
+ */
+export const lockPaymentPermissions = (tx: Tx) => tx.execute(sql`select pg_advisory_xact_lock(hashtext('payments_permissions'))`);
+
+/**
+ * A ban takes every payments permission away in its transaction, logged, and supersedes any grant or
+ * revoke still waiting on the person. An unban gives nothing back: they return only through the
+ * two-admin grant (ADR 0013).
+ */
+async function removePaymentPermissions(tx: Tx, adminUserId: string, userId: string, reason: string) {
+  const removed = await tx.delete(adminPermissions).where(eq(adminPermissions.userId, userId)).returning({ permission: adminPermissions.permission });
+  const superseded = await tx.update(paymentPermissionGrants).set({ status: "superseded" })
+    .where(and(eq(paymentPermissionGrants.userId, userId), eq(paymentPermissionGrants.status, "awaiting_second_admin"))).returning({ id: paymentPermissionGrants.id });
+  if (!removed.length && !superseded.length) return;
+  await recordAdminAction(tx, {
+    adminUserId, action: "payments.permissions_removed_by_ban", targetType: "user", targetId: userId, reason,
+    before: { permissions: removed.map((r) => r.permission).sort() }, after: { permissions: [], supersededGrants: superseded.map((g) => g.id) },
+  });
 }
 
 export async function unbanUser(adminUserId: string, userId: string, reason: string): Promise<User> {
