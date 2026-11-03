@@ -1,9 +1,10 @@
 /**
  * The per-user chat send limit, across every thread: a short burst window and an hourly cap, both fixed
- * windows counted in Valkey so every realtime instance shares them. Counted before the check, so a
+ * windows counted in Valkey (valkeyCounter in @contestly/queue) so every instance shares them. Party, DM
+ * and crew lines (realtime) and corner replies (API) all count here. Counted before the check, so a
  * client hammering a closed window keeps it closed.
  */
-import type { ChatConfig } from "@contestly/shared";
+import type { ChatConfig } from "./chat.js";
 
 /** Counts a hit on `key` in a window that starts with the first hit; returns the count and the seconds left. */
 export interface WindowCounter {
@@ -22,18 +23,4 @@ export async function chatRateCheck(counter: WindowCounter, userId: string, cfg:
     if (count > w.max) retryAfter = Math.max(retryAfter, Math.max(1, ttlSeconds));
   }
   return retryAfter ? { retryAfter } : null;
-}
-
-/** The Valkey counter (an ioredis connection). */
-export function valkeyCounter(redis: { multi(): { incr(k: string): unknown; expire(k: string, s: number, mode: "NX"): unknown; ttl(k: string): unknown; exec(): Promise<unknown> } }): WindowCounter {
-  return {
-    async hit(key, windowSeconds) {
-      const m = redis.multi();
-      m.incr(key);
-      m.expire(key, windowSeconds, "NX");
-      m.ttl(key);
-      const [[, count], , [, ttl]] = (await m.exec()) as [[null, number], unknown, [null, number]];
-      return { count, ttlSeconds: ttl };
-    },
-  };
 }

@@ -973,3 +973,4 @@ export const draftsResponseSchema = z.object({
   specSummary: z.string().nullable(),
   questions: z.array(draftQuestionSchema),
 });
+export * from "./chatRate.js";

@@ -6,10 +6,9 @@
  */
 import type { Client } from "colyseus";
 import { getChatConfig, lineDeliveries, postMessage, type ChatSender, type ChatThread } from "@contestly/db";
-import { chatQueue, makeRedis, notifyQueue } from "@contestly/queue";
+import { chatQueue, makeRedis, notifyQueue, valkeyCounter } from "@contestly/queue";
 import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
-import { MSG, type ChatMessage, type ChatSend } from "@contestly/shared";
-import { chatRateCheck, valkeyCounter, type WindowCounter } from "./chatRate.js";
+import { MSG, chatRateCheck, type ChatMessage, type ChatSend, type WindowCounter } from "@contestly/shared";
 
 /** What a room publishes on: its Colyseus presence (Valkey). */
 export interface Publisher {

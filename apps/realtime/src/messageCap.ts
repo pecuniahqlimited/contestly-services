@@ -2,7 +2,7 @@
  * Per-connection message cap, in memory (one counter per WebSocket, gone with it). Each second may carry
  * up to `perSecond` messages; past that they're dropped. A connection that stays over the cap for
  * `disconnectAfterSeconds` in a row (every second over, no quiet second between) is disconnected. A second
- * under the cap ends the burst. Separate from HTTP limits and from chat's per-user limits (chatRate.ts).
+ * under the cap ends the burst. Separate from HTTP limits and from chat's per-user limits (chatRateCheck in @contestly/shared).
  */
 export interface MessageCapConfig { perSecond: number; disconnectAfterSeconds: number }
 
