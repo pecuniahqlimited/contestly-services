@@ -58,7 +58,8 @@ async function playOrder(partyId: string, players: User[], qs: ({ status: "playe
 }
 const prizesIn = (partyId: string) => db.select({ userId: ledgerAccounts.userId, type: ledgerEntries.type, amountKobo: ledgerEntries.amountKobo }).from(ledgerEntries)
   .innerJoin(ledgerAccounts, eq(ledgerAccounts.id, ledgerEntries.accountId))
-  .where(and(eq(ledgerEntries.refId, partyId), inArray(ledgerEntries.type, ["party_prize", "party_rake", "party_refund"])));
+  // People's accounts only: since double entry (ADR 0013) each movement also has the pot's side.
+  .where(and(eq(ledgerEntries.refId, partyId), inArray(ledgerEntries.type, ["party_prize", "party_rake", "party_refund"]), inArray(ledgerAccounts.kind, [...ledger.USER_ACCOUNT_KINDS])));
 const mine = (out: { id: string }[], id: string) => out.filter((o) => o.id === id);
 
 afterAll(async () => { await sql.end(); });
