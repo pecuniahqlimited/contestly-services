@@ -1,8 +1,8 @@
 # ADR 0013: Payments: pluggable providers, verify-then-credit, debit-first withdrawals
 
 Status: accepted (2026-10-31; revised 2026-11-02 after an independent review). Roadmap row 10. Makes the
-ledger double entry. Migrations 0021 (double entry, the payment tables), 0022 (the review's fixes) and 0023
-(waiving what's owed).
+ledger double entry. Migrations 0022 (double entry, the payment tables) through 0036 (renumbered after
+main's 0021_admin_alerts on the rebase, 2026-11-03).
 
 ## Context
 
@@ -268,20 +268,17 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   which our default cutoff matches. paystack.com/docs was behind a bot check when this was written, so this
   rests on the support article; `npm run paystack:check` now keeps verifying after a decline and reports
   whether "failed" then "success" came back for the same reference, to confirm it on the real test API.
-- **Deploy hazard: 0021 needs every API and worker instance on the new code before it runs.** An old
+- **Deploy hazard: 0022 needs every API and worker instance on the new code before it runs.** An old
   instance still running after it writes single-leg entries, which the invariants (rightly) flag as
   `entry_outside_journal` and pause payouts. Stop all API and worker instances, migrate, start them on the
-  new code: no rolling deploy for this one (`docs/engineering/deploy-notes.md`). 0022 is additive, but ship
-  it the same way since it lands with 0021.
-- **Parties that straddle 0021** (a seat charged before double entry, refunded after) leave a pot that
+  new code: no rolling deploy for this one (`docs/engineering/deploy-notes.md`). 0023–0036 are additive,
+  but ship them the same way since they land with 0022.
+- **Parties that straddle 0022** (a seat charged before double entry, refunded after) leave a pot that
   never received the entry, so it ends negative. No money was created. The pot invariants leave out any
-  party with an entry from before double entry. In production there are none (0021 ships before launch).
-  In the dev database (`contestly_pay`) they are the three seeded parties, all cancelled:
-  `2f7c9040-42c6-48e8-9901-59812bbb5cdd` (Afrobeats 2010s throwback),
-  `41d45f15-c722-41e6-8ed9-a40b8de4abc0` (Jollof Republic lunch break) and
-  `2fec056f-82a3-4f73-a510-d691ec791d21` (Friday night football). Any other database migrated with
-  pre-0021 parties has its own (`select distinct ref_id from ledger_entries where ref_type = 'party' and
-  journal_id is null`).
+  party with an entry from before double entry. In production there are none (0022 ships before launch).
+  The dev database was rebuilt from scratch on the rebase (2026-11-03), so it has none either (before that,
+  its three seeded parties did). Any database migrated with older parties has its own: `select distinct
+  ref_id from ledger_entries where ref_type = 'party' and journal_id is null`.
 - **Throughput.** `payout_pending` and `topup_in` are one row per provider, so every withdrawal and every
   top-up credit locks the same row and they run one at a time. This is speed, not money, and fine at
   launch volumes. If it bites, bucket the platform accounts (`scope` = `<provider>:<n>`, n from a hash of

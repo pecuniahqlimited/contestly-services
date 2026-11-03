@@ -12,7 +12,7 @@
  * 4. Every withdrawal's own entries: debited once; reversed at most once and only if failed or rejected;
  *    settled only if succeeded; never both; recovered (a contradiction resolved) once, and only then.
  * 5. A finished or cancelled party's pot is zero. Parties with entries from before double entry (migration
- *    0021) are left out: a seat charged before it and refunded after leaves a pot that never got the entry.
+ *    0022) are left out: a seat charged before it and refunded after leaves a pot that never got the entry.
  * 6. Every platform account points the way it should: money in (topup_in, dev_mint, bonus_issued,
  *    prize_funding, platform_funds, payout_owed) at or below zero, money held or out (pots, payout_pending,
  *    payout_settled, payout_fees, contradiction holds) at or above; fee_variance either way.

@@ -624,7 +624,7 @@ export const ledgerAccounts = pgTable("ledger_accounts", {
 /** Append-only. Never update or delete rows here. Every journal's legs sum to zero (ledger.journal()). */
 export const ledgerEntries = pgTable("ledger_entries", {
   id: uuid("id").primaryKey().defaultRandom(),
-  /** The legs written together. Null only on entries from before double entry (migration 0021). */
+  /** The legs written together. Null only on entries from before double entry (migration 0022). */
   journalId: uuid("journal_id"),
   accountId: uuid("account_id").notNull().references(() => ledgerAccounts.id),
   amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(), // signed
