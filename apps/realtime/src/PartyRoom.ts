@@ -9,7 +9,8 @@
  */
 import type { Client } from "colyseus";
 import { SafeRoom } from "./SafeRoom.js";
-import { parsePublished, sendLine } from "./chat.js";
+import { firstSighting, parsePublished, sendLine } from "./chat.js";
+import type { ChatMessage } from "@contestly/shared";
 import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
@@ -179,7 +180,11 @@ export class PartyRoom extends SafeRoom {
     }
   }
 
-  private onLine = (raw: unknown) => this.run("chat line", () => this.broadcast(MSG.chatMessage, parsePublished(raw)));
+  private firstLine = firstSighting();
+  private onLine = (raw: unknown) => this.run("chat line", () => {
+    const line = parsePublished<ChatMessage>(raw);
+    if (this.firstLine(line.id)) this.broadcast(MSG.chatMessage, line);
+  });
 
   /** Dev header or Firebase token, same as the API. Only seated players (and the creator) may enter the room. */
   async onAuth(_client: Client, options: { token?: string; devUser?: string }) {
@@ -452,6 +457,7 @@ export class PartyRoom extends SafeRoom {
    * closes each connection with its own code, so the app can tell it from a dropped socket.
    */
   private onCancelled(ev: PartyCancelledEvent) {
+    if (this.phase === "cancelled") return; // heard already (a worker job replayed after its commit)
     this.setPhase("cancelled");
     this.broadcast(MSG.phase, { phase: "cancelled", ...(ev.by ? { by: ev.by } : {}), ...(ev.message ? { message: ev.message } : {}) });
     if (ev.by === "host") for (const client of [...this.clients]) client.leave(HOST_CANCELLED_CLOSE_CODE);

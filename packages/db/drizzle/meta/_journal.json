@@ -260,6 +260,13 @@
       "when": 1793666107641,
       "tag": "0036_drop_payment_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793704487644,
+      "tag": "0037_party_start_follow_up",
+      "breakpoints": true
     }
   ]
 }

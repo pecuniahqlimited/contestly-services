@@ -4,20 +4,32 @@
  * what it tells the outside world (room events, chat lines, follow-up jobs) is passed in.
  */
 import { and, asc, count, eq, lte } from "drizzle-orm";
-import { db, getPartyConfig, getQuestionsConfig, parties, partyAnswers, partyPlayers, partyQuestions, refundAndCancel, seenInSet, systemLine, type Party, type Tx } from "@contestly/db";
+import { db, getPartyConfig, getQuestionsConfig, parties, partyAnswers, partyLifecycleLine, partyLineByKey, partyPlayers, partyQuestions, refundAndCancel, seenInSet, type Party, type Tx } from "@contestly/db";
 import { stallThresholdSeconds, type ChatMessage } from "@contestly/shared";
 import { standingsFromRecords } from "@contestly/game";
 
+/**
+ * What the party jobs tell the outside world, all after their transaction commits, and all safe to repeat:
+ * a replayed job sends them again (rooms ignore a repeated event, and drop a line id they've relayed), and
+ * every follow-up job is queued under a fixed id, so a second add is a no-op.
+ */
 export interface StartDeps {
   /** Tell the party's room (the `party:events` channel). */
   emit(ev: { partyId: string; status: string }): Promise<unknown>;
   /** Deliver a committed system line to the party's room and inboxes. */
   publishLine(line: ChatMessage): Promise<unknown>;
   /** Queue the questions service: swap seen questions, or build a set that was never started. */
-  queueQuestions(kind: "reseal_for_roster" | "generate_set", partyId: string): Promise<unknown>;
+  queueQuestions(kind: "reseal_for_roster" | "generate_set", partyId: string, jobId: string): Promise<unknown>;
   /** Queue the first watchdog check of a live party. */
-  queueWatchdog(partyId: string): Promise<unknown>;
+  queueWatchdog(partyId: string, jobId: string): Promise<unknown>;
 }
+
+/** The fixed job ids of what a start queues (BullMQ ignores an add whose id it already holds). */
+export const startJobIds = {
+  reseal_for_roster: (partyId: string) => `reseal-${partyId}`,
+  generate_set: (partyId: string) => `generate-set-${partyId}-start`,
+  watchdog: (partyId: string) => `watchdog-${partyId}-start`,
+};
 
 export const GENERATION_FAILED_MESSAGE = "We couldn't build the questions for this party. Everyone has been refunded.";
 
@@ -38,6 +50,7 @@ export async function announceCancelled(deps: Pick<StartDeps, "emit" | "publishL
 export async function cancelFailedGeneration(deps: Pick<StartDeps, "emit" | "publishLine">, partyId: string): Promise<boolean> {
   const line = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+    if (p && cancelledLiveBySystem(p)) return partyLineByKey(tx, partyId, "cancelled"); // a replay: announce it again
     if (!p || p.status !== "live") return null; // before start a failed set never cancels: the host retries
     if (p.questionsStatus === "ready") return null; // a retry made the set playable after all; let the round run
     const out = await refundAndCancel(tx, p, GENERATION_FAILED_MESSAGE);
@@ -49,12 +62,16 @@ export async function cancelFailedGeneration(deps: Pick<StartDeps, "emit" | "pub
   return true;
 }
 
+/** Cancelled by the system after it went live (a refund job, the stall check): what a replayed refund job finds. */
+const cancelledLiveBySystem = (p: Party) => p.status === "cancelled" && p.cancelledBy === "system" && p.liveAt !== null;
+
 export const INTERRUPTED_MESSAGE = "The round was interrupted. Everyone has been refunded.";
 
 /** The watchdog's refund: the room vanished mid-round, or the set never arrived. True when this call cancelled it. */
 export async function refundInterrupted(deps: Pick<StartDeps, "emit" | "publishLine">, partyId: string, generationStalled: boolean): Promise<boolean> {
   const line = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
+    if (p && cancelledLiveBySystem(p)) return partyLineByKey(tx, partyId, "cancelled"); // a replay: announce it again
     if (!p || p.status !== "live") return null;
     const out = await refundAndCancel(tx, p, generationStalled ? GENERATION_FAILED_MESSAGE : INTERRUPTED_MESSAGE);
     console.log(`[party] ${p.title}: ${generationStalled ? "generation stalled" : "room disappeared mid-round"}, cancelled and ${out.players} refunded`);
@@ -85,23 +102,42 @@ async function sealedFollowUp(p: Party): Promise<StartFollowUp> {
   return (await seenInSet(p.id)).length ? "reseal" : "none";
 }
 
-/** live: it started. cancelled: refunded and cancelled. skipped: it wasn't open (already started, over, or gone). */
-export type StartOutcome = "live" | "cancelled" | "skipped";
+/**
+ * live: it started. cancelled: refunded and cancelled. replayed: it had already started or been cancelled at
+ * its start (a retry after a failure past the commit), and this call finished what that one began.
+ * skipped: it wasn't open, and isn't this start's to finish (over, cancelled some other way, or gone).
+ */
+export type StartOutcome = "live" | "cancelled" | "replayed" | "skipped";
 
-/** Start a party at startsAt, or cancel + refund if too few people joined or it has nothing to play. */
+type StartDecision =
+  | { outcome: "live" | "replayed"; status: "live"; line: ChatMessage | null; followUp: StartFollowUp }
+  | { outcome: "cancelled" | "replayed"; status: "cancelled"; line: ChatMessage | null }
+  | { outcome: "skipped" };
+
+/**
+ * Start a party at startsAt, or cancel + refund if too few people joined or it has nothing to play. Everything
+ * the outside world hears comes after the commit; a replay that finds the party already live (or cancelled
+ * before it ever went live) sends it all again: the event, the chat line, and the follow-up jobs.
+ */
 export async function startOrCancel(deps: StartDeps, partyId: string): Promise<StartOutcome> {
   const cfg = await getPartyConfig();
-  let line: ChatMessage | undefined;
-  // Cancelling: refund, and remember the line; the room hears it only after the commit.
-  const cancel = async (tx: Tx, p: Party, message: string, why: string) => {
+  const cancel = async (tx: Tx, p: Party, message: string, why: string): Promise<StartDecision> => {
     const out = await refundAndCancel(tx, p, message);
-    line = out.line;
     console.log(`[party] ${p.title}: ${why}, cancelled and ${out.players} refunded`);
-    return "cancelled" as const;
+    return { outcome: "cancelled", status: "cancelled", line: out.line };
   };
-  const started = await db.transaction(async (tx): Promise<StartFollowUp | StartOutcome> => {
+  const decided = await db.transaction(async (tx): Promise<StartDecision> => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "open") return "skipped";
+    if (!p) return { outcome: "skipped" };
+    if (p.status === "live") {
+      // Already started: the questions follow-up only while it's still pending (the set is still being made).
+      const followUp = p.questionsStatus === "generating" ? (p.startFollowUp ?? "none") : "none";
+      return { outcome: "replayed", status: "live", line: await partyLineByKey(tx, partyId, "live"), followUp };
+    }
+    if (p.status === "cancelled" && p.cancelledBy === "system" && !p.liveAt) {
+      return { outcome: "replayed", status: "cancelled", line: await partyLineByKey(tx, partyId, "cancelled") };
+    }
+    if (p.status !== "open") return { outcome: "skipped" };
     const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
     if (Number(n) < cfg.minPlayers) return cancel(tx, p, "Not enough players joined. Everyone has been refunded.", `${n} player(s), fewer than ${cfg.minPlayers}`);
     if (p.mode === "curate" && !(await curateSetApproved(tx, p))) return cancel(tx, p, "The host didn't finish reviewing the questions. Everyone has been refunded.", "curate set not approved at start");
@@ -110,25 +146,26 @@ export async function startOrCancel(deps: StartDeps, partyId: string): Promise<S
     await tx.update(parties).set({
       status: "live",
       liveAt: new Date(),
-      ...(followUp === "none" ? {} : { questionsStatus: "generating" as const }),
+      ...(followUp === "none" ? {} : { questionsStatus: "generating" as const, startFollowUp: followUp }),
     }).where(eq(parties.id, partyId));
-    line = await systemLine(tx, partyId, "The party is starting. Good luck!");
+    const line = await partyLifecycleLine(tx, partyId, "live", "The party is starting. Good luck!");
     console.log(`[party] ${p.title} is live with ${n} players${followUp === "reseal" ? "; swapping questions a player has already seen" : ""}`);
-    return followUp;
+    return { outcome: "live", status: "live", line, followUp };
   });
-  if (started === "skipped") return started;
-  if (started === "cancelled") {
-    await announceCancelled(deps, partyId, line!);
-    return started;
+  if (decided.outcome === "skipped") return "skipped";
+  if (decided.status === "cancelled") {
+    if (decided.line) await announceCancelled(deps, partyId, decided.line);
+    else await deps.emit({ partyId, status: "cancelled" });
+    return decided.outcome;
   }
-  if (line) await deps.publishLine(line);
+  if (decided.line) await deps.publishLine(decided.line);
   // After commit, so the room never reads the set's state from before this transaction.
   await deps.emit({ partyId, status: "live" });
-  if (started === "reseal") await deps.queueQuestions("reseal_for_roster", partyId);
-  if (started === "generate") await deps.queueQuestions("generate_set", partyId);
+  if (decided.followUp === "reseal") await deps.queueQuestions("reseal_for_roster", partyId, startJobIds.reseal_for_roster(partyId));
+  if (decided.followUp === "generate") await deps.queueQuestions("generate_set", partyId, startJobIds.generate_set(partyId));
   // Watchdog: if the realtime room's heartbeat key goes stale mid-round, cancel and refund.
-  await deps.queueWatchdog(partyId);
-  return "live";
+  await deps.queueWatchdog(partyId, startJobIds.watchdog(partyId));
+  return decided.outcome;
 }
 
 /** A start job normally fires on time; the sweep leaves a party this long so it only picks up what was missed. */

@@ -6,29 +6,46 @@
  * What it tells the outside world is passed in.
  */
 import { and, asc, eq } from "drizzle-orm";
-import { cancelIfUnplaceable, db, getPartyConfig, ledger, parties, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, systemLine, users } from "@contestly/db";
+import { cancelIfUnplaceable, db, getPartyConfig, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, users } from "@contestly/db";
 import { isGoods, type ChatMessage } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 
 export interface SettleDeps {
   emit(ev: { partyId: string; status: string }): Promise<unknown>;
   publishLine(line: ChatMessage): Promise<unknown>;
-  /** Fold the party's answer stats into the question bank (the questions service's record_play). */
-  queueRecordPlay(partyId: string): Promise<unknown>;
+  /** Fold the party's answer stats into the question bank (the questions service's record_play), under a fixed job id. */
+  queueRecordPlay(partyId: string, jobId: string): Promise<unknown>;
 }
+
+export const recordPlayJobId = (partyId: string) => `record-play-${partyId}`;
 
 /**
  * Settle a finished round: rake taken once, pot split via the ledger with idempotency keys,
- * goods become one fulfilment record per winning place, party → finished with ranks. A replayed job is a no-op.
+ * goods become one fulfilment record per winning place, party → finished with ranks. A replay moves no
+ * money; it finds the party finished (or cancelled as unplaceable) and sends what the first run may not have
+ * got to after its commit: the event, the chat line, and record_play. True only for the run that settled.
  */
 export async function settle(deps: SettleDeps, partyId: string): Promise<boolean> {
   const cfg = await getPartyConfig();
   let line: ChatMessage | undefined;
   // What the room hears, published only once the transaction has committed (never a state that rolled back).
   let event: { partyId: string; status: "finished" | "cancelled" } | undefined;
+  let replayedFinish = false;
   const settled = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-    if (!p || p.status !== "live") return false; // already settled or cancelled
+    if (p?.status === "finished") {
+      line = (await partyLineByKey(tx, partyId, "finished")) ?? undefined;
+      event = { partyId, status: "finished" };
+      replayedFinish = true;
+      return false;
+    }
+    if (p?.status === "cancelled" && p.cancelledBy === "system" && p.liveAt) {
+      // Cancelled after going live by the system (here as unplaceable, or a refund job): announce it again.
+      line = (await partyLineByKey(tx, partyId, "cancelled")) ?? undefined;
+      event = { partyId, status: "cancelled" };
+      return false;
+    }
+    if (!p || p.status !== "live") return false; // cancelled some other way
     const players = await tx.select({ userId: partyPlayers.userId, rank: partyPlayers.rank, isGuest: users.isGuest, bannedAt: users.bannedAt }).from(partyPlayers)
       .innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, partyId)).orderBy(asc(partyPlayers.rank));
     if (!players.some((x) => x.rank !== null)) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
@@ -71,13 +88,13 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
     await tx.update(parties).set({ status: "finished", endedAt: new Date() }).where(eq(parties.id, partyId));
     // The feed hears every finish; a bragging-rights party also earns party points (ADR 0008).
     await recordPartyFinish(tx, p, players);
-    line = await systemLine(tx, partyId, "That's a wrap! Results are in.");
+    line = await partyLifecycleLine(tx, partyId, "finished", "That's a wrap! Results are in.");
     event = { partyId, status: "finished" };
     return true;
   });
   if (event) await deps.emit(event);
   if (line) await deps.publishLine(line);
-  // Fold this party's answer stats back into the question bank (idempotent via play_stats_recorded_at).
-  if (settled) await deps.queueRecordPlay(partyId);
+  // Fold this party's answer stats back into the question bank (idempotent via play_stats_recorded_at and its job id).
+  if (settled || replayedFinish) await deps.queueRecordPlay(partyId, recordPlayJobId(partyId));
   return settled;
 }

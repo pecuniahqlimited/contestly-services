@@ -58,3 +58,20 @@ export async function publishLine(presence: Publisher, message: ChatMessage) {
 
 /** Valkey pub/sub hands RedisPresence callbacks parsed JSON and LocalPresence the raw string. */
 export const parsePublished = <T>(raw: unknown): T => (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
+
+/** How many line ids a room remembers to drop a repeat (a worker job replayed after its commit republishes its line). */
+export const RECENT_LINES_KEPT = 200;
+
+/**
+ * True the first time a line id is seen, false for a repeat. Remembers the last `kept` ids, so a line
+ * published twice reaches clients once.
+ */
+export function firstSighting(kept = RECENT_LINES_KEPT) {
+  const seen = new Set<string>();
+  return (id: string): boolean => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    if (seen.size > kept) seen.delete(seen.values().next().value!);
+    return true;
+  };
+}

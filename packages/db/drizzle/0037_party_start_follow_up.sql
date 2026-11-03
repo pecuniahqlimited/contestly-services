@@ -1,0 +1,1 @@
+ALTER TABLE "parties" ADD COLUMN "start_follow_up" text;

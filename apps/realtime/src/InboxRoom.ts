@@ -11,7 +11,8 @@ import { canReadThread, db, getChatConfig, parties, threadById, type ChatSender,
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
 import { MSG, SIGN_UP_REQUIRED, chatThreadChannel, chatUserChannel, inboxSendSchema, partyChatFromOutside, watchThreadSchema } from "@contestly/shared";
 import { SafeRoom } from "./SafeRoom.js";
-import { parsePublished, sendLine } from "./chat.js";
+import { firstSighting, parsePublished, sendLine } from "./chat.js";
+import type { ChatMessage } from "@contestly/shared";
 
 /** A user's devices share their inbox room. */
 const MAX_DEVICES = 10;
@@ -96,8 +97,10 @@ export class InboxRoom extends SafeRoom {
     const existing = this.watching.get(threadId);
     if (existing) return void existing.sessions.add(sessionId);
     const sessions = new Set([sessionId]);
+    const first = firstSighting();
     const listener = (raw: unknown) => this.run("thread line", () => {
-      const line = parsePublished(raw);
+      const line = parsePublished<ChatMessage>(raw);
+      if (!first(line.id)) return; // a republished line
       for (const c of this.clients) if (sessions.has(c.sessionId)) c.send(MSG.chatMessage, line);
     });
     this.watching.set(threadId, { sessions, listener });

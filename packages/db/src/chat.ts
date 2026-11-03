@@ -3,7 +3,8 @@
  * the inbox room, the API's system lines and the worker all come through here, so the rules (who may
  * write, message requests, masking, mentions, the client message id) live once.
  */
-import { and, count, desc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, count, desc, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { chatThreadChannel, chatUserChannel, dmKey, dmPermission, maskProfanity, type ChatConfig, type ChatMessage, type DmPermission, type InboxUpdate } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { chatMembers, chatMessages, chatThreads, crewMembers, crews, follows, parties, partyPlayers, users, voiceNotes, type ChatThread, type User, type VoiceNote } from "./schema.js";
@@ -163,6 +164,32 @@ export async function messagesPage(threadId: string, opts: { before?: string; li
 /** A system line in a party's chat ("Ada joined"). Inside the caller's transaction; publish it after commit. */
 export async function systemLine(q: Conn, partyId: string, text: string): Promise<ChatMessage> {
   return systemLineIn(q, await partyThreadId(q, partyId), text);
+}
+
+/** A party's lifecycle lines: at most one of each per party ("live", "cancelled", "finished"). */
+export type PartyLineKey = "live" | "cancelled" | "finished";
+
+/** The fixed client message id of a party's lifecycle line, so it can be found again (a UUID made from the key). */
+function lifecycleMsgId(partyId: string, key: PartyLineKey): string {
+  const h = createHash("sha256").update(`party_line:${partyId}:${key}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** The party's lifecycle line for this key, if it was written. */
+export async function partyLineByKey(q: Conn, partyId: string, key: PartyLineKey): Promise<ChatMessage | null> {
+  const [row] = await q.select({ id: chatMessages.id }).from(chatMessages).innerJoin(chatThreads, eq(chatThreads.id, chatMessages.threadId))
+    .where(and(eq(chatThreads.partyId, partyId), isNull(chatMessages.userId), eq(chatMessages.clientMsgId, lifecycleMsgId(partyId, key))));
+  return row ? messageById(q, row.id) : null;
+}
+
+/**
+ * A lifecycle line, written once per party and key: a replay (the caller holds the party row, so two can't
+ * race) gets the line already there, which it can publish again (rooms drop a line id they've relayed).
+ */
+export async function partyLifecycleLine(q: Conn, partyId: string, key: PartyLineKey, text: string): Promise<ChatMessage> {
+  const existing = await partyLineByKey(q, partyId, key);
+  if (existing) return existing;
+  return insertLine(q, { threadId: await partyThreadId(q, partyId), kind: "system", text, clientMsgId: lifecycleMsgId(partyId, key) });
 }
 
 /** A system line in any thread (a crew's "new record"). */

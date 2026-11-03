@@ -6,7 +6,7 @@ import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
-import { allQuestionsPlayed, cancelFailedGeneration, refundInterrupted, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
+import { allQuestionsPlayed, announceCancelled, cancelFailedGeneration, refundInterrupted, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { selectTranscriber } from "./transcribe/index.js";
 import { sendersFromEnv } from "@contestly/email";
@@ -45,20 +45,35 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
 /** An admin cancelled a scheduled or live party. Idempotent: a party already over is left alone. */
 async function adminCancel(partyId: string) {
   const out = await db.transaction((tx) => adminCancelParty(tx, partyId));
-  if (!out.cancelled) return;
-  await emit({ partyId, status: "cancelled" });
-  console.log(`[party] ${partyId}: cancelled by an admin, ${out.refunded} refunded`);
+  if (!out.line) return; // over some other way
+  // After the commit; a replay (already cancelled by an admin) announces it again.
+  await announceCancelled(startDeps, partyId, out.line);
+  if (out.cancelled) console.log(`[party] ${partyId}: cancelled by an admin, ${out.refunded} refunded`);
 }
 
+
+/** The watchdog's first look after a start, then every WATCHDOG_EVERY_MS; one chain per party (see watchdog()). */
+const WATCHDOG_FIRST_MS = 45_000;
+const WATCHDOG_EVERY_MS = 30_000;
+const WATCHDOG_ONE_CHAIN_MS = 20_000;
 
 /**
  * A live round whose room heartbeat disappeared (process crash, deploy) is cancelled and refunded.
  * Also the belt-and-braces for generation: a live party still waiting for its question set past
  * the generation timeout is cancelled the same way (a dead questions process never fails its job).
  */
-async function watchdog(partyId: string) {
+async function watchdog(partyId: string, jobId: string | undefined) {
+  // One chain per party: a link runs only if no other link ran in the last WATCHDOG_ONE_CHAIN_MS (its own
+  // retry is let through), so a start that queued the first link twice can't leave two chains running.
+  const key = `party:watchdog:${partyId}`;
+  if (!(await pub.set(key, jobId ?? "", "PX", WATCHDOG_ONE_CHAIN_MS, "NX")) && (await pub.get(key)) !== jobId) return;
   const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
-  if (!p || p.status !== "live") return; // finished or cancelled; the watchdog retires
+  if (!p) return;
+  if (p.status !== "live") {
+    // Finished or cancelled: the watchdog retires. A refund of its own that failed after the commit is announced again.
+    if (p.status === "cancelled") await refundInterrupted(startDeps, partyId, false);
+    return;
+  }
   const qcfg = await getQuestionsConfig();
   const generationStalled =
     p.liveAt !== null &&
@@ -67,7 +82,7 @@ async function watchdog(partyId: string) {
   if (!generationStalled) {
     const alive = await pub.get(partyRoomKey(partyId));
     if (alive) {
-      await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 30_000 });
+      await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: WATCHDOG_EVERY_MS });
       return;
     }
   }
@@ -84,14 +99,12 @@ async function watchdog(partyId: string) {
 /** Starts, cancels and the sweep (partyStart.ts) reach the rest of the system through these. */
 const startDeps: StartDeps = {
   emit, publishLine,
-  queueQuestions: (kind, partyId) => kind === "reseal_for_roster"
-    ? questionJobs.add("reseal_for_roster", { kind, partyId }, { jobId: `reseal-${partyId}` })
-    : questionJobs.add("generate_set", { kind, partyId }, { jobId: `generate-set-${partyId}-start` }),
-  queueWatchdog: (partyId) => partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: 45_000 }),
+  queueQuestions: (kind, partyId, jobId) => questionJobs.add(kind, { kind, partyId }, { jobId }),
+  queueWatchdog: (partyId, jobId) => partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: WATCHDOG_FIRST_MS, jobId }),
 };
 const settleDeps: SettleDeps = {
   emit, publishLine,
-  queueRecordPlay: (partyId) => questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId: `record-play-${partyId}` }),
+  queueRecordPlay: (partyId, jobId) => questionJobs.add("record_play", { kind: "record_play", partyId }, { jobId }),
 };
 const settle = (partyId: string) => settleWith(settleDeps, partyId);
 
@@ -109,7 +122,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   }
   if (d.kind === "start" || d.kind === "cancel_if_empty") return startOrCancel(startDeps, d.partyId);
   if (d.kind === "settle") return settle(d.partyId);
-  if (d.kind === "watchdog") return watchdog(d.partyId);
+  if (d.kind === "watchdog") return watchdog(d.partyId, job.id);
   if (d.kind === "cancel_generation_failed") return cancelFailedGeneration(startDeps, d.partyId);
   if (d.kind === "admin_cancel") return adminCancel(d.partyId);
 }, { connection, prefix: QUEUE_PREFIX });

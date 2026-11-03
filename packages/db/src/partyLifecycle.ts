@@ -9,7 +9,7 @@ import { NOT_HOST, PARTY_CLOSED, PARTY_LIVE, hostCancelMessage, type CancelledBy
 import { db, type Tx } from "./client.js";
 import { ledgerAccounts, ledgerEntries, parties, partyPlayers, users, type Party } from "./schema.js";
 import { recordAdminAction, systemActorId } from "./admin.js";
-import { systemLine } from "./chat.js";
+import { partyLifecycleLine, partyLineByKey } from "./chat.js";
 import { isHostTeam } from "./host.js";
 import * as ledger from "./ledger.js";
 import { entryChargeKey } from "./seats.js";
@@ -31,7 +31,7 @@ export async function refundAndCancel(tx: Tx, p: Party, message: string, cancell
     status: "cancelled", endedAt: new Date(), cancelledBy: cancelledBy.by,
     ...(cancelledBy.by === "host" ? { cancelledByUserId: cancelledBy.userId, cancelReason: cancelledBy.reason ?? null } : {}),
   }).where(eq(parties.id, p.id));
-  const line = await systemLine(tx, p.id, message);
+  const line = await partyLifecycleLine(tx, p.id, "cancelled", message);
   return { players: players.length, line };
 }
 
@@ -72,11 +72,17 @@ export async function cancelIfUnplaceable(tx: Tx, p: Party) {
 
 export const ADMIN_CANCEL_MESSAGE = "This party was cancelled by Contestly. Everyone has been refunded.";
 
-/** An admin's cancel: refunds and cancels a scheduled or live party; anything already over is left alone. */
-export async function adminCancelParty(tx: Tx, partyId: string): Promise<{ cancelled: boolean; refunded: number }> {
+/**
+ * An admin's cancel: refunds and cancels a scheduled or live party; anything already over is left alone.
+ * The line comes back for the caller to publish after the commit; a replay (already cancelled by an admin)
+ * gets it again with cancelled false, so a job that failed after its commit can still announce it.
+ */
+export async function adminCancelParty(tx: Tx, partyId: string): Promise<{ cancelled: boolean; refunded: number; line: ChatMessage | null }> {
   const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
-  if (!p || (p.status !== "open" && p.status !== "live")) return { cancelled: false, refunded: 0 };
-  return { cancelled: true, refunded: (await refundAndCancel(tx, p, ADMIN_CANCEL_MESSAGE, { by: "admin" })).players };
+  if (p?.status === "cancelled" && p.cancelledBy === "admin") return { cancelled: false, refunded: 0, line: await partyLineByKey(tx, p.id, "cancelled") };
+  if (!p || (p.status !== "open" && p.status !== "live")) return { cancelled: false, refunded: 0, line: null };
+  const out = await refundAndCancel(tx, p, ADMIN_CANCEL_MESSAGE, { by: "admin" });
+  return { cancelled: true, refunded: out.players, line: out.line };
 }
 
 /**

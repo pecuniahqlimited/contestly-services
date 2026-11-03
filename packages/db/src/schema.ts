@@ -301,6 +301,8 @@ export const parties = pgTable("parties", {
   roundProgressAt: timestamp("round_progress_at", { withTimezone: true }),
   /** When the worker last republished the start of a stalled live party; a second stall after it cancels and refunds. */
   stallRekickedAt: timestamp("stall_rekicked_at", { withTimezone: true }),
+  /** What the start asked of the questions service when it went live (a roster swap, a set never built), so a replayed start job queues it again. */
+  startFollowUp: text("start_follow_up", { enum: ["reseal", "generate"] }),
   /** Set when record_play has folded this party's answer stats into the bank (job idempotency). */
   playStatsRecordedAt: timestamp("play_stats_recorded_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

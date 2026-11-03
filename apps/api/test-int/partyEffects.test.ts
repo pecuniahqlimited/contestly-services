@@ -2,32 +2,48 @@
  * What the worker's party jobs tell the outside world (apps/worker/src/partyStart.ts, partySettle.ts):
  * the room and the chat hear a cancel only once its transaction has committed. A commit that fails (a
  * deadlock injected at commit with a deferred trigger, after the point where the old code emitted) tells
- * nobody anything, and the retry announces it once.
+ * nobody anything, and the retry announces it once. And a job that fails after its commit (the event or the
+ * line couldn't be sent) finishes on its retry: the event again, the same chat line again (written once per
+ * party and key), and its follow-up jobs under fixed ids.
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { eq, sql as sqlRaw } from "drizzle-orm";
-import { db, ledger, parties, partyPlayers, sql, type Party, type User } from "@contestly/db";
+import { and, eq, isNull, sql as sqlRaw } from "drizzle-orm";
+import { adminCancelParty, chatMessages, chatThreads, db, ledger, parties, partyPlayers, sql, users, type Party, type User } from "@contestly/db";
 import { kobo, type ChatMessage } from "@contestly/shared";
-import { cancelFailedGeneration, refundInterrupted, startOrCancel, type StartDeps } from "../../worker/src/partyStart.js";
+import { cancelFailedGeneration, refundInterrupted, startJobIds, startOrCancel, type StartDeps } from "../../worker/src/partyStart.js";
+import { recordPlayJobId, settle, type SettleDeps } from "../../worker/src/partySettle.js";
 import { makeUser, tag } from "./harness.js";
 
 const ENTRY = kobo(100);
 let n = 0;
 
-/** A recorder for everything a job tells the outside world, per party. */
-function recorder() {
+/**
+ * A recorder for everything a job tells the outside world. `failOnce` makes that one call throw the first
+ * time (Valkey down for a moment): a failure after the commit.
+ */
+function recorder(failOnce?: "emit" | "publishLine") {
   const events: { partyId: string; status: string }[] = [];
   const lines: ChatMessage[] = [];
-  const questions: string[] = [];
-  const watchdogs: string[] = [];
-  const deps: StartDeps = {
-    emit: async (ev) => events.push(ev),
-    publishLine: async (l) => lines.push(l),
-    queueQuestions: async (kind, id) => questions.push(`${kind}:${id}`),
-    queueWatchdog: async (id) => watchdogs.push(id),
+  const jobs: string[] = [];
+  let failed = false;
+  const maybeFail = (what: "emit" | "publishLine") => {
+    if (failOnce === what && !failed) {
+      failed = true;
+      throw new Error(`injected: ${what} failed after the commit`);
+    }
   };
-  return { deps, events, lines, questions, watchdogs };
+  const deps: StartDeps & SettleDeps = {
+    emit: async (ev) => { maybeFail("emit"); events.push(ev); },
+    publishLine: async (l) => { maybeFail("publishLine"); lines.push(l); },
+    queueQuestions: async (_kind, _id, jobId) => jobs.push(jobId),
+    queueWatchdog: async (_id, jobId) => jobs.push(jobId),
+    queueRecordPlay: async (_id, jobId) => jobs.push(jobId),
+  };
+  return { deps, events, lines, jobs };
 }
+/** The party's system lines in the database. */
+const systemLines = async (partyId: string) => db.select({ id: chatMessages.id, text: chatMessages.text }).from(chatMessages)
+  .innerJoin(chatThreads, eq(chatThreads.id, chatMessages.threadId)).where(and(eq(chatThreads.partyId, partyId), isNull(chatMessages.userId)));
 
 async function party(status: "open" | "live", players: User[], extra: Partial<typeof parties.$inferInsert> = {}): Promise<Party> {
   const host = players[0] ?? (await makeUser(`fxhost${++n}`));
@@ -88,4 +104,95 @@ describe("a cancel is announced only after it commits", () => {
       expect(lines).toHaveLength(1);
     });
   }
+});
+
+describe("a job that fails after its commit finishes on its retry", () => {
+  it("start (live, with a set never built): the retry emits live, republishes the same line, and queues the build and the watchdog under fixed ids", async () => {
+    const players = [await makeUser(`fxlive${++n}`), await makeUser(`fxlive${++n}`)];
+    const p = await party("open", players, { questionsStatus: "not_started" });
+    const { deps, events, lines, jobs } = recorder("emit");
+    await expect(startOrCancel(deps, p.id)).rejects.toThrow(/injected/);
+    expect([await statusOf(p.id), events, jobs]).toEqual(["live", [], []]); // committed; the room heard nothing
+    const firstLine = lines[0];
+
+    expect(await startOrCancel(deps, p.id)).toBe("replayed");
+    expect(events).toEqual([{ partyId: p.id, status: "live" }]);
+    expect(lines.map((l) => l.id)).toEqual([firstLine.id, firstLine.id]); // the same line again; the room drops the repeat
+    expect(jobs).toEqual([startJobIds.generate_set(p.id), startJobIds.watchdog(p.id)]);
+    expect(await systemLines(p.id)).toHaveLength(1);
+    // A third run is the same again: safe to repeat.
+    await startOrCancel(deps, p.id);
+    expect(jobs).toEqual([startJobIds.generate_set(p.id), startJobIds.watchdog(p.id), startJobIds.generate_set(p.id), startJobIds.watchdog(p.id)]);
+    // Once the set is ready, a replay no longer asks for it.
+    await db.update(parties).set({ questionsStatus: "ready" }).where(eq(parties.id, p.id));
+    jobs.length = 0;
+    await startOrCancel(deps, p.id);
+    expect(jobs).toEqual([startJobIds.watchdog(p.id)]);
+  });
+
+  it("start (cancelled for too few players): the retry announces the cancel and its line", async () => {
+    const p = await party("open", []);
+    const { deps, events, lines } = recorder("publishLine");
+    await expect(startOrCancel(deps, p.id)).rejects.toThrow(/injected/);
+    expect([await statusOf(p.id), events, lines]).toEqual(["cancelled", [], []]);
+    expect(await startOrCancel(deps, p.id)).toBe("replayed");
+    expect(events).toEqual([{ partyId: p.id, status: "cancelled" }]);
+    expect(lines.map((l) => l.id)).toEqual((await systemLines(p.id)).map((l) => l.id));
+  });
+
+  it("settle: the retry emits finished, republishes the wrap line and queues record_play under its id; no money moves twice", async () => {
+    const [a, b] = [await makeUser(`fxset${++n}`), await makeUser(`fxset${++n}`)];
+    const p = await party("live", [a, b]);
+    await db.update(partyPlayers).set({ rank: 1 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, a.id)));
+    await db.update(partyPlayers).set({ rank: 2 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, b.id)));
+    const { deps, events, lines, jobs } = recorder("emit");
+    await expect(settle(deps, p.id)).rejects.toThrow(/injected/);
+    expect([await statusOf(p.id), events, jobs]).toEqual(["finished", [], []]);
+    const paid = await ledger.balances(a.id);
+
+    expect(await settle(deps, p.id)).toBe(false); // settled by the first run
+    expect(events).toEqual([{ partyId: p.id, status: "finished" }]);
+    expect(lines).toHaveLength(1);
+    expect(jobs).toEqual([recordPlayJobId(p.id)]);
+    expect(await ledger.balances(a.id)).toEqual(paid);
+    expect(await systemLines(p.id)).toHaveLength(1);
+  });
+
+  it("settle, cancelled as unplaceable: the retry announces the cancel", async () => {
+    const banned = await makeUser(`fxban${++n}`);
+    const p = await party("live", [banned]);
+    await db.update(partyPlayers).set({ rank: 1 }).where(eq(partyPlayers.partyId, p.id));
+    await db.update(users).set({ bannedAt: new Date(), banReason: "test" }).where(eq(users.id, banned.id));
+    const { deps, events, lines } = recorder("emit");
+    await expect(settle(deps, p.id)).rejects.toThrow(/injected/);
+    expect(await statusOf(p.id)).toBe("cancelled");
+    await settle(deps, p.id);
+    expect(events).toEqual([{ partyId: p.id, status: "cancelled" }]);
+    expect(new Set(lines.map((l) => l.id)).size).toBe(1);
+  });
+
+  for (const [what, make, run] of [
+    ["cancelGenerationFailed", async () => party("live", [await makeUser(`fxgen${++n}`)], { questionsStatus: "failed" }), cancelFailedGeneration],
+    ["the watchdog's refund", async () => party("live", [await makeUser(`fxdog${++n}`)]), (deps: StartDeps, id: string) => refundInterrupted(deps, id, false)],
+  ] as const) {
+    it(`${what}: the retry announces the cancel and its line; nothing is refunded twice`, async () => {
+      const p = await make();
+      const { deps, events, lines } = recorder("emit");
+      await expect(run(deps, p.id)).rejects.toThrow(/injected/);
+      expect([await statusOf(p.id), events]).toEqual(["cancelled", []]);
+      await run(deps, p.id);
+      expect(events).toEqual([{ partyId: p.id, status: "cancelled" }]);
+      expect(new Set(lines.map((l) => l.id)).size).toBe(1);
+      expect(await systemLines(p.id)).toHaveLength(1);
+    });
+  }
+
+  it("an admin's cancel: a replay gets the same line back to announce, and refunds nothing", async () => {
+    const u = await makeUser(`fxadm${++n}`);
+    const p = await party("open", [u]);
+    const first = await db.transaction((tx) => adminCancelParty(tx, p.id));
+    const again = await db.transaction((tx) => adminCancelParty(tx, p.id));
+    expect([first.cancelled, again.cancelled, again.refunded, again.line?.id]).toEqual([true, false, 0, first.line?.id]);
+    expect(await ledger.balances(u.id)).toEqual({ cashKobo: ENTRY, bonusKobo: 0 });
+  });
 });
