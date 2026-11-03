@@ -3,15 +3,16 @@ import { and, desc, eq } from "drizzle-orm";
 import { db, ledger, payoutAccounts, payouts } from "@contestly/db";
 import {
   addBankAccountSchema, bankAccountSchema, bankAccountsResponseSchema, banksResponseSchema, createTopupSchema, kobo, payoutSchema, payoutsResponseSchema,
-  resolveAccountResponseSchema, resolveAccountSchema, topupSchema, walletLimitsQuerySchema, walletLimitsSchema, withdrawalRequestSchema,
+  resolveAccountResponseSchema, resolveAccountSchema, topupSchema, topupsResponseSchema, walletLimitsQuerySchema, walletLimitsSchema, withdrawalRequestSchema,
 } from "@contestly/shared";
 import {
-  addBankAccount, bankAccountsOf, createTopup, listBanks, paymentsDevTools, payoutView, removeBankAccount, requestPayout, resolveAccount, topupForUser, topupView, walletLimits,
+  addBankAccount, bankAccountsOf, createTopup, listBanks, paymentsDevTools, payoutView, removeBankAccount, requestPayout, resolveAccount, topupForUser, topupsOf, topupView, walletLimits,
 } from "@contestly/payments";
 import { requireUser, uuidParam } from "../auth.js";
 import { paymentsDeps, paymentsKv, topupReturnUrl } from "../payments.js";
 
 const WITHDRAWALS_SHOWN = 50;
+const TOPUPS_SHOWN = 50;
 
 export async function walletRoutes(app: FastifyInstance) {
   app.get("/wallet", async (req) => {
@@ -49,6 +50,12 @@ export async function walletRoutes(app: FastifyInstance) {
     const me = requireUser(req);
     const { amountKobo } = walletLimitsQuerySchema.parse(req.query);
     return walletLimitsSchema.parse(await walletLimits(me.id, amountKobo));
+  });
+
+  /** The person's top-ups, newest first (creditedKobo once credited). */
+  app.get("/wallet/topups", async (req) => {
+    const me = requireUser(req);
+    return topupsResponseSchema.parse({ topups: (await topupsOf(me.id, TOPUPS_SHOWN)).map(topupView) });
   });
 
   /** After checkout the app polls this. Our record only: it never asks the provider and never credits. */

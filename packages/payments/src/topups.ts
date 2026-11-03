@@ -11,7 +11,7 @@
  * stays pending, marked attempt_failed, until its cutoff, and the check at the cutoff is the final one.
  */
 import { randomBytes } from "node:crypto";
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, isNull, lt } from "drizzle-orm";
 import { db, moneyTransaction, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User, adminAlert } from "@contestly/db";
 import { BELOW_MINIMUM, CURRENCY, EMAIL_REQUIRED, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, TOPUP_REFUSED, type TopupView } from "@contestly/shared";
 import { backoffMs, paymentsError, ONCE_PER_THING_SECONDS } from "./common.js";
@@ -26,6 +26,7 @@ const newReference = () => `tp-${randomBytes(12).toString("hex")}`;
 export const topupView = (t: Topup): TopupView => ({
   reference: t.reference, amountKobo: t.amountKobo, currency: CURRENCY, status: t.status,
   checkoutUrl: t.status === "pending" ? t.checkoutUrl : null, attemptFailed: t.status === "pending" && !!t.attemptFailedAt, createdAt: t.createdAt.toISOString(), creditedAt: t.creditedAt?.toISOString() ?? null,
+  creditedKobo: t.status === "succeeded" ? (t.creditedKobo ?? t.amountKobo) : null,
 });
 
 export interface CreateTopupOptions { returnUrl: string | null; now?: Date }
@@ -94,6 +95,11 @@ export async function failUnstartedTopups(now = new Date()) {
 export async function topupForUser(userId: string, reference: string): Promise<Topup | null> {
   const [t] = await db.select().from(topups).where(and(eq(topups.reference, reference), eq(topups.userId, userId)));
   return t ?? null;
+}
+
+/** The person's top-ups, newest first. */
+export async function topupsOf(userId: string, limit: number): Promise<Topup[]> {
+  return db.select().from(topups).where(eq(topups.userId, userId)).orderBy(desc(topups.createdAt)).limit(limit);
 }
 
 export type ConfirmVia = "webhook" | "check" | "admin_verify";

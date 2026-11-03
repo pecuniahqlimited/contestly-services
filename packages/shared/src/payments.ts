@@ -190,9 +190,11 @@ export const topupSchema = z.object({
   /** The last attempt was declined; the checkout is still open, so the app can say "try again or another card". */
   attemptFailed: z.boolean(),
   createdAt: z.string(), creditedAt: z.string().nullable(),
+  /** What reached the wallet, once credited: the amount the provider verified (an admin may credit a verified amount that differs). */
+  creditedKobo: kobo.nullable(),
 });
 export type TopupView = z.infer<typeof topupSchema>;
-
+export const topupsResponseSchema = z.object({ topups: z.array(topupSchema) });
 
 export const bankSchema = z.object({ code: z.string(), name: z.string() });
 export const banksResponseSchema = z.object({ banks: z.array(bankSchema) });

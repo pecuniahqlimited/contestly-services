@@ -867,6 +867,11 @@ describe("admins finalize stuck transactions through the same transitions", () =
     expect((await confirm(admin2, res.json().finalization.id)).json().finalization.status).toBe("applied");
     expect(await cash(u)).toBe(kobo(501) + 21); // what was paid, never t.amountKobo
     expect((await db.select().from(topups).where(eq(topups.id, t.id)))[0].creditedKobo).toBe(kobo(501) + 21);
+    // The app reads what was credited, not what was asked for: on the top-up and in the list.
+    const mine = await app.inject({ method: "GET", url: `/wallet/topups/${t.reference}`, headers: as(u) });
+    expect(mine.json()).toMatchObject({ status: "succeeded", amountKobo: kobo(500) + 21, creditedKobo: kobo(501) + 21 });
+    const listed = (await app.inject({ method: "GET", url: "/wallet/topups", headers: as(u) })).json().topups;
+    expect(listed.map((x: { reference: string; creditedKobo: number | null }) => [x.reference, x.creditedKobo])).toEqual([[t.reference, kobo(501) + 21]]);
     expect((await app.inject({ method: "POST", url: `/admin/payments/topups/${t.id}/finalize`, headers: as(admin), payload: { outcome: "success", reason: "again" } })).json().error).toBe("not_finalizable");
     expect(await cash(u)).toBe(kobo(501) + 21);
 
