@@ -518,13 +518,13 @@ describe("follows", () => {
     const profile = (await app.inject({ url: `/users/${owner.handle}`, headers: as(fan) })).json();
     expect(profile).not.toHaveProperty("followers");
     expect(profile).not.toHaveProperty("viewer");
-    expect(profile.corner).toEqual({ id: corner.id, name: `${owner.displayName}'s corner`, following: true });
+    expect(profile.corner).toEqual({ id: corner.id, name: `${owner.displayName}'s corner`, color: CORNER_COLORS[0], lane: null, following: true });
     expect((await app.inject({ url: `/users/${fan.handle}`, headers: as(owner) })).json().corner).toBeNull();
   });
 
   it("the lobby shows the host's corner with the viewer's follow", async () => {
     const [p] = await db.insert(parties).values({ createdByUserId: owner.id, title: "Lobby", category: "General knowledge", maxPlayers: 10, funding: "pooled", split: [100], startsAt: new Date(Date.now() + 3_600_000) }).returning();
-    expect((await app.inject({ url: `/parties/${p.id}`, headers: as(fan) })).json().hostCorner).toEqual({ id: corner.id, name: `${owner.displayName}'s corner`, following: true });
+    expect((await app.inject({ url: `/parties/${p.id}`, headers: as(fan) })).json().hostCorner).toEqual({ id: corner.id, name: `${owner.displayName}'s corner`, color: CORNER_COLORS[0], lane: null, following: true });
   });
 });
 

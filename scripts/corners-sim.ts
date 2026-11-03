@@ -152,7 +152,12 @@ try {
   const asP1 = await api(P1, "GET", `/corners/${cornerId}/followers`);
   ok(asP1.yourPeople.count === 1 && asP1.yourPeople.faces[0]?.handle === P2, "with how many of your people follow it on top");
   ok((await api(FAN, "GET", "/me/follows")).some((x: any) => x.corner.id === cornerId), "your own follows");
-  ok((await api(FAN, "GET", `/users/${HOST}`)).corner?.id === cornerId, "the host's profile points to the corner");
+  const onProfile = (await api(FAN, "GET", `/users/${HOST}`)).corner;
+  ok(onProfile?.id === cornerId && onProfile.color === "#7C3AED" && onProfile.lane === "Geography", "the host's profile points to the corner, in its colour and lane");
+  const hostsParty = await openParty(HOST, [], `Corner sim ${tag} colour`);
+  const hc = (await api(FAN, "GET", `/parties/${hostsParty}`)).hostCorner;
+  ok(hc?.id === cornerId && hc.color === "#7C3AED" && hc.lane === "Geography" && hc.following, "and so does the host's party, the same way");
+  await api(HOST, "POST", `/parties/${hostsParty}/cancel`, { reason: "sim" });
   ok((await call(FAN, "POST", `/users/${await idOf(HOST)}/follow`)).status === 404, "people can't be followed any more");
 
   // ---- 4. posts -----------------------------------------------------------------------------

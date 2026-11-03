@@ -200,8 +200,8 @@ export const cornerRefSchema = z.object({
 export type CornerRef = z.infer<typeof cornerRefSchema>;
 /** The viewer and a corner: following it (with party alerts on or off). All false signed out. */
 export const cornerViewerSchema = z.object({ following: z.boolean(), notify: z.boolean() });
-/** On a profile and in a party's lobby: the host's corner, if they have one, and whether the viewer follows it. */
-export const hostCornerSchema = cornerRefSchema.pick({ id: true, name: true }).extend({ following: z.boolean() });
+/** On a profile and in a party's lobby: the host's corner, if they have one (its colour and lane to dress the link), and whether the viewer follows it. */
+export const hostCornerSchema = cornerRefSchema.pick({ id: true, name: true, color: true, lane: true }).extend({ following: z.boolean() });
 /** POST/DELETE/PATCH /corners/:id/follow. */
 export const cornerFollowStateSchema = cornerViewerSchema.extend({ followerCount: z.number().int() });
 

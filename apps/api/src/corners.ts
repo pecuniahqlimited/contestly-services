@@ -42,7 +42,7 @@ async function followOf(viewerId: string | undefined, cornerId: string) {
 
 /** The host's corner as a profile or a lobby shows it ("Follow corner"), or null when they have none to show. */
 export async function hostCornerOf(hostId: string, viewerId: string | undefined) {
-  const [c] = await db.select({ id: corners.id, name: corners.name }).from(corners).where(and(eq(corners.ownerUserId, hostId), cornerShown));
+  const [c] = await db.select({ id: corners.id, name: corners.name, color: corners.color, lane: corners.lane }).from(corners).where(and(eq(corners.ownerUserId, hostId), cornerShown));
   if (!c) return null;
   return { ...c, following: !!(await followOf(viewerId, c.id)) };
 }
