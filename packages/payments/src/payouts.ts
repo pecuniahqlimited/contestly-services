@@ -20,7 +20,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { db, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
+import { db, moneyTransaction, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
 import {
   ACCOUNT_UNRESOLVED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
@@ -60,7 +60,7 @@ export async function withdrawContext(conn: Tx | typeof db, user: Pick<User, "id
 
 /** An admin has checked a new account against a deleted one with a payment issue: it may withdraw again. Logged. */
 export async function clearLinkedPaymentIssue(adminUserId: string, userId: string, reason: string) {
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     const u = await lockPerson(tx, userId);
     if (!u) throw paymentsError(404, "not_found");
     if (u.id === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
@@ -88,7 +88,7 @@ export async function requestPayout(user: User, req: WithdrawalRequest, deps: Pa
   const provider = providerNamed(settings.payouts);
   if (!provider.payout) throw paymentsError(409, "provider_not_configured", { provider: provider.name });
 
-  const out = await db.transaction(async (tx) => {
+  const out = await moneyTransaction(async (tx) => {
     // The person first (NO KEY UPDATE: FOR UPDATE deadlocked with a worker settling their earlier payout).
     const fresh = await lockPerson(tx, user.id);
     const [prior] = await tx.select().from(payouts).where(and(eq(payouts.userId, user.id), eq(payouts.clientRequestId, req.clientRequestId)));
@@ -200,7 +200,7 @@ export type PayoutOutcome = "succeeded" | "failed" | "unknown" | "unchanged";
 export async function applyOutcome(payoutId: string, check: ProviderCheck, via: string, now = new Date()): Promise<PayoutOutcome> {
   const cfg = await getPaymentsConfig();
   const [owner] = await db.select({ userId: payouts.userId }).from(payouts).where(eq(payouts.id, payoutId));
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     await lockPerson(tx, owner.userId);
     const p = await lockPayout(tx, payoutId);
     const record = checkRecord(check, via, now);
@@ -303,7 +303,7 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
   if ((await currentSettings()).payoutsPaused) return "unchanged";
   const [account] = await db.select().from(payoutAccounts).where(eq(payoutAccounts.id, p.payoutAccountId));
 
-  const go = await db.transaction(async (tx): Promise<number | false> => {
+  const go = await moneyTransaction(async (tx): Promise<number | false> => {
     // The person, then the payout: a freeze committing meanwhile is seen here, never after the send.
     const u = await lockPerson(tx, p.userId);
     const row = await lockPayout(tx, payoutId);
@@ -352,7 +352,7 @@ export async function checkPayout(payoutId: string, via: "check" | "webhook", no
     await raiseAlert(db, { severity: "critical", kind: "payout_resend_account_removed", dedupeKey: `payout_resend_account_removed:${p.id}`, refType: "payout", refId: p.id, detail: { payoutAccountId: p.payoutAccountId, check } });
     return applyOutcome(payoutId, unknownCheck(p.reference, "not resent: the recipient account was removed", "not_resent"), via, now);
   }
-  const resend = await db.transaction(async (tx) => {
+  const resend = await moneyTransaction(async (tx) => {
     const row = await lockPayout(tx, payoutId);
     if (isFinal(row) || row.lastSentAt?.getTime() !== p.lastSentAt?.getTime()) return false; // someone else moved it
     await tx.update(payouts).set({ sendAttempts: row.sendAttempts + 1, lastSentAt: now, updatedAt: now }).where(eq(payouts.id, p.id));
@@ -374,7 +374,7 @@ async function lockOwner(tx: Tx, payoutId: string) {
 }
 
 export async function approvePayout(adminUserId: string, payoutId: string, deps: PaymentsDeps) {
-  const p = await db.transaction(async (tx) => {
+  const p = await moneyTransaction(async (tx) => {
     await lockOwner(tx, payoutId);
     const row = await lockPayout(tx, payoutId);
     if (!row) throw paymentsError(404, "not_found");
@@ -390,7 +390,7 @@ export async function approvePayout(adminUserId: string, payoutId: string, deps:
 }
 
 export async function rejectPayout(adminUserId: string, payoutId: string, reason: string) {
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     await lockOwner(tx, payoutId);
     const row = await lockPayout(tx, payoutId);
     if (!row) throw paymentsError(404, "not_found");

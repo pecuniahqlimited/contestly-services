@@ -12,7 +12,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { and, eq, gte, inArray, isNull, lt, sql } from "drizzle-orm";
-import { db, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User } from "@contestly/db";
+import { db, moneyTransaction, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User } from "@contestly/db";
 import { BELOW_MINIMUM, CURRENCY, EMAIL_REQUIRED, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, TOPUP_REFUSED, type TopupView } from "@contestly/shared";
 import { backoffMs, lagosDayStart, paymentsError, raiseAlert } from "./common.js";
 import { currentSettings } from "./settings.js";
@@ -57,7 +57,7 @@ export async function createTopup(user: User, amountKobo: number, opts: CreateTo
   const provider = providerNamed(settings.collections);
   if (!provider.collection) throw paymentsError(409, "provider_not_configured", { provider: provider.name });
 
-  const row = await db.transaction(async (tx) => {
+  const row = await moneyTransaction(async (tx) => {
     await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for("no key update"); // one top-up start at a time per person (the daily cap holds), without blocking FK checks
     const [{ total }] = await tx.select({ total: sql<number>`coalesce(sum(${topups.amountKobo}), 0)::bigint` }).from(topups)
       .where(and(eq(topups.userId, user.id), gte(topups.createdAt, lagosDayStart(now)), inArray(topups.status, ["pending", "succeeded"])));
@@ -157,7 +157,7 @@ export async function confirmTopup(topupId: string, via: ConfirmVia, claim: Webh
   const check = await verifyWithProvider(before);
   const cfg = await getPaymentsConfig();
 
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     const [t] = await tx.select().from(topups).where(eq(topups.id, topupId)).for("update");
     const record = checkRecord(check, via, now);
     if (t.status === "succeeded") return "already_credited";

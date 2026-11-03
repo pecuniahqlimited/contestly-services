@@ -10,7 +10,7 @@
  * waives their own. Never more than is owed when it's confirmed. Every step logged.
  */
 import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
-import { db, ledger, ledgerAccounts, owedWaivers, payoutContradictions, recordAdminAction, users, type OwedWaiver, type Tx } from "@contestly/db";
+import { db, moneyTransaction, ledger, ledgerAccounts, owedWaivers, payoutContradictions, recordAdminAction, users, type OwedWaiver, type Tx } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED } from "@contestly/shared";
 import { lockPerson, paymentsError } from "./common.js";
 
@@ -42,7 +42,7 @@ export async function listOwedWaivers(limit: number) {
 /** The first admin asks to waive what this person owes now. Nothing moves until a second admin confirms. */
 export async function requestOwedWaiver(adminUserId: string, userId: string, reason: string) {
   if (userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     await lockPerson(tx, userId);
     await refuseWhileContradictionOpen(tx, userId);
     const owed = await ledger.owedKobo(tx, userId);
@@ -59,7 +59,7 @@ export async function requestOwedWaiver(adminUserId: string, userId: string, rea
 export async function confirmOwedWaiver(adminUserId: string, waiverId: string, now = new Date()) {
   const [pre] = await db.select({ userId: owedWaivers.userId }).from(owedWaivers).where(eq(owedWaivers.id, waiverId));
   if (!pre) throw paymentsError(404, "not_found");
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     await lockPerson(tx, pre.userId); // the lock order: the person, the waiver, then what they owe
     const [w] = await tx.select().from(owedWaivers).where(eq(owedWaivers.id, waiverId)).for("update");
     if (w.status !== "awaiting_second_admin") throw paymentsError(409, "waiver_not_pending", { status: w.status });

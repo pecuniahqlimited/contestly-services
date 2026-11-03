@@ -16,7 +16,7 @@
  *   the request is superseded instead of applied.
  */
 import { and, eq } from "drizzle-orm";
-import { db, getPaymentsConfig, paymentFinalizations, payouts, recordAdminAction, topups, type PaymentFinalization, type Payout, type Topup, type Tx } from "@contestly/db";
+import { db, moneyTransaction, getPaymentsConfig, paymentFinalizations, payouts, recordAdminAction, topups, type PaymentFinalization, type Payout, type Topup, type Tx } from "@contestly/db";
 import { CURRENCY, FINALIZE_TOO_SOON, NO_VERIFIED_AMOUNT, NOT_FINALIZABLE, OWN_TRANSACTION, SECOND_ADMIN_REQUIRED, type PaymentsConfig, type SecondAdminBecause } from "@contestly/shared";
 import { lockPerson, paymentsError } from "./common.js";
 import { queryProvider, reverseLocked, settleLocked } from "./payouts.js";
@@ -116,7 +116,7 @@ export async function requestFinalization(adminUserId: string, target: FinalizeT
   assertFinalizable(target, first, adminUserId);
   if (target.type === "payout") assertQuietSinceSend(first as Payout, cfg, now);
   const check = await freshCheck(target);
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     await lockPerson(tx, first.userId); // the lock order: the person, then transaction rows, then accounts
     const row = await load(target, tx, true);
     assertFinalizable(target, row, adminUserId);
@@ -155,7 +155,7 @@ export async function confirmFinalization(adminUserId: string, finalizationId: s
   const cfg = await getPaymentsConfig();
   const check = await freshCheck(target);
   const owner = await load(target);
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     await lockPerson(tx, owner.userId);
     const [f] = await tx.select().from(paymentFinalizations).where(eq(paymentFinalizations.id, finalizationId)).for("update");
     if (f.status !== "awaiting_second_admin") throw paymentsError(409, "finalization_not_pending", { status: f.status });

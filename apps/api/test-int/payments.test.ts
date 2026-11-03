@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, archiveAccount, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  adminActions, adminPermissions, archiveAccount, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -1200,6 +1200,28 @@ describe("the lock order: the person's row, then transaction rows, then the pers
     });
     expect((await archived!).forfeitedBonusKobo).toBe(kobo(150));
     expect((await ledger.balances(u.id)).bonusKobo).toBe(0);
+  });
+
+  it("a deadlock between two money transactions is retried (bounded, logged) and both finish", async () => {
+    const [a, b] = [await makeUser(nextName("dla")), await makeUser(nextName("dlb"))];
+    await fund(a, kobo(10));
+    await fund(b, kobo(10));
+    const acct = async (u: User) => (await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, u.id), eq(ledgerAccounts.kind, "cash"))))[0].id;
+    const [x, y] = [await acct(a), await acct(b)];
+    const retries: string[] = [];
+    let firstTry = true;
+    const crossing = (first: string, second: string) => moneyTransaction(async (tx) => {
+      await tx.execute(sqlRaw`select id from ledger_accounts where id = ${first} for update`);
+      if (firstTry) await pause(200); // only the first round crosses
+      await tx.execute(sqlRaw`select id from ledger_accounts where id = ${second} for update`);
+      return "done";
+    }, { label: "test", onRetry: (_n, code) => { retries.push(code); firstTry = false; } });
+    expect(await Promise.all([crossing(x, y), crossing(y, x)])).toEqual(["done", "done"]);
+    expect(retries).toEqual(["40P01"]);
+    // Bounded: a transaction that keeps failing gives up after its attempts, with the error.
+    let tries = 0;
+    await expect(moneyTransaction(async () => { tries++; throw Object.assign(new Error("deadlock detected"), { code: "40P01" }); }, { attempts: 3 })).rejects.toThrow("deadlock detected");
+    expect(tries).toBe(3);
   });
 
   it("approve and reject take the person first", async () => {

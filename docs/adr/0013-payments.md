@@ -274,8 +274,13 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   3. ledger accounts, inside `ledger.journal()`: the person's own and those kept per person (what they owe,
      what's held) first, then platform accounts, each group by id; cash credited to someone who owes locks
      their owed account up front for the repayment.
-  A transaction that moves several people's money (settlement, a cancel's refunds) is serialised by the
-  party row, and each journal in it follows 3. Audit (2026-11-03), every place a user row is locked:
+  **What this guarantees, exactly:** 1 → 2 → 3 holds on every payments path, and 3 holds *within a
+  journal*. Across several journals in one transaction it doesn't: a freeze locks the person's cash early and
+  their owed account in a later journal; two settles of different parties can credit the same two people in
+  opposite orders (the party row serialises one party, not two). Those cycles are possible; Postgres breaks
+  one by aborting a side, which rolls back whole (no money moves), and money transactions in payments run in
+  `moneyTransaction`, which retries a deadlock or serialization failure up to 3 times with jitter, logging
+  each retry. Settlement and refunds (main's party code) don't use it yet; their jobs are retried by BullMQ. Audit (2026-11-03), every place a user row is locked:
   withdrawal request, send, every payout transition (applyOutcome, the freeze), approve, reject, finalize
   and its confirm, contradiction confirm, waiver request and confirm, top-up start, permission changes:
   person first, `NO KEY UPDATE` (changed in payments; tested). Account deletion and a guest's sign-up

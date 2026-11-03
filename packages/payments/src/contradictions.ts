@@ -7,7 +7,7 @@
  * Every step logged. Nobody acts on their own payout.
  */
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
-import { db, ledger, payoutContradictions, payouts, recordAdminAction, users, type PayoutContradiction, type Tx } from "@contestly/db";
+import { db, moneyTransaction, ledger, payoutContradictions, payouts, recordAdminAction, users, type PayoutContradiction, type Tx } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED } from "@contestly/shared";
 import { lockPerson, paymentsError } from "./common.js";
 import { bookFee, queryProvider } from "./payouts.js";
@@ -36,7 +36,7 @@ async function lockContradiction(tx: Tx, id: string) {
 
 /** The first admin asks to resolve it, with a reason. Nothing moves until a second admin confirms. */
 export async function requestContradictionResolution(adminUserId: string, id: string, reason: string, now = new Date()) {
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     const c = await lockContradiction(tx, id);
     if (c.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
     if (c.status !== "open") throw paymentsError(409, "contradiction_not_open", { status: c.status });
@@ -70,7 +70,7 @@ export async function confirmContradictionResolution(adminUserId: string, id: st
   if (!pre) throw paymentsError(404, "not_found");
   const [payout] = await db.select().from(payouts).where(eq(payouts.id, pre.payoutId));
   const check = await queryProvider(payout);
-  return db.transaction(async (tx) => {
+  return moneyTransaction(async (tx) => {
     await lockPerson(tx, pre.userId); // the lock order: the person, then transaction rows, then accounts
     const c = await lockContradiction(tx, id);
     if (c.status !== "awaiting_second_admin") throw paymentsError(409, "contradiction_not_pending", { status: c.status });
