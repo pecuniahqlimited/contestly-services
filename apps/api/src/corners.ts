@@ -7,12 +7,12 @@
 import { and, asc, count, desc, eq, inArray, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   cornerMutes, cornerNewPlayers, cornerParties, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, currentCornerConfig, db, follows, getChatConfig,
-  getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, type Corner, type User,
+  getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, refreshDefaultLane, type Corner, type User,
 } from "@contestly/db";
 import { valkeyCounter } from "@contestly/queue";
 import {
   CORNER_REGULARS_SHOWN, CORNER_UP_NEXT_SHOWN, CORNER_WINNERS_SHOWN, POST_REPLIES_INLINE, YOUR_PEOPLE_FACES, chatRateCheck, isBraggingRights, lagosDay, maskProfanity,
-  partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerProgress, type CornerReaction, type Person,
+  partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerProgress, type CornerReaction, type CornerUpdate, type Person,
 } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { peopleOf, personColumns } from "./people.js";
@@ -122,7 +122,7 @@ async function followerCounts(ids: string[]) {
   return new Map(rows.map((r) => [r.id, Number(r.n)]));
 }
 
-const cornerRef = (c: Corner, owner: Person, followerCount: number) => ({ id: c.id, name: c.name, owner, level: c.level, followerCount });
+const cornerRef = (c: Corner, owner: Person, followerCount: number) => ({ id: c.id, name: c.name, owner, level: c.level, followerCount, lane: c.lane, color: c.color });
 
 /** The corners the viewer follows (for the feed and the Parties tab's "following" filter). */
 export async function followedCornerIds(viewerId: string) {
@@ -389,12 +389,23 @@ export async function cornerPage(cornerId: string, viewer: User | undefined) {
   };
 }
 
-/** The owner names their corner and writes its bio. */
-export async function updateMyCorner(me: User, body: { name?: string; bio?: string | null }) {
-  const c = await cornerOf(db, me.id);
-  if (!c || c.status !== "unlocked") throw httpError(409, "corner_not_unlocked");
-  const [after] = await db.update(corners).set({ ...(body.name ? { name: body.name } : {}), ...(body.bio !== undefined ? { bio: body.bio } : {}) }).where(eq(corners.id, c.id)).returning();
-  return { id: after.id, name: after.name, bio: after.bio };
+const myCorner = (c: Corner) => ({ id: c.id, name: c.name, bio: c.bio, lane: c.lane, laneChosen: !!c.laneChosenAt, color: c.color });
+
+/**
+ * The owner sets up their corner: name, bio, lane and colour. Picking a lane keeps it; `lane: null` hands it
+ * back to the default (what their parties are mostly about).
+ */
+export async function updateMyCorner(me: User, body: CornerUpdate) {
+  return db.transaction(async (tx) => {
+    const c = await cornerOf(tx, me.id);
+    if (!c || c.status !== "unlocked") throw httpError(409, "corner_not_unlocked");
+    const lane = body.lane === undefined ? {} : body.lane === null ? { laneChosenAt: null } : { lane: body.lane, laneChosenAt: new Date() };
+    await tx.update(corners).set({
+      ...(body.name ? { name: body.name } : {}), ...(body.bio !== undefined ? { bio: body.bio } : {}), ...(body.color ? { color: body.color } : {}), ...lane,
+    }).where(eq(corners.id, c.id));
+    if (body.lane === null) await refreshDefaultLane(tx, me.id);
+    return myCorner((await cornerOf(tx, me.id))!);
+  });
 }
 
 /** The owner's app showed the unlock celebration: recorded once, so it never shows again (a repeat keeps the first time). */
@@ -422,6 +433,7 @@ export async function progressOf(hostId: string): Promise<CornerProgress> {
       id: corner.id, name: corner.name, bio: corner.bio, status: corner.status, level: corner.level,
       unlockedAt: corner.unlockedAt?.toISOString() ?? null, unlockConfigVersion: corner.unlockConfigVersion,
       celebrationSeenAt: corner.celebrationSeenAt?.toISOString() ?? null,
+      lane: corner.lane, laneChosen: !!corner.laneChosenAt, color: corner.color,
     } : null,
     config: { ...cfg.config, version: cfg.version },
     thresholds, allMet,

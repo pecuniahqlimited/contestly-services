@@ -6,7 +6,7 @@
  */
 import { and, asc, count, countDistinct, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
-  clusteredPlayers, cornerUnlockConfigSchema, newPlayerVerdict, partyCountsForCorner, unlockProgress, UNLOCK_CLUSTER_MIN_PLAYERS,
+  clusteredPlayers, cornerUnlockConfigSchema, mostlyAbout, newPlayerVerdict, partyCountsForCorner, unlockProgress, UNLOCK_CLUSTER_MIN_PLAYERS,
   type CornerCounts, type CornerUnlockConfig,
 } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
@@ -61,6 +61,21 @@ export async function ensureCorner(q: Conn, ownerUserId: string): Promise<Corner
 export async function cornerOf(q: Conn, ownerUserId: string): Promise<Corner | null> {
   const [row] = await q.select().from(corners).where(eq(corners.ownerUserId, ownerUserId));
   return row ?? null;
+}
+
+/** The lane a host's finished parties are mostly about (mostlyAbout in shared), or null. */
+export async function defaultLaneOf(q: Conn, hostId: string) {
+  const rows = await q.select({ category: parties.category, endedAt: cornerParties.finishedAt }).from(cornerParties)
+    .innerJoin(parties, eq(parties.id, cornerParties.partyId)).where(eq(cornerParties.hostUserId, hostId));
+  return mostlyAbout(rows);
+}
+
+/** Until its owner picks a lane, a corner's lane follows what their parties are mostly about. */
+export async function refreshDefaultLane(q: Conn, hostId: string): Promise<void> {
+  const c = await cornerOf(q, hostId);
+  if (!c || c.laneChosenAt) return;
+  const lane = await defaultLaneOf(q, hostId);
+  if (lane !== c.lane) await q.update(corners).set({ lane }).where(eq(corners.id, c.id));
 }
 
 /**
@@ -171,6 +186,7 @@ export async function recordCornerProgress(tx: Tx, party: Party, seats: CornerSe
   if (!recorded) return;
   if (counts && real.length) await tx.insert(cornerPartyPlayers).values(real.map((userId) => ({ partyId: party.id, userId, hostUserId: hostId }))).onConflictDoNothing();
   await ensureCorner(tx, hostId);
+  await refreshDefaultLane(tx, hostId);
 
   const hosts = new Set([hostId]);
   // Only players nobody has yet, or still pending, have anything to decide (one query for the rest).

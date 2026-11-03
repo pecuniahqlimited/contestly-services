@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  DEFAULT_CORNER_UNLOCK, FILLING_UP_SHARE, FILLING_UP_WITHIN_MINUTES, clusteredPlayers, isFillingUp, newPlayerVerdict, partiesTabOrder, partyCountsForCorner, unlockProgress,
+  DEFAULT_CORNER_UNLOCK, FILLING_UP_SHARE, FILLING_UP_WITHIN_MINUTES, clusteredPlayers, isFillingUp, mostlyAbout, newPlayerVerdict, partiesTabOrder, partyCountsForCorner, unlockProgress,
 } from "../src/index.js";
 
 const cfg = DEFAULT_CORNER_UNLOCK; // P 5, R 4, D 20, N 5
@@ -71,5 +71,21 @@ describe("partiesTabOrder (interim, until row 7)", () => {
   });
   it("accepts Date start times too (the API's cards before they're sent)", () => {
     expect(partiesTabOrder([{ ...card("a", 30, 0), startsAt: new Date(at(30)) }, { ...card("b", 5, 0), startsAt: new Date(at(5)) }], now).map((c) => c.id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("mostlyAbout: a corner's default lane", () => {
+  const at = (min: number) => new Date(Date.UTC(2026, 10, 1, 12, min));
+  it("is the lane most parties were tagged with", () => {
+    expect(mostlyAbout([{ category: "Football", endedAt: at(1) }, { category: "Afrobeats", endedAt: at(2) }, { category: "Football", endedAt: at(3) }])).toBe("Football");
+  });
+  it("a tie goes to the lane played most recently", () => {
+    expect(mostlyAbout([{ category: "Football", endedAt: at(5) }, { category: "Afrobeats", endedAt: at(2) }, { category: "Afrobeats", endedAt: at(1) }, { category: "Football", endedAt: at(3) }])).toBe("Football");
+    expect(mostlyAbout([{ category: "Football", endedAt: at(1) }, { category: "Afrobeats", endedAt: at(2) }])).toBe("Afrobeats");
+  });
+  it("ignores tags that aren't lanes; none at all is null", () => {
+    expect(mostlyAbout([{ category: "Knitting", endedAt: at(1) }, { category: "Knitting", endedAt: at(2) }, { category: "Maths", endedAt: at(0) }])).toBe("Maths");
+    expect(mostlyAbout([])).toBeNull();
+    expect(mostlyAbout([{ category: "Knitting", endedAt: at(1) }])).toBeNull();
   });
 });

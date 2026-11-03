@@ -288,6 +288,13 @@
       "when": 1793726655914,
       "tag": "0040_corner_celebration",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1793726750166,
+      "tag": "0041_corner_lane_color",
+      "breakpoints": true
     }
   ]
 }

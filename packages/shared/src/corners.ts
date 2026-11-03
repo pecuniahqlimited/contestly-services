@@ -5,9 +5,35 @@
  */
 import { z } from "zod";
 import { personSchema } from "./person.js";
+import { laneSchema } from "./about.js";
+import { CATEGORIES, type Category } from "./categories.js";
 
 export const CORNER_STATUSES = ["locked", "unlocked", "revoked"] as const;
 export type CornerStatus = (typeof CORNER_STATUSES)[number];
+
+// ---- setup -----------------------------------------------------------------------------
+
+/** The colours an owner picks for their corner: a fixed palette, so every one reads on the app's surfaces. The first is the default. */
+export const CORNER_COLORS = ["#0B64FC", "#7C3AED", "#DB2777", "#EA580C", "#16A34A", "#0891B2", "#CA8A04", "#475569"] as const;
+export type CornerColor = (typeof CORNER_COLORS)[number];
+export const cornerColorSchema = z.enum(CORNER_COLORS);
+
+/**
+ * A corner's lane until its owner picks one: the lane most of the host's finished parties were tagged with
+ * (ties to the most recent), or null when none of them is a lane.
+ */
+export function mostlyAbout(parties: { category: string; endedAt: Date }[]): Category | null {
+  const tally = new Map<Category, { n: number; last: number }>();
+  for (const p of parties) {
+    const lane = (CATEGORIES as readonly string[]).includes(p.category) ? (p.category as Category) : null;
+    if (!lane) continue;
+    const t = tally.get(lane) ?? { n: 0, last: 0 };
+    tally.set(lane, { n: t.n + 1, last: Math.max(t.last, p.endedAt.getTime()) });
+  }
+  let best: [Category, { n: number; last: number }] | null = null;
+  for (const e of tally) if (!best || e[1].n > best[1].n || (e[1].n === best[1].n && e[1].last > best[1].last)) best = e;
+  return best?.[0] ?? null;
+}
 
 // ---- unlocking -------------------------------------------------------------------------
 
@@ -129,7 +155,18 @@ export const cornerReplyBodySchema = z.object({ text: z.string().trim().min(1).m
 export const cornerReactionBodySchema = z.object({ emoji: z.enum(CORNER_REACTIONS) });
 export const cornerReportBodySchema = z.object({ reason: z.string().trim().max(200).optional() });
 export const cornerMuteBodySchema = z.object({ userId: z.string().uuid() });
-export const cornerUpdateSchema = z.object({ name: z.string().trim().min(2).max(40).optional(), bio: z.string().trim().max(280).nullable().optional() });
+/** PATCH /me/corner. `lane: null` goes back to the default (what the host's parties are mostly about). */
+export const cornerUpdateSchema = z.object({
+  name: z.string().trim().min(2).max(40).optional(),
+  bio: z.string().trim().max(280).nullable().optional(),
+  lane: laneSchema.nullable().optional(),
+  color: cornerColorSchema.optional(),
+});
+export type CornerUpdate = z.infer<typeof cornerUpdateSchema>;
+/** What PATCH /me/corner answers. `laneChosen`: the owner picked the lane (false: it follows their parties). */
+export const myCornerSchema = z.object({
+  id: z.string().uuid(), name: z.string(), bio: z.string().nullable(), lane: z.enum(CATEGORIES).nullable(), laneChosen: z.boolean(), color: cornerColorSchema,
+});
 export const cornerFollowAlertSchema = z.object({ notify: z.boolean() });
 
 export const cornerReplySchema = z.object({ id: z.string().uuid(), person: personSchema, text: z.string(), createdAt: z.string().datetime() });
@@ -156,7 +193,10 @@ export const POST_REPLIES_INLINE = 3;
 // ---- the corner, its follows and followers ---------------------------------------------
 
 /** A corner as a card, a profile or a party shows it. Only unlocked corners of hosts in good standing are ever shown. */
-export const cornerRefSchema = z.object({ id: z.string().uuid(), name: z.string(), owner: personSchema, level: z.number().int(), followerCount: z.number().int() });
+export const cornerRefSchema = z.object({
+  id: z.string().uuid(), name: z.string(), owner: personSchema, level: z.number().int(), followerCount: z.number().int(),
+  lane: z.enum(CATEGORIES).nullable(), color: cornerColorSchema,
+});
 export type CornerRef = z.infer<typeof cornerRefSchema>;
 /** The viewer and a corner: following it (with party alerts on or off). All false signed out. */
 export const cornerViewerSchema = z.object({ following: z.boolean(), notify: z.boolean() });
@@ -212,6 +252,7 @@ export const cornerProgressSchema = z.object({
     unlockedAt: z.string().datetime().nullable(), unlockConfigVersion: z.number().int().nullable(),
     /** Null until the owner's app has shown the unlock celebration: show it when unlocked and this is null. */
     celebrationSeenAt: z.string().datetime().nullable(),
+    lane: z.enum(CATEGORIES).nullable(), laneChosen: z.boolean(), color: cornerColorSchema,
   }).nullable(),
   config: cornerUnlockConfigSchema.extend({ version: z.number().int() }),
   thresholds: z.object({ partiesHosted: cornerThresholdSchema, distinctPlayers: cornerThresholdSchema, newPlayers: cornerThresholdSchema }),

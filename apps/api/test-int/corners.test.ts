@@ -14,7 +14,7 @@ import {
   getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
-import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, celebrationSeenSchema, lagosDay, myContactsSchema, weekOf } from "@contestly/shared";
+import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, CORNER_COLORS, celebrationSeenSchema, lagosDay, myContactsSchema, myCornerSchema, weekOf } from "@contestly/shared";
 import { setWeekPoints } from "../src/climb/boards.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
@@ -37,10 +37,10 @@ async function person(name: string, o: { install?: string | null; ip?: string; e
  * A party `host` hosted, finished now: these seats (in rank order), one question, an answer from everyone in
  * `answered` (default: all seated), then the worker's record_progress job (corners and played-with).
  */
-async function finish(host: User, seated: User[], o: { answered?: User[]; at?: Date } = {}): Promise<Party> {
+async function finish(host: User, seated: User[], o: { answered?: User[]; at?: Date; category?: string } = {}): Promise<Party> {
   const at = o.at ?? new Date();
   const [p] = await db.insert(parties).values({
-    createdByUserId: host.id, title: "Corner test", category: "General knowledge", maxPlayers: 30, funding: "pooled", split: [100], status: "finished", startsAt: at, endedAt: at,
+    createdByUserId: host.id, title: "Corner test", category: o.category ?? "General knowledge", maxPlayers: 30, funding: "pooled", split: [100], status: "finished", startsAt: at, endedAt: at,
   }).returning();
   for (const [i, u] of seated.entries()) await db.insert(partyPlayers).values({ partyId: p.id, userId: u.id, rank: i + 1, score: 100 - i });
   const [q] = await db.insert(partyQuestions).values({ partyId: p.id, idx: 0, format: "pick_one", payload: {}, seconds: 10 }).returning();
@@ -267,6 +267,48 @@ describe("the unlock celebration", () => {
     expect((await progress(host)).corner.celebrationSeenAt).toBe(seenAt);
     expect((await celebrate()).json().celebrationSeenAt).toBe(seenAt);
     expect((await app.inject({ method: "POST", url: "/me/corner/celebration-seen" })).statusCode).toBe(401);
+  });
+});
+
+describe("corner setup: lane and colour", () => {
+  let host: User;
+  const patch = (payload: object) => app.inject({ method: "PATCH", url: "/me/corner", headers: as(host), payload });
+  beforeAll(async () => {
+    host = await person("lhost");
+    const [a, b] = [await person("la"), await person("lb")];
+    await finish(host, [a, b, await person("lc")], { category: "Football" });
+    await finish(host, [a, b, await person("ld")], { category: "Football" });
+    await finish(host, [a, b, await person("le")], { category: "Afrobeats" });
+  });
+
+  it("defaults: the lane its parties are mostly about, the palette's first colour", async () => {
+    expect((await progress(host)).corner).toMatchObject({ status: "unlocked", lane: "Football", laneChosen: false, color: CORNER_COLORS[0] });
+  });
+
+  it("the owner picks a lane and a colour; a picked lane stays whatever they host next", async () => {
+    const res = await patch({ lane: "nollywood", color: "#DB2777" });
+    expect(res.statusCode).toBe(200);
+    expect(myCornerSchema.parse(res.json())).toMatchObject({ lane: "Nollywood", laneChosen: true, color: "#DB2777" });
+    const [a, b] = [await person("lf"), await person("lg")];
+    await finish(host, [a, b, await person("lh")], { category: "Afrobeats" });
+    const page = (await app.inject({ url: `/corners/${(await cornerRow(host)).id}` })).json();
+    expect(page.corner).toMatchObject({ lane: "Nollywood", color: "#DB2777" });
+  });
+
+  it("lane null goes back to the default, which follows their parties again", async () => {
+    // Football 2, Afrobeats 2: a tie goes to the most recent (Afrobeats).
+    expect((await patch({ lane: null })).json()).toMatchObject({ lane: "Afrobeats", laneChosen: false });
+  });
+
+  it("only lanes and the palette", async () => {
+    expect((await patch({ lane: "Knitting" })).statusCode).toBe(400);
+    expect((await patch({ color: "#123456" })).statusCode).toBe(400);
+  });
+
+  it("a host whose parties aren't in any lane has none", async () => {
+    const h = await person("lnone");
+    await finish(h, [await person("lx")], { category: "Something else" });
+    expect((await cornerRow(h)).lane).toBeNull();
   });
 });
 

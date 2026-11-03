@@ -26,10 +26,10 @@ export async function seedCorners(tx: Tx, by: Record<string, string>, now = new 
 
   // Tunde: unlocked under version 1 (a seed; nobody made up N). Afrobeats Weekly: a verified brand's corner.
   const tunde = await ensureCorner(tx, by["tunde"]);
-  await tx.update(corners).set({ name: "Tunde's Friday Football", bio: "Football trivia every Friday night. Bring your people.", status: "unlocked", unlockedAt: now, unlockConfigVersion: 1 })
+  await tx.update(corners).set({ name: "Tunde's Friday Football", bio: "Football trivia every Friday night. Bring your people.", status: "unlocked", unlockedAt: now, unlockConfigVersion: 1, lane: "Football", laneChosenAt: now, color: "#16A34A" })
     .where(eq(corners.id, tunde.id));
   const afro = await createBrandCorner(tx, by["afrobeatsweekly"], now);
-  await tx.update(corners).set({ name: "Afrobeats Weekly", bio: "The home of Afrobeats. A new party every week." }).where(eq(corners.id, afro.id));
+  await tx.update(corners).set({ name: "Afrobeats Weekly", bio: "The home of Afrobeats. A new party every week.", lane: "Afrobeats", laneChosenAt: now, color: "#DB2777" }).where(eq(corners.id, afro.id));
 
   await tx.insert(follows).values([
     { followerId: by["ada.o"], cornerId: tunde.id }, { followerId: by["kemz"], cornerId: tunde.id }, { followerId: by["segunola"], cornerId: tunde.id },
