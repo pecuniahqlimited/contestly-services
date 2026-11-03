@@ -3,13 +3,15 @@
  *
  * 1. Playing parties until a host unlocks: thresholds lowered for the run (P 2, R 2, D 3, N 2; put back after),
  *    two rounds of real parties, the corner locked after the first and unlocked after the second, with the
- *    info alert naming who made up N.
+ *    info alert naming who made up N, and the unlock celebration shown once.
  * 2. The N rules: an unverified email doesn't count, an install id seen on another account doesn't count, and a
  *    player another host brought first doesn't count for this one.
- * 3. Follow and unfollow, party alerts, the public follower list.
+ * 3. The owner's setup (lane, colour), suggested corners, the post cap in GET /config; follow and unfollow,
+ *    party alerts, the public follower list.
  * 4. A post, a reaction, a reply and a mute (the muted follower isn't told).
  * 5. The DM rule: following a corner opens nothing; playing together does.
- * 6. Your people: the friends board, the lobby's "who's in", and the feed with the corner's post.
+ * 6. Your people: the friends board, the lobby's "who's in", and the feed with the corner's post. Then a
+ *    revoke, and its undo with the follows and posts intact.
  *
  * Every request carries the player's install id (x-install-id), as the app does. TEST-ONLY: answers are read
  * from Postgres, and one player's email is marked unverified in the database (dev accounts come verified).
@@ -113,6 +115,10 @@ try {
   ok(!np(BROUGHT), "a player another host brought first doesn't count for this one");
   ok((await api(OTHER_HOST, "GET", "/me/corner/progress")).newPlayers.some((n: any) => n.person.handle === BROUGHT && n.status === "counted"), "they count for the host who brought them");
 
+  ok(!!after2.corner.unlockedAt && after2.corner.celebrationSeenAt === null, "the progress view says it just unlocked: show the celebration");
+  const seen = await api(HOST, "POST", "/me/corner/celebration-seen");
+  ok((await api(HOST, "GET", "/me/corner/progress")).corner.celebrationSeenAt === seen.celebrationSeenAt, "once seen, it stays seen");
+
   const cornerId: string = after2.corner.id;
   const [alert] = await db.select().from(adminAlerts).where(and(eq(adminAlerts.refType, "corner"), eq(adminAlerts.refId, cornerId)));
   ok(alert?.kind === "corner.unlocked" && alert.severity === "info", "admins get an info alert for the unlock");
@@ -123,7 +129,11 @@ try {
   // ---- 3. follows ---------------------------------------------------------------------------
 
   console.log("\n3. Follows");
-  await api(HOST, "PATCH", "/me/corner", { name: `Corner ${tag}`, bio: "Quiz night, every night." });
+  const setUp = await api(HOST, "PATCH", "/me/corner", { name: `Corner ${tag}`, bio: "Quiz night, every night.", lane: "Geography", color: "#7C3AED" });
+  ok(setUp.lane === "Geography" && setUp.laneChosen && setUp.color === "#7C3AED", "the owner sets a lane and a colour from the palette");
+  const suggestedToFan = await api(FAN, "GET", "/corners/suggested?limit=30");
+  ok(suggestedToFan.corners.some((x: any) => x.corner.id === cornerId && !x.following), "it's suggested to someone who doesn't follow it yet");
+  ok((await api(null, "GET", "/config")).social?.cornerPostMaxChars > 0, "the app can read the post cap before posting");
   const f = await api(FAN, "POST", `/corners/${cornerId}/follow`);
   ok(f.following && f.notify && f.followerCount === 1, "following a corner: alerts on by default, count on the corner");
   ok((await api(FAN, "PATCH", `/corners/${cornerId}/follow`, { notify: false })).notify === false, "alerts can be turned off per corner");
@@ -180,6 +190,10 @@ try {
   const revoked = await call(ADMIN, "POST", `/admin/corners/${cornerId}/revoke`, { reason: `sim:corners ${tag}` });
   ok(revoked.status === 200 && revoked.body.corner.status === "revoked", "an admin revokes it, with a reason");
   ok((await call(FAN, "GET", `/corners/${cornerId}`)).status === 404, "and it's gone");
+  const restored = await call(ADMIN, "POST", `/admin/corners/${cornerId}/restore`, { reason: `sim:corners ${tag}: undo` });
+  ok(restored.status === 200 && restored.body.corner.status === "unlocked", "an admin undoes the revoke, with a reason");
+  const back = await api(FAN, "GET", `/corners/${cornerId}`);
+  ok(back.viewer.following && back.posts.posts[0]?.id === post.id && back.corner.followerCount === page.corner.followerCount, "and it's back with its follows and posts");
 } finally {
   const { partiesHosted, realPlayersPerParty, distinctPlayers, newPlayers } = originalConfig;
   await call(ADMIN, "PUT", "/admin/corners/config", { config: { partiesHosted, realPlayersPerParty, distinctPlayers, newPlayers }, reason: `sim:corners ${tag}: put back` });
