@@ -15,7 +15,7 @@ import {
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -1350,6 +1350,32 @@ describe("permissions", () => {
     // Revoking applies at once, one admin.
     const revoked = await app.inject({ method: "PUT", url: `/admin/payments/permissions/${plain.id}`, headers: as(admin), payload: { permissions: ["payments.view"], reason: "off the rota" } });
     expect([revoked.statusCode, revoked.json().permissions, revoked.json().pendingGrant]).toEqual([200, ["payments.view"], null]);
+  });
+
+  it("payments.config can't be stripped: from one of the last two holders it takes a second admin, the last holder can't lose it; other revokes are instant", async () => {
+    // Narrow the holders to admin and admin2 for this test (restored after).
+    const others = await db.select().from(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
+    await db.delete(adminPermissions).where(and(eq(adminPermissions.permission, "payments.config"), sqlRaw`${adminPermissions.userId} not in (${admin.id}, ${admin2.id})`));
+    const ops = await makeUser(nextName("permops"), { isAdmin: true }); // an admin without payments.config (dev sessions pass the route's check)
+    const put = (who: User, target: User, permissions: string[], reason = "rota change") => app.inject({ method: "PUT", url: `/admin/payments/permissions/${target.id}`, headers: as(who), payload: { permissions, reason } });
+    try {
+      // Revoking anything else is instant.
+      const view = await put(admin, admin2, ["payments.approve", "payments.finalize", "payments.config"]);
+      expect([view.statusCode, view.json().permissions]).toEqual([200, ["payments.approve", "payments.config", "payments.finalize"]]);
+      // payments.config from one of the last two: waits for a second admin; the requester can't confirm; the holder can agree.
+      const asked = await put(admin, admin2, ["payments.approve", "payments.finalize"]);
+      expect([asked.statusCode, asked.json().pendingGrant.change, asked.json().permissions]).toEqual([202, "revoke", ["payments.approve", "payments.config", "payments.finalize"]]);
+      const confirm = (who: User) => app.inject({ method: "POST", url: `/admin/payments/permission-grants/${asked.json().pendingGrant.id}/confirm`, headers: as(who) });
+      expect((await confirm(admin)).json().error).toBe("second_admin_required");
+      expect((await confirm(admin2)).json().grant.status).toBe("applied");
+      expect(await permissionsOf(admin2.id)).not.toContain("payments.config");
+      // admin is now the last holder: nobody can take it (only reachable past the route's check: a dev session, or two revokes racing).
+      await expect(setPermissions(ops.id, admin.id, ["payments.view"], "rota change")).rejects.toMatchObject({ message: "last_config_holder" });
+      expect(await permissionsOf(admin.id)).toContain("payments.config");
+    } finally {
+      await db.insert(adminPermissions).values([{ userId: admin2.id, permission: "payments.config" }, { userId: admin2.id, permission: "payments.view" }]).onConflictDoNothing();
+      if (others.length) await db.insert(adminPermissions).values(others.map((o) => ({ userId: o.userId, permission: o.permission }))).onConflictDoNothing();
+    }
   });
 
   it("a grantee can't confirm their own grant (one admin can't make a second admin)", async () => {

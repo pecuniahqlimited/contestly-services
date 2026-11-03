@@ -1,0 +1,1 @@
+ALTER TABLE "payment_permission_grants" ADD COLUMN "change" text DEFAULT 'grant' NOT NULL;

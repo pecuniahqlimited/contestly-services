@@ -137,7 +137,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    so it's maker-checker (`payment_permission_grants`): a `.config` holder asks, a different `.config`
    holder confirms, and the grantee can never confirm their own grant; otherwise one admin could make a
    second account that passes every second-admin check. Nobody changes their own permissions. Revoking
-   applies at once with one admin. Dev sessions and seeded dev admins hold all four. **Who is an admin at
+   applies at once with one admin, except `payments.config`: taking it from one of the last two holders
+   waits for a second admin (the holder may agree to it themselves), and the last holder can't lose it at
+   all (409 `last_config_holder`), so one admin can't strip everyone else and leave payouts paused with
+   nobody able to un-pause. Dev sessions and seeded dev admins hold all four. **Who is an admin at
    all** (`ADMIN_EMAILS`, and `DEV_ADMIN_HANDLES` in dev) **is controlled by whoever controls the
    environment**: none of these controls protect against them, so production secrets and deploys need
    their own two-person rule.

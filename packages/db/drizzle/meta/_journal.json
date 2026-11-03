@@ -218,6 +218,13 @@
       "when": 1793665861099,
       "tag": "0030_drop_entry_forfeits",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1793665862025,
+      "tag": "0031_permission_revokes",
+      "breakpoints": true
     }
   ]
 }

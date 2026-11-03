@@ -879,6 +879,8 @@ export const invariantAcknowledgments = pgTable("invariant_acknowledgments", {
 export const paymentPermissionGrants = pgTable("payment_permission_grants", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
+  /** grant: adding permissions. revoke: taking payments.config from one of the last two holders. */
+  change: text("change", { enum: ["grant", "revoke"] }).notNull().default("grant"),
   permissions: text("permissions").array().notNull(),
   reason: text("reason").notNull(),
   status: text("status", { enum: ["awaiting_second_admin", "applied", "superseded"] }).notNull(),
