@@ -7,7 +7,7 @@
  * logged) and a run in progress ends as abandoned. Crew hand-over and the Firebase user are the API's part.
  */
 import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
-import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, PAYOUT_OPEN_STATUSES, leaveWindow, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
+import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, PAYOUT_OPEN_STATUSES, leaveWindow, normaliseEmail, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import {
   archivedCrewInvites, archivedFollows, climbAwards, climbRuns, crewInvites, follows, ledgerAccounts, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
@@ -74,7 +74,7 @@ export async function archiveAccount(tx: Tx, user: User, reason: string | null, 
   await tx.update(users).set({
     deletedAt: now, deletedReason: reason,
     archivedEmail: user.email, archivedHandle: user.handle, archivedDisplayName: user.displayName, archivedAvatarEmoji: user.avatarEmoji,
-    archivedBio: user.bio, archivedPhone: user.phone, archivedPhoneHmac: user.phoneHmac,
+    archivedBio: user.bio, archivedPhone: user.phone, archivedPhoneHmac: user.phoneHmac, archivedEmailKey: user.email ? normaliseEmail(user.email) : null,
     email: null, handle: deletedHandle(user.id), displayName: DELETED_DISPLAY_NAME, avatarEmoji: DELETED_AVATAR_EMOJI, bio: null,
     phone: null, phoneHmac: null, interests: [], invitePartyId: null,
   }).where(eq(users.id, user.id));
@@ -130,12 +130,20 @@ async function voidUnpaidAwards(tx: Tx, userId: string) {
 /**
  * The retention job: deleted accounts older than `before` lose their archived personal fields (email,
  * phone and its hash, name, face, bio, About you answers). The row, its id, the handle it had and the
- * ledger stay. Returns how many were cleared.
+ * ledger stay. Returns how many were cleared. An account that still has a payment issue (money owed, money
+ * held, a contradiction not yet worked out) keeps them: they're how a new account with the same email or
+ * phone is matched to the debt (ADR 0013). It's cleared on a later run once the issue is gone.
  */
 export async function clearExpiredArchives(before: Date): Promise<number> {
   const rows = await db.update(users).set({
-    archivedEmail: null, archivedPhone: null, archivedPhoneHmac: null, archivedDisplayName: null, archivedAvatarEmoji: null, archivedBio: null,
+    archivedEmail: null, archivedEmailKey: null, archivedPhone: null, archivedPhoneHmac: null, archivedDisplayName: null, archivedAvatarEmoji: null, archivedBio: null,
     aboutAnswers: null, archiveClearedAt: sql`now()`,
-  }).where(and(isNotNull(users.deletedAt), lt(users.deletedAt, before), isNull(users.archiveClearedAt))).returning({ id: users.id });
+  }).where(and(isNotNull(users.deletedAt), lt(users.deletedAt, before), isNull(users.archiveClearedAt), sql`not ${hasPaymentIssue}`)).returning({ id: users.id });
   return rows.length;
 }
+
+/** In SQL, for users: owes (payout_owed below zero), has money held, or a contradiction still open. */
+const hasPaymentIssue = sql`(
+  exists (select 1 from ledger_accounts a where a.scope = ${users.id}::text and ((a.kind = 'payout_owed' and a.balance_kobo < 0) or (a.kind = 'contradiction_hold' and a.balance_kobo <> 0)))
+  or exists (select 1 from payout_contradictions c where c.user_id = ${users.id} and c.status in ('open', 'awaiting_second_admin'))
+)`;

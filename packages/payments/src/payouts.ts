@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { db, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
 import {
-  ACCOUNT_UNRESOLVED, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
+  ACCOUNT_UNRESOLVED, normaliseEmail, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
 import { backoffMs, lagosDayStart, lockPerson, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
 import { currentSettings } from "./settings.js";
@@ -49,8 +49,11 @@ export const payoutView = (p: Payout, a: Pick<PayoutAccount, "bankName" | "accou
 export async function withdrawContext(conn: Tx | typeof db, user: Pick<User, "id" | "email" | "phoneHmac" | "linkedPaymentIssueClearedAt">) {
   const owedKobo = await ledger.owedKobo(conn, user.id);
   if (user.linkedPaymentIssueClearedAt || (!user.email && !user.phoneHmac)) return { owedKobo, linkedIssue: false };
-  const same = [user.email ? eq(users.archivedEmail, user.email) : undefined, user.phoneHmac ? eq(users.archivedPhoneHmac, user.phoneHmac) : undefined].filter((x) => x !== undefined);
-  const archived = await conn.select({ id: users.id }).from(users).where(and(isNotNull(users.deletedAt), ne(users.id, user.id), or(...same)));
+  // Two indexed lookups (an OR across two columns would scan): the normalised email, and the phone hash.
+  const deleted = and(isNotNull(users.deletedAt), ne(users.id, user.id));
+  const byEmail = user.email ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedEmailKey, normaliseEmail(user.email)), deleted)) : [];
+  const byPhone = user.phoneHmac ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedPhoneHmac, user.phoneHmac), deleted)) : [];
+  const archived = [...new Map([...byEmail, ...byPhone].map((a) => [a.id, a])).values()];
   for (const a of archived) {
     const i = await ledger.paymentIssues(conn, a.id);
     if (i.owedKobo > 0 || i.heldKobo !== 0 || i.everContradicted) return { owedKobo, linkedIssue: true };

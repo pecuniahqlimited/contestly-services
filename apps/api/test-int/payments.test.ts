@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, archiveAccount, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  adminActions, adminPermissions, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -1198,6 +1198,35 @@ describe("contradictions: resolved by two admins", () => {
     const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, again.u.id), eq(adminActions.action, "payments.linked_issue_cleared")));
     expect([log.adminUserId, (log.after as { requestedBy: string }).requestedBy]).toEqual([admin2.id, admin.id]);
     expect((await confirm(admin2)).json().error).toBe("clearance_not_pending");
+  });
+
+  it("a Gmail alias of a deleted debtor's address matches it (dots and +tags dropped)", async () => {
+    const { u } = await owing("cralias");
+    await db.update(users).set({ email: `pay.${tag}.alias@gmail.com` }).where(eq(users.id, u.id));
+    const [old] = await db.select().from(users).where(eq(users.id, u.id));
+    await db.transaction((tx) => archiveAccount(tx, old, null));
+    expect((await db.select().from(users).where(eq(users.id, u.id)))[0].archivedEmailKey).toBe(`pay${tag}alias@gmail.com`);
+    const alias = await withdrawer("cralias2", kobo(10_000), { email: `PAY${tag}ALIAS+again@googlemail.com`.toLowerCase() });
+    await expect(request((await db.select().from(users).where(eq(users.id, alias.u.id)))[0], alias.account.id, kobo(1500))).rejects.toMatchObject({ details: { reason: "linked_payment_issue" } });
+  });
+
+  it("the archive retention keeps a deleted account's email and phone hash while it still has a payment issue", async () => {
+    const { u } = await owing("crkeep");
+    await db.update(users).set({ phoneHmac: `hmac-keep-${tag}` }).where(eq(users.id, u.id));
+    const [owes] = await db.select().from(users).where(eq(users.id, u.id));
+    await db.transaction((tx) => archiveAccount(tx, owes, null));
+    const clean = await makeUser(nextName("crkeepok"));
+    await db.transaction((tx) => archiveAccount(tx, clean, null));
+    await clearExpiredArchives(new Date(Date.now() + 3600_000));
+    const [kept] = await db.select().from(users).where(eq(users.id, u.id));
+    expect([kept.archivedEmailKey, kept.archivedPhoneHmac, kept.archiveClearedAt]).toEqual([owes.email, `hmac-keep-${tag}`, null]);
+    const [gone] = await db.select().from(users).where(eq(users.id, clean.id));
+    expect([gone.archivedEmail, gone.archivedEmailKey, gone.archiveClearedAt !== null]).toEqual([null, null, true]);
+    // Once nothing is owed, a later run clears it.
+    await db.transaction((tx) => ledger.journal(tx, { type: "topup", idempotencyKey: `t:keep:pay:${u.id}`, legs: [{ account: { system: "dev_mint" }, amountKobo: -(kobo(1500) + 11) }, { account: { userId: u.id, kind: "cash" }, amountKobo: kobo(1500) + 11 }] }));
+    expect(await ledger.owedKobo(db, u.id)).toBe(0);
+    await clearExpiredArchives(new Date(Date.now() + 3600_000));
+    expect((await db.select().from(users).where(eq(users.id, u.id)))[0].archivedPhoneHmac).toBeNull();
   });
 
   it("nobody resolves their own", async () => {

@@ -225,7 +225,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   money from a duplicate payout. Contact support") or a contradiction is open or money is held for one
   (`payment_issue`: "You have an open payment issue. Contact support").
 - **A deleted account's email and phone can be reused** (ADR 0010 frees them for a new sign-up; checked
-  2026-11-03: the live email, phone and phone HMAC are cleared and kept only in the archive columns). So a
+  2026-11-03: the live email, phone and phone HMAC are cleared and kept only in the archive columns). Emails
+  match by `normaliseEmail()` on both sides (`users.archived_email_key`: Gmail dots and +tags dropped,
+  googlemail folded in); phones by the E.164 hash. Each is its own indexed lookup. The archive retention job
+  keeps those fields while the deleted account still owes, has money held, or has a contradiction open. So a
   debt could leave with a deleted account (one deleted before this rule, or a contradiction heard after the
   delete). A new account whose verified email or phone HMAC matches a deleted account that owes, has money
   held, or ever had a contradiction can't withdraw (`linked_payment_issue`) until it's cleared, which is

@@ -93,8 +93,13 @@ export const users = pgTable("users", {
   archivedBio: text("archived_bio"),
   archivedPhone: text("archived_phone"),
   archivedPhoneHmac: text("archived_phone_hmac"),
+  /** normaliseEmail(archived email): Gmail dots and +tags dropped, so an alias of a deleted account's address matches it (ADR 0013). */
+  archivedEmailKey: text("archived_email_key"),
   archiveClearedAt: timestamp("archive_cleared_at", { withTimezone: true }),
-}, (t) => [index("users_archived_email_idx").on(t.archivedEmail), index("users_archived_handle_idx").on(t.archivedHandle)]);
+}, (t) => [
+  index("users_archived_email_idx").on(t.archivedEmail), index("users_archived_handle_idx").on(t.archivedHandle),
+  index("users_archived_email_key_idx").on(t.archivedEmailKey), index("users_archived_phone_hmac_idx").on(t.archivedPhoneHmac),
+]);
 
 /**
  * How a session or a sign-in reaches an account: (provider, external id). "firebase" is the session
