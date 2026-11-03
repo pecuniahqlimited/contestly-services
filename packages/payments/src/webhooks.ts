@@ -7,7 +7,7 @@
 import { and, count, desc, eq, gte, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { db, getPaymentsConfig, paymentWebhookEvents, paymentWebhookRejections, payouts, topups } from "@contestly/db";
 import { backoffMs, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
-import { configuredProviderNames, knownProviderNames, providerNamed } from "./providers/index.js";
+import { allowListedWebhookIps, configuredProviderNames, knownProviderNames, providerNamed } from "./providers/index.js";
 import { confirmTopup } from "./topups.js";
 import { checkPayout } from "./payouts.js";
 import type { Headers } from "./types.js";
@@ -16,15 +16,21 @@ export interface IngestOptions {
   /** PAYMENTS_WEBHOOK_IP_ALLOWLIST: refuse a webhook from outside the provider's published addresses. */
   ipAllowlist: boolean;
   clientIp: string;
+  /** What to do with a refusal (tests pass their own); the API's by default. */
+  gate?: RejectionGate;
 }
 
 /**
  * Authenticate and store. Throws 404 for a provider we don't have, 409 for one not configured here, 403 off
- * the allow-list, 401 for a bad signature; each refusal is recorded first (recordRejection).
+ * the allow-list, 401 for a bad signature, 429 when one address keeps sending refused webhooks; each refusal
+ * goes through the in-memory gate first, which decides whether it's stored (recordRejection).
  */
 export async function ingestWebhook(providerName: string, rawBody: Buffer, headers: Headers, opts: IngestOptions, deps: PaymentsDeps) {
+  const gate = opts.gate ?? rejectionGate;
   const refuse = async (status: number, reason: string) => {
-    await recordRejection(providerName, opts.clientIp, reason, rawBody);
+    const decision = gate.decide(opts.clientIp);
+    if (decision === "throttle") return paymentsError(429, "too_many_refusals");
+    if (decision === "record") await recordRejection(providerName, opts.clientIp, reason, rawBody, gate.counts().thisHour);
     return paymentsError(status, reason);
   };
   if (!knownProviderNames().includes(providerName)) throw await refuse(404, "not_found");
@@ -116,35 +122,80 @@ async function unknownReference(provider: string, object: string, reference: str
   return "unknown_reference";
 }
 
-/** At most this many rejections are stored per hour (a flood is counted by the cap being hit, not stored). */
+/** At most this many rejections are stored per hour (past it, they're counted in memory, not stored). */
 export const REJECTIONS_PER_HOUR_CAP = 1000;
 /** Rejections are kept this long (the sweep deletes older ones). */
 export const REJECTIONS_KEPT_DAYS = 30;
 const HEAD_BYTES = 500;
+const MINUTE_MS = 60_000;
+
+export type GateDecision = "record" | "count" | "throttle";
+export interface RejectionGateOptions { perIpPerMinute: number; perHourCap: number; exemptIps: () => string[] }
 
 /**
- * Record a refused webhook: provider (as given, truncated), source IP, reason and the first 500 bytes, never
- * the whole body; at most REJECTIONS_PER_HOUR_CAP an hour. At webhooks.rejectionsAlertPerHour in an hour,
- * an alert (once an hour): every webhook failing at once usually means a wrong secret after a key rotation.
+ * Decides, in memory and before any database work, what happens to a refused webhook (ADR 0013):
+ * - throttle: more than perIpPerMinute refusals from this address this minute (a provider's own allow-listed
+ *   addresses are exempt): answered 429, never stored;
+ * - count: this hour's perHourCap rows are already stored: refused as usual, only counted ("and N more");
+ * - record: stored (recordRejection).
+ * Per process: with several API instances each keeps its own counts.
  */
-export async function recordRejection(provider: string, sourceIp: string, reason: string, rawBody: Buffer, now = new Date()) {
-  const hourAgo = new Date(now.getTime() - 3600_000);
-  const [{ n }] = await db.select({ n: count() }).from(paymentWebhookRejections).where(gte(paymentWebhookRejections.createdAt, hourAgo));
-  if (Number(n) >= REJECTIONS_PER_HOUR_CAP) return false;
+export function makeRejectionGate(opts: RejectionGateOptions) {
+  let hour = "";
+  let recorded = 0;
+  let notRecorded = 0;
+  let perIp = new Map<string, { minute: number; n: number }>();
+  return {
+    decide(ip: string, now = new Date()): GateDecision {
+      const h = now.toISOString().slice(0, 13);
+      if (h !== hour) { hour = h; recorded = 0; notRecorded = 0; perIp = new Map(); }
+      const minute = Math.floor(now.getTime() / MINUTE_MS);
+      if (!opts.exemptIps().includes(ip)) {
+        const seen = perIp.get(ip);
+        const n = seen && seen.minute === minute ? seen.n + 1 : 1;
+        perIp.set(ip, { minute, n });
+        if (n > opts.perIpPerMinute) { notRecorded++; return "throttle"; }
+      }
+      if (recorded >= opts.perHourCap) { notRecorded++; return "count"; }
+      recorded++;
+      return "record";
+    },
+    /** Refusals this hour (stored and not) and how many weren't stored. */
+    counts(now = new Date()) {
+      const current = now.toISOString().slice(0, 13) === hour;
+      return { thisHour: current ? recorded + notRecorded : 0, notRecordedThisHour: current ? notRecorded : 0 };
+    },
+  };
+}
+export type RejectionGate = ReturnType<typeof makeRejectionGate>;
+
+/** The API's gate. PAYMENTS_WEBHOOK_REFUSALS_PER_IP_PER_MINUTE (default 30). */
+export const rejectionGate = makeRejectionGate({
+  perIpPerMinute: Number(process.env.PAYMENTS_WEBHOOK_REFUSALS_PER_IP_PER_MINUTE) || 30,
+  perHourCap: REJECTIONS_PER_HOUR_CAP,
+  exemptIps: allowListedWebhookIps,
+});
+
+/**
+ * Store a refused webhook the gate let through: provider (as given, truncated), source IP, reason and the
+ * first 500 bytes, never the whole body. When this hour's refusals reach webhooks.rejectionsAlertPerHour, an
+ * alert (once an hour): every webhook failing at once usually means a wrong secret after a key rotation.
+ */
+export async function recordRejection(provider: string, sourceIp: string, reason: string, rawBody: Buffer, refusalsThisHour: number, now = new Date()) {
   const head = rawBody.subarray(0, HEAD_BYTES).toString("utf8").replace(/\u0000/g, "");
   await db.insert(paymentWebhookRejections).values({ provider: provider.slice(0, 50), sourceIp: sourceIp.slice(0, 64), reason, head, createdAt: now });
   const threshold = (await getPaymentsConfig()).webhooks.rejectionsAlertPerHour;
-  if (Number(n) + 1 >= threshold) {
-    await raiseAlert(db, { severity: "warning", kind: "webhook_rejections", dedupeKey: `webhook_rejections:${now.toISOString().slice(0, 13)}`, detail: { lastHour: Number(n) + 1, threshold, latest: { provider, reason, sourceIp } } });
+  if (refusalsThisHour >= threshold) {
+    await raiseAlert(db, { severity: "warning", kind: "webhook_rejections", dedupeKey: `webhook_rejections:${now.toISOString().slice(0, 13)}`, detail: { thisHour: refusalsThisHour, threshold, latest: { provider, reason, sourceIp } } });
   }
-  return true;
 }
 
 /** For the console's webhooks page: rejections in the last hour and day, and the latest few. */
-export async function rejectionSummary(limit = 20, now = new Date()) {
+export async function rejectionSummary(limit = 20, now = new Date(), gate: RejectionGate = rejectionGate) {
   const since = (ms: number) => db.select({ n: count() }).from(paymentWebhookRejections).where(gte(paymentWebhookRejections.createdAt, new Date(now.getTime() - ms)));
   const [[hour], [day], latest] = await Promise.all([since(3600_000), since(24 * 3600_000), db.select().from(paymentWebhookRejections).orderBy(desc(paymentWebhookRejections.createdAt)).limit(limit)]);
-  return { lastHour: Number(hour.n), lastDay: Number(day.n), latest: latest.map((r) => ({ id: r.id, provider: r.provider, sourceIp: r.sourceIp, reason: r.reason, head: r.head, at: r.createdAt.toISOString() })) };
+  // notRecordedThisHour: refused but not stored (throttled, or past the hourly cap): "and N more refused".
+  return { lastHour: Number(hour.n), lastDay: Number(day.n), notRecordedThisHour: gate.counts(now).notRecordedThisHour, latest: latest.map((r) => ({ id: r.id, provider: r.provider, sourceIp: r.sourceIp, reason: r.reason, head: r.head, at: r.createdAt.toISOString() })) };
 }
 
 /** The retention: rejections older than REJECTIONS_KEPT_DAYS go. */

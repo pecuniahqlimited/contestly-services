@@ -63,6 +63,8 @@ function providers(): Map<string, PaymentProvider> {
 }
 
 export const knownProviderNames = () => Object.keys(REGISTRY);
+/** Real providers' published webhook addresses (never the mock's): exempt from the refusal throttle. */
+export const allowListedWebhookIps = () => [...providers().values()].filter((p) => p.name !== MOCK).flatMap((p) => p.webhookIps);
 export const configuredProviderNames = () => [...providers().keys()];
 
 const notConfigured = (name: string) => Object.assign(new Error("provider_not_configured"), { statusCode: 409, details: { provider: name } });

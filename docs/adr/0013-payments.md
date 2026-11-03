@@ -191,7 +191,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    with a warning alert (the top-up's own checks still run). A refused webhook (unknown or unconfigured
    provider, off the allow-list, bad signature) isn't stored as an event; it's recorded in
    `payment_webhook_rejections`: time, provider, source IP, reason and the first 500 bytes, never the whole
-   body, at most 1,000 an hour, kept 30 days. The webhooks page shows the counts; at
+   body, at most 1,000 an hour, kept 30 days. An in-memory gate decides before any database work: an
+   address with more than `PAYMENTS_WEBHOOK_REFUSALS_PER_IP_PER_MINUTE` (default 30) refusals a minute gets
+   429 and nothing is stored (real providers' published addresses are exempt); past the hourly cap a refusal
+   is only counted, and the page shows "and N more refused" (per API process). The webhooks page shows the counts; at
    `webhooks.rejectionsAlertPerHour` (default 20) in an hour a warning alert fires, since a wrong secret
    after a key rotation fails every webhook at once.
 10. **Loosening a control takes two admins.** A change to payments config or settings that loosens a

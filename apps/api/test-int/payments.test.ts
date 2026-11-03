@@ -15,7 +15,7 @@ import {
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, recordRejection, REJECTIONS_KEPT_DAYS, REJECTIONS_PER_HOUR_CAP, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -333,20 +333,29 @@ describe("top-ups: credited once, only on a verified confirmation", () => {
       expect((await db.select().from(paymentAlerts).where(like(paymentAlerts.dedupeKey, "webhook_rejections:%"))).length).toBeGreaterThan(0);
       const page = (await app.inject({ method: "GET", url: "/admin/payments/webhooks", headers: as(viewer) })).json();
       expect(page.rejections.lastHour).toBeGreaterThanOrEqual(3);
-      // The cap: past it, nothing more is stored this hour.
-      const hourAgo = new Date(Date.now() - 3600_000);
-      const [{ n }] = await db.select({ n: count() }).from(paymentWebhookRejections).where(gte(paymentWebhookRejections.createdAt, hourAgo));
-      const fill = REJECTIONS_PER_HOUR_CAP - Number(n);
-      await db.insert(paymentWebhookRejections).values(Array.from({ length: fill }, () => ({ provider: "mock", sourceIp: "203.0.113.9", reason: "invalid_signature", head: `filler-${tag}` })));
-      expect(await recordRejection("mock", "203.0.113.9", "invalid_signature", Buffer.from(`over-${tag}`))).toBe(false);
-      expect((await postWebhook(big)).statusCode).toBe(401); // still refused, just not stored
-      expect(await db.select().from(paymentWebhookRejections).where(like(paymentWebhookRejections.head, `over-${tag}%`))).toHaveLength(0);
       // Kept 30 days.
-      expect(await pruneRejections(new Date(Date.now() + (REJECTIONS_KEPT_DAYS + 1) * 24 * 3600_000))).toBeGreaterThanOrEqual(REJECTIONS_PER_HOUR_CAP);
+      expect(await pruneRejections(new Date(Date.now() + (REJECTIONS_KEPT_DAYS + 1) * 24 * 3600_000))).toBeGreaterThanOrEqual(3);
     } finally {
       await config(() => {});
     }
   });
+
+  it("a flood of refusals stays capped without database writes: the in-memory gate throttles per address and counts past the hourly cap", async () => {
+    const stored = async () => Number((await db.select({ n: count() }).from(paymentWebhookRejections).where(like(paymentWebhookRejections.head, `%flood-${tag}%`)))[0].n);
+    const gate = makeRejectionGate({ perIpPerMinute: 1000, perHourCap: 3, exemptIps: () => ["52.31.139.75"] });
+    const bad = mock.signedDelivery("topup.paid", { reference: `flood-${tag}` }, true);
+    const ingestFrom = (ip: string, g = gate) => ingestWebhook("mock", bad.rawBody, bad.headers, { ipAllowlist: false, clientIp: ip, gate: g }, deps).then(() => 200, (e: { statusCode: number }) => e.statusCode);
+    for (let i = 0; i < 50; i++) expect(await ingestFrom(`198.51.100.${i % 20}`)).toBe(401);
+    expect(await stored()).toBe(3); // the cap; the other 47 never reached the database
+    expect(gate.counts()).toEqual({ thisHour: 50, notRecordedThisHour: 47 });
+    expect((await rejectionSummary(20, new Date(), gate)).notRecordedThisHour).toBe(47);
+    // Per address: past its limit an address gets 429 and nothing is stored or counted against the cap; a provider's own address is exempt.
+    const tight = makeRejectionGate({ perIpPerMinute: 2, perHourCap: 1000, exemptIps: () => ["52.31.139.75"] });
+    expect([await ingestFrom("203.0.113.50", tight), await ingestFrom("203.0.113.50", tight), await ingestFrom("203.0.113.50", tight)]).toEqual([401, 401, 429]);
+    expect([await ingestFrom("52.31.139.75", tight), await ingestFrom("52.31.139.75", tight), await ingestFrom("52.31.139.75", tight)]).toEqual([401, 401, 401]);
+    expect(await stored()).toBe(3 + 2 + 3);
+  });
+
 
   it("limits and the pause are enforced", async () => {
     const u = await makeUser(nextName("tplimits"));
