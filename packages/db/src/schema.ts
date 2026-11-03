@@ -873,6 +873,21 @@ export const invariantAcknowledgments = pgTable("invariant_acknowledgments", {
 }, (t) => [index("invariant_acknowledgments_kind_idx").on(t.kind)]);
 
 /**
+ * Clearing linked_payment_issue for an account (ADR 0013) is loosening: one admin with payments.finalize
+ * asks with a reason, a different one confirms; neither may be the account holder. Never edited after.
+ */
+export const linkedIssueClearances = pgTable("linked_issue_clearances", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  reason: text("reason").notNull(),
+  status: text("status", { enum: ["awaiting_second_admin", "applied"] }).notNull(),
+  requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
+  confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  appliedAt: timestamp("applied_at", { withTimezone: true }),
+}, (t) => [uniqueIndex("linked_issue_clearances_one_open").on(t.userId).where(sql`status = 'awaiting_second_admin'`)]);
+
+/**
  * Granting payments permissions is loosening (ADR 0013): a payments.config holder asks, a different one
  * confirms; never the grantee, never for themselves. Revoking applies at once. Never edited after.
  */
@@ -1276,6 +1291,7 @@ export type PayoutContradiction = typeof payoutContradictions.$inferSelect;
 export type PaymentConfigChange = typeof paymentConfigChanges.$inferSelect;
 export type OwedWaiver = typeof owedWaivers.$inferSelect;
 export type PaymentPermissionGrant = typeof paymentPermissionGrants.$inferSelect;
+export type LinkedIssueClearance = typeof linkedIssueClearances.$inferSelect;
 export type InvariantAcknowledgment = typeof invariantAcknowledgments.$inferSelect;
 export type QuestionReviewRow = typeof questionReviews.$inferSelect;
 export type Party = typeof parties.$inferSelect;

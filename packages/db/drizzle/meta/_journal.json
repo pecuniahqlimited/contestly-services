@@ -225,6 +225,13 @@
       "when": 1793665862025,
       "tag": "0031_permission_revokes",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1793665863095,
+      "tag": "0032_linked_issue_clearances",
+      "breakpoints": true
     }
   ]
 }

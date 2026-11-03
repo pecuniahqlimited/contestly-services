@@ -15,7 +15,7 @@ import {
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
-  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
+  approvePayout, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
 } from "@contestly/payments";
 import { buildApp } from "../src/app.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
@@ -1180,11 +1180,24 @@ describe("contradictions: resolved by two admins", () => {
     // Same phone, different email.
     const byPhone = await withdrawer("crreuse3", kobo(10_000), { phoneHmac });
     await expect(request((await db.select().from(users).where(eq(users.id, byPhone.u.id)))[0], byPhone.account.id, kobo(1500))).rejects.toMatchObject({ details: { reason: "linked_payment_issue" } });
-    // An admin checks and clears it (logged): then it can.
-    const cleared = await app.inject({ method: "POST", url: `/admin/payments/users/${again.u.id}/clear-linked-issue`, headers: as(admin), payload: { reason: "different person: checked ID with support" } });
-    expect(cleared.statusCode).toBe(200);
-    expect((await request((await db.select().from(users).where(eq(users.id, again.u.id)))[0], again.account.id, kobo(1500))).payout.status).toBe("requested");
-    expect((await db.select().from(adminActions).where(and(eq(adminActions.targetId, again.u.id), eq(adminActions.action, "payments.linked_issue_cleared")))).length).toBe(1);
+    // An admin checks and asks to clear it: nothing changes until a different admin confirms.
+    const asked = await app.inject({ method: "POST", url: `/admin/payments/users/${again.u.id}/clear-linked-issue`, headers: as(admin), payload: { reason: "different person: checked ID with support" } });
+    expect([asked.statusCode, asked.json().clearance.status]).toEqual([202, "awaiting_second_admin"]);
+    const fresh = async () => (await db.select().from(users).where(eq(users.id, again.u.id)))[0];
+    await expect(request(await fresh(), again.account.id, kobo(1500))).rejects.toMatchObject({ details: { reason: "linked_payment_issue" } });
+    const confirm = (who: User) => app.inject({ method: "POST", url: `/admin/payments/linked-issue-clearances/${asked.json().clearance.id}/confirm`, headers: as(who) });
+    expect((await confirm(admin)).json().error).toBe("second_admin_required");
+    // Neither admin may be the account holder.
+    await db.update(users).set({ isAdmin: true }).where(eq(users.id, again.u.id));
+    await db.insert(adminPermissions).values({ userId: again.u.id, permission: "payments.finalize" });
+    expect((await confirm(again.u)).json().error).toBe("own_transaction");
+    expect((await app.inject({ method: "POST", url: `/admin/payments/users/${byPhone.u.id}/clear-linked-issue`, headers: as(byPhone.u), payload: { reason: "it's me, honest" } })).json().error).toBe("admin_only");
+    await expect(requestLinkedIssueClearance(again.u.id, again.u.id, "it's me, honest")).rejects.toMatchObject({ message: "own_transaction" }); // an admin holder can't ask for their own
+    expect((await confirm(admin2)).json().clearance).toMatchObject({ status: "applied", confirmedBy: admin2.id });
+    expect((await request(await fresh(), again.account.id, kobo(1500))).payout.status).toBe("requested");
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, again.u.id), eq(adminActions.action, "payments.linked_issue_cleared")));
+    expect([log.adminUserId, (log.after as { requestedBy: string }).requestedBy]).toEqual([admin2.id, admin.id]);
+    expect((await confirm(admin2)).json().error).toBe("clearance_not_pending");
   });
 
   it("nobody resolves their own", async () => {

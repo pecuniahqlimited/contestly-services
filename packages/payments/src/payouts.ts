@@ -20,9 +20,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { db, moneyTransaction, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
+import { db, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User } from "@contestly/db";
 import {
-  ACCOUNT_UNRESOLVED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
+  ACCOUNT_UNRESOLVED, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
 import { backoffMs, lagosDayStart, lockPerson, paymentsError, raiseAlert, type PaymentsDeps } from "./common.js";
 import { currentSettings } from "./settings.js";
@@ -58,16 +58,45 @@ export async function withdrawContext(conn: Tx | typeof db, user: Pick<User, "id
   return { owedKobo, linkedIssue: false };
 }
 
-/** An admin has checked a new account against a deleted one with a payment issue: it may withdraw again. Logged. */
-export async function clearLinkedPaymentIssue(adminUserId: string, userId: string, reason: string) {
+const clearanceView = (c: LinkedIssueClearance) => ({
+  id: c.id, userId: c.userId, reason: c.reason, status: c.status, requestedBy: c.requestedByUserId, confirmedBy: c.confirmedByUserId,
+  createdAt: c.createdAt.toISOString(), appliedAt: c.appliedAt?.toISOString() ?? null,
+});
+
+/**
+ * An admin has checked a new account against a deleted one with a payment issue and asks to let it withdraw.
+ * Loosening, so maker-checker: nothing changes until a different admin confirms; neither is the account holder.
+ */
+export async function requestLinkedIssueClearance(adminUserId: string, userId: string, reason: string) {
   return moneyTransaction(async (tx) => {
     const u = await lockPerson(tx, userId);
     if (!u) throw paymentsError(404, "not_found");
     if (u.id === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
-    const now = new Date();
-    await tx.update(users).set({ linkedPaymentIssueClearedAt: now }).where(eq(users.id, userId));
-    await recordAdminAction(tx, { adminUserId, action: "payments.linked_issue_cleared", targetType: "user", targetId: userId, reason, before: { clearedAt: u.linkedPaymentIssueClearedAt?.toISOString() ?? null }, after: { clearedAt: now.toISOString() } });
-    return { clearedAt: now.toISOString() };
+    const [open] = await tx.select({ id: linkedIssueClearances.id }).from(linkedIssueClearances).where(and(eq(linkedIssueClearances.userId, userId), eq(linkedIssueClearances.status, "awaiting_second_admin")));
+    if (open) throw paymentsError(409, "clearance_pending", { clearanceId: open.id });
+    const [c] = await tx.insert(linkedIssueClearances).values({ userId, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
+    await recordAdminAction(tx, { adminUserId, action: "payments.linked_issue_clear_requested", targetType: "user", targetId: userId, reason, before: null, after: { clearanceId: c.id } });
+    return clearanceView(c);
+  });
+}
+
+/** A second admin confirms: not whoever asked, not the account holder. Then the account may withdraw. Logged. */
+export async function confirmLinkedIssueClearance(adminUserId: string, clearanceId: string, now = new Date()) {
+  const [pre] = await db.select({ userId: linkedIssueClearances.userId }).from(linkedIssueClearances).where(eq(linkedIssueClearances.id, clearanceId));
+  if (!pre) throw paymentsError(404, "not_found");
+  return moneyTransaction(async (tx) => {
+    const u = await lockPerson(tx, pre.userId);
+    const [c] = await tx.select().from(linkedIssueClearances).where(eq(linkedIssueClearances.id, clearanceId)).for("update");
+    if (c.status !== "awaiting_second_admin") throw paymentsError(409, "clearance_not_pending", { status: c.status });
+    if (c.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);
+    if (c.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
+    await tx.update(users).set({ linkedPaymentIssueClearedAt: now }).where(eq(users.id, c.userId));
+    const [done] = await tx.update(linkedIssueClearances).set({ status: "applied", confirmedByUserId: adminUserId, appliedAt: now }).where(eq(linkedIssueClearances.id, c.id)).returning();
+    await recordAdminAction(tx, {
+      adminUserId, action: "payments.linked_issue_cleared", targetType: "user", targetId: c.userId, reason: c.reason,
+      before: { clearedAt: u.linkedPaymentIssueClearedAt?.toISOString() ?? null }, after: { clearedAt: now.toISOString(), clearanceId: c.id, requestedBy: c.requestedByUserId },
+    });
+    return clearanceView(done);
   });
 }
 

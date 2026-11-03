@@ -6,7 +6,7 @@ import {
   adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, invariantAcknowledgmentSchema, acknowledgeBreachBodySchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
-  acknowledgeAlert, adminVerifyTopup, clearLinkedPaymentIssue, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
+  acknowledgeAlert, adminVerifyTopup, confirmLinkedIssueClearance, requestLinkedIssueClearance, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
   listAlerts, listContradictions, listControlChanges, listPayouts, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectionSummary, rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
   confirmAcknowledgment, listAcknowledgments, requestAcknowledgment, confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
@@ -138,11 +138,18 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
     return { waiver: owedWaiverSchema.parse(await confirmOwedWaiver(admin.id, uuidParam(req))) };
   });
 
-  /** A new account matching a deleted one with a payment issue (same email or phone): an admin checked it; it may withdraw. */
-  app.post("/admin/payments/users/:id/clear-linked-issue", async (req) => {
+  /**
+   * A new account matching a deleted one with a payment issue (same email or phone): an admin checked it and
+   * asks to let it withdraw (202); a different admin confirms. Neither may be the account holder.
+   */
+  app.post("/admin/payments/users/:id/clear-linked-issue", async (req, reply) => {
     const admin = await requirePermission(req, "payments.finalize");
     const { reason } = adminReasonBodySchema.parse(req.body);
-    return clearLinkedPaymentIssue(admin.id, uuidParam(req), reason);
+    return reply.code(202).send({ clearance: await requestLinkedIssueClearance(admin.id, uuidParam(req), reason) });
+  });
+  app.post("/admin/payments/linked-issue-clearances/:id/confirm", async (req) => {
+    const admin = await requirePermission(req, "payments.finalize");
+    return { clearance: await confirmLinkedIssueClearance(admin.id, uuidParam(req)) };
   });
 
   /** Run the invariant checks now (they also run hourly). A breach that repeats alerts and pauses payouts. */

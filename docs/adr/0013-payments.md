@@ -228,8 +228,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   2026-11-03: the live email, phone and phone HMAC are cleared and kept only in the archive columns). So a
   debt could leave with a deleted account (one deleted before this rule, or a contradiction heard after the
   delete). A new account whose verified email or phone HMAC matches a deleted account that owes, has money
-  held, or ever had a contradiction can't withdraw (`linked_payment_issue`) until an admin with
-  `payments.finalize` checks it and clears it with a reason (`users.linked_payment_issue_cleared_at`, logged).
+  held, or ever had a contradiction can't withdraw (`linked_payment_issue`) until it's cleared, which is
+  loosening and so maker-checker like the rest: an admin with `payments.finalize` checks it and asks with a
+  reason, a different `payments.finalize` admin confirms (`linked_issue_clearances`); neither may be the
+  account holder. Then `users.linked_payment_issue_cleared_at` is set; every step logged.
 - The minimum withdrawal defaults to ₦1,000 (admin config). Paystack charged ₦10 to send ₦100 in test mode and
   the platform bears the fee by default, so below that the fee is too large a share of what moves.
 - Checked against Paystack's test API (`npm run paystack:check`, 2026-11-02): checkout, verify (pending as
