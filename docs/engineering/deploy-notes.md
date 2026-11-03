@@ -28,11 +28,17 @@ New env with this release (ADR 0013): `PAYSTACK_SECRET_KEY` (a `sk_test_…` key
 
 Not a migration, but it needs the same access. The payments console needs at least two unbanned
 `payments.config` holders (ADR 0013). If it ever has fewer and nobody can confirm a grant, someone with
-shell access to a box that can reach the production database runs, from the repo with production env:
+shell access to the droplet runs it inside the running API container, which already has the production
+environment and reaches the database (the script ships in every image built from the `Dockerfile`):
 
 ```bash
-npm run payments:break-glass -- --grant-config <handle> --reason "both config holders left; ticket OPS-123"
+docker compose -f docker-compose.prod.yml exec api \
+  npm run payments:break-glass -- --grant-config <handle> --reason "both config holders left; Ada; ticket OPS-123"
 ```
+
+From a checkout with the production env instead, the same `npm run payments:break-glass -- …` works.
+Inside a container the OS user it records is the image's (`node`), so put who is running it in the
+reason. It prints what it did, or `break-glass refused: <code>` and exits 1.
 
 It grants `payments.config` to that admin (who must already be an admin, not banned or deleted), logs
 `payments.break_glass` in `admin_actions` as the system with the reason and the OS user, and raises a
@@ -41,3 +47,12 @@ maker-checker flow for anything else. There is no API route for this, by design.
 
 It refuses (`not_stuck`) while there are two or more unbanned holders, since the console can grant it
 then. `--force` grants anyway; the `admin_actions` row and the alert both record `force: true`.
+
+## Before launch
+
+- **Dry-run break-glass on staging.** On the staging droplet, with staging at fewer than two
+  `payments.config` holders (or with `--force`), run the command above in the API container for a test
+  admin. Check the grant shows in the console, the `payments.break_glass` row in the admin log names the
+  reason, and the critical alert reached `ADMIN_ALERT_PAYMENTS_EMAILS` (and the general channels as a
+  subject and console link). Then revoke the grant through the console. This proves the image, the
+  container's database access and the alert path before anyone needs it for real.

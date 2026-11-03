@@ -32,8 +32,9 @@ try {
     ? `payments.config granted to @${out.user.handle}: ${out.holders} holder(s) now (the console needs ${CONFIG_HOLDER_FLOOR}). Logged as payments.break_glass; a critical alert was raised.`
     : `@${out.user.handle} already holds payments.config; nothing changed (${out.holders} holder(s)).`);
 } catch (e) {
-  const err = e as Error & { details?: unknown };
-  console.error(`break-glass refused: ${err.message}${err.details ? ` ${JSON.stringify(err.details)}` : ""}`);
+  const err = e as Error & { details?: unknown; code?: string };
+  // A connection failure is an AggregateError with no message: say what it was.
+  console.error(`break-glass refused: ${err.message || err.code || String(err)}${err.details ? ` ${JSON.stringify(err.details)}` : ""}`);
   if (err.message === "not_stuck") console.error(`The console has ${CONFIG_HOLDER_FLOOR}+ config holders and can grant it. --force overrides (recorded).`);
   process.exitCode = 1;
 } finally {

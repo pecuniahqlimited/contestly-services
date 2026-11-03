@@ -2,7 +2,7 @@
 FROM node:22-alpine AS build
 ARG APP
 WORKDIR /repo
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/api/package.json ./apps/api/
 COPY apps/realtime/package.json ./apps/realtime/
@@ -10,7 +10,10 @@ COPY apps/worker/package.json ./apps/worker/
 COPY apps/questions/package.json ./apps/questions/
 RUN npm ci --omit=dev=false --workspace=@contestly/${APP} --include-workspace-root
 COPY apps/${APP} ./apps/${APP}
-RUN npm run build
+# Server-only operations, run inside a container (docs/engineering/deploy-notes.md), e.g.
+#   docker compose -f docker-compose.prod.yml exec api npm run payments:break-glass -- --grant-config <handle> --reason "…"
+COPY scripts/payments-break-glass.ts ./scripts/
+RUN npm run build -w apps/${APP}   # npm ci already built the packages (the root prepare script)
 
 FROM node:22-alpine
 ARG APP
