@@ -1,0 +1,1 @@
+ALTER TABLE "corners" ADD COLUMN "celebration_seen_at" timestamp with time zone;

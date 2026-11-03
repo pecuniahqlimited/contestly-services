@@ -1306,6 +1306,8 @@ export const corners = pgTable("corners", {
   status: cornerStatus("status").notNull().default("locked"),
   level: integer("level").notNull().default(1),
   unlockedAt: timestamp("unlocked_at", { withTimezone: true }),
+  /** When the owner's app showed the unlock celebration (POST /me/corner/celebration-seen), so it shows once. */
+  celebrationSeenAt: timestamp("celebration_seen_at", { withTimezone: true }),
   /** The corner_configs version whose thresholds it met; null for a brand's corner (no unlock). */
   unlockConfigVersion: integer("unlock_config_version"),
   /** Who made up N when it unlocked, so an admin can spot-check it. */

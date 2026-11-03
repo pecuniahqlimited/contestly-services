@@ -210,6 +210,8 @@ export const cornerProgressSchema = z.object({
   corner: z.object({
     id: z.string().uuid(), name: z.string(), bio: z.string().nullable(), status: z.enum(CORNER_STATUSES), level: z.number().int(),
     unlockedAt: z.string().datetime().nullable(), unlockConfigVersion: z.number().int().nullable(),
+    /** Null until the owner's app has shown the unlock celebration: show it when unlocked and this is null. */
+    celebrationSeenAt: z.string().datetime().nullable(),
   }).nullable(),
   config: cornerUnlockConfigSchema.extend({ version: z.number().int() }),
   thresholds: z.object({ partiesHosted: cornerThresholdSchema, distinctPlayers: cornerThresholdSchema, newPlayers: cornerThresholdSchema }),
@@ -218,6 +220,8 @@ export const cornerProgressSchema = z.object({
   newPlayers: z.array(progressNewPlayerSchema),
 });
 export type CornerProgress = z.infer<typeof cornerProgressSchema>;
+/** POST /me/corner/celebration-seen: when it was first seen (a repeat keeps the first time). */
+export const celebrationSeenSchema = z.object({ celebrationSeenAt: z.string().datetime() });
 
 /** The admin's view adds who made up N at unlock, and how a revoke went. */
 export const adminCornerViewSchema = cornerProgressSchema.extend({

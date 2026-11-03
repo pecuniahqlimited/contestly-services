@@ -7,7 +7,7 @@ import {
 import { requireUser, uuidParam } from "../auth.js";
 import {
   cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postsPage, progressOf, react, reply, repliesPage, reportReply, setAlerts, shownCorner,
-  unfollow, unmute, unreact, updateMyCorner,
+  unfollow, unmute, unreact, updateMyCorner, celebrationSeen,
 } from "../corners.js";
 
 const userIdParam = (params: unknown) => z.object({ userId: z.string().uuid() }).parse(params).userId;
@@ -59,4 +59,6 @@ export async function cornersRoutes(app: FastifyInstance) {
   app.get("/me/corner/progress", async (req) => progressOf(requireUser(req).id));
   /** Name and bio, once it's unlocked. */
   app.patch("/me/corner", async (req) => updateMyCorner(requireUser(req), cornerUpdateSchema.parse(req.body)));
+  /** The unlock celebration has been shown; the progress view's celebrationSeenAt is set from then on. */
+  app.post("/me/corner/celebration-seen", async (req) => celebrationSeen(requireUser(req)));
 }

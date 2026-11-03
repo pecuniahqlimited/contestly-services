@@ -397,6 +397,14 @@ export async function updateMyCorner(me: User, body: { name?: string; bio?: stri
   return { id: after.id, name: after.name, bio: after.bio };
 }
 
+/** The owner's app showed the unlock celebration: recorded once, so it never shows again (a repeat keeps the first time). */
+export async function celebrationSeen(me: User) {
+  const c = await cornerOf(db, me.id);
+  if (!c || c.status !== "unlocked") throw httpError(409, "corner_not_unlocked");
+  const [after] = await db.update(corners).set({ celebrationSeenAt: sql`coalesce(${corners.celebrationSeenAt}, now())` }).where(eq(corners.id, c.id)).returning();
+  return { celebrationSeenAt: after.celebrationSeenAt!.toISOString() };
+}
+
 // ---- progress --------------------------------------------------------------------------
 
 /** A host's progress toward unlocking: each threshold, the parties hosted (and whether each counted), and their new players. */
@@ -413,6 +421,7 @@ export async function progressOf(hostId: string): Promise<CornerProgress> {
     corner: corner ? {
       id: corner.id, name: corner.name, bio: corner.bio, status: corner.status, level: corner.level,
       unlockedAt: corner.unlockedAt?.toISOString() ?? null, unlockConfigVersion: corner.unlockConfigVersion,
+      celebrationSeenAt: corner.celebrationSeenAt?.toISOString() ?? null,
     } : null,
     config: { ...cfg.config, version: cfg.version },
     thresholds, allMet,

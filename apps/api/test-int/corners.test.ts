@@ -14,7 +14,7 @@ import {
   getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
-import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, lagosDay, myContactsSchema, weekOf } from "@contestly/shared";
+import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, celebrationSeenSchema, lagosDay, myContactsSchema, weekOf } from "@contestly/shared";
 import { setWeekPoints } from "../src/climb/boards.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
@@ -246,6 +246,27 @@ describe("unlock alerts", () => {
     const [alert] = await alertsFor((await cornerRow(host)).id);
     expect(alert).toMatchObject({ kind: "corner.unlock_cluster", severity: "warning" });
     expect((alert.details.clustered as { id: string }[]).map((p) => p.id).sort()).toEqual([a.id, b.id].sort());
+  });
+});
+
+describe("the unlock celebration", () => {
+  it("progress has unlockedAt and celebrationSeenAt; seen once, a repeat keeps the first time; refused before unlock", async () => {
+    const host = await person("chost");
+    const celebrate = () => app.inject({ method: "POST", url: "/me/corner/celebration-seen", headers: as(host) });
+    expect((await celebrate()).json().error).toBe("corner_not_unlocked"); // no corner yet
+    const [a, b] = [await person("ca"), await person("cb")];
+    await finish(host, [a, b, await person("cc")]);
+    expect((await celebrate()).json().error).toBe("corner_not_unlocked"); // locked
+    await finish(host, [a, b, await person("cd")]);
+    const before = await progress(host);
+    expect(before.corner).toMatchObject({ status: "unlocked", celebrationSeenAt: null });
+    expect(before.corner.unlockedAt).toEqual(expect.any(String));
+    const first = await celebrate();
+    expect(first.statusCode).toBe(200);
+    const seenAt = celebrationSeenSchema.parse(first.json()).celebrationSeenAt;
+    expect((await progress(host)).corner.celebrationSeenAt).toBe(seenAt);
+    expect((await celebrate()).json().celebrationSeenAt).toBe(seenAt);
+    expect((await app.inject({ method: "POST", url: "/me/corner/celebration-seen" })).statusCode).toBe(401);
   });
 });
 
