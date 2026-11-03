@@ -1198,6 +1198,30 @@ describe("contradictions: resolved by two admins", () => {
     const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, again.u.id), eq(adminActions.action, "payments.linked_issue_cleared")));
     expect([log.adminUserId, (log.after as { requestedBy: string }).requestedBy]).toEqual([admin2.id, admin.id]);
     expect((await confirm(admin2)).json().error).toBe("clearance_not_pending");
+    expect(log.after).toMatchObject({ coveredUserIds: [u.id] });
+    // A clearance covers the accounts it was checked against: another deleted debtor matching later blocks again.
+    const second = await owing("crreuse4");
+    await db.update(users).set({ email: `second-${tag}@test.contestly.invalid` }).where(eq(users.id, second.u.id));
+    await db.update(users).set({ phoneHmac: `hmac2-${tag}` }).where(eq(users.id, second.u.id));
+    await db.transaction(async (tx) => archiveAccount(tx, (await tx.select().from(users).where(eq(users.id, second.u.id)))[0], null));
+    await db.update(users).set({ phoneHmac: `hmac2-${tag}` }).where(eq(users.id, again.u.id)); // they verify the other account's old number
+    await expect(request(await fresh(), again.account.id, kobo(1500))).rejects.toMatchObject({ details: { reason: "linked_payment_issue" } });
+  });
+
+  it("a deleted account whose contradiction dissolved (the transfer came back) blocks nobody who gets its number", async () => {
+    const { u, payout, c } = await contradicted("crinnocent", kobo(10_000));
+    await resolve(admin, c.id);
+    const t = (await mock.getTransfer(payout.reference))!;
+    await mock.setTransfer(payout.reference, { ...t, state: "failed" });
+    expect((await confirmIt(admin2, c.id)).json().contradiction.status).toBe("dissolved");
+    await db.update(users).set({ phoneHmac: `hmac-inn-${tag}` }).where(eq(users.id, u.id));
+    await db.transaction(async (tx) => {
+      const [x] = await tx.select().from(users).where(eq(users.id, u.id));
+      await ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: -(await ledger.balances(u.id)).cashKobo, type: "topup", idempotencyKey: `t:inn:spend:${u.id}` });
+      await archiveAccount(tx, x, null);
+    });
+    const stranger = await withdrawer("crinnocent2", kobo(10_000), { phoneHmac: `hmac-inn-${tag}` }); // the carrier gave them the number
+    expect((await request((await db.select().from(users).where(eq(users.id, stranger.u.id)))[0], stranger.account.id, kobo(1500))).payout.status).toBe("requested");
   });
 
   it("a Gmail alias of a deleted debtor's address matches it (dots and +tags dropped)", async () => {

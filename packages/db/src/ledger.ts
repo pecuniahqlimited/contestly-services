@@ -199,17 +199,18 @@ export async function outstandingDebts(tx: Tx, userId: string) {
 
 /**
  * A person's open payment issues: what they owe, whether a contradiction of theirs is still open, and what's
- * held for it. Any of them blocks deleting the account; any of them (or any contradiction at all) on a
+ * held for it. Any of them blocks deleting the account; any of them (or a resolved contradiction) on a
  * deleted account blocks withdrawals on a new account with its email or phone (ADR 0013).
  */
 export async function paymentIssues(conn: Tx | typeof db, userId: string) {
   const [owed, [open], [any], held] = await Promise.all([
     owedKobo(conn, userId),
     conn.select({ id: payoutContradictions.id }).from(payoutContradictions).where(and(eq(payoutContradictions.userId, userId), inArray(payoutContradictions.status, ["open", "awaiting_second_admin"]))).limit(1),
-    conn.select({ id: payoutContradictions.id }).from(payoutContradictions).where(eq(payoutContradictions.userId, userId)).limit(1),
+    conn.select({ id: payoutContradictions.id }).from(payoutContradictions).where(and(eq(payoutContradictions.userId, userId), eq(payoutContradictions.status, "resolved"))).limit(1),
     conn.select({ b: ledgerAccounts.balanceKobo }).from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "contradiction_hold"), eq(ledgerAccounts.scope, userId))),
   ]);
-  return { owedKobo: owed, openContradiction: !!open, everContradicted: !!any, heldKobo: held[0]?.b ?? 0 };
+  // resolvedContradiction: a duplicate payout confirmed paid. A dissolved one (the transfer came back) isn't held against anyone.
+  return { owedKobo: owed, openContradiction: !!open, resolvedContradiction: !!any, heldKobo: held[0]?.b ?? 0 };
 }
 
 /** Lock what's kept per person (their owed account and hold), by id, before reading either to size a journal. */

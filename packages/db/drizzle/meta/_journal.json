@@ -239,6 +239,13 @@
       "when": 1793665864011,
       "tag": "0033_archived_email_key",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793665864853,
+      "tag": "0034_clearance_covers",
+      "breakpoints": true
     }
   ]
 }

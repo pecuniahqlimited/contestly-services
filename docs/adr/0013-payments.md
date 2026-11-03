@@ -231,10 +231,13 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
   keeps those fields while the deleted account still owes, has money held, or has a contradiction open. So a
   debt could leave with a deleted account (one deleted before this rule, or a contradiction heard after the
   delete). A new account whose verified email or phone HMAC matches a deleted account that owes, has money
-  held, or ever had a contradiction can't withdraw (`linked_payment_issue`) until it's cleared, which is
-  loosening and so maker-checker like the rest: an admin with `payments.finalize` checks it and asks with a
-  reason, a different `payments.finalize` admin confirms (`linked_issue_clearances`); neither may be the
-  account holder. Then `users.linked_payment_issue_cleared_at` is set; every step logged.
+  held, or has a contradiction open or resolved as a real duplicate payout can't withdraw
+  (`linked_payment_issue`). A dissolved contradiction (the transfer came back) counts against nobody:
+  carriers reassign numbers, and a stranger with the old number did nothing. Clearing it is loosening and
+  so maker-checker like the rest: an admin with `payments.finalize` checks it and asks with a reason, a
+  different `payments.finalize` admin confirms (`linked_issue_clearances`); neither may be the account
+  holder. A clearance covers exactly the deleted accounts it was checked against; a new match later blocks
+  again. Every step logged.
 - The minimum withdrawal defaults to ₦1,000 (admin config). Paystack charged ₦10 to send ₦100 in test mode and
   the platform bears the fee by default, so below that the fee is too large a share of what moves.
 - Checked against Paystack's test API (`npm run paystack:check`, 2026-11-02): checkout, verify (pending as

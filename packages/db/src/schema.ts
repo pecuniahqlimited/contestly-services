@@ -56,11 +56,6 @@ export const users = pgTable("users", {
   bannedAt: timestamp("banned_at", { withTimezone: true }),
   /** Withdrawals frozen because a payout we reversed turned out to have been paid (ADR 0013); cleared when an admin resolves it. */
   withdrawalsFrozenAt: timestamp("withdrawals_frozen_at", { withTimezone: true }),
-  /**
-   * An admin checked this account against a deleted one with the same email or phone that had a payment issue
-   * (owed money, a contradiction): until then it can't withdraw (ADR 0013).
-   */
-  linkedPaymentIssueClearedAt: timestamp("linked_payment_issue_cleared_at", { withTimezone: true }),
   banReason: text("ban_reason"),
   /** A staked invite this person opened before signing up: onboarding ends in its lobby. */
   invitePartyId: uuid("invite_party_id").references((): AnyPgColumn => parties.id, { onDelete: "set null" }),
@@ -884,6 +879,8 @@ export const invariantAcknowledgments = pgTable("invariant_acknowledgments", {
 export const linkedIssueClearances = pgTable("linked_issue_clearances", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
+  /** The deleted accounts it was checked against: it clears those only; a new match blocks again. */
+  coveredUserIds: uuid("covered_user_ids").array().notNull().default(sql`'{}'::uuid[]`),
   reason: text("reason").notNull(),
   status: text("status", { enum: ["awaiting_second_admin", "applied"] }).notNull(),
   requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),

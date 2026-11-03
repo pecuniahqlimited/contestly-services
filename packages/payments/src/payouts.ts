@@ -40,29 +40,48 @@ export const payoutView = (p: Payout, a: Pick<PayoutAccount, "bankName" | "accou
   createdAt: p.createdAt.toISOString(), finalAt: p.finalAt?.toISOString() ?? null,
 });
 
+type Linkable = Pick<User, "id" | "email" | "phoneHmac">;
+
 /**
- * What withdrawBlockReason needs beyond the user row: what they owe, and whether a deleted account sharing
- * their email or phone had a payment issue (owed money, held money, any contradiction) that an admin hasn't
- * cleared for this account. Deleting frees the email and phone for a new sign-up (ADR 0010); this keeps a
- * debt from leaving with the old account.
+ * Deleted accounts sharing this person's email (normalised) or phone hash that carry a payment issue: owed
+ * money, money held, a contradiction open, or one resolved as a real duplicate payout (a dissolved one, where
+ * the transfer came back, isn't held against anyone). Two indexed lookups, not an OR.
  */
-export async function withdrawContext(conn: Tx | typeof db, user: Pick<User, "id" | "email" | "phoneHmac" | "linkedPaymentIssueClearedAt">) {
-  const owedKobo = await ledger.owedKobo(conn, user.id);
-  if (user.linkedPaymentIssueClearedAt || (!user.email && !user.phoneHmac)) return { owedKobo, linkedIssue: false };
-  // Two indexed lookups (an OR across two columns would scan): the normalised email, and the phone hash.
+export async function linkedIssueAccounts(conn: Tx | typeof db, user: Linkable): Promise<string[]> {
+  if (!user.email && !user.phoneHmac) return [];
   const deleted = and(isNotNull(users.deletedAt), ne(users.id, user.id));
   const byEmail = user.email ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedEmailKey, normaliseEmail(user.email)), deleted)) : [];
   const byPhone = user.phoneHmac ? await conn.select({ id: users.id }).from(users).where(and(eq(users.archivedPhoneHmac, user.phoneHmac), deleted)) : [];
-  const archived = [...new Map([...byEmail, ...byPhone].map((a) => [a.id, a])).values()];
-  for (const a of archived) {
-    const i = await ledger.paymentIssues(conn, a.id);
-    if (i.owedKobo > 0 || i.heldKobo !== 0 || i.everContradicted) return { owedKobo, linkedIssue: true };
+  const out: string[] = [];
+  for (const id of new Set([...byEmail, ...byPhone].map((a) => a.id))) {
+    const i = await ledger.paymentIssues(conn, id);
+    if (i.owedKobo > 0 || i.heldKobo !== 0 || i.openContradiction || i.resolvedContradiction) out.push(id);
   }
-  return { owedKobo, linkedIssue: false };
+  return out.sort();
+}
+
+/** The deleted accounts admins have cleared this person against (applied clearances). */
+async function clearedAgainst(conn: Tx | typeof db, userId: string) {
+  const rows = await conn.select({ ids: linkedIssueClearances.coveredUserIds }).from(linkedIssueClearances)
+    .where(and(eq(linkedIssueClearances.userId, userId), eq(linkedIssueClearances.status, "applied")));
+  return new Set(rows.flatMap((r) => r.ids));
+}
+
+/**
+ * What withdrawBlockReason needs beyond the user row: what they owe, and whether a deleted account sharing
+ * their email or phone carries a payment issue that no clearance for this account covers. Deleting frees the
+ * email and phone for a new sign-up (ADR 0010); this keeps a debt from leaving with the old account.
+ */
+export async function withdrawContext(conn: Tx | typeof db, user: Linkable) {
+  const owedKobo = await ledger.owedKobo(conn, user.id);
+  const linked = await linkedIssueAccounts(conn, user);
+  if (!linked.length) return { owedKobo, linkedIssue: false };
+  const cleared = await clearedAgainst(conn, user.id);
+  return { owedKobo, linkedIssue: linked.some((id) => !cleared.has(id)) };
 }
 
 const clearanceView = (c: LinkedIssueClearance) => ({
-  id: c.id, userId: c.userId, reason: c.reason, status: c.status, requestedBy: c.requestedByUserId, confirmedBy: c.confirmedByUserId,
+  id: c.id, userId: c.userId, coveredUserIds: c.coveredUserIds, reason: c.reason, status: c.status, requestedBy: c.requestedByUserId, confirmedBy: c.confirmedByUserId,
   createdAt: c.createdAt.toISOString(), appliedAt: c.appliedAt?.toISOString() ?? null,
 });
 
@@ -77,8 +96,12 @@ export async function requestLinkedIssueClearance(adminUserId: string, userId: s
     if (u.id === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
     const [open] = await tx.select({ id: linkedIssueClearances.id }).from(linkedIssueClearances).where(and(eq(linkedIssueClearances.userId, userId), eq(linkedIssueClearances.status, "awaiting_second_admin")));
     if (open) throw paymentsError(409, "clearance_pending", { clearanceId: open.id });
-    const [c] = await tx.insert(linkedIssueClearances).values({ userId, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
-    await recordAdminAction(tx, { adminUserId, action: "payments.linked_issue_clear_requested", targetType: "user", targetId: userId, reason, before: null, after: { clearanceId: c.id } });
+    // It covers exactly the deleted accounts blocking them now; one matched later blocks again.
+    const cleared = await clearedAgainst(tx, userId);
+    const covering = (await linkedIssueAccounts(tx, u)).filter((id) => !cleared.has(id));
+    if (!covering.length) throw paymentsError(409, "nothing_to_clear");
+    const [c] = await tx.insert(linkedIssueClearances).values({ userId, coveredUserIds: covering, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
+    await recordAdminAction(tx, { adminUserId, action: "payments.linked_issue_clear_requested", targetType: "user", targetId: userId, reason, before: null, after: { clearanceId: c.id, coveredUserIds: covering } });
     return clearanceView(c);
   });
 }
@@ -93,11 +116,10 @@ export async function confirmLinkedIssueClearance(adminUserId: string, clearance
     if (c.status !== "awaiting_second_admin") throw paymentsError(409, "clearance_not_pending", { status: c.status });
     if (c.requestedByUserId === adminUserId) throw paymentsError(403, SECOND_ADMIN_REQUIRED);
     if (c.userId === adminUserId) throw paymentsError(403, OWN_TRANSACTION);
-    await tx.update(users).set({ linkedPaymentIssueClearedAt: now }).where(eq(users.id, c.userId));
     const [done] = await tx.update(linkedIssueClearances).set({ status: "applied", confirmedByUserId: adminUserId, appliedAt: now }).where(eq(linkedIssueClearances.id, c.id)).returning();
     await recordAdminAction(tx, {
       adminUserId, action: "payments.linked_issue_cleared", targetType: "user", targetId: c.userId, reason: c.reason,
-      before: { clearedAt: u.linkedPaymentIssueClearedAt?.toISOString() ?? null }, after: { clearedAt: now.toISOString(), clearanceId: c.id, requestedBy: c.requestedByUserId },
+      before: null, after: { clearedAt: now.toISOString(), clearanceId: c.id, coveredUserIds: c.coveredUserIds, requestedBy: c.requestedByUserId },
     });
     return clearanceView(done);
   });
