@@ -103,7 +103,8 @@ async function applyLocked(tx: Tx, target: FinalizeTarget, outcome: Outcome, amo
 
 type CheckView = { status: string; providerStatus: string; amountKobo: number | null; checkedAt: string; error: string | null };
 const checkView = (c: Checked): CheckView => ({ status: c.status, providerStatus: c.providerStatus, amountKobo: c.amountKobo, checkedAt: c.checkedAt, error: c.error });
-const view = (f: PaymentFinalization, confirmCheck: Checked | null = null) => ({
+/** A finalization as the console shows it. */
+export const finalizationView = (f: PaymentFinalization, confirmCheck: Checked | null = null) => ({
   id: f.id, targetType: f.targetType, targetId: f.targetId, outcome: f.outcome, status: f.status, requestedBy: f.requestedByUserId, confirmedBy: f.confirmedByUserId,
   amountKobo: f.amountKobo, providerCheck: f.providerCheck as CheckView, secondAdminBecause: f.secondAdminBecause as SecondAdminBecause[],
   confirmCheck: confirmCheck ? checkView(confirmCheck) : null,
@@ -133,7 +134,7 @@ export async function requestFinalization(adminUserId: string, target: FinalizeT
       adminUserId, action: needsSecond ? "payments.finalize_requested" : "payments.finalize", targetType: target.type, targetId: target.id, reason,
       before: { status: row.status }, after: { outcome, amountKobo, finalizationId: f.id, providerCheck: check, secondAdminBecause },
     });
-    return view(f);
+    return finalizationView(f);
   });
 }
 
@@ -170,7 +171,7 @@ export async function confirmFinalization(adminUserId: string, finalizationId: s
         adminUserId, action: "payments.finalize_superseded", targetType: target.type, targetId: target.id, reason: f.reason,
         before: { status: row.status }, after: { finalizationId: f.id, outcome: f.outcome, providerCheck: check, why: finalizable ? "provider_answer_changed" : "already_final" },
       });
-      return view(gone, check);
+      return finalizationView(gone, check);
     }
     await applyLocked(tx, target, f.outcome, f.amountKobo ?? row.amountKobo, check, cfg, now);
     const [done] = await tx.update(paymentFinalizations).set({ status: "applied", confirmedByUserId: adminUserId, appliedAt: now }).where(eq(paymentFinalizations.id, f.id)).returning();
@@ -178,6 +179,6 @@ export async function confirmFinalization(adminUserId: string, finalizationId: s
       adminUserId, action: "payments.finalize_confirmed", targetType: target.type, targetId: target.id, reason: f.reason,
       before: { status: row.status }, after: { outcome: f.outcome, amountKobo: f.amountKobo, finalizationId: f.id, requestedBy: f.requestedByUserId, secondAdminBecause: f.secondAdminBecause, requestCheck: f.providerCheck, providerCheck: check },
     });
-    return view(done, check);
+    return finalizationView(done, check);
   });
 }

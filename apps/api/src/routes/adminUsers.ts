@@ -5,7 +5,7 @@ import {
 } from "@contestly/db";
 import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
 import {
-  adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema, adminUserSearchSchema, normalisePhone, type AdminEvent,
+  adminBanRequestResponseSchema, adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema, adminUserSearchSchema, normalisePhone, type AdminEvent,
 } from "@contestly/shared";
 import { sql } from "drizzle-orm";
 import { requireAdmin, uuidParam } from "../auth.js";
@@ -130,7 +130,7 @@ export async function adminUsersRoutes(app: FastifyInstance) {
     const { reason } = adminReasonBodySchema.parse(req.body);
     const id = uuidParam(req);
     const out = await banOrRequestBan(admin.id, id, reason);
-    if ("banRequest" in out) return reply.code(202).send(out);
+    if ("banRequest" in out) return reply.code(202).send(adminBanRequestResponseSchema.parse(out));
     await publishBan(id);
     return userDetail(id);
   });
@@ -138,7 +138,7 @@ export async function adminUsersRoutes(app: FastifyInstance) {
     const admin = requireAdmin(req);
     const done = await confirmPaymentsAdminBan(admin.id, uuidParam(req));
     await publishBan(done.userId);
-    return { banRequest: done, user: await userDetail(done.userId) };
+    return { ...adminBanRequestResponseSchema.parse({ banRequest: done }), user: await userDetail(done.userId) };
   });
 
   app.post("/admin/users/:id/unban", async (req) => {

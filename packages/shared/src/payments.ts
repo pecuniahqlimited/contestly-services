@@ -328,3 +328,87 @@ export const adminPendingItemSchema = z.object({
 export type AdminPendingItem = z.infer<typeof adminPendingItemSchema>;
 /** GET /admin/payments/pending: oldest first; only what the viewer could confirm, never what they asked for themselves. */
 export const adminPendingResponseSchema = z.object({ pending: z.array(adminPendingItemSchema) });
+
+// ---------------------------------------------------------------- the console's payments responses
+
+const iso = z.string();
+const isoOrNull = z.string().nullable();
+const uuid = z.string().uuid();
+
+/** GET /admin/payments. */
+export const adminPaymentsOverviewSchema = z.object({
+  settings: paymentSettingsSchema, config: paymentsConfigSchema,
+  providers: z.object({ known: z.array(z.string()), configured: z.array(z.string()) }),
+  /** How many top-ups and payouts are in each status. */
+  topups: z.record(z.number().int()), payouts: z.record(z.number().int()),
+  /** Breaches admins acknowledged (and ones waiting for a second admin). */
+  acknowledgedBreaches: z.array(invariantAcknowledgmentSchema),
+});
+
+/** GET /admin/payments/topups. */
+export const adminTopupSchema = z.object({
+  id: uuid, userId: uuid, reference: z.string(), provider: z.string(), amountKobo: kobo, currency: z.string(), status: z.enum(TOPUP_STATUSES),
+  checks: z.number().int(), lastCheck: z.unknown(), problem: z.unknown(), creditedVia: z.string().nullable(),
+  createdAt: iso, creditedAt: isoOrNull, nextCheckAt: isoOrNull,
+});
+export const adminTopupsResponseSchema = z.object({ topups: z.array(adminTopupSchema) });
+
+/** GET /admin/payments/payouts (the full account number: admins only). */
+export const adminPayoutSchema = z.object({
+  id: uuid, userId: uuid, reference: z.string(), provider: z.string(), amountKobo: kobo, sentKobo: z.number().int(), feeKobo: kobo, feeBearer: z.enum(FEE_BEARERS),
+  status: z.enum(PAYOUT_STATUSES), holdReason: z.string().nullable(), sendAttempts: z.number().int(), checks: z.number().int(), lastCheck: z.unknown(), finalVia: z.string().nullable(),
+  bankAccount: z.object({ bankName: z.string(), accountNumber: z.string(), accountName: z.string() }),
+  createdAt: iso, submittedAt: isoOrNull, finalAt: isoOrNull, nextCheckAt: isoOrNull,
+});
+export const adminPayoutsResponseSchema = z.object({ payouts: z.array(adminPayoutSchema) });
+
+/** GET /admin/payments/webhooks: stored events, and the refusals. */
+export const adminWebhookSchema = z.object({
+  id: uuid, provider: z.string(), eventId: z.string(), type: z.string(), reference: z.string().nullable(), deliveries: z.number().int(),
+  receivedAt: iso, processedAt: isoOrNull, outcome: z.string().nullable(), attempts: z.number().int(), deadLetteredAt: isoOrNull, body: z.string(),
+});
+export const webhookRejectionSummarySchema = z.object({
+  lastHour: z.number().int(), lastDay: z.number().int(),
+  /** Refused but not stored this hour (throttled, or past the hourly cap): "and N more refused". */
+  notRecordedThisHour: z.number().int(),
+  latest: z.array(z.object({ id: uuid, provider: z.string(), sourceIp: z.string(), reason: z.string(), head: z.string(), at: iso })),
+});
+export const adminWebhooksResponseSchema = z.object({ webhooks: z.array(adminWebhookSchema), rejections: webhookRejectionSummarySchema });
+
+/** GET /admin/payments/reconciliation. */
+export const reconItemSchema = z.object({
+  id: uuid, object: z.enum(["topup", "payout"]), kind: z.enum(["missing_ours", "missing_theirs", "amount_differs", "status_differs"]), reference: z.string(),
+  ours: z.unknown(), theirs: z.unknown(), resolvedBy: uuid.nullable(), resolvedAt: isoOrNull, note: z.string().nullable(),
+});
+export const reconRunSchema = z.object({
+  id: uuid, provider: z.string(), day: z.string(), startedAt: iso, finishedAt: isoOrNull, error: z.string().nullable(), counts: z.unknown(), items: z.array(reconItemSchema),
+});
+export const adminReconciliationResponseSchema = z.object({ runs: z.array(reconRunSchema) });
+
+/** GET /admin/payments/{payouts,topups}/:id/check: the provider's answer now, and the finalizations so far. */
+export const adminFreshCheckResponseSchema = z.object({ check: providerCheckSchema, finalizations: z.array(adminFinalizeResponseSchema.shape.finalization) });
+
+/** Clearing a new account's linked_payment_issue: payments.finalize asks, a different admin confirms. */
+export const linkedIssueClearanceSchema = z.object({
+  id: uuid, userId: uuid, coveredUserIds: z.array(uuid), reason: z.string(), status: z.enum(["awaiting_second_admin", "applied"]),
+  requestedBy: uuid, confirmedBy: uuid.nullable(), createdAt: iso, appliedAt: isoOrNull,
+});
+export const linkedIssueClearanceResponseSchema = z.object({ clearance: linkedIssueClearanceSchema });
+
+/** Banning an admin who holds payments permissions: one admin asks (202 { banRequest }), a different one confirms. */
+export const adminBanRequestSchema = z.object({
+  id: uuid, userId: uuid, reason: z.string(), status: z.enum(["awaiting_second_admin", "applied"]), requestedBy: uuid, confirmedBy: uuid.nullable(), createdAt: iso, appliedAt: isoOrNull,
+});
+export const adminBanRequestResponseSchema = z.object({ banRequest: adminBanRequestSchema });
+
+/** POST /admin/payments/invariants/run. */
+export const invariantBreachSchema = z.object({ kind: z.string(), detail: z.record(z.unknown()), items: z.record(z.number()), overflow: z.boolean().optional() });
+export const invariantsRunResponseSchema = z.object({
+  breaches: z.array(invariantBreachSchema),
+  /** Whether this run paused payouts (a breach that repeated in a second snapshot and isn't acknowledged). */
+  paused: z.boolean(),
+  /** Kinds seen once that didn't repeat in the second snapshot. */
+  transient: z.array(z.string()),
+  /** Breaches an acknowledgment covers: they don't pause payouts. */
+  acknowledged: z.array(invariantBreachSchema),
+});

@@ -2,11 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { getPaymentsConfig } from "@contestly/db";
 import {
-  PAYMENT_PERMISSIONS, type PaymentPermission, adminPendingQuerySchema, adminPendingResponseSchema, adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
+  PAYMENT_PERMISSIONS, type PaymentPermission, adminFreshCheckResponseSchema, adminPaymentsOverviewSchema, adminPayoutsResponseSchema, adminReconciliationResponseSchema,
+  adminTopupsResponseSchema, adminWebhooksResponseSchema, invariantsRunResponseSchema, linkedIssueClearanceResponseSchema, adminPendingQuerySchema, adminPendingResponseSchema, adminFinalizeBodySchema, adminFinalizeResponseSchema, adminPaymentListQuerySchema, adminPaymentPermissionsBodySchema, adminPaymentSettingsBodySchema,
   adminPaymentsConfigBodySchema, adminReasonBodySchema, owedListSchema, owedWaiverSchema, paymentConfigChangeSchema, permissionGrantSchema, invariantAcknowledgmentSchema, acknowledgeBreachBodySchema, paymentSettingsSchema, payoutContradictionSchema, providerCheckSchema,
 } from "@contestly/shared";
 import {
-  adminVerifyTopup, confirmLinkedIssueClearance, requestLinkedIssueClearance, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, freshCheck,
+  adminVerifyTopup, confirmLinkedIssueClearance, requestLinkedIssueClearance, approvePayout, confirmContradictionResolution, confirmControlChange, confirmFinalization, currentSettings, finalizationsFor, finalizationView, freshCheck,
   listContradictions, listControlChanges, listPayouts, pendingForViewer, listReconciliation, listTopups, listWebhooks, paymentsOverview, permissionsOf, proposeControlChange,
   rejectionSummary, rejectPayout, requestContradictionResolution, requestFinalization, resolveReconItem, runInvariants, setPermissions,
   confirmAcknowledgment, listAcknowledgments, requestAcknowledgment, confirmOwedWaiver, confirmPermissionGrant, listOwed, listOwedWaivers, listPermissionGrants, requestOwedWaiver,
@@ -28,7 +29,7 @@ const reconRunSchema = z.object({ provider: z.string().min(1), day: z.string().r
 export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.get("/admin/payments", async (req) => {
     await requirePermission(req, "payments.view");
-    return paymentsOverview();
+    return adminPaymentsOverviewSchema.parse(await paymentsOverview());
   });
   /** Everything waiting for a second admin that this admin could confirm (?kind=), oldest first. */
   app.get("/admin/payments/pending", async (req) => {
@@ -40,19 +41,19 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   });
   app.get("/admin/payments/topups", async (req) => {
     await requirePermission(req, "payments.view");
-    return { topups: await listTopups(adminPaymentListQuerySchema.parse(req.query)) };
+    return adminTopupsResponseSchema.parse({ topups: await listTopups(adminPaymentListQuerySchema.parse(req.query)) });
   });
   app.get("/admin/payments/payouts", async (req) => {
     await requirePermission(req, "payments.view");
-    return { payouts: await listPayouts(adminPaymentListQuerySchema.parse(req.query)) };
+    return adminPayoutsResponseSchema.parse({ payouts: await listPayouts(adminPaymentListQuerySchema.parse(req.query)) });
   });
   app.get("/admin/payments/webhooks", async (req) => {
     await requirePermission(req, "payments.view");
-    return { webhooks: await listWebhooks(limitQuery.parse(req.query).limit), rejections: await rejectionSummary() };
+    return adminWebhooksResponseSchema.parse({ webhooks: await listWebhooks(limitQuery.parse(req.query).limit), rejections: await rejectionSummary() });
   });
   app.get("/admin/payments/reconciliation", async (req) => {
     await requirePermission(req, "payments.view");
-    return { runs: await listReconciliation(limitQuery.parse(req.query).limit) };
+    return adminReconciliationResponseSchema.parse({ runs: await listReconciliation(limitQuery.parse(req.query).limit) });
   });
 
   // ---- Approval ----
@@ -71,7 +72,7 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
     app.get(`/admin/payments/${type}s/:id/check`, async (req) => {
       await requirePermission(req, "payments.finalize");
       const id = uuidParam(req);
-      return { check: checkView(await freshCheck({ type, id })), finalizations: await finalizationsFor(id) };
+      return adminFreshCheckResponseSchema.parse({ check: checkView(await freshCheck({ type, id })), finalizations: (await finalizationsFor(id)).map((f) => finalizationView(f)) });
     });
     app.post(`/admin/payments/${type}s/:id/finalize`, async (req) => {
       const admin = await requirePermission(req, "payments.finalize");
@@ -144,17 +145,17 @@ export async function adminPaymentsRoutes(app: FastifyInstance) {
   app.post("/admin/payments/users/:id/clear-linked-issue", async (req, reply) => {
     const admin = await requirePermission(req, "payments.finalize");
     const { reason } = adminReasonBodySchema.parse(req.body);
-    return reply.code(202).send({ clearance: await requestLinkedIssueClearance(admin.id, uuidParam(req), reason) });
+    return reply.code(202).send(linkedIssueClearanceResponseSchema.parse({ clearance: await requestLinkedIssueClearance(admin.id, uuidParam(req), reason) }));
   });
   app.post("/admin/payments/linked-issue-clearances/:id/confirm", async (req) => {
     const admin = await requirePermission(req, "payments.finalize");
-    return { clearance: await confirmLinkedIssueClearance(admin.id, uuidParam(req)) };
+    return linkedIssueClearanceResponseSchema.parse({ clearance: await confirmLinkedIssueClearance(admin.id, uuidParam(req)) });
   });
 
   /** Run the invariant checks now (they also run hourly). A breach that repeats alerts and pauses payouts. */
   app.post("/admin/payments/invariants/run", async (req) => {
     await requirePermission(req, "payments.finalize");
-    return runInvariants();
+    return invariantsRunResponseSchema.parse(await runInvariants());
   });
 
   /** Acknowledge a breach as it stands now (payments.config, then a second admin): the same, no larger, won't pause payouts again. */

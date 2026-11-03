@@ -12,7 +12,10 @@ import {
   accountHasPaymentIssue, adminActions, adminBanRequests, linkedIssueClearances, owedWaivers, paymentFinalizations, paymentPermissionGrants, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, systemActorId, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
-import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
+import {
+  DEFAULT_PAYMENTS_CONFIG, adminFreshCheckResponseSchema, adminPaymentsOverviewSchema, adminPayoutsResponseSchema, adminPendingResponseSchema, adminReconciliationResponseSchema,
+  adminTopupsResponseSchema, adminWebhooksResponseSchema, kobo, type PaymentsConfig, type PaymentsJob,
+} from "@contestly/shared";
 import {
   addBankAccount, applyOutcome, checkPayout, findBreaches, closeProviders, confirmTopup, createTopup, mockControlsOrNull, pausePayoutsBySystem, processWebhookEvent, reconcileDay,
   approvePayout, breakGlassGrantConfig, linkedIssueAccounts, confirmFinalization, confirmOwedWaiver, ITEM_CAP, requestLinkedIssueClearance, setPermissions, permissionsOf, pruneRejections, type Breach, rejectPayout, requestFinalization, requestOwedWaiver, ingestWebhook, makeRejectionGate, rejectionSummary, REJECTIONS_KEPT_DAYS, requestPayout, resetProviders, resolveAccount, runInvariants, settleLocked, submitPayout, sweepDue, type KeyValue, type MockControls, type MockDelivery, type PaymentsDeps,
@@ -1745,6 +1748,27 @@ describe("permissions", () => {
       await db.update(invariantAcknowledgments).set({ status: "applied" }).where(eq(invariantAcknowledgments.id, ack.id));
       await db.update(users).set({ bannedAt: null, banReason: null }).where(eq(users.id, viewOnlyAdmin.id));
     }
+  });
+
+  it("every console payments response has its shared schema, and parses with it", async () => {
+    const { u, account } = await withdrawer("schemas");
+    const { payout } = await request(u, account.id, kobo(1500));
+    await createTopup(u, kobo(500), { returnUrl: null });
+    const reads: [string, { parse(v: unknown): unknown }][] = [
+      ["/admin/payments", adminPaymentsOverviewSchema],
+      [`/admin/payments/topups?userId=${u.id}`, adminTopupsResponseSchema],
+      [`/admin/payments/payouts?userId=${u.id}`, adminPayoutsResponseSchema],
+      ["/admin/payments/webhooks", adminWebhooksResponseSchema],
+      ["/admin/payments/reconciliation", adminReconciliationResponseSchema],
+      [`/admin/payments/payouts/${payout.id}/check`, adminFreshCheckResponseSchema],
+      ["/admin/payments/pending", adminPendingResponseSchema],
+    ];
+    for (const [url, schema] of reads) {
+      const res = await app.inject({ method: "GET", url, headers: as(admin) });
+      expect(res.statusCode, url).toBe(200);
+      expect(() => schema.parse(res.json()), url).not.toThrow();
+    }
+    expect((adminPayoutsResponseSchema.parse((await app.inject({ method: "GET", url: `/admin/payments/payouts?userId=${u.id}`, headers: as(admin) })).json())).payouts[0].id).toBe(payout.id);
   });
 
   it("a grantee can't confirm their own grant (one admin can't make a second admin)", async () => {
