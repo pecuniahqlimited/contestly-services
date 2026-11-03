@@ -1,6 +1,6 @@
 # ADR 0008: Friends and crew boards count Climb points plus party points; crews close weekly
 
-Status: accepted (Oct 2026). Row 6b, social.
+Status: accepted (Oct 2026). Row 6b, social. Partly superseded by ADR 0012 (Nov 2026): people no longer follow each other, so the friends board is you plus your people (crew, contacts, played with lately), not the people you follow.
 
 ## Context
 

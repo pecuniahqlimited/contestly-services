@@ -6,7 +6,7 @@ Social trivia app: **Party** (play with friends, split the pot) and **The Climb*
 
 ```
 apps/
-  api/        Fastify HTTP API        :4000   users, follows, parties, wallet
+  api/        Fastify HTTP API        :4000   users, corners, parties, wallet
   realtime/   Socket.io               :4001   lobby presence, chat, party status
   worker/     BullMQ                           notifications, party start/cancel + refunds
 packages/
