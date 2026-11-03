@@ -207,13 +207,15 @@ export async function confirmPaymentsAdminBan(adminUserId: string, banRequestId:
 // ---- Break-glass ----
 
 /**
- * Grant payments.config straight from the server when the console is stuck (fewer than two holders can
- * act). Only from `npm run payments:break-glass`, which needs the server and the database: never an API
- * route. Logged as the system with the reason and the OS user, and raised as a critical alert, in one
- * transaction.
+ * Grant payments.config straight from the server when the console is stuck: fewer than CONFIG_HOLDER_FLOOR
+ * unbanned holders, so no grant can be confirmed. Otherwise refused (409 not_stuck), unless `force`, which
+ * the admin_actions row and the alert both record. Only from `npm run payments:break-glass`, which needs
+ * the server and the database: never an API route. Logged as the system with the reason and the OS user,
+ * and raised as a critical alert, in one transaction.
  */
-export async function breakGlassGrantConfig(handle: string, reason: string, osUser: string) {
+export async function breakGlassGrantConfig(handle: string, reason: string, osUser: string, opts: { force?: boolean } = {}) {
   if (reason.trim().length < 3) throw paymentsError(400, "reason_required");
+  const force = opts.force === true;
   return db.transaction(async (tx) => {
     await lockPermissions(tx);
     const [target] = await tx.select().from(users).where(and(eq(users.handle, handle.replace(/^@/, "").toLowerCase()), liveUser)).for("no key update");
@@ -223,16 +225,18 @@ export async function breakGlassGrantConfig(handle: string, reason: string, osUs
     const before = await currentOf(tx, target.id);
     const holdersBefore = await configHolderCount(tx);
     if (before.includes(CONFIG)) return { user: target, granted: false, holders: holdersBefore };
+    if (holdersBefore >= CONFIG_HOLDER_FLOOR && !force) throw paymentsError(409, "not_stuck", { floor: CONFIG_HOLDER_FLOOR, holders: holdersBefore });
     const system = await systemActorId(tx);
     await tx.insert(adminPermissions).values({ userId: target.id, permission: CONFIG, grantedByUserId: system });
     const after = await currentOf(tx, target.id);
     await recordAdminAction(tx, {
       adminUserId: system, action: "payments.break_glass", targetType: "user", targetId: target.id, reason,
-      before, after: { permissions: after, osUser, holdersBefore },
+      before, after: { permissions: after, osUser, holdersBefore, force },
     });
     await adminAlert({
-      kind: "payments.break_glass", severity: "critical", subject: `Break-glass: payments.config granted to @${target.handle} from the server`,
-      details: { handle: target.handle, reason, osUser, holdersBefore }, dedupeKey: `payments.break_glass:${randomUUID()}`, refType: "user", refId: target.id,
+      kind: "payments.break_glass", severity: "critical",
+      subject: `Break-glass${force ? " (forced: the console wasn't stuck)" : ""}: payments.config granted to @${target.handle} from the server`,
+      details: { handle: target.handle, reason, osUser, holdersBefore, force }, dedupeKey: `payments.break_glass:${randomUUID()}`, refType: "user", refId: target.id,
     }, tx);
     return { user: target, granted: true, holders: holdersBefore + 1 };
   });

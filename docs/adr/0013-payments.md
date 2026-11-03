@@ -156,7 +156,8 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    and database access runs `npm run payments:break-glass -- --grant-config <handle> --reason "…"`. It grants
    `payments.config` to that admin directly, writes an `admin_actions` row as the system (action
    `payments.break_glass`, with the reason, the OS user and how many holders there were) and raises a
-   critical alert, all in one transaction. It is never an API route: the controls above protect the console
+   critical alert, all in one transaction. It refuses (`not_stuck`) unless there are fewer than two unbanned
+   holders; `--force` overrides, and the log row and the alert record that it was forced. It is never an API route: the controls above protect the console
    from its admins; break-glass is for whoever already controls the servers. Dev sessions and seeded dev admins hold all four. **Who is an admin at
    all** (`ADMIN_EMAILS`, and `DEV_ADMIN_HANDLES` in dev) **is controlled by whoever controls the
    environment**: none of these controls protect against them, so production secrets and deploys need

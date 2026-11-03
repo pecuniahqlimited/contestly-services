@@ -1708,22 +1708,37 @@ describe("permissions", () => {
     expect((await db.select().from(users).where(eq(users.id, newcomer.id)))[0].bannedAt).toBeNull();
   });
 
-  it("break-glass grants payments.config from the server: logged as the system with the reason and OS user, and a critical alert", async () => {
+  it("break-glass grants payments.config from the server only when the console is stuck: logged as the system with the reason and OS user, and a critical alert", async () => {
     const stuck = await makeUser(nextName("glass"), { isAdmin: true });
-    const out = await breakGlassGrantConfig(stuck.handle, "both config holders left; OPS-1", "ops-oncall");
-    expect([out.granted, await permissionsOf(stuck.id)]).toEqual([true, ["payments.config"]]);
-    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, stuck.id), eq(adminActions.action, "payments.break_glass")));
-    expect(log.adminUserId).toBe(await db.transaction((tx) => systemActorId(tx)));
-    expect(log.reason).toBe("both config holders left; OPS-1");
-    expect(log.after).toMatchObject({ permissions: ["payments.config"], osUser: "ops-oncall" });
-    const [alert] = await alertsFor(stuck.id);
-    expect(alert).toMatchObject({ kind: "payments.break_glass", severity: "critical" });
-    // Again: nothing changes, nothing more logged. A non-admin, or a banned one, is refused.
-    expect((await breakGlassGrantConfig(stuck.handle, "again", "ops-oncall")).granted).toBe(false);
-    expect(await db.select().from(adminActions).where(and(eq(adminActions.targetId, stuck.id), eq(adminActions.action, "payments.break_glass")))).toHaveLength(1);
-    await expect(breakGlassGrantConfig((await makeUser(nextName("glassna"))).handle, "x y z", "ops")).rejects.toMatchObject({ message: "not_admin" });
-    await expect(breakGlassGrantConfig((await makeUser(nextName("glassban"), { isAdmin: true, bannedAt: new Date() })).handle, "x y z", "ops")).rejects.toMatchObject({ message: "banned" });
-    await db.delete(adminPermissions).where(eq(adminPermissions.userId, stuck.id)); // TEST-ONLY: keep the holder count as the other tests expect
+    const breakGlassLogs = () => db.select().from(adminActions).where(and(eq(adminActions.targetId, stuck.id), eq(adminActions.action, "payments.break_glass")));
+    await withHolders([], async () => {
+      // Two holders: the console can grant it, so break-glass refuses.
+      await expect(breakGlassGrantConfig(stuck.handle, "trying it out", "ops-oncall")).rejects.toMatchObject({ message: "not_stuck", details: { floor: 2, holders: 2 } });
+      expect(await permissionsOf(stuck.id)).toEqual([]);
+      await db.delete(adminPermissions).where(and(eq(adminPermissions.userId, admin2.id), eq(adminPermissions.permission, "payments.config"))); // TEST-ONLY: one holder left
+      const out = await breakGlassGrantConfig(stuck.handle, "both config holders left; OPS-1", "ops-oncall");
+      expect([out.granted, await permissionsOf(stuck.id)]).toEqual([true, ["payments.config"]]);
+      const [log] = await breakGlassLogs();
+      expect(log.adminUserId).toBe(await db.transaction((tx) => systemActorId(tx)));
+      expect(log.reason).toBe("both config holders left; OPS-1");
+      expect(log.after).toMatchObject({ permissions: ["payments.config"], osUser: "ops-oncall", holdersBefore: 1, force: false });
+      const [alert] = await alertsFor(stuck.id);
+      expect(alert).toMatchObject({ kind: "payments.break_glass", severity: "critical", details: { force: false } });
+      // Again: nothing changes, nothing more logged. A non-admin, or a banned one, is refused.
+      expect((await breakGlassGrantConfig(stuck.handle, "again", "ops-oncall")).granted).toBe(false);
+      expect(await breakGlassLogs()).toHaveLength(1);
+      await expect(breakGlassGrantConfig((await makeUser(nextName("glassna"))).handle, "x y z", "ops")).rejects.toMatchObject({ message: "not_admin" });
+      await expect(breakGlassGrantConfig((await makeUser(nextName("glassban"), { isAdmin: true, bannedAt: new Date() })).handle, "x y z", "ops")).rejects.toMatchObject({ message: "banned" });
+      // Not stuck (two holders again), forced: granted, and the log and the alert say it was forced.
+      const forced = await makeUser(nextName("glassforce"), { isAdmin: true });
+      expect((await breakGlassGrantConfig(forced.handle, "drill on staging; OPS-2", "ops-oncall", { force: true })).granted).toBe(true);
+      const [forcedLog] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, forced.id), eq(adminActions.action, "payments.break_glass")));
+      expect(forcedLog.after).toMatchObject({ holdersBefore: 2, force: true });
+      const [forcedAlert] = await alertsFor(forced.id);
+      expect(forcedAlert.details).toMatchObject({ force: true });
+      expect(forcedAlert.subject).toContain("forced");
+      await db.delete(adminPermissions).where(inArray(adminPermissions.userId, [stuck.id, forced.id])); // TEST-ONLY: keep the holder count as the other tests expect
+    });
   });
 
   it("payments alerts on the admin alerts page: payments.view to see them, payments.finalize to acknowledge them", async () => {

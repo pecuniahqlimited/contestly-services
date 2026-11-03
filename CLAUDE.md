@@ -183,7 +183,7 @@ npm run db:generate -- --name <what_changed>   # after editing packages/db/src/s
 npm run db:baseline     # once, only on a database db:push built before migrations (Oct 2026): marks 0000 applied, then db:migrate
 npm run db:seed         # demo users (tunde, ada.o, kemz, segunola, zee + 2 brands) and 3 parties; DEV_ADMIN_HANDLES (default tunde) become admins
 npm run db:dev-admins   # dev only, idempotent: DEV_ADMIN_HANDLES become admins with every payments permission, without a reseed
-npm run payments:break-glass -- --grant-config <handle> --reason "…"   # server only: payments.config when the console is stuck (ADR 0013)
+npm run payments:break-glass -- --grant-config <handle> --reason "…" [--force]   # server only: payments.config when the console is stuck (<2 holders; ADR 0013)
 npm run dev             # api, realtime, worker, questions
 npm run build && npm run typecheck
 npm test                # unit tests (shared, game, email, realtime, apps/questions, apps/api); no infra needed

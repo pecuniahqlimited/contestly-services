@@ -38,3 +38,6 @@ It grants `payments.config` to that admin (who must already be an admin, not ban
 `payments.break_glass` in `admin_actions` as the system with the reason and the OS user, and raises a
 critical alert to the alert channels. Run it once per admin needed, then use the console's normal
 maker-checker flow for anything else. There is no API route for this, by design.
+
+It refuses (`not_stuck`) while there are two or more unbanned holders, since the console can grant it
+then. `--force` grants anyway; the `admin_actions` row and the alert both record `force: true`.
