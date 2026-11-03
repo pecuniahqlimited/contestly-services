@@ -4,11 +4,12 @@
  * admin-approved prizes through the ledger. Fresh players each run, so it's repeatable.
  * TEST-ONLY: the "perfect player" reads round answers from Postgres, which no client can.
  */
+import { isDeepStrictEqual as same } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { climbChallengeAttempts, climbChallenges, climbWeekPrizes, climbWeeks, db, ledgerAccounts, ledgerEntries, sql, users } from "@contestly/db";
 import { climbQueue, closeQueues } from "@contestly/queue";
 import { lagosDay } from "@contestly/shared";
-import { api, call, failureCount, makeContacts, nextClimbRound, ok, rightClimbAnswer, sleep, waitFor, wrongClimbAnswer } from "./sim-lib.js";
+import { api, call, failureCount, makeContacts, nextClimbRound, ok, putBack, putBackLater, rightClimbAnswer, sleep, waitFor, wrongClimbAnswer } from "./sim-lib.js";
 
 const tag = Date.now().toString(36);
 const ADMIN = `climb.admin.${tag}`;
@@ -56,17 +57,31 @@ const testLadder = {
   stages: [...before.ladder.stages.map((s: any) => ({ ...s, seconds: 6 })), ...newTypeStages],
   enabledTypes: [...new Set([...before.ladder.enabledTypes, "pattern_recall", "word_search"])],
 };
-const saved = await api(ADMIN, "PUT", "/admin/climb/ladder", { ladder: testLadder });
-ok(saved.version > before.version, "saving the ladder makes a new version");
 const settingsBefore = (await api(ADMIN, "GET", "/admin/climb/settings")).settings;
-await api(ADMIN, "PUT", "/admin/climb/settings", { settings: { ...settingsBefore, revealSeconds: 0, stageBreakSeconds: 1 } });
-const badSettings = await call(ADMIN, "PUT", "/admin/climb/settings", { settings: { ...settingsBefore, revealSeconds: -1 } });
-ok(badSettings.status === 400, "settings out of range are refused");
 const prizesBefore = await api(ADMIN, "GET", "/admin/climb/prizes");
 /** Set when the sim writes today's challenge itself, so it can take it away again. */
 let createdChallengeDay: string | null = null;
 
+// What the sim changes is put back as it found it, in the finally below (and on Ctrl-C): only what differs.
+putBackLater(`the Climb ladder (version ${before.version})`, async () => {
+  if (!same((await api(ADMIN, "GET", "/admin/climb/ladder")).ladder, before.ladder)) await api(ADMIN, "PUT", "/admin/climb/ladder", { ladder: before.ladder });
+});
+putBackLater("the Climb settings", async () => {
+  if (!same((await api(ADMIN, "GET", "/admin/climb/settings")).settings, settingsBefore)) await api(ADMIN, "PUT", "/admin/climb/settings", { settings: settingsBefore });
+});
+putBackLater("the Climb weekly prizes", async () => {
+  if (prizesBefore.current && !same((await api(ADMIN, "GET", "/admin/climb/prizes")).current?.prizes, prizesBefore.current.prizes)) {
+    await api(ADMIN, "PUT", "/admin/climb/prizes", { prizes: prizesBefore.current.prizes });
+  }
+});
+
 try {
+  const saved = await api(ADMIN, "PUT", "/admin/climb/ladder", { ladder: testLadder });
+  ok(saved.version > before.version, "saving the ladder makes a new version");
+  await api(ADMIN, "PUT", "/admin/climb/settings", { settings: { ...settingsBefore, revealSeconds: 0, stageBreakSeconds: 1 } });
+  const badSettings = await call(ADMIN, "PUT", "/admin/climb/settings", { settings: { ...settingsBefore, revealSeconds: -1 } });
+  ok(badSettings.status === 400, "settings out of range are refused");
+
   console.log("\n==== a full clear ====");
   const full = await play(ADA, () => true);
   const maxPoints = testLadder.stages.reduce((n: number, s: any) => n + s.points, 0);
@@ -231,9 +246,7 @@ try {
   }
   await closeQueues(jobs);
 } finally {
-  await api(ADMIN, "PUT", "/admin/climb/ladder", { ladder: before.ladder });
-  await api(ADMIN, "PUT", "/admin/climb/settings", { settings: settingsBefore });
-  if (prizesBefore.current) await api(ADMIN, "PUT", "/admin/climb/prizes", { prizes: prizesBefore.current.prizes });
+  await putBack();
   if (createdChallengeDay) {
     // Played challenges can't be deleted through the API, so the sim removes its own directly (attempts' answers cascade).
     const [ch] = await db.select({ id: climbChallenges.id }).from(climbChallenges).where(eq(climbChallenges.day, createdChallengeDay));
@@ -242,7 +255,7 @@ try {
       await db.delete(climbChallenges).where(eq(climbChallenges.id, ch.id));
     }
   }
-  console.log(`\n(ladder, settings and prizes restored${createdChallengeDay ? "; the sim's challenge for today removed" : ""})`);
+  if (createdChallengeDay) console.log("(the sim's challenge for today removed)");
 }
 
 await sql.end();

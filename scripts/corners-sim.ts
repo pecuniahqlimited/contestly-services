@@ -24,7 +24,7 @@ import { adminAlerts, db, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { INSTALL_ID_HEADER, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { API, RT, correctAnswer, failureCount, inMinutes, ok, sleep, waitFor, waitForProgress } from "./sim-lib.js";
+import { API, RT, correctAnswer, failureCount, inMinutes, ok, putBack, putBackLater, sleep, waitFor, waitForProgress } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const h = (name: string) => `cs${tag}_${name}`;
@@ -88,6 +88,13 @@ try {
   installs.set(SAME_DEVICE, installOf(FAN));
   await api(SAME_DEVICE, "GET", "/me");
   await db.update(users).set({ emailVerifiedAt: null }).where(eq(users.handle, UNVERIFIED)); // TEST-ONLY
+  putBackLater(`the corner thresholds (version ${originalConfig.version})`, async () => {
+    const { partiesHosted, realPlayersPerParty, distinctPlayers, newPlayers } = originalConfig;
+    const found = { partiesHosted, realPlayersPerParty, distinctPlayers, newPlayers };
+    const now = await api(ADMIN, "GET", "/admin/corners/config");
+    if (Object.entries(found).every(([k, v]) => now[k] === v)) return;
+    await api(ADMIN, "PUT", "/admin/corners/config", { config: found, reason: `sim:corners ${tag}: put back version ${originalConfig.version}` });
+  });
   await api(ADMIN, "PUT", "/admin/corners/config", { config: { partiesHosted: 2, realPlayersPerParty: 2, distinctPlayers: 3, newPlayers: 2 }, reason: `sim:corners ${tag}` });
 
   // ---- 1 and 2. playing until the host unlocks ----------------------------------------------
@@ -195,8 +202,7 @@ try {
   const back = await api(FAN, "GET", `/corners/${cornerId}`);
   ok(back.viewer.following && back.posts.posts[0]?.id === post.id && back.corner.followerCount === page.corner.followerCount, "and it's back with its follows and posts");
 } finally {
-  const { partiesHosted, realPlayersPerParty, distinctPlayers, newPlayers } = originalConfig;
-  await call(ADMIN, "PUT", "/admin/corners/config", { config: { partiesHosted, realPlayersPerParty, distinctPlayers, newPlayers }, reason: `sim:corners ${tag}: put back` });
+  await putBack();
 }
 
 const failed = failureCount();

@@ -20,7 +20,7 @@ import {
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MAX_UPLOAD_BYTES, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
+import { RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, putBack, putBackLater, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 import { minimalPdf } from "./sim-pdf.js";
 
 const HOST = "tunde";
@@ -306,6 +306,7 @@ ok(!!playedStats && pulled?.every((b) => b.timesPlayed === 0) === true, "play st
 const schedulers = await questionsQueue().getJobSchedulers();
 ok(schedulers.some((s) => s.key === "retire-sweep" || s.id === "retire-sweep"), "daily retirement sweep is scheduled");
 const cfg = await getQuestionsConfig();
+putBackLater("the questions config (retirement threshold)", () => setQuestionsConfig(cfg));
 try {
   await setQuestionsConfig({ ...cfg, retireFlagCount: 3 }); // test-only: make 3 flags enough to retire
   await questionsQueue().add("retire_sweep", { kind: "retire_sweep" });
@@ -315,7 +316,7 @@ try {
   }, { tries: 30 });
   ok(!!retired, "retirement sweep retired the flagged questions, with the reason");
 } finally {
-  await setQuestionsConfig(cfg);
+  await putBack();
 }
 
 const files = await db.select().from(partyFiles).where(eq(partyFiles.partyId, partyId));

@@ -15,10 +15,11 @@
  * provider, the dev default): npm run sim:payments
  */
 import { randomBytes, randomUUID } from "node:crypto";
+import { isDeepStrictEqual as same } from "node:util";
 import { eq } from "drizzle-orm";
 import { db, sql, users } from "@contestly/db";
 import { kobo } from "@contestly/shared";
-import { API, api, call, failureCount, ok, waitFor } from "./sim-lib.js";
+import { API, api, call, failureCount, ok, putBack, putBackLater, waitFor } from "./sim-lib.js";
 
 const tag = randomBytes(3).toString("hex");
 const ME = `pay.${tag}`;
@@ -80,17 +81,25 @@ const ADMIN2 = `payadm.${tag}`;
 await api(ADMIN2, "GET", "/me");
 await db.update(users).set({ isAdmin: true }).where(eq(users.handle, ADMIN2));
 const cfg = (await api(ADMIN, "GET", "/admin/payments/config")).config;
-const raised = structuredClone(cfg);
-raised.payout.maxKobo += kobo(1000);
-const asked = await call(ADMIN, "PUT", "/admin/payments/config", { config: raised, reason: "sim: raise the max" });
-ok(asked.status === 202 && (asked.body as any).change?.loosens?.[0] === "payout.maxKobo", "raising a limit waits for a second admin");
-const self = await call(ADMIN, "POST", `/admin/payments/config-changes/${(asked.body as any).change.id}/confirm`);
-ok(self.status === 403, "not the same admin");
-ok((await api(ADMIN2, "POST", `/admin/payments/config-changes/${(asked.body as any).change.id}/confirm`)).change.status === "applied", "a second admin confirms it");
-const back = await call(ADMIN, "PUT", "/admin/payments/config", { config: cfg, reason: "sim: back to before" });
-ok(back.status === 200, "lowering it back is one admin");
-const inv = await api(ADMIN, "POST", "/admin/payments/invariants/run");
-ok(inv.breaches.length === 0, `invariants: ${inv.breaches.length ? JSON.stringify(inv.breaches) : "no breach"}`);
+// Lowering back is one admin (it tightens), so the put-back needs no second admin, even after a failure.
+putBackLater("the payments config", async () => {
+  if (!same((await api(ADMIN, "GET", "/admin/payments/config")).config, cfg)) await api(ADMIN, "PUT", "/admin/payments/config", { config: cfg, reason: "sim: put back as found" });
+});
+try {
+  const raised = structuredClone(cfg);
+  raised.payout.maxKobo += kobo(1000);
+  const asked = await call(ADMIN, "PUT", "/admin/payments/config", { config: raised, reason: "sim: raise the max" });
+  ok(asked.status === 202 && (asked.body as any).change?.loosens?.[0] === "payout.maxKobo", "raising a limit waits for a second admin");
+  const self = await call(ADMIN, "POST", `/admin/payments/config-changes/${(asked.body as any).change.id}/confirm`);
+  ok(self.status === 403, "not the same admin");
+  ok((await api(ADMIN2, "POST", `/admin/payments/config-changes/${(asked.body as any).change.id}/confirm`)).change.status === "applied", "a second admin confirms it");
+  const back = await call(ADMIN, "PUT", "/admin/payments/config", { config: cfg, reason: "sim: back to before" });
+  ok(back.status === 200, "lowering it back is one admin");
+  const inv = await api(ADMIN, "POST", "/admin/payments/invariants/run");
+  ok(inv.breaches.length === 0, `invariants: ${inv.breaches.length ? JSON.stringify(inv.breaches) : "no breach"}`);
+} finally {
+  await putBack();
+}
 
 await sql.end();
 console.log(failureCount() ? `\n${failureCount()} failure(s)` : "\npayments sim passed");

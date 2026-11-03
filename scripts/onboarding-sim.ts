@@ -17,7 +17,7 @@ import { eq, desc } from "drizzle-orm";
 import { climbAwards, db, emailSends, sql, users } from "@contestly/db";
 import { makeRedis } from "@contestly/queue";
 import { SIGN_UP_REQUIRED, aboutVersionSchema, kobo, phoneHash, type AboutConfig, type AboutVersion } from "@contestly/shared";
-import { API, api, failureCount, ok, sleep } from "./sim-lib.js";
+import { API, api, failureCount, ok, putBack, putBackLater, sleep } from "./sim-lib.js";
 
 const EMULATOR = process.env.FIREBASE_AUTH_EMULATOR_HOST;
 const PROJECT = process.env.FIREBASE_PROJECT_ID ?? "demo-contestly";
@@ -137,7 +137,11 @@ if (process.env.AUTH_MODE !== "dev" || process.env.NODE_ENV === "production") {
   process.exit(1);
 }
 for (const key of await redis.keys("limit:*")) await redis.del(key);
-const seededSet = (await aboutSet("person")).config;
+const found = await aboutSet("person");
+const seededSet = found.config;
+putBackLater(`the person About you set (version ${found.version})`, async () => {
+  if (!same((await aboutSet("person")).config, seededSet)) await saveSet("person", seededSet, `sim:onboarding ${tag}: put back version ${found.version}`);
+});
 try {
   console.log("\n==== anonymous first: who's playing, then About you ====");
   // A known set saved as the current version, so the picks below mean what they say; the set that was current is put back at the end.
@@ -235,6 +239,7 @@ try {
   ok((await answerAbout(dami, person.version, { saturday: ["match"], rather: ["beat"] })).status === 422, "a brand can't answer the person set");
 
   console.log("\n==== the primary provider fails, the backup delivers ====");
+  putBackLater("the primary email provider (no longer failing on purpose)", () => redis.del(`dev:email:fail:zeptomail`));
   await redis.set(`dev:email:fail:zeptomail`, "1", "EX", 60);
   const eve = await anonymous();
   const eveEmail = `sim${tag}eve@example.com`;
@@ -352,7 +357,7 @@ try {
   ok((await http(ginaMember, "POST", "/me/contacts/match", { hashes: [await phoneHash(randomPhone())] })).body.error === "contacts_limit", "two syncs a day");
   ok((await http(guest, "POST", "/me/contacts/match", { hashes: [await phoneHash(adaPhone)] })).body.error === SIGN_UP_REQUIRED, "guests can't look up contacts");
 } finally {
-  await api("tunde", "PUT", "/admin/onboarding/about/person", { config: seededSet, reason: `sim:onboarding ${tag}: put the set back` });
+  await putBack();
   await redis.quit();
   await sql.end();
 }

@@ -191,7 +191,7 @@ npm run build && npm run typecheck
 npm test                # unit tests (shared, game, email, realtime, apps/questions, apps/api); no infra needed
 npm run test:int        # integration tests against local Postgres + Valkey + the Auth emulator (apps/api/test-int: admin permissions, bans, cancel, question queue, About you versions and answers, rejected sessions, account deletion, leaving a party, the host cancelling, the overdue-party sweep, stalled live parties, rate limits and the client IP, admin alerts (dedupe, delivery, throttle, digest, acknowledge), chat rules, crews and party points, corners: unlock thresholds and the new-player rules, alerts, revoke and restore, setup, suggestions, the celebration, follows, contacts, your people, posts)
 scripts/smoke.sh        # end-to-end check against the running stack
-npm run sim             # the sims against the running stack: sim:sealed (generated set, 3 players),
+npm run sim             # the sims against the running stack (each puts back any admin config it changed, as it found it, even when it fails or is interrupted: putBackLater()/putBack() in scripts/sim-lib.ts): sim:sealed (generated set, 3 players),
                         # sim:curate (PDF read → curate review → play with two flag-voids → settle), sim:stakes (incl. leaving and the host cancelling, with the lobby room),
                         # sim:climb (runs, Today's challenge, boards, week close → approved prizes),
                         # sim:onboarding (anonymous → About you → email code via Mailpit → lanes + archetype kept; edit from Me,

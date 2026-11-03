@@ -18,6 +18,36 @@ export const ok = (cond: boolean, label: string) => {
 };
 export const failureCount = () => failures;
 
+/**
+ * Admin config a sim changed, put back as it found it. Register each put-back right before the change; the
+ * sim calls putBack() in a finally, so a failing sim restores too, and Ctrl-C or a kill runs them as well.
+ * Each runs once, newest first; one that fails is logged and counts as a failure, and the rest still run.
+ */
+const putBacks: { what: string; run: () => Promise<unknown> }[] = [];
+let exitHooked = false;
+export function putBackLater(what: string, run: () => Promise<unknown>) {
+  putBacks.push({ what, run });
+  if (exitHooked) return;
+  exitHooked = true;
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      console.log(`\n(${signal}: putting the admin config back first)`);
+      void putBack().finally(() => process.exit(130));
+    });
+  }
+}
+export async function putBack() {
+  while (putBacks.length) {
+    const { what, run } = putBacks.pop()!;
+    try {
+      await run();
+      console.log(`(put back: ${what})`);
+    } catch (e) {
+      ok(false, `couldn't put back ${what}: ${(e as Error).message}`);
+    }
+  }
+}
+
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A party's startsAt, this many minutes from now. */
 export const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
