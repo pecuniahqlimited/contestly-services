@@ -45,12 +45,12 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
       console.log(`[party] ${p.title}: ${awards.length} goods prize(s) awarded (one fulfilment record per place)`);
     } else if (!ranked.length) {
       // Nobody can be placed. A pot with money in it is never left there (ADR 0013): cancel as the system,
-      // refund every seat as paid, banned players' entries to entry_forfeited.
+      // refund every seat as paid (banned players too: a ban's wallet freeze holds their money), logged.
       const out = await cancelIfUnplaceable(tx, p);
       if (out) {
         line = out.line;
         await deps.emit({ partyId, status: "cancelled" });
-        console.log(`[party] ${p.title}: nobody could be placed; cancelled, ${out.players - out.forfeited} refunded, ${out.forfeited} banned entr${out.forfeited === 1 ? "y" : "ies"} forfeited`);
+        console.log(`[party] ${p.title}: nobody could be placed; cancelled, ${out.players} seat(s) refunded (${out.bannedSeats} banned)`);
         return false;
       }
       console.log(`[party] ${p.title}: only guests played, nothing to pay`);

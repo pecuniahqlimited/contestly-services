@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, sql as sqlRaw } from "drizzle-orm";
 import {
-  adminActions, adminPermissions, archiveAccount, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, entryForfeits, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  adminActions, adminPermissions, archiveAccount, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentAlerts, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import { DEFAULT_PAYMENTS_CONFIG, kobo, type PaymentsConfig, type PaymentsJob } from "@contestly/shared";
@@ -1606,7 +1606,7 @@ describe("guardrails", () => {
     })).toEqual(["platform_direction"]);
   });
 
-  it("a party with every signed-up player banned mid-game ends with an empty pot and no breach: refunds as paid, banned entries forfeited", async () => {
+  it("a party with every signed-up player banned mid-game ends with an empty pot and no breach: every seat refunded as paid, banned ones too, logged", async () => {
     const host = await makeUser(nextName("bnhost"));
     const [a, b, c] = [await makeUser(nextName("bna")), await makeUser(nextName("bnb")), await makeUser(nextName("bnc"))];
     for (const u of [a, b, c]) await fund(u, kobo(1000));
@@ -1621,14 +1621,15 @@ describe("guardrails", () => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, party.id)).for("update");
       return cancelIfUnplaceable(tx, p);
     });
-    expect(out).toMatchObject({ players: 3, forfeited: 2 });
+    expect(out).toMatchObject({ players: 3, bannedSeats: 2 });
     const [after] = await db.select().from(parties).where(eq(parties.id, party.id));
     expect([after.status, after.cancelledBy]).toEqual(["cancelled", "system"]);
     expect(await db.transaction((tx) => potBalance(tx, party.id))).toBe(0);
     expect(await ledger.balances(c.id)).toEqual({ cashKobo: kobo(1000), bonusKobo: kobo(200) }); // refunded as paid: bonus to bonus, cash to cash
-    expect((await ledger.balances(a.id)).cashKobo).toBe(kobo(500)); // the banned entry is kept
-    const forfeits = await db.select().from(entryForfeits).where(eq(entryForfeits.partyId, party.id));
-    expect(forfeits.map((f) => [f.userId, f.amountKobo, f.banReason]).sort()).toEqual([[a.id, kobo(500), "cheating"], [b.id, kobo(500), "cheating"]].sort());
+    expect([(await ledger.balances(a.id)).cashKobo, (await ledger.balances(b.id)).cashKobo]).toEqual([kobo(1000), kobo(1000)]); // a ban's freeze holds it, not the party
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.targetId, party.id), eq(adminActions.action, "party.cancel_unplaceable")));
+    expect(log.adminUserId).toBe(await db.transaction((tx) => ledger.treasuryUserId(tx))); // the system
+    expect((log.after as { bannedSeats: { userId: string; banReason: string }[] }).bannedSeats.map((x) => [x.userId, x.banReason]).sort()).toEqual([[a.id, "cheating"], [b.id, "cheating"]].sort());
     expect(await findBreaches(db)).toEqual([]);
     // Settling twice moves nothing.
     expect(await db.transaction(async (tx) => cancelIfUnplaceable(tx, (await tx.select().from(parties).where(eq(parties.id, party.id)))[0]))).toBeNull();

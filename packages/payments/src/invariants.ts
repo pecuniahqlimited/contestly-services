@@ -15,7 +15,7 @@
  *    0021) are left out: a seat charged before it and refunded after leaves a pot that never got the entry.
  * 6. Every platform account points the way it should: money in (topup_in, dev_mint, bonus_issued,
  *    prize_funding, platform_funds, payout_owed) at or below zero, money held or out (pots, payout_pending,
- *    payout_settled, payout_fees, contradiction holds, forfeited entries) at or above; fee_variance either way.
+ *    payout_settled, payout_fees, contradiction holds) at or above; fee_variance either way.
  *
  * Admins can acknowledge a breach (payments.config and a second admin, with a reason): for
  * invariants.acknowledgmentDays (default 7), one of the same kind with exactly the same items and signed
@@ -152,7 +152,7 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
 
 /** Platform accounts money comes in through (they only go negative) and ones that hold or pay it out (only positive). */
 export const PLATFORM_AT_MOST_ZERO = ["topup_in", "dev_mint", "bonus_issued", "prize_funding", "platform_funds", "payout_owed"] as const;
-export const PLATFORM_AT_LEAST_ZERO = ["party_pot", "payout_pending", "payout_settled", "payout_fees", "contradiction_hold", "entry_forfeited"] as const;
+export const PLATFORM_AT_LEAST_ZERO = ["party_pot", "payout_pending", "payout_settled", "payout_fees", "contradiction_hold"] as const;
 // fee_variance goes either way (a user-borne fee estimated high or low), so it's in neither list.
 const inList = (kinds: readonly string[]) => sql.raw(kinds.map((k) => `'${k}'`).join(", "));
 

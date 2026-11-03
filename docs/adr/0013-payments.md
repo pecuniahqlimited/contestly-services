@@ -164,8 +164,11 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    **The invariants must never cause an endless outage:**
    - *Nobody can be placed.* When settlement finds nobody it can rank for prizes (every signed-up player
      banned mid-game, say) and the pot has money in it, the party is cancelled by the system and every seat
-     refunded as it was paid; a banned player's entry goes to `entry_forfeited` instead, recorded with the
-     ban (`entry_forfeits`). The pot is always empty when a party closes.
+     refunded as it was paid, banned players included (decided 2026-11-03: a ban's wallet freeze, row 11,
+     is what holds a banned player's money, not the party). Logged as a system action
+     (`party.cancel_unplaceable`, by the treasury account) listing the banned seats. The pot is always empty
+     when a party closes. (`entry_forfeited` from an earlier draft is unused; its table is dropped, and
+     Postgres can't drop the enum value.)
    - *Fees.* When the user bears the fee, they paid our estimate; the difference from what the provider
      actually charged goes to `fee_variance`, which may go either way (no direction rule). A platform-borne
      fee comes from `platform_funds`. Settles and resolved contradictions book fees through one function.

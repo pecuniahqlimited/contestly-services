@@ -41,11 +41,10 @@ type Kind = (typeof USER_ACCOUNT_KINDS)[number];
  *   cover it (scope: their user id). Every later cash credit to them repays it first (repayOwed).
  * - contradiction_hold: the disputed amount of a duplicate payout, secured at the freeze from the person's
  *   cash and what they owe (scope: their user id); the recovery when it's confirmed, released if it dissolves
- * - entry_forfeited: banned players' entries kept when a party nobody can be ranked in is cancelled
  * - fee_variance: when the user bears a payout's fee, the difference between the fee they paid (our estimate)
  *   and what the provider charged; either sign
  */
-export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "entry_forfeited", "fee_variance"] as const;
+export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "fee_variance"] as const;
 export type SystemKind = (typeof SYSTEM_ACCOUNT_KINDS)[number];
 
 export type AccountRef = { userId: string; kind: Kind } | { system: SystemKind; scope?: string };

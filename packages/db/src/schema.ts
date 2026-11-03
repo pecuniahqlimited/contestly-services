@@ -6,6 +6,7 @@ export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 /** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0013). */
+/** entry_forfeited is unused (banned players' entries are refunded; ADR 0013); Postgres can't drop an enum value. */
 export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "entry_forfeited", "fee_variance"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
@@ -851,21 +852,6 @@ export const payoutContradictions = pgTable("payout_contradictions", {
   recoveredKobo: bigint("recovered_kobo", { mode: "number" }),
   owedKobo: bigint("owed_kobo", { mode: "number" }),
 }, (t) => [uniqueIndex("payout_contradictions_payout").on(t.payoutId), index("payout_contradictions_user_idx").on(t.userId)]);
-
-/**
- * A banned player's entry kept by the platform when a party nobody can be ranked in is cancelled (ADR 0013):
- * recorded with the ban as it stood. The money is in entry_forfeited under party_forfeit:<seat id>.
- */
-export const entryForfeits = pgTable("entry_forfeits", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  partyId: uuid("party_id").notNull().references(() => parties.id),
-  userId: uuid("user_id").notNull().references(() => users.id),
-  seatId: uuid("seat_id").notNull(),
-  amountKobo: bigint("amount_kobo", { mode: "number" }).notNull(),
-  bannedAt: timestamp("banned_at", { withTimezone: true }).notNull(),
-  banReason: text("ban_reason"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex("entry_forfeits_seat").on(t.seatId)]);
 
 /**
  * An invariant breach admins have acknowledged (ADR 0013): payments.config asks with a reason, a second
