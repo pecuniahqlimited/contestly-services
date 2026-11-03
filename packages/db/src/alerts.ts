@@ -6,7 +6,7 @@
  * digest, info only in the console's list. Every alert is also a console line when raised.
  */
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { ALERT_SEVERITIES, ALERT_TEST_KIND, type AlertSeverity } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { adminAlertDeliveries, adminAlerts, users, type User } from "./schema.js";
@@ -18,6 +18,13 @@ export type AdminAlertRow = typeof adminAlerts.$inferSelect;
 
 /** A repeat of the same dedupe key within this long of the first bumps the count (callers can pass their own). */
 export const DEFAULT_ALERT_DEDUPE_WINDOW_SECONDS = 24 * 3600;
+/**
+ * A window at least this long marks a key about one thing (a payout, a top-up: ONCE_PER_THING_SECONDS in
+ * payments). Acknowledging such an alert settles it for the rest of its window: repeats are counted on the
+ * acknowledged row and nobody is told again. A shorter window (a rate, a spike) behaves as before: after an
+ * acknowledge, the next raise is a new alert.
+ */
+export const LONG_ALERT_WINDOW_SECONDS = 7 * 24 * 3600;
 
 export interface AdminAlertInput {
   /** What happened, as a stable code: "payout_unknown_too_long", "code_sends_spike". Throttling is per kind. */
@@ -26,7 +33,10 @@ export interface AdminAlertInput {
   /** One line a person reads first (the email subject, the list row). */
   subject: string;
   details: Record<string, unknown>;
-  /** The same key within the window is the same alert: its count goes up instead of a new row. */
+  /**
+   * The same key within the window is the same alert: its count goes up instead of a new row. Once
+   * acknowledged, a short window's next raise is a new alert; a long one's (LONG_ALERT_WINDOW_SECONDS) isn't.
+   */
   dedupeKey: string;
   /** What it's about, to find a thing's alerts: ("payout", id), ("user", id). */
   refType?: string;
@@ -36,9 +46,11 @@ export interface AdminAlertInput {
 
 export interface RaisedAlert {
   id: string;
-  /** False when it bumped an open alert with the same key. */
+  /** False when it bumped an alert with the same key in its window. */
   isNew: boolean;
   count: number;
+  /** True when that alert was acknowledged and its long window holds: counted, nobody told. */
+  suppressed: boolean;
 }
 
 const consoleFor: Record<AlertSeverity, (line: string) => void> = { info: (l) => console.log(l), warning: (l) => console.warn(l), critical: (l) => console.error(l) };
@@ -49,9 +61,10 @@ const consoleFor: Record<AlertSeverity, (line: string) => void> = { info: (l) =>
  */
 export async function adminAlert(a: AdminAlertInput, conn: Conn = db): Promise<RaisedAlert> {
   const raised = "rollback" in conn ? await raiseIn(conn, a) : await db.transaction((tx) => raiseIn(tx, a));
-  // A new alert is logged; a repeat only at ×10, ×100, ×1000…, so a storm doesn't flood the log either.
-  // Inside a money transaction the line waits for the commit (afterCommit), so a retried attempt doesn't repeat it.
-  if (raised.isNew || Number.isInteger(Math.log10(raised.count))) afterCommit(conn, () => {
+  // A new alert is logged; a repeat only at ×10, ×100, ×1000…, so a storm doesn't flood the log either; an
+  // acknowledged one not at all. Inside a money transaction the line waits for the commit (afterCommit), so a
+  // retried attempt doesn't repeat it.
+  if (raised.isNew || (!raised.suppressed && Number.isInteger(Math.log10(raised.count)))) afterCommit(conn, () => {
     consoleFor[a.severity](`[alert] ${a.severity.toUpperCase()} ${a.kind}${raised.isNew ? "" : ` (×${raised.count})`}: ${a.subject} ${JSON.stringify(a.details)}`);
   });
   return raised;
@@ -59,21 +72,23 @@ export async function adminAlert(a: AdminAlertInput, conn: Conn = db): Promise<R
 
 async function raiseIn(tx: Tx, a: AdminAlertInput): Promise<RaisedAlert> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`admin_alert:${a.dedupeKey}`}, 0))`);
-  const [open] = await tx.select({ id: adminAlerts.id }).from(adminAlerts)
-    .where(and(eq(adminAlerts.dedupeKey, a.dedupeKey), gt(adminAlerts.windowEndsAt, sql`now()`), isNull(adminAlerts.acknowledgedAt)))
+  // The alert this repeats: still in its window, and open, or acknowledged with a long window (it stays settled).
+  const longWindow = sql`${adminAlerts.windowEndsAt} - ${adminAlerts.firstSeenAt} >= make_interval(secs => ${LONG_ALERT_WINDOW_SECONDS})`;
+  const [open] = await tx.select({ id: adminAlerts.id, acknowledgedAt: adminAlerts.acknowledgedAt }).from(adminAlerts)
+    .where(and(eq(adminAlerts.dedupeKey, a.dedupeKey), gt(adminAlerts.windowEndsAt, sql`now()`), or(isNull(adminAlerts.acknowledgedAt), longWindow)))
     .orderBy(desc(adminAlerts.firstSeenAt)).limit(1);
   if (open) {
     const [bumped] = await tx.update(adminAlerts)
       .set({ count: sql`${adminAlerts.count} + 1`, lastSeenAt: sql`now()`, subject: a.subject, details: a.details })
       .where(eq(adminAlerts.id, open.id)).returning({ id: adminAlerts.id, count: adminAlerts.count });
-    return { id: bumped.id, isNew: false, count: bumped.count };
+    return { id: bumped.id, isNew: false, count: bumped.count, suppressed: open.acknowledgedAt !== null };
   }
   const window = a.dedupeWindowSeconds ?? DEFAULT_ALERT_DEDUPE_WINDOW_SECONDS;
   const [row] = await tx.insert(adminAlerts).values({
     kind: a.kind, severity: a.severity, subject: a.subject, details: a.details, dedupeKey: a.dedupeKey,
     refType: a.refType ?? null, refId: a.refId ?? null, windowEndsAt: sql`now() + make_interval(secs => ${window})`,
   }).returning({ id: adminAlerts.id, count: adminAlerts.count });
-  return { id: row.id, isNew: true, count: row.count };
+  return { id: row.id, isNew: true, count: row.count, suppressed: false };
 }
 
 // ---------------------------------------------------------------- the console
@@ -112,8 +127,9 @@ export async function openAlertCounts(): Promise<Record<AlertSeverity, number>> 
 
 /**
  * An admin acknowledges with a note (what they found or did), logged in admin_actions in the same
- * transaction. Acknowledging twice keeps the first and logs nothing more. Delivery stops for it, and the
- * next raise of its key is a new alert.
+ * transaction. Acknowledging twice keeps the first and logs nothing more. Delivery stops for it. The next
+ * raise of its key is a new alert, unless its window is long (LONG_ALERT_WINDOW_SECONDS): then repeats are
+ * counted on this row until the window ends, and nobody is told again.
  */
 export async function acknowledgeAdminAlert(adminUserId: string, id: string, note: string): Promise<{ alert: AdminAlertRow; ackedBy: User; replayed: boolean } | null> {
   return db.transaction(async (tx) => {

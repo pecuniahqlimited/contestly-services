@@ -205,8 +205,10 @@ wrongly, or not at all; a timeout tells you nothing about whether a transfer wen
    failure after a success), a payout amount that differs, invariant breaches, payouts paused by the system.
    Warning: everything else (an unknown payout past its cutoff, top-up mismatches, webhook rejections over
    the threshold, dead-lettered webhooks, reconciliation, velocity). Keys about one thing (a payout, a
-   top-up, a webhook) use a ten-year dedupe window so they're raised once, not again after a day or an
-   acknowledge. `payments.*` alerts need `payments.view` to list and `payments.finalize` to acknowledge on
+   top-up, a webhook) use a ten-year dedupe window: a repeat bumps the same alert's count rather than opening
+   a new one after a day, and once acknowledged it stays settled for the window (repeats are counted on the
+   acknowledged row; nobody is told again). Any window of a week or more behaves this way
+   (`LONG_ALERT_WINDOW_SECONDS`); shorter ones open a new alert on the first raise after an acknowledge. `payments.*` alerts need `payments.view` to list and `payments.finalize` to acknowledge on
    `/admin/alerts`; the old `payment_alerts` table and `/admin/payments/alerts` are gone.
 9. **Webhooks** at `POST /webhooks/:provider`: authenticate first (Paystack: HMAC-SHA512 of the raw body
    in `x-paystack-signature`), store the raw event (one row per event; redeliveries counted), acknowledge,

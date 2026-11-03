@@ -71,7 +71,7 @@ describe("adminAlert(): stored and deduped", () => {
     const first = await adminAlert({ kind: k, severity: "warning", subject: "one", details: { n: 1 }, dedupeKey: dk });
     const again = await adminAlert({ kind: k, severity: "warning", subject: "one, again", details: { n: 2 }, dedupeKey: dk });
     expect(first).toMatchObject({ isNew: true, count: 1 });
-    expect(again).toEqual({ id: first.id, isNew: false, count: 2 });
+    expect(again).toEqual({ id: first.id, isNew: false, count: 2, suppressed: false });
     const [row] = await rowsOf(k);
     expect(row).toMatchObject({ count: 2, subject: "one, again", details: { n: 2 } });
     expect(row.lastSeenAt.getTime()).toBeGreaterThanOrEqual(row.firstSeenAt.getTime());
@@ -86,7 +86,27 @@ describe("adminAlert(): stored and deduped", () => {
     expect(rows.map((r) => r.count)).toEqual([20]);
   });
 
-  it("after its window, or once acknowledged, the same key is a new alert", async () => {
+  it("a long window (a key about one thing): once acknowledged it stays settled, counted and delivered to nobody, until its window ends", async () => {
+    const f = fakes();
+    const k = f.kind("once"), dk = key();
+    const ONCE = 10 * 365 * 24 * 3600;
+    const a = await adminAlert({ kind: k, severity: "critical", subject: "payout unknown too long", details: {}, dedupeKey: dk, dedupeWindowSeconds: ONCE });
+    await deliver(f, [f.email], new Date());
+    expect(f.mail).toHaveLength(1);
+    await app.inject({ method: "POST", url: `/admin/alerts/${a.id}/ack`, headers: as(admin), payload: { note: "with the provider" } });
+    const b = await adminAlert({ kind: k, severity: "critical", subject: "payout unknown too long", details: {}, dedupeKey: dk, dedupeWindowSeconds: ONCE });
+    expect(b).toEqual({ id: a.id, isNew: false, count: 2, suppressed: true });
+    const [row] = await rowsOf(k);
+    expect(row.acknowledgedAt).not.toBeNull();
+    await deliver(f, [f.email], later(CFG.digestMinutes * MIN + MIN));
+    expect(f.mail).toHaveLength(1); // nobody told again
+    expect((await app.inject({ method: "GET", url: `/admin/alerts?kind=${k}&state=open`, headers: as(admin) })).json().alerts).toEqual([]);
+    // Past its window, the key is a new alert again.
+    await db.update(adminAlerts).set({ windowEndsAt: new Date(Date.now() - 1000) }).where(eq(adminAlerts.id, a.id)); // TEST-ONLY: the window has passed
+    expect((await adminAlert({ kind: k, severity: "critical", subject: "s", details: {}, dedupeKey: dk, dedupeWindowSeconds: ONCE })).isNew).toBe(true);
+  });
+
+  it("a normal window: after it, or once acknowledged, the same key is a new alert", async () => {
     const k = kind("window"), dk = key();
     const a = await adminAlert({ kind: k, severity: "info", subject: "s", details: {}, dedupeKey: dk, dedupeWindowSeconds: 60 });
     await db.update(adminAlerts).set({ windowEndsAt: new Date(Date.now() - 1000) }).where(eq(adminAlerts.id, a.id)); // TEST-ONLY: the window has passed

@@ -31,7 +31,8 @@ export const lagosDayRange = (day: string) => ({ from: new Date(`${day}T00:00:00
 /**
  * Payments alerts go through main's adminAlert() (packages/db/src/alerts.ts), kinds prefixed "payments.", always
  * with the transaction they belong to, so a freeze or a pause and its alert commit together. A key that's
- * about one thing (a payout, a top-up, a webhook) is raised once for good: this window, not the 24-hour default.
+ * about one thing (a payout, a top-up, a webhook) uses this window, not the 24-hour default: raised again, it
+ * bumps the same alert's count, and once an admin acknowledges it, it stays settled (counted, nobody told).
  */
 export const ONCE_PER_THING_SECONDS = 10 * 365 * 24 * 3600;
 
