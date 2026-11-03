@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, count, desc, eq, gte, inArray, like, notInArray, sql as sqlRaw } from "drizzle-orm";
 import {
-  accountHasPaymentIssue, adminActions, adminBanRequests, linkedIssueClearances, owedWaivers, paymentFinalizations, paymentPermissionGrants, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
+  accountHasPaymentIssue, devAdminHandles, grantDevAdmins, adminActions, adminBanRequests, linkedIssueClearances, owedWaivers, paymentFinalizations, paymentPermissionGrants, adminAlert, adminAlerts, adminPermissions, afterCommit, archiveAccount, clearExpiredArchives, moneyTransaction, invariantAcknowledgments, cancelIfUnplaceable, db, deletionBlockers, partyPlayers, potBalance, takeSeat, getPaymentsConfig, ledger, ledgerAccounts, ledgerEntries, parties, paymentConfigChanges, paymentReconItems, paymentSettings, paymentWebhookEvents, paymentWebhookRejections,
   payoutAccounts, payoutContradictions, payouts, setPaymentsConfig, sql, systemActorId, topups, users, type Payout, type Tx, type User,
 } from "@contestly/db";
 import {
@@ -1769,6 +1769,19 @@ describe("permissions", () => {
       expect(() => schema.parse(res.json()), url).not.toThrow();
     }
     expect((adminPayoutsResponseSchema.parse((await app.inject({ method: "GET", url: `/admin/payments/payouts?userId=${u.id}`, headers: as(admin) })).json())).payouts[0].id).toBe(payout.id);
+  });
+
+  it("dev admins (DEV_ADMIN_HANDLES) get every payments permission without a reseed: idempotent, logged, never in production", async () => {
+    const dev = await makeUser(nextName("devadm"));
+    const grant = (env: NodeJS.ProcessEnv = {}) => db.transaction((tx) => grantDevAdmins(tx, [dev.handle], env));
+    await expect(grant({ NODE_ENV: "production" })).rejects.toThrow(/never granted in production/);
+    expect(await permissionsOf(dev.id)).toEqual([]);
+    expect(await grant()).toEqual([{ handle: dev.handle, granted: ["payments.approve", "payments.config", "payments.finalize", "payments.view"] }]);
+    expect((await db.select().from(users).where(eq(users.id, dev.id)))[0].isAdmin).toBe(true);
+    expect(await grant()).toEqual([{ handle: dev.handle, granted: [] }]); // again: nothing new
+    expect(await db.select().from(adminActions).where(and(eq(adminActions.targetId, dev.id), eq(adminActions.action, "payments.dev_admin_grant")))).toHaveLength(1);
+    expect(devAdminHandles({ DEV_ADMIN_HANDLES: " Tunde, ada.o ,," })).toEqual(["tunde", "ada.o"]);
+    await db.delete(adminPermissions).where(eq(adminPermissions.userId, dev.id)); // TEST-ONLY: keep the config-holder count as the other tests expect
   });
 
   it("a grantee can't confirm their own grant (one admin can't make a second admin)", async () => {

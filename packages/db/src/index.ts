@@ -17,5 +17,6 @@ export * from "./admin.js";
 export * from "./partyLifecycle.js";
 export * from "./seats.js";
 export * from "./deletion.js";
+export * from "./devAdmins.js";
 export * from "./alerts.js";
 export * from "./retry.js";

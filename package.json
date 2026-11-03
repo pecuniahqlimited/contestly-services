@@ -24,6 +24,7 @@
     "db:migrate": "npm run migrate -w @contestly/db",
     "db:baseline": "npm run baseline -w @contestly/db",
     "db:seed": "npm run seed -w @contestly/db",
+    "db:dev-admins": "npm run dev-admins -w @contestly/db",
     "dev": "concurrently -n api,rt,worker,questions -c blue,magenta,yellow,cyan \"npm run dev -w @contestly/api\" \"npm run dev -w @contestly/realtime\" \"npm run dev -w @contestly/worker\" \"npm run dev -w @contestly/questions\"",
     "build": "npm run prepare && npm run build -w apps --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
