@@ -183,6 +183,14 @@ export const cornerPostSchema = z.object({
   replies: z.array(cornerReplySchema),
 });
 export type CornerPost = z.infer<typeof cornerPostSchema>;
+/**
+ * GET /corner-posts/:id: one post as the corner page shows it, with its corner's name and colour (a thread link
+ * opens a post by its id). Same visibility as the corner page: a hidden corner or a deleted post is 404.
+ */
+export const cornerPostDetailSchema = cornerPostSchema.extend({
+  corner: z.object({ id: z.string().uuid(), name: z.string(), color: cornerColorSchema }),
+});
+export type CornerPostDetail = z.infer<typeof cornerPostDetailSchema>;
 export const PAGE_DEFAULT = 20;
 export const cornerPageQuerySchema = z.object({ before: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(50).default(PAGE_DEFAULT) });
 export const cornerPostsPageSchema = z.object({ posts: z.array(cornerPostSchema), before: z.string().uuid().nullable() });

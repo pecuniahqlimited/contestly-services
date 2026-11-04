@@ -1,13 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
-  cornerFollowAlertSchema, cornerFollowersQuerySchema, cornerMuteBodySchema, cornerPageQuerySchema, cornerPostBodySchema, cornerReactionBodySchema, cornerReplyBodySchema,
+  cornerFollowAlertSchema, cornerFollowersQuerySchema, cornerMuteBodySchema, cornerPageQuerySchema, cornerPostBodySchema, cornerPostDetailSchema, cornerReactionBodySchema, cornerReplyBodySchema,
   cornerReportBodySchema, cornerUpdateSchema, followerInviteOptionsSchema, followerInviteResultSchema, followerInviteSchema, suggestedCornersQuerySchema,
 } from "@contestly/shared";
 import { askToFollow, followAskOptions } from "@contestly/db";
 import { requireUser, uuidParam } from "../auth.js";
 import {
-  cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postsPage, progressOf, react, reply, repliesPage, reportReply, setAlerts, shownCorner,
+  cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postDetail, postsPage, progressOf, react, reply, repliesPage, reportReply, setAlerts, shownCorner,
   unfollow, unmute, unreact, updateMyCorner, celebrationSeen, suggestedCorners,
 } from "../corners.js";
 
@@ -36,6 +36,7 @@ export async function cornersRoutes(app: FastifyInstance) {
   });
   /** The owner posts text (capped in social config). */
   app.post("/corners/:id/posts", async (req, res) => res.code(201).send(await createPost(requireUser(req), uuidParam(req), cornerPostBodySchema.parse(req.body).text)));
+  app.get("/corner-posts/:id", async (req) => cornerPostDetailSchema.parse(await postDetail(uuidParam(req), req.auth?.user?.id)));
   app.delete("/corner-posts/:id", async (req) => deletePost(requireUser(req), uuidParam(req)));
 
   /** One reaction per person per post, from the fixed set; a new one replaces it. */

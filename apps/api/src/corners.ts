@@ -12,7 +12,7 @@ import {
 import { notifyQueue, valkeyCounter } from "@contestly/queue";
 import {
   CORNER_REGULARS_SHOWN, CORNER_UP_NEXT_SHOWN, CORNER_WINNERS_SHOWN, POST_REPLIES_INLINE, YOUR_PEOPLE_FACES, chatRateCheck, isBraggingRights, lagosDay, maskProfanity,
-  partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerProgress, type CornerReaction, type CornerUpdate, type Person, type SuggestedCorners,
+  partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerPostDetail, type CornerProgress, type CornerReaction, type CornerUpdate, type Person, type SuggestedCorners,
 } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { peopleOf, personColumns } from "./people.js";
@@ -328,6 +328,16 @@ async function postViews(posts: (typeof cornerPosts.$inferSelect)[], viewerId: s
       person: { id: r.uid, handle: r.handle, displayName: r.display_name, avatarEmoji: r.avatar_emoji, isVerified: r.is_verified },
     })),
   }));
+}
+
+/** One post, as the corner page shows it to this viewer, with its corner (a muted viewer still sees it). */
+export async function postDetail(postId: string, viewerId: string | undefined): Promise<CornerPostDetail> {
+  const post = await livePost(postId);
+  const [[view], [corner]] = await Promise.all([
+    postViews([post], viewerId),
+    db.select({ id: corners.id, name: corners.name, color: corners.color }).from(corners).where(eq(corners.id, post.cornerId)),
+  ]);
+  return { ...view, corner };
 }
 
 /** A corner's posts, newest first, a page at a time (before = a post id). */

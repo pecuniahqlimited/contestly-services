@@ -14,7 +14,7 @@ import {
   follows, getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
-import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, CORNER_COLORS, celebrationSeenSchema, lagosDay, myContactsSchema, myCornerSchema, suggestedCornersSchema, weekOf } from "@contestly/shared";
+import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, CORNER_COLORS, celebrationSeenSchema, cornerPostDetailSchema, lagosDay, myContactsSchema, myCornerSchema, suggestedCornersSchema, weekOf } from "@contestly/shared";
 import { setWeekPoints } from "../src/climb/boards.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
@@ -850,11 +850,39 @@ describe("host posts", () => {
     expect((await app.inject({ url: `/corners/${cornerId}/mutes`, headers: as(owner) })).json().map((m: { person: { id: string } }) => m.person.id)).toEqual([muted.id]);
   });
 
+  it("GET /corner-posts/:id is the post as the corner page shows it, with its corner; a muted viewer still sees it", async () => {
+    const one = async (u?: User) => app.inject({ url: `/corner-posts/${postId}`, headers: u ? as(u) : {} });
+    const corner = (await db.select().from(corners).where(eq(corners.id, cornerId)))[0];
+    for (const u of [owner, fan, muted, undefined]) {
+      const res = await one(u);
+      expect(res.statusCode).toBe(200);
+      const post = cornerPostDetailSchema.parse(res.json());
+      const { corner: c, ...rest } = post;
+      expect(c).toEqual({ id: cornerId, name: corner.name, color: corner.color });
+      expect(rest).toEqual(await page(u)); // the same reactions, reply count and replies as on the corner page
+    }
+    // The muted viewer's own reaction and reply count for them only, as on the page.
+    expect((await one(muted)).json()).toMatchObject({ mine: "🔥", replyCount: (await page(muted)).replyCount });
+    expect((await one(owner)).json().replyCount).toBe((await one(muted)).json().replyCount - 1);
+    expect((await app.inject({ url: `/corner-posts/${randomUUID()}` })).statusCode).toBe(404);
+  });
+
   it("the host deletes a post, and it leaves the feed with it", async () => {
     expect((await app.inject({ method: "DELETE", url: `/corner-posts/${postId}`, headers: as(fan) })).json().error).toBe("not_corner_owner");
     expect((await app.inject({ method: "DELETE", url: `/corner-posts/${postId}`, headers: as(owner) })).json()).toEqual({ deleted: true });
     expect((await app.inject({ url: `/corners/${cornerId}/posts` })).json().posts).toEqual([]);
     expect((await app.inject({ url: "/feed", headers: as(fan) })).json().events.some((e: { data: { postId?: string } }) => e.data.postId === postId)).toBe(false);
+  });
+
+  it("a deleted post, or a post in a revoked corner, is 404 at GET /corner-posts/:id; a restore brings it back", async () => {
+    expect((await app.inject({ url: `/corner-posts/${postId}` })).statusCode).toBe(404); // deleted above
+    const live = (await app.inject({ method: "POST", url: `/corners/${cornerId}/posts`, headers: as(owner), payload: { text: "Still here" } })).json().id;
+    const get = async () => (await app.inject({ url: `/corner-posts/${live}`, headers: as(fan) })).statusCode;
+    expect(await get()).toBe(200);
+    await app.inject({ method: "POST", url: `/admin/corners/${cornerId}/revoke`, headers: as(admin), payload: { reason: "test" } });
+    expect(await get()).toBe(404);
+    await app.inject({ method: "POST", url: `/admin/corners/${cornerId}/restore`, headers: as(admin), payload: { reason: "test" } });
+    expect(await get()).toBe(200);
   });
 });
 
