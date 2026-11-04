@@ -9,6 +9,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./nudges": {
+      "types": "./dist/nudges.d.ts",
+      "import": "./dist/nudges.js",
+      "default": "./dist/nudges.js"
     }
   },
   "scripts": {
