@@ -7,13 +7,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import {
-  archiveAccount, climbRuns, contactMatches, cornerPosts, corners, currentLadder, db, deliverDueNudges, deviceTokens, emitClimbRivals, emitCornerParty,
+  archiveAccount, chatThreads, climbRuns, contactMatches, cornerPosts, corners, crews, currentLadder, db, deliverDueNudges, deviceTokens, emitClimbRivals, emitCornerParty,
   emitCornerReply, emitFillingUp, emitGuestFollowUps, emitHeadToHeadRivals, emitHostCancelled, emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined,
   emitStreakRisk, emitWinBack, follows, getNudgeConfig, nudge, nudges, parties, partyPlayers, setNudgeConfig, users,
   type DeliveryDeps, type NudgeRow, type Party, type PushMessage, type PushSender, type User,
 } from "@contestly/db";
 import {
-  DEFAULT_NUDGE_CONFIG, INSTALL_ID_HEADER, addDays, deviceSchema, followerInviteOptionsSchema, lagosDay, notificationSettingsSchema, nudgeMessageSchema, type NudgeMessage,
+  DEFAULT_NUDGE_CONFIG, INSTALL_ID_HEADER, addDays, deviceSchema, followerInviteOptionsSchema, lagosDay, notificationSettingsSchema, nudgeMessageSchema, parseThreadLink, type NudgeMessage,
 } from "@contestly/shared";
 import { as, makeUser, testApp } from "./harness.js";
 
@@ -35,6 +35,7 @@ async function party(host: User, o: Partial<typeof parties.$inferInsert> = {}): 
 const seat = (p: Party, ...people: User[]) => db.insert(partyPlayers).values(people.map((u) => ({ partyId: p.id, userId: u.id })));
 const device = (u: User, token = `tok-${randomUUID()}`, permission: "granted" | "denied" = "granted") =>
   db.insert(deviceTokens).values({ userId: u.id, installId: `inst-${randomUUID()}`, platform: "android", token, appVersion: "1.0.0", permission }).returning();
+const dmThread = async () => (await db.insert(chatThreads).values({ kind: "dm", dmKey: randomUUID() }).returning())[0].id;
 const contacts = (a: User, b: User) => db.insert(contactMatches).values({ userId: a.id, contactUserId: b.id });
 const rowsOf = (u: User, kind?: string) => db.select().from(nudges).where(and(eq(nudges.userId, u.id), kind ? eq(nudges.kind, kind as never) : undefined));
 const one = async (u: User, kind?: string): Promise<NudgeRow> => {
@@ -262,7 +263,7 @@ describe("@mentions and corner replies", () => {
   it("a mention always goes, batched per thread", async () => {
     const [ada, kemi, me] = [await person("ma", { displayName: "Ada" }), await person("mk", { displayName: "Kemi" }), await person("mm")];
     await device(me);
-    const thread = randomUUID();
+    const thread = await dmThread();
     const w = world();
     await emitMentions(thread, ada.id, [me.id]);
     await deliver(w);
@@ -271,7 +272,7 @@ describe("@mentions and corner replies", () => {
     const rows = await rowsOf(me, "mention");
     expect(rows.map((r) => r.status).sort()).toEqual(["pending", "sent"]);
     expect(rows.find((r) => r.status === "pending")!.title).toBe("Kemi and Ada mentioned you");
-    await emitMentions(randomUUID(), ada.id, [me.id]); // another thread is its own batch
+    await emitMentions(await dmThread(), ada.id, [me.id]); // another thread is its own batch
     await deliver(w);
     expect((await rowsOf(me, "mention")).filter((r) => r.status === "sent")).toHaveLength(2);
   });
@@ -284,6 +285,29 @@ describe("@mentions and corner replies", () => {
     await emitCornerReply(post.id, host.id, "see you"); // the host's own reply tells nobody
     expect((await one(host, "corner_reply")).title).toBe(`${fan.displayName} replied to your post`);
     expect((await one(tagged, "mention")).body).toBe("In a corner post");
+    // Both open the post's replies, by the post's id.
+    for (const n of [await one(host, "corner_reply"), await one(tagged, "mention")]) {
+      expect(parseThreadLink(n.deepLink)).toEqual({ kind: "corner_post", postId: post.id });
+    }
+  });
+
+  it("a mention opens the exact thread: a DM by the sender's handle, a crew by its id, a party's chat by the party's id", async () => {
+    const [ada, me] = [await person("ta", { displayName: "Ada" }), await person("tm")];
+    const p = await party(ada);
+    const [crew] = await db.insert(crews).values({ name: "Night owls", emoji: "🦉", color: "blue", createdByUserId: ada.id }).returning();
+    const [partyThread] = await db.insert(chatThreads).values({ kind: "party", partyId: p.id }).returning();
+    const [crewThread] = await db.insert(chatThreads).values({ kind: "crew", crewId: crew.id }).returning();
+    const dm = await dmThread();
+    for (const t of [dm, crewThread.id, partyThread.id]) expect(await emitMentions(t, ada.id, [me.id])).toBe(1);
+    const byThread = new Map((await rowsOf(me, "mention")).map((r) => [r.refId, r]));
+    expect(parseThreadLink(byThread.get(dm)!.deepLink)).toEqual({ kind: "dm", handle: ada.handle });
+    expect(byThread.get(dm)!.deepLink).toBe(`contestly://chats/dm/${ada.handle}`);
+    expect(parseThreadLink(byThread.get(crewThread.id)!.deepLink)).toEqual({ kind: "crew", crewId: crew.id });
+    expect(byThread.get(crewThread.id)!.body).toBe("In Night owls");
+    expect(parseThreadLink(byThread.get(partyThread.id)!.deepLink)).toEqual({ kind: "party", partyId: p.id });
+    expect(byThread.get(partyThread.id)!.body).toBe(`In ${p.title} chat`);
+    // A thread that's gone has nowhere to open: nothing is recorded.
+    expect(await emitMentions(randomUUID(), ada.id, [me.id])).toBe(0);
   });
 });
 
@@ -426,7 +450,7 @@ describe("the central rules", () => {
     for (const u of [ny, la]) await device(u);
     const p = await party(host, { startsAt: new Date(at.getTime() + 5 * MIN) });
     await seat(p, ny);
-    for (const u of [ny, la]) await nudge(db, { userId: u.id, kind: "mention", data: { threadId: randomUUID(), where: "a message", link: "contestly://chats/x" }, dueAt: at });
+    for (const u of [ny, la]) await nudge(db, { userId: u.id, kind: "mention", data: { thread: { kind: "dm", handle: "x" }, where: "a message" }, dueAt: at });
     await nudge(db, { userId: ny.id, kind: "party_starting", data: { partyId: p.id, title: p.title, minutes: 5 }, ref: { type: "party", id: p.id }, dueAt: at });
     const w = world();
     await deliver(w, at);
@@ -442,7 +466,7 @@ describe("the central rules", () => {
     const patched = await app.inject({ method: "PATCH", url: "/me/notifications", headers: as(u), payload: { toggles: { mentions: false }, timeZone: "Europe/London" } });
     expect(notificationSettingsSchema.parse(patched.json())).toEqual({ toggles: { parties: true, corners: true, people: true, mentions: false, climb: true, account: true }, timeZone: "Europe/London" });
     expect((await app.inject({ url: "/me/notifications", headers: as(u) })).json().toggles.mentions).toBe(false);
-    await emitMentions(randomUUID(), (await person("tog2")).id, [u.id]);
+    await emitMentions(await dmThread(), (await person("tog2")).id, [u.id]);
     await nudge(db, { userId: u.id, kind: "streak_risk", data: { days: 3 }, dedupeKey: "s" });
     const w = world();
     await deliver(w, new Date("2026-11-04T15:00:00Z")); // 15:00 in London

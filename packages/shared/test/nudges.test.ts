@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MoneyInNudge, NUDGE_KINDS, NUDGE_KIND_NAMES, actorsLine, inQuietHours, localClock, mentionsMoney, renderNudge, startOfLocalDay, togglesFromOff,
+  DEEP_LINKS, MoneyInNudge, NUDGE_KINDS, parseThreadLink, NUDGE_KIND_NAMES, actorsLine, inQuietHours, localClock, mentionsMoney, renderNudge, startOfLocalDay, togglesFromOff,
   DEFAULT_NUDGE_CONFIG, deviceRegisterSchema, notificationSettingsPatchSchema, type NudgeData, type NudgeKind,
 } from "../src/index.js";
 
@@ -12,7 +12,7 @@ const SAMPLE: { [K in NudgeKind]: NudgeData[K] } = {
   people_joined: { partyId: id, title: "Friday Night Quiz" },
   party_filling: { partyId: id, title: "Friday Night Quiz", lane: "Football" },
   corner_party: { partyId: id, title: "Friday Night Quiz", cornerId: id, cornerName: "Kemi's corner" },
-  mention: { threadId: id, where: "Friday Night Quiz chat", link: "contestly://chats/x" },
+  mention: { thread: { kind: "party", partyId: id }, where: "Friday Night Quiz chat" },
   corner_reply: { cornerId: id, postId: id },
   corner_follow_ask: { cornerId: id, cornerName: "Kemi's corner", hostName: "Kemi" },
   corner_open: { cornerId: id },
@@ -54,6 +54,27 @@ describe("the no-money guard", () => {
   it("every kind has a category, and only party start and live are live-party events", () => {
     const live = NUDGE_KIND_NAMES.filter((k) => NUDGE_KINDS[k].livePartyEvent);
     expect(live.sort()).toEqual(["party_live", "party_starting"]);
+  });
+});
+
+describe("thread links", () => {
+  it("carry the thread's kind and reference, and read back the same", () => {
+    const threads = [
+      { kind: "dm", handle: "ada.o" }, { kind: "crew", crewId: id }, { kind: "party", partyId: id }, { kind: "corner_post", postId: id },
+    ] as const;
+    for (const t of threads) expect(parseThreadLink(DEEP_LINKS.thread(t))).toEqual(t);
+    expect(DEEP_LINKS.thread({ kind: "dm", handle: "kemz" })).toBe("contestly://chats/dm/kemz");
+  });
+
+  it("anything else isn't a thread link", () => {
+    for (const link of ["contestly://chats/x", "contestly://chats/crew/not-a-uuid", "contestly://chats/group/x", "contestly://party/" + id, "https://chats/dm/kemz"]) {
+      expect(parseThreadLink(link)).toBeNull();
+    }
+  });
+
+  it("mentions and corner replies link to their thread", () => {
+    expect(renderNudge("mention", SAMPLE.mention, [{ id, name: "Ada" }]).deepLink).toBe(`contestly://chats/party/${id}`);
+    expect(renderNudge("corner_reply", SAMPLE.corner_reply, [{ id, name: "Ada" }]).deepLink).toBe(`contestly://chats/corner_post/${id}`);
   });
 });
 

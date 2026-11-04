@@ -99,12 +99,38 @@ export function actorsLine(actors: readonly NudgeActor[]): string {
   return `${first.name} and ${actors.length - 1} others`;
 }
 
+/**
+ * A thread a nudge opens, by what the app looks it up by: a DM by the other person's handle, a crew by its id, a
+ * party's chat by the party's id, a corner post's replies by the post's id (GET /corner-posts/:id/replies).
+ */
+export const NUDGE_THREAD_KINDS = ["dm", "crew", "party", "corner_post"] as const;
+export const nudgeThreadSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("dm"), handle: z.string().min(1) }),
+  z.object({ kind: z.literal("crew"), crewId: z.string().uuid() }),
+  z.object({ kind: z.literal("party"), partyId: z.string().uuid() }),
+  z.object({ kind: z.literal("corner_post"), postId: z.string().uuid() }),
+]);
+export type NudgeThread = z.infer<typeof nudgeThreadSchema>;
+const threadRef = (t: NudgeThread) =>
+  t.kind === "dm" ? t.handle : t.kind === "crew" ? t.crewId : t.kind === "party" ? t.partyId : t.postId;
+const THREAD_LINK = /^contestly:\/\/chats\/(dm|crew|party|corner_post)\/([^/?#]+)$/;
+
+/** A thread deep link back into its kind and reference (null if it isn't one): the one parser, for the app. */
+export function parseThreadLink(link: string): NudgeThread | null {
+  const m = THREAD_LINK.exec(link);
+  if (!m) return null;
+  const ref = decodeURIComponent(m[2]);
+  const t = m[1] === "dm" ? { kind: "dm", handle: ref } : m[1] === "crew" ? { kind: "crew", crewId: ref } : m[1] === "party" ? { kind: "party", partyId: ref } : { kind: "corner_post", postId: ref };
+  const parsed = nudgeThreadSchema.safeParse(t);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Deep links (the app's scheme). */
 export const DEEP_LINKS = {
   party: (id: string) => `contestly://party/${id}`,
   partyRoom: (id: string) => `contestly://party/${id}/room`,
-  thread: (id: string) => `contestly://chats/${id}`,
-  cornerPost: (cornerId: string, postId: string) => `contestly://corner/${cornerId}/post/${postId}`,
+  /** contestly://chats/<kind>/<reference>, e.g. contestly://chats/dm/kemz; parseThreadLink() reads it back. */
+  thread: (t: NudgeThread) => `contestly://chats/${t.kind}/${encodeURIComponent(threadRef(t))}`,
   corner: (id: string) => `contestly://corner/${id}`,
   profile: (handle: string) => `contestly://u/${handle}`,
   climb: () => "contestly://climb",
@@ -121,7 +147,7 @@ export type NudgeData = {
   people_joined: { partyId: string; title: string };
   party_filling: { partyId: string; title: string; lane: string };
   corner_party: { partyId: string; title: string; cornerId: string; cornerName: string };
-  mention: { threadId: string; where: string; link: string };
+  mention: { thread: NudgeThread; where: string };
   corner_reply: { cornerId: string; postId: string };
   corner_follow_ask: { cornerId: string; cornerName: string; hostName: string };
   corner_open: { cornerId: string };
@@ -175,11 +201,11 @@ const kinds: { [K in NudgeKind]: NudgeKindDef<K> } = {
   },
   mention: {
     category: "mentions", batchGap: "mentionBatchSeconds",
-    render: (d, actors) => ({ title: `${actorsLine(actors)} mentioned you`, body: `In ${d.where}`, deepLink: d.link, reason: "You were mentioned" }),
+    render: (d, actors) => ({ title: `${actorsLine(actors)} mentioned you`, body: `In ${d.where}`, deepLink: DEEP_LINKS.thread(d.thread), reason: "You were mentioned" }),
   },
   corner_reply: {
     category: "corners", batchGap: "replyBatchSeconds",
-    render: (d, actors) => ({ title: `${actorsLine(actors)} replied to your post`, body: "See what they said.", deepLink: DEEP_LINKS.cornerPost(d.cornerId, d.postId), reason: "Replies to your corner post" }),
+    render: (d, actors) => ({ title: `${actorsLine(actors)} replied to your post`, body: "See what they said.", deepLink: DEEP_LINKS.thread({ kind: "corner_post", postId: d.postId }), reason: "Replies to your corner post" }),
   },
   corner_follow_ask: {
     category: "corners",

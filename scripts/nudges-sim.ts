@@ -12,7 +12,7 @@ import { Client, type Room } from "colyseus.js";
 import { and, eq } from "drizzle-orm";
 import { db, nudges, users } from "@contestly/db";
 import { partyQueue, closeQueues } from "@contestly/queue";
-import { INBOX_ROOM, INSTALL_ID_HEADER, MSG, PARTY_ROOM, localClock, type NudgeMessage } from "@contestly/shared";
+import { INBOX_ROOM, INSTALL_ID_HEADER, MSG, PARTY_ROOM, localClock, parseThreadLink, type NudgeMessage } from "@contestly/shared";
 import { API, RT, api, failureCount, inMinutes, makeContacts, ok, simHeaders, waitFor } from "./sim-lib.js";
 
 const tag = Date.now().toString(36).slice(-5);
@@ -88,7 +88,7 @@ try {
   lobby.onMessage("*", () => {});
   lobby.send(MSG.chat, { clientMsgId: randomUUID(), text: `Ready @${DAYTIME} and @${NIGHT}?` });
   const shown = await Promise.race([banner, new Promise<null>((r) => setTimeout(() => r(null), 30_000))]);
-  ok(shown?.kind === "mention" && shown.title === `${HOST} mentioned you` && shown.deepLink.startsWith("contestly://chats/"), "the open app gets the mention as a banner");
+  ok(shown?.kind === "mention" && shown.title === `${HOST} mentioned you` && parseThreadLink(shown.deepLink)?.kind === "party", "the open app gets the mention as a banner, opening the party's chat");
   const asBanner = await decided(DAYTIME, "mention");
   ok(asBanner?.channel === "banner" && asBanner.pushes === 0, "and it replaced the push");
   const quiet = await decided(NIGHT, "mention");

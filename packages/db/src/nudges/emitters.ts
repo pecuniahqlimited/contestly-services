@@ -6,7 +6,7 @@
  */
 import { and, count, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import {
-  CLIMB_TIME_ZONE, DEEP_LINKS, addDays, lagosDay, localClock, mentionedHandles, type NudgeActor, type NudgeConfig,
+  CLIMB_TIME_ZONE, addDays, lagosDay, localClock, mentionedHandles, type NudgeActor, type NudgeConfig, type NudgeThread,
 } from "@contestly/shared";
 import { db, type Tx } from "../client.js";
 import { getNudgeConfig } from "../config.js";
@@ -165,24 +165,30 @@ export async function emitHostCancelled(partyId: string, toUserIds: string[], en
 
 // ---- chat and corners ------------------------------------------------------------------
 
-/** Where a thread is, as a mention says it. */
-async function threadPlace(threadId: string): Promise<string> {
-  const [t] = await db.select({ kind: chatThreads.kind, party: parties.title, crew: crews.name }).from(chatThreads)
+/**
+ * Where a thread is, as a mention says it and links to it. A DM opens by the other person's handle, and in a DM
+ * the only one who can mention you is the other person, so that's the sender. Null for a thread that's gone.
+ */
+async function threadTarget(threadId: string, senderHandle: string): Promise<{ where: string; thread: NudgeThread } | null> {
+  const [t] = await db.select({ kind: chatThreads.kind, partyId: chatThreads.partyId, crewId: chatThreads.crewId, party: parties.title, crew: crews.name }).from(chatThreads)
     .leftJoin(parties, eq(parties.id, chatThreads.partyId)).leftJoin(crews, eq(crews.id, chatThreads.crewId)).where(eq(chatThreads.id, threadId));
-  if (t?.kind === "party" && t.party) return `${t.party} chat`;
-  if (t?.kind === "crew" && t.crew) return t.crew;
-  return "a message";
+  if (t?.kind === "party" && t.partyId) return { where: `${t.party} chat`, thread: { kind: "party", partyId: t.partyId } };
+  if (t?.kind === "crew" && t.crewId) return { where: t.crew ?? "your crew", thread: { kind: "crew", crewId: t.crewId } };
+  if (t?.kind === "dm") return { where: "a message", thread: { kind: "dm", handle: senderHandle } };
+  return null;
 }
 
 /** @mentions in a party chat, a DM or a crew: always, batched per thread. */
 export async function emitMentions(threadId: string, fromUserId: string, toUserIds: string[]): Promise<number> {
   const actor = await actorOf(db, fromUserId);
-  if (!actor) return 0;
-  const where = await threadPlace(threadId);
-  for (const userId of toUserIds.filter((id) => id !== fromUserId)) {
-    await nudge(db, { userId, kind: "mention", data: { threadId, where, link: DEEP_LINKS.thread(threadId) }, ref: { type: "thread", id: threadId }, batchKey: `mention:${threadId}`, actor });
+  const [sender] = await db.select({ handle: users.handle }).from(users).where(eq(users.id, fromUserId));
+  const target = actor && sender ? await threadTarget(threadId, sender.handle) : null;
+  if (!actor || !target) return 0;
+  const to = toUserIds.filter((id) => id !== fromUserId);
+  for (const userId of to) {
+    await nudge(db, { userId, kind: "mention", data: target, ref: { type: "thread", id: threadId }, batchKey: `mention:${threadId}`, actor });
   }
-  return toUserIds.length;
+  return to.length;
 }
 
 /**
@@ -204,7 +210,7 @@ export async function emitCornerReply(postId: string, fromUserId: string, text: 
     const mentioned = await db.select({ id: users.id }).from(users).where(and(inArray(users.handle, handles), liveUser, eq(users.isSystem, false), ne(users.id, fromUserId)));
     for (const m of mentioned) {
       await nudge(db, {
-        userId: m.id, kind: "mention", data: { threadId: postId, where: "a corner post", link: DEEP_LINKS.cornerPost(post.p.cornerId, postId) },
+        userId: m.id, kind: "mention", data: { thread: { kind: "corner_post", postId }, where: "a corner post" },
         ref: { type: "post", id: postId }, batchKey: `mention:post:${postId}`, actor,
       });
       n++;
