@@ -482,7 +482,7 @@ describe("the central rules", () => {
     await emitMentions(await dmThread(), (await person("tog2")).id, [u.id]);
     await nudge(db, { userId: u.id, kind: "streak_risk", data: { days: 3 }, dedupeKey: "s" });
     const w = world();
-    await deliver(w, new Date("2026-11-04T15:00:00Z")); // 15:00 in London
+    await deliver(w);
     expect((await one(u, "mention")).skipReason).toBe("toggle_off");
     expect((await one(u, "streak_risk")).status).toBe("sent");
   });
@@ -508,7 +508,7 @@ describe("the central rules", () => {
     for (const x of [u, gone]) await nudge(db, { userId: x.id, kind: "streak_risk", data: { days: 3 }, dedupeKey: "i" });
     const w = world();
     w.push.invalid.add("invalid-1").add("invalid-2");
-    await deliver(w, new Date("2026-11-04T14:00:00Z"));
+    await deliver(w);
     expect((await one(u)).pushes).toBe(1);
     expect((await one(gone)).skipReason).toBe("no_device");
     const tokens = await db.select({ id: deviceTokens.id, token: deviceTokens.token }).from(deviceTokens).where(inArray(deviceTokens.id, [good.id, bad.id, bad2.id]));
@@ -535,7 +535,7 @@ describe("the central rules", () => {
     await nudge(db, { userId: u.id, kind: "streak_risk", data: { days: 3 }, dedupeKey: "l" });
     await nudge(db, { userId: other.id, kind: "streak_risk", data: { days: 3 }, dedupeKey: "l" });
     const w = world();
-    await deliver(w, new Date("2026-11-04T14:00:00Z"));
+    await deliver(w);
     const [sent, skipped] = [await one(u), await one(other)];
     expect(sent).toMatchObject({ status: "sent", channel: "push", pushes: 1, skipReason: null });
     expect(sent.decidedAt).not.toBeNull();
