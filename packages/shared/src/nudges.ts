@@ -338,8 +338,20 @@ export const deviceSchema = z.object({
   permission: z.enum(PUSH_PERMISSIONS), lastSeenAt: z.string().datetime(),
 });
 
+/**
+ * The quiet hours in effect for a person: from `start` until `end` (the next morning when it wraps midnight), as
+ * "HH:MM" on their own clock in `timeZone`. Null when the config has none (start and end the same hour). Pushes
+ * hold back in them, except a party they're in starting or going live; banners in the open app don't.
+ */
+export const quietHoursSchema = z.object({ start: z.string().regex(/^\d{2}:\d{2}$/), end: z.string().regex(/^\d{2}:\d{2}$/), timeZone: z.string() });
+export type QuietHours = z.infer<typeof quietHoursSchema>;
+const hhmm = (hour: number) => `${String(hour).padStart(2, "0")}:00`;
+export function quietHoursIn(q: NudgeConfig["quietHours"], timeZone: string): QuietHours | null {
+  return q.startHour === q.endHour ? null : { start: hhmm(q.startHour), end: hhmm(q.endHour), timeZone };
+}
+
 /** GET /me/notifications, and what PATCH answers. PATCH takes any of the toggles and/or the zone. */
-export const notificationSettingsSchema = z.object({ toggles: nudgeTogglesSchema, timeZone: z.string() });
+export const notificationSettingsSchema = z.object({ toggles: nudgeTogglesSchema, timeZone: z.string(), quietHours: quietHoursSchema.nullable() });
 export const notificationSettingsPatchSchema = z.object({ toggles: nudgeTogglesSchema.partial().optional(), timeZone: timeZoneSchema.optional() })
   .refine((p) => p.toggles !== undefined || p.timeZone !== undefined, { message: "toggles or timeZone" });
 

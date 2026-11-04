@@ -1,12 +1,18 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
-import { db, deviceView, registerDevice, removeDevicesOf, reportNudge, unregisterDevice, users } from "@contestly/db";
-import { NUDGE_CATEGORIES, deviceRegisterSchema, deviceSchema, notificationSettingsPatchSchema, notificationSettingsSchema, nudgeReportSchema, togglesFromOff } from "@contestly/shared";
+import { db, deviceView, getNudgeConfig, registerDevice, removeDevicesOf, reportNudge, unregisterDevice, users } from "@contestly/db";
+import { NUDGE_CATEGORIES, deviceRegisterSchema, deviceSchema, notificationSettingsPatchSchema, notificationSettingsSchema, nudgeReportSchema, quietHoursIn, togglesFromOff } from "@contestly/shared";
 import { requireSession, uuidParam } from "../auth.js";
 import { httpError } from "../httpError.js";
 import { installIdOf } from "../signals.js";
 
 const installIdRequired = () => httpError(400, "install_id_required");
+
+/** The settings view: the toggles, the zone, and the quiet hours in effect there (from config). */
+async function settingsOf(u: { nudgesOff: readonly string[]; timeZone: string }) {
+  const cfg = await getNudgeConfig();
+  return notificationSettingsSchema.parse({ toggles: togglesFromOff(u.nudgesOff), timeZone: u.timeZone, quietHours: quietHoursIn(cfg.quietHours, u.timeZone) });
+}
 
 /**
  * Devices, notification settings and nudge reports (row 9). Guests too: they get the guest follow-up. Opting in
@@ -41,7 +47,7 @@ export async function notificationsRoutes(app: FastifyInstance) {
 
   app.get("/me/notifications", async (req) => {
     const me = requireSession(req);
-    return notificationSettingsSchema.parse({ toggles: togglesFromOff(me.nudgesOff), timeZone: me.timeZone });
+    return settingsOf(me);
   });
 
   /** Turn categories on or off, and/or set the zone (quiet hours and "a day" follow it). */
@@ -51,7 +57,7 @@ export async function notificationsRoutes(app: FastifyInstance) {
     const toggles = { ...togglesFromOff(me.nudgesOff), ...body.toggles };
     const [u] = await db.update(users).set({ nudgesOff: NUDGE_CATEGORIES.filter((c) => !toggles[c]), ...(body.timeZone ? { timeZone: body.timeZone } : {}) })
       .where(eq(users.id, me.id)).returning();
-    return notificationSettingsSchema.parse({ toggles: togglesFromOff(u.nudgesOff), timeZone: u.timeZone });
+    return settingsOf(u);
   });
 
   /** The app tapped (opened) or swiped away (dismissed) a nudge, push or banner. The first report of each sticks. */

@@ -460,11 +460,24 @@ describe("the central rules", () => {
     await setNudgeConfig(NO_QUIET);
   });
 
+  it("GET /me/notifications says the quiet hours in effect, from config, on the person's clock", async () => {
+    const u = await person("qv", { timeZone: "America/New_York" });
+    await setNudgeConfig(DEFAULT_NUDGE_CONFIG);
+    const settings = notificationSettingsSchema.parse((await app.inject({ url: "/me/notifications", headers: as(u) })).json());
+    expect(settings.quietHours).toEqual({ start: "23:00", end: "07:00", timeZone: "America/New_York" });
+    await setNudgeConfig({ ...DEFAULT_NUDGE_CONFIG, quietHours: { startHour: 22, endHour: 8 } });
+    const moved = await app.inject({ method: "PATCH", url: "/me/notifications", headers: as(u), payload: { timeZone: "Africa/Lagos" } });
+    expect(moved.json().quietHours).toEqual({ start: "22:00", end: "08:00", timeZone: "Africa/Lagos" });
+    await setNudgeConfig(NO_QUIET);
+    expect((await app.inject({ url: "/me/notifications", headers: as(u) })).json().quietHours).toBeNull();
+  });
+
   it("a category turned off is skipped and logged as such; PATCH /me/notifications turns it off", async () => {
     const u = await person("tog");
     await device(u);
     const patched = await app.inject({ method: "PATCH", url: "/me/notifications", headers: as(u), payload: { toggles: { mentions: false }, timeZone: "Europe/London" } });
-    expect(notificationSettingsSchema.parse(patched.json())).toEqual({ toggles: { parties: true, corners: true, people: true, mentions: false, climb: true, account: true }, timeZone: "Europe/London" });
+    // NO_QUIET is in effect here: no quiet hours.
+    expect(notificationSettingsSchema.parse(patched.json())).toEqual({ toggles: { parties: true, corners: true, people: true, mentions: false, climb: true, account: true }, timeZone: "Europe/London", quietHours: null });
     expect((await app.inject({ url: "/me/notifications", headers: as(u) })).json().toggles.mentions).toBe(false);
     await emitMentions(await dmThread(), (await person("tog2")).id, [u.id]);
     await nudge(db, { userId: u.id, kind: "streak_risk", data: { days: 3 }, dedupeKey: "s" });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEEP_LINKS, MoneyInNudge, NUDGE_KINDS, parseThreadLink, NUDGE_KIND_NAMES, actorsLine, inQuietHours, localClock, mentionsMoney, renderNudge, startOfLocalDay, togglesFromOff,
-  DEFAULT_NUDGE_CONFIG, deviceRegisterSchema, notificationSettingsPatchSchema, type NudgeData, type NudgeKind,
+  DEFAULT_NUDGE_CONFIG, deviceRegisterSchema, quietHoursIn, notificationSettingsPatchSchema, type NudgeData, type NudgeKind,
 } from "../src/index.js";
 
 const id = "00000000-0000-4000-8000-000000000001";
@@ -104,6 +104,12 @@ describe("time zones and quiet hours", () => {
     expect(inQuietHours(new Date("2026-11-04T04:00:00Z"), "America/New_York", q)).toBe(true); // 23:00 NY
     expect(inQuietHours(new Date("2026-11-04T12:00:00Z"), "America/New_York", q)).toBe(false); // 07:00 NY
     expect(inQuietHours(new Date("2026-11-04T11:59:00Z"), "America/New_York", q)).toBe(true); // 06:59 NY
+  });
+
+  it("are shown on the person's clock, and as none when start and end are the same hour", () => {
+    expect(quietHoursIn(q, "Africa/Lagos")).toEqual({ start: "23:00", end: "07:00", timeZone: "Africa/Lagos" });
+    expect(quietHoursIn({ startHour: 9, endHour: 17 }, "UTC")).toEqual({ start: "09:00", end: "17:00", timeZone: "UTC" });
+    expect(quietHoursIn({ startHour: 0, endHour: 0 }, "UTC")).toBeNull();
   });
 
   it("a day for caps starts at their midnight", () => {
