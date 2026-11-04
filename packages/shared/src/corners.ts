@@ -266,6 +266,8 @@ export const cornerProgressSchema = z.object({
     unlockedAt: z.string().datetime().nullable(), unlockConfigVersion: z.number().int().nullable(),
     /** Null until the owner's app has shown the unlock celebration: show it when unlocked and this is null. */
     celebrationSeenAt: z.string().datetime().nullable(),
+    /** When an admin granted it (ADR 0012 §4), else null: word the celebration around the grant, not the stats. Who and why stay admin-only. */
+    grantedAt: z.string().datetime().nullable(),
     lane: z.enum(CATEGORIES).nullable(), laneChosen: z.boolean(), color: cornerColorSchema,
   }).nullable(),
   config: cornerUnlockConfigSchema.extend({ version: z.number().int() }),

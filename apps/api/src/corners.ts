@@ -463,6 +463,7 @@ export async function progressOf(hostId: string): Promise<CornerProgress> {
       id: corner.id, name: corner.name, bio: corner.bio, status: corner.status, level: corner.level,
       unlockedAt: corner.unlockedAt?.toISOString() ?? null, unlockConfigVersion: corner.unlockConfigVersion,
       celebrationSeenAt: corner.celebrationSeenAt?.toISOString() ?? null,
+      grantedAt: corner.grantedAt?.toISOString() ?? null,
       lane: corner.lane, laneChosen: !!corner.laneChosenAt, color: corner.color,
     } : null,
     config: { ...cfg.config, version: cfg.version },

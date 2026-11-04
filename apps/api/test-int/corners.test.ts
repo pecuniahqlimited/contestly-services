@@ -259,7 +259,7 @@ describe("the unlock celebration", () => {
     expect((await celebrate()).json().error).toBe("corner_not_unlocked"); // locked
     await finish(host, [a, b, await person("cd")]);
     const before = await progress(host);
-    expect(before.corner).toMatchObject({ status: "unlocked", celebrationSeenAt: null });
+    expect(before.corner).toMatchObject({ status: "unlocked", celebrationSeenAt: null, grantedAt: null }); // earned, not granted
     expect(before.corner.unlockedAt).toEqual(expect.any(String));
     const first = await celebrate();
     expect(first.statusCode).toBe(200);
@@ -404,7 +404,10 @@ describe("grant", () => {
     const page = await app.inject({ url: `/corners/${c.id}` });
     expect(page.statusCode).toBe(200);
     expect(JSON.stringify(page.json())).not.toMatch(/grant/i);
-    expect((await app.inject({ url: "/me/corner/progress", headers: as(host) })).json().corner.celebrationSeenAt).toBeNull();
+    // The owner sees that it was granted and when (for the celebration's wording), never by whom or why.
+    const own = (await app.inject({ url: "/me/corner/progress", headers: as(host) })).json();
+    expect(own.corner).toMatchObject({ celebrationSeenAt: null, grantedAt: c.grantedAt!.toISOString() });
+    expect(JSON.stringify(own)).not.toMatch(/launch partner|grantedBy/);
     const [log] = await db.select().from(adminActions).where(and(eq(adminActions.action, "corner.grant"), eq(adminActions.targetId, c.id)));
     expect(log).toMatchObject({ adminUserId: admin.id, reason: "launch partner", before: { status: "locked" }, after: { status: "unlocked", ownerUserId: host.id } });
     const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `corner_granted:${c.id}`));
