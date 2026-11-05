@@ -1,0 +1,441 @@
+/**
+ * Party templates and host-written questions (ADR 0015): templates prefill and edit down to empty, distractor
+ * suggestions (through the real questions queue too), the safety filter failing closed on the host's words,
+ * host-written questions never in the bank, forced curate and its lockout, free refused, each cap, the link check
+ * (people, install, IP), the outlier flag, a held prize that can't be withdrawn or spent, clear and reject (idempotent).
+ */
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Worker } from "bullmq";
+import { and, eq, inArray, like, sql } from "drizzle-orm";
+import {
+  adminActions, adminAlerts, bankQuestions, contactMatches, db, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
+  savePartyTemplates, currentPartyTemplates, takeSeat, users, withdrawBlockReason, type Party, type User,
+} from "@contestly/db";
+import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
+import {
+  DEFAULT_HOST_WRITTEN_RULES, DEFAULT_PARTY_TEMPLATES, QUEUES, hostSlots, kobo, partyTemplatesResponseSchema, type DistractorRequest, type HostQuestion, type QuestionsJob,
+} from "@contestly/shared";
+import { requestPayout, withdrawContext } from "@contestly/payments";
+import { settle } from "../../worker/src/partySettle.js";
+import { generateSet } from "../../questions/src/pipeline/generateSet.js";
+import { recordPlay } from "../../questions/src/pipeline/recordPlay.js";
+import { suggestDistractors } from "../../questions/src/pipeline/distractors.js";
+import { selectProviders } from "../../questions/src/providers/index.js";
+import { queueDistractors } from "../src/distractors.js";
+import { as, makeUser, tag, testApp } from "./harness.js";
+
+let app: Awaited<ReturnType<typeof testApp>>["app"];
+const asked: DistractorRequest[] = [];
+let host: User, admin: User;
+let version: number;
+let n = 0;
+const name = (p: string) => `${p}${++n}`;
+
+const ENTRY = kobo(500);
+const q = (question: string, answer = "Church"): HostQuestion => ({ question, answer, distractors: ["Office", "Gym", "Wedding"] });
+const pooled = (over: Record<string, unknown> = {}) => ({
+  title: "Ada's 25th", brief: "Ada's birthday quiz, light and fun", funding: "pooled", entryKobo: ENTRY, maxPlayers: 8, split: "winner", mode: "curate", questionCount: 6, ...over,
+});
+const fund = (u: User, amountKobo: number) => db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo, type: "topup", idempotencyKey: `t:tpl:${tag}:${u.id}:${randomUUID()}` }));
+const cash = async (u: User) => (await ledger.balances(u.id)).cashKobo;
+const partyRow = async (id: string) => (await db.select().from(parties).where(eq(parties.id, id)))[0];
+const create = (u: User, body: Record<string, unknown>) => app.inject({ method: "POST", url: "/parties", headers: as(u), payload: body });
+
+beforeAll(async () => {
+  ({ app } = await testApp({ distractors: async (req) => { asked.push(req); return { distractors: ["Office", "Gym", "Wedding"] }; } }));
+  host = await makeUser("tplhost");
+  admin = await makeUser("tpladmin", { isAdmin: true });
+  version = (await currentPartyTemplates()).version;
+});
+afterAll(async () => { await app.close(); });
+
+describe("templates", () => {
+  it("GET /party-templates: the seeded six in order, and the caps", async () => {
+    const res = await app.inject({ method: "GET", url: "/party-templates" });
+    expect(res.statusCode).toBe(200);
+    const body = partyTemplatesResponseSchema.parse(res.json());
+    expect(body.templates.map((t) => t.id)).toEqual(["birthday", "bridal-shower", "couples", "game-night", "office-party", "reunion"]);
+    expect(body.rules).toEqual({ maxEntryKobo: DEFAULT_HOST_WRITTEN_RULES.maxEntryKobo, maxHostPrizeKobo: DEFAULT_HOST_WRITTEN_RULES.maxHostPrizeKobo, maxHostShareBps: 5000 });
+  });
+
+  it("a template prefills what the host left out, and the party keeps its own copy", async () => {
+    await fund(host, ENTRY * 3); // no host-written questions: sealed, so the host plays and pays their entry
+    const res = await create(host, { template: { id: "birthday", version }, funding: "pooled", entryKobo: ENTRY, maxPlayers: 6, split: "winner" });
+    expect(res.statusCode).toBe(201);
+    const p = await partyRow(res.json().id);
+    const t = DEFAULT_PARTY_TEMPLATES.templates[0];
+    expect(p).toMatchObject({ title: t.title, brief: t.brief, coverEmoji: t.cover.emoji, coverColor: t.cover.color, questionCount: t.dials.questionCount, questionSeconds: t.dials.secondsPerQuestion, difficulty: t.dials.difficulty, formats: t.dials.formats, hostQuestionCount: 0 });
+    expect(p.template).toMatchObject({ id: "birthday", version, occasion: "birthday", themed: t.themed });
+    expect(p.hostRules).toEqual(DEFAULT_HOST_WRITTEN_RULES);
+    // What the host sends wins.
+    const mine = await create(host, { template: { id: "birthday", version }, title: "Ada turns 25", coverEmoji: "🥳", funding: "pooled", entryKobo: ENTRY, maxPlayers: 6, split: "winner" });
+    expect(await partyRow(mine.json().id)).toMatchObject({ title: "Ada turns 25", coverEmoji: "🥳", brief: t.brief });
+    // A version that doesn't have it is refused.
+    expect((await create(host, { template: { id: "nope", version }, funding: "pooled", entryKobo: ENTRY, maxPlayers: 6, split: "winner" })).json().error).toBe("template_not_found");
+  });
+
+  it("everything stays editable: host questions written at creation, edited, and removed down to an empty set", async () => {
+    const res = await create(host, pooled({ template: { id: "bridal-shower", version }, hostQuestions: [q("Where did Tolu and Femi first meet?"), q("Who said I love you first?", "Femi")] }));
+    expect(res.statusCode).toBe(201);
+    const id = res.json().id;
+    expect(res.json().questions).toMatchObject({ hostWritten: true, review: "host_reviewed" });
+    const rows = await db.select().from(partyQuestions).where(eq(partyQuestions.partyId, id));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.hostWritten && r.hostAuthored && r.sourceRef === null && r.format === "pick_one" && r.status === "pending")).toBe(true);
+    const first = rows.find((r) => (r.payload as { question: string }).question.startsWith("Where"))!;
+    const put = await app.inject({ method: "PUT", url: `/parties/${id}/host-questions/${first.id}`, headers: as(host), payload: { ...q("Where did Tolu and Femi meet?", "Choir practice"), distractors: ["Bible study", "A wedding", "Work"] } });
+    expect(put.statusCode).toBe(204);
+    const edited = (await db.select().from(partyQuestions).where(eq(partyQuestions.id, first.id)))[0].payload as { options: string[]; correctIndex: number };
+    expect(edited.options[edited.correctIndex]).toBe("Choir practice");
+    expect(edited.correctIndex).toBe((first.payload as { correctIndex: number }).correctIndex); // the right answer didn't move
+    for (const r of rows) expect((await app.inject({ method: "DELETE", url: `/parties/${id}/host-questions/${r.id}`, headers: as(host) })).statusCode).toBe(204);
+    const p = await partyRow(id);
+    expect(p.hostQuestionCount).toBe(0);
+    expect((await app.inject({ method: "GET", url: `/parties/${id}` })).json().questions.hostWritten).toBe(false);
+    // And added back to the same party.
+    const add = await app.inject({ method: "POST", url: `/parties/${id}/host-questions`, headers: as(host), payload: q("What is Tolu's pet name for Femi?", "Baby") });
+    expect(add.statusCode).toBe(201);
+    expect((await partyRow(id)).hostQuestionCount).toBe(1);
+    // Only the host's team.
+    const other = await makeUser(name("tplother"));
+    expect((await app.inject({ method: "POST", url: `/parties/${id}/host-questions`, headers: as(other), payload: q("Anything?") })).statusCode).toBe(403);
+  });
+
+  it("an admin saves a new version (logged, with a reason): hide, reorder, preview", async () => {
+    const before = await currentPartyTemplates();
+    const [birthday, ...rest] = before.config.templates;
+    const config = { ...before.config, templates: [...rest, { ...birthday, hidden: true }] };
+    expect((await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(host), payload: { config, reason: "test" } })).statusCode).toBe(403);
+    expect((await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(admin), payload: { config } })).statusCode).toBe(400); // a reason is required
+    const saved = await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(admin), payload: { config, reason: "Birthday rests for a week" } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().version).toBe(before.version + 1);
+    const offered = (await app.inject({ method: "GET", url: "/party-templates" })).json();
+    expect(offered.templates.map((t: { id: string }) => t.id)).toEqual(["bridal-shower", "couples", "game-night", "office-party", "reunion"]);
+    const [log] = await db.select().from(adminActions).where(and(eq(adminActions.action, "config.party_templates"), eq(adminActions.adminUserId, admin.id)));
+    expect(log.reason).toBe("Birthday rests for a week");
+    const preview = await app.inject({ method: "POST", url: "/admin/party-templates/preview", headers: as(admin), payload: { templateId: "bridal-shower" } });
+    expect(preview.json()).toMatchObject({ hostQuestionsAllowed: 6, problems: [], prefill: { title: "Bridal shower quiz" } });
+    const tooMany = { ...config, templates: config.templates.map((t) => (t.id === "couples" ? { ...t, dials: { ...t.dials, questionCount: 4 } } : t)) };
+    expect((await app.inject({ method: "POST", url: "/admin/party-templates/preview", headers: as(admin), payload: { templateId: "couples", config: tooMany } })).json().problems).toHaveLength(1);
+    // Put it back as it was (a new version, as every save is).
+    await db.transaction((tx) => savePartyTemplates(tx, before.config, admin.id));
+  });
+});
+
+describe("distractors", () => {
+  it("suggests three through the questions service's suggester", async () => {
+    const res = await app.inject({ method: "POST", url: "/parties/host-questions/distractors", headers: as(host), payload: { question: "Where did Tolu and Femi first meet?", answer: "Church", brief: "a bridal shower" } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ distractors: ["Office", "Gym", "Wedding"] });
+    expect(asked.at(-1)).toMatchObject({ question: "Where did Tolu and Femi first meet?", answer: "Church" });
+  });
+
+  it("over the real questions queue: the generation call, then the safety filter", async () => {
+    const providers = selectProviders();
+    const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => (job.data.kind === "suggest_distractors" ? suggestDistractors(job.data, { generator: providers.generator }) : undefined), { connection: makeRedis(), prefix: QUEUE_PREFIX });
+    try {
+      const out = await queueDistractors({ question: "What year did we graduate?", answer: "2009", brief: "" });
+      expect(out.distractors).toHaveLength(3);
+      expect(out.distractors).not.toContain("2009");
+      // The service refuses unsafe host words too (the route checks first; this is the service's own check).
+      await expect(queueDistractors({ question: "Which casino did they meet in?", answer: "The casino", brief: "" })).rejects.toMatchObject({ statusCode: 422, message: "host_text_unsafe" });
+    } finally {
+      await worker.close();
+    }
+  });
+});
+
+describe("the safety filter fails closed on the host's own words", () => {
+  it("refuses at creation, on add, on edit and before any suggestion, naming which question", async () => {
+    const before = asked.length;
+    const sug = await app.inject({ method: "POST", url: "/parties/host-questions/distractors", headers: as(host), payload: { question: "Who did they vote for in the election?", answer: "Nobody" } });
+    expect(sug.statusCode).toBe(422);
+    expect(sug.json()).toMatchObject({ error: "host_text_unsafe", details: { reasons: ["politics"] } });
+    expect(asked.length).toBe(before); // never reached the questions service
+
+    const made = await create(host, pooled({ hostQuestions: [q("Where did they meet?"), q("Their favourite bar for a free beer?", "Spot")] }));
+    expect(made.statusCode).toBe(422);
+    expect(made.json()).toMatchObject({ error: "host_text_unsafe", details: { index: 1, reasons: ["alcohol_promo"] } });
+
+    const ok = await create(host, pooled({ hostQuestions: [q("Where did they meet?")] }));
+    const id = ok.json().id;
+    expect((await app.inject({ method: "POST", url: `/parties/${id}/host-questions`, headers: as(host), payload: q("Best casino in town?", "Eko") })).json().error).toBe("host_text_unsafe");
+    // The brief's own exclusions hold for the host's words too.
+    const strict = await create(host, pooled({ brief: "A wedding quiz, nothing about exes", hostQuestions: [q("Which of the exes came to the wedding?", "Tunde")] }));
+    expect(strict.json()).toMatchObject({ error: "host_text_unsafe", details: { reasons: ["excluded:exes"] } });
+    const [row] = await db.select().from(partyQuestions).where(eq(partyQuestions.partyId, id));
+    expect((await app.inject({ method: "PUT", url: `/parties/${id}/host-questions/${row.id}`, headers: as(host), payload: q("Where did they shit?") })).json().error).toBe("host_text_unsafe");
+  });
+});
+
+describe("curate is forced, with its lockout", () => {
+  it("a sealed request with host-written questions is made curate: the host isn't seated and can't join", async () => {
+    const res = await create(host, pooled({ mode: "sealed", hostQuestions: [q("Where did they meet?")] }));
+    expect(res.statusCode).toBe(201);
+    const id = res.json().id;
+    expect((await partyRow(id)).mode).toBe("curate");
+    expect(await db.select().from(partyPlayers).where(eq(partyPlayers.partyId, id))).toHaveLength(0);
+    await fund(host, ENTRY);
+    expect((await app.inject({ method: "POST", url: `/parties/${id}/join`, headers: as(host) })).json().error).toBe("seen_the_questions_cannot_play");
+    const player = await makeUser(name("tplplayer"));
+    await fund(player, ENTRY);
+    expect((await app.inject({ method: "POST", url: `/parties/${id}/join`, headers: as(player) })).statusCode).toBe(201);
+    const detail = (await app.inject({ method: "GET", url: `/parties/${id}`, headers: as(player) })).json();
+    expect(detail.questions).toMatchObject({ hostWritten: true, review: "host_reviewed", aiGenerated: true });
+  });
+
+  it("a sealed party can't take host-written questions later", async () => {
+    await fund(host, ENTRY);
+    const res = await create(host, pooled({ mode: "sealed" }));
+    expect((await app.inject({ method: "POST", url: `/parties/${res.json().id}/host-questions`, headers: as(host), payload: q("Where did they meet?") })).json().error).toBe("sealed_party_no_host_questions");
+  });
+});
+
+describe("stakes", () => {
+  it("never free: a template party, or one with host-written questions (at creation and when added)", async () => {
+    expect((await create(host, pooled({ template: { id: "game-night", version }, entryKobo: 0 }))).json().error).toBe("template_party_cannot_be_free");
+    expect((await create(host, pooled({ entryKobo: 0, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_party_cannot_be_free");
+    const free = await create(host, pooled({ entryKobo: 0 }));
+    expect(free.statusCode).toBe(201);
+    expect((await app.inject({ method: "POST", url: `/parties/${free.json().id}/host-questions`, headers: as(host), payload: q("Who won last time?", "Ada") })).json().error).toBe("host_written_party_cannot_be_free");
+  });
+
+  it("each cap: the entry, the host's cash prize, and the host's share", async () => {
+    const rules = DEFAULT_HOST_WRITTEN_RULES;
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100), hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_entry_above_cap");
+    // The same entry with no host-written questions is fine.
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
+    const prize = { funding: "host", entryKobo: 0, hostPoolKobo: rules.maxHostPrizeKobo + kobo(100) };
+    await fund(host, rules.maxHostPrizeKobo + kobo(100));
+    expect((await create(host, pooled({ ...prize, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_prize_above_cap");
+    // Four questions: at most two host-written.
+    const share = [q("Who won last time?", "Ada"), q("Who lost?", "Bayo"), q("Who cheated?", "Chi")];
+    expect((await create(host, pooled({ questionCount: 4, hostQuestions: share }))).json().error).toBe("host_written_share_above_cap");
+    const two = await create(host, pooled({ questionCount: 4, hostQuestions: share.slice(0, 2) }));
+    expect(two.statusCode).toBe(201);
+    expect((await app.inject({ method: "POST", url: `/parties/${two.json().id}/host-questions`, headers: as(host), payload: share[2] })).json().error).toBe("host_written_share_above_cap");
+  });
+});
+
+describe("host-written questions never enter the bank", () => {
+  it("the engine drafts around them, spread through the play order; nothing of theirs is banked or counted in play stats", async () => {
+    const texts = ["What is Ada's go-to order?", "Which city was Ada born in?"];
+    const res = await create(host, pooled({ questionCount: 6, formats: ["pick_one"], hostQuestions: texts.map((t) => q(t, "Ibadan")) }));
+    const id = res.json().id;
+    expect((await app.inject({ method: "POST", url: `/parties/${id}/drafts`, headers: as(host) })).statusCode).toBe(202);
+    await generateSet(id, { providers: selectProviders(), publish: async () => undefined });
+    const order = await db.select().from(partyQuestions).where(and(eq(partyQuestions.partyId, id), eq(partyQuestions.reserve, false))).orderBy(partyQuestions.idx);
+    expect(order).toHaveLength(6);
+    expect(order.map((r, i) => (r.hostWritten ? i : -1)).filter((i) => i >= 0)).toEqual(hostSlots(6, 2));
+    expect(order.filter((r) => !r.hostWritten).every((r) => r.sourceRef && r.status === "draft")).toBe(true);
+    for (const t of texts) {
+      const [{ c }] = await db.select({ c: sql<number>`count(*)::int` }).from(bankQuestions).where(sql`${bankQuestions.payload}->>'question' = ${t}`);
+      expect(c).toBe(0);
+    }
+    // The drafts carry the flag for the host's review.
+    const drafts = (await app.inject({ method: "GET", url: `/parties/${id}/drafts`, headers: as(host) })).json();
+    expect(drafts.questions.filter((d: { hostWritten: boolean }) => d.hostWritten)).toHaveLength(2);
+    // Play stats after a finish: only the bank questions move.
+    const banked = order.filter((r) => !r.hostWritten);
+    const player = await makeUser(name("tplstats"));
+    await db.update(partyQuestions).set({ status: "played" }).where(eq(partyQuestions.partyId, id));
+    await db.insert(partyAnswers).values(order.map((r) => ({ partyId: id, questionId: r.id, userId: player.id, correctness: 100, points: 100 })));
+    const before = await db.select({ id: bankQuestions.id, timesPlayed: bankQuestions.timesPlayed }).from(bankQuestions).where(inArray(bankQuestions.id, banked.map((b) => b.sourceRef!)));
+    await db.update(parties).set({ status: "finished" }).where(eq(parties.id, id));
+    await recordPlay(id);
+    const after = await db.select({ id: bankQuestions.id, timesPlayed: bankQuestions.timesPlayed }).from(bankQuestions).where(inArray(bankQuestions.id, banked.map((b) => b.sourceRef!)));
+    expect(after.reduce((a, b) => a + b.timesPlayed, 0)).toBe(before.reduce((a, b) => a + b.timesPlayed, 0) + banked.length);
+  });
+});
+
+// ---- settlement: the link check, the outlier flag, the hold, clear and reject -------------------------------------
+
+const settled: string[] = [];
+const settleDeps = { emit: async () => undefined, publishLine: async () => undefined, queueRecordPlay: async () => undefined, queueRecordProgress: async () => undefined };
+
+/**
+ * A live party with host-written questions as the room leaves it: every seat paid and ranked in the order given,
+ * two host-written and two themed questions played, with each seat's correctness on them ([host, host, themed, themed]).
+ */
+async function playedParty(opts: { hostUser: User; seats: { u: User; correct: number[] }[]; funding?: "pooled" | "host"; hostPoolKobo?: number; split?: number[] }): Promise<Party> {
+  const funding = opts.funding ?? "pooled";
+  const [p] = await db.insert(parties).values({
+    createdByUserId: opts.hostUser.id, title: `Held ${randomUUID().slice(0, 6)}`, category: "General knowledge", entryKobo: funding === "pooled" ? ENTRY : 0, maxPlayers: 10,
+    funding, hostPoolKobo: opts.hostPoolKobo ?? 0, split: opts.split ?? [100], mode: "curate", status: "live", startsAt: new Date(), liveAt: new Date(), questionsStatus: "ready",
+    hostRules: DEFAULT_HOST_WRITTEN_RULES, hostQuestionCount: 2,
+  }).returning();
+  if (funding === "host") {
+    await fund(opts.hostUser, opts.hostPoolKobo!);
+    await db.transaction((tx) => ledger.hold(tx, { userId: opts.hostUser.id, amountKobo: opts.hostPoolKobo!, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` }));
+  }
+  for (const [i, s] of opts.seats.entries()) {
+    if (funding === "pooled") await fund(s.u, ENTRY);
+    await db.transaction((tx) => takeSeat(tx, p, s.u.id, p.entryKobo));
+    await db.update(partyPlayers).set({ rank: i + 1, score: 1000 - i }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, s.u.id)));
+  }
+  for (let idx = 0; idx < 4; idx++) {
+    const [pq] = await db.insert(partyQuestions).values({ partyId: p.id, idx, format: "pick_one", payload: { question: `q${idx}`, options: ["a", "b"], correctIndex: 0 }, seconds: 10, status: "played", hostWritten: idx < 2, hostAuthored: idx < 2 }).returning();
+    await db.insert(partyAnswers).values(opts.seats.map((s) => ({ partyId: p.id, questionId: pq.id, userId: s.u.id, correctness: s.correct[idx], points: s.correct[idx] })));
+  }
+  await settle(settleDeps, p.id);
+  settled.push(p.id);
+  return (await partyRow(p.id))!;
+}
+const heldIn = (partyId: string) => db.select().from(heldPrizes).where(eq(heldPrizes.partyId, partyId));
+const ACE = [100, 100, 0, 0];
+const MISS = [0, 0, 100, 100];
+
+describe("the link check and the outlier flag at settlement", () => {
+  it("holds a winner who is one of the host's people and beat the room on the host's questions (and alerts)", async () => {
+    const h = await makeUser(name("hosta"));
+    const [w, a, b] = [await makeUser(name("wina")), await makeUser(name("pa")), await makeUser(name("pb"))];
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: a, correct: MISS }, { u: b, correct: MISS }] });
+    expect(p.status).toBe("finished");
+    const [held] = await heldIn(p.id);
+    expect(held).toMatchObject({ userId: w.id, hostUserId: h.id, place: 1, status: "held", amountKobo: (await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, w.id))))[0].prizeKobo });
+    expect(held.evidence).toMatchObject({ links: ["people"], hostQuestionsPlayed: 2, winnerAccuracyPct: 100, roomAccuracyPct: 0, winnerThemedAccuracyPct: 0 });
+    // Credited all the same.
+    expect(await cash(w)).toBe(held.amountKobo);
+    const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `prize_held:${held.id}`));
+    expect(alert).toMatchObject({ kind: "templates.prize_held", severity: "warning", refId: p.id });
+  });
+
+  it("links by the same install id, and by the same IP", async () => {
+    for (const kind of ["install", "ip"] as const) {
+      const h = await makeUser(name(`host${kind}`));
+      const w = await makeUser(name(`win${kind}`));
+      const signal = kind === "install" ? { installId: `inst-${randomUUID()}` } : { ip: `2001:db8::${randomUUID().slice(0, 4)}` };
+      await recordSignals(h.id, signal);
+      await recordSignals(w.id, signal);
+      const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("px")), correct: MISS }] });
+      expect((await heldIn(p.id))[0]?.evidence.links).toEqual([kind]);
+    }
+  });
+
+  it("pays as normal: an unlinked winner however well they did, and a linked one within the margin", async () => {
+    const h = await makeUser(name("hostc"));
+    const stranger = await makeUser(name("stranger"));
+    const p1 = await playedParty({ hostUser: h, seats: [{ u: stranger, correct: ACE }, { u: await makeUser(name("py")), correct: MISS }] });
+    expect(await heldIn(p1.id)).toEqual([]);
+    const friend = await makeUser(name("friend"));
+    await db.insert(contactMatches).values({ userId: friend.id, contactUserId: h.id }); // either way makes them contacts
+    // Friend 50% on the host's questions, the room 50%: no margin.
+    const p2 = await playedParty({ hostUser: h, seats: [{ u: friend, correct: [100, 0, 100, 100] }, { u: await makeUser(name("pz")), correct: [0, 100, 0, 0] }] });
+    expect(await heldIn(p2.id)).toEqual([]);
+  });
+});
+
+describe("a held prize", () => {
+  let h: User, w: User, second: User, third: User, p: Party, heldId: string;
+  beforeAll(async () => {
+    h = await makeUser(name("hostd"));
+    w = await makeUser(name("wind"), { phone: `+23480${randomUUID().replace(/\D/g, "").slice(0, 8)}`, phoneVerifiedAt: new Date() });
+    second = await makeUser(name("second"));
+    third = await makeUser(name("third"));
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: second, correct: MISS }, { u: third, correct: MISS }] });
+    heldId = (await heldIn(p.id))[0].id;
+  });
+
+  it("can't be withdrawn (prize_under_review), nor spent below what's held", async () => {
+    const [u] = await db.select().from(users).where(eq(users.id, w.id));
+    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBe("prize_under_review");
+    await expect(requestPayout(u, { amountKobo: kobo(100), bankAccountId: randomUUID(), clientRequestId: randomUUID() }, { enqueue: async () => undefined }))
+      .rejects.toMatchObject({ statusCode: 403, message: "withdraw_not_allowed", details: { reason: "prize_under_review" } });
+    expect((await app.inject({ method: "GET", url: "/me", headers: as(w) })).json().canWithdraw).toBe(false);
+    // Entering a party from the held cash is refused; from fresh cash on top of it, fine.
+    await fund(host, ENTRY);
+    const open = (await create(host, pooled({ mode: "curate" }))).json().id;
+    const join = await app.inject({ method: "POST", url: `/parties/${open}/join`, headers: as(w) });
+    expect(join.statusCode).toBe(409);
+    expect(join.json().error).toBe("prize_under_review");
+    await fund(w, ENTRY);
+    expect((await app.inject({ method: "POST", url: `/parties/${open}/join`, headers: as(w) })).statusCode).toBe(201);
+  });
+
+  it("is listed for admins with its evidence", async () => {
+    expect((await app.inject({ method: "GET", url: "/admin/party-templates/held-prizes", headers: as(w) })).statusCode).toBe(403);
+    const list = (await app.inject({ method: "GET", url: "/admin/party-templates/held-prizes?status=held", headers: as(admin) })).json();
+    const mine = list.prizes.find((x: { id: string }) => x.id === heldId);
+    expect(mine).toMatchObject({ status: "held", place: 1, winner: { id: w.id }, host: { id: h.id }, party: { id: p.id }, evidence: { links: ["people"] } });
+  });
+
+  it("reject: taken back and passed to the next placed player, once, however many times it's asked", async () => {
+    const amount = (await heldIn(p.id))[0].amountKobo;
+    const [wBefore, sBefore] = [await cash(w), await cash(second)];
+    expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: {} })).statusCode).toBe(400); // a reason
+    const first = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: { reason: "Fed the answers by the host" } });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ replayed: false, prize: { status: "rejected", reason: "Fed the answers by the host", outcome: { kind: "passed_on", to: [{ userId: second.id, amountKobo: amount }] }, decidedBy: { id: admin.id } } });
+    expect(await cash(w)).toBe(wBefore - amount);
+    expect(await cash(second)).toBe(sBefore + amount);
+    const entries = () => db.select().from(ledgerEntries).where(like(ledgerEntries.idempotencyKey, `held_prize_reject:${heldId}%`));
+    expect(await entries()).toHaveLength(2);
+    const again = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: { reason: "again" } });
+    expect(again.json()).toMatchObject({ replayed: true, prize: { status: "rejected", reason: "Fed the answers by the host" } });
+    expect(await entries()).toHaveLength(2);
+    expect([await cash(w), await cash(second)]).toEqual([wBefore - amount, sBefore + amount]);
+    expect((await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, second.id))))[0].prizeKobo).toBe(amount);
+    // A rejected prize can't then be cleared; the winner can withdraw again (nothing else holds them).
+    expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/clear`, headers: as(admin), payload: { reason: "oops" } })).json().error).toBe("prize_already_decided");
+    const [u] = await db.select().from(users).where(eq(users.id, w.id));
+    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
+    const logs = await db.select().from(adminActions).where(and(eq(adminActions.targetType, "held_prize"), eq(adminActions.targetId, heldId)));
+    expect(logs.map((l) => l.action)).toEqual(["party_templates.held_prize_reject"]);
+  });
+});
+
+describe("clear, and the other reject outcomes", () => {
+  it("clear: nothing moves, the winner may withdraw; a replay says so", async () => {
+    const h = await makeUser(name("hoste"));
+    const w = await makeUser(name("wine"), { phone: `+23480${randomUUID().replace(/\D/g, "").slice(0, 8)}`, phoneVerifiedAt: new Date() });
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("pq")), correct: MISS }] });
+    const [held] = await heldIn(p.id);
+    const before = await cash(w);
+    const res = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "Checked: they're just good" } });
+    expect(res.json()).toMatchObject({ replayed: false, prize: { status: "cleared", reason: "Checked: they're just good" } });
+    expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "again" } })).json()).toMatchObject({ replayed: true, prize: { reason: "Checked: they're just good" } });
+    expect(await cash(w)).toBe(before);
+    const [u] = await db.select().from(users).where(eq(users.id, w.id));
+    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
+    expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "changed my mind" } })).json().error).toBe("prize_already_decided");
+  });
+
+  it("a host's cash prize to a linked winner: checked the same, and back to the host when nobody's left to pass it to", async () => {
+    const h = await makeUser(name("hostf"));
+    const w = await makeUser(name("winf"));
+    await recordSignals(w.id, { installId: `inst-${randomUUID()}` });
+    await db.insert(contactMatches).values({ userId: w.id, contactUserId: h.id });
+    const other = await makeUser(name("otherf"));
+    const p = await playedParty({ hostUser: h, funding: "host", hostPoolKobo: kobo(2_000), seats: [{ u: w, correct: ACE }, { u: other, correct: MISS }] });
+    await db.update(users).set({ bannedAt: new Date() }).where(eq(users.id, other.id)); // banned since: never a prize
+    const [held] = await heldIn(p.id);
+    expect(held.amountKobo).toBe(kobo(2_000));
+    const hostBefore = await cash(h);
+    const res = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "Host funding a friend" } });
+    expect(res.json().prize.outcome).toEqual({ kind: "returned_to_host", to: [{ userId: h.id, amountKobo: kobo(2_000) }] });
+    expect(await cash(h)).toBe(hostBefore + kobo(2_000));
+    expect(await cash(w)).toBe(0);
+  });
+
+  it("a passed-on prize goes through the same check: a second linked player is held in turn", async () => {
+    const h = await makeUser(name("hostg"));
+    const [w1, w2, last] = [await makeUser(name("w1g")), await makeUser(name("w2g")), await makeUser(name("lastg"))];
+    await db.insert(contactMatches).values([{ userId: h.id, contactUserId: w1.id }, { userId: h.id, contactUserId: w2.id }]);
+    const p = await playedParty({ hostUser: h, seats: [{ u: w1, correct: ACE }, { u: w2, correct: ACE }, { u: last, correct: MISS }] });
+    const [held] = await heldIn(p.id);
+    await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "Linked" } });
+    const now = await heldIn(p.id);
+    expect(now.map((x) => [x.userId, x.status]).sort()).toEqual([[w1.id, "rejected"], [w2.id, "held"]].sort());
+    expect(await cash(w2)).toBe(held.amountKobo);
+  });
+});
+
+afterAll(async () => {
+  // Nothing else reads these parties; they're left finished like any other.
+  expect(settled.length).toBeGreaterThan(0);
+});

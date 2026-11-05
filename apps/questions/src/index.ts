@@ -25,6 +25,7 @@ import { embedFile } from "./files/embedFile.js";
 import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
 import { needsReembed, reembedBackoffMs, reembedBatch, REEMBED_MAX_WAIT_MS, staleRows } from "./pipeline/reembed.js";
+import { suggestDistractors } from "./pipeline/distractors.js";
 
 /** Daily, at 04:00 server time: retire flagged and underperforming bank questions. */
 const RETIRE_SWEEP_CRON = "0 4 * * *";
@@ -96,6 +97,7 @@ async function run(d: QuestionsJob) {
     case "question_voided": return questionVoided(d);
     case "review_edit": return reviewEdit(d, { providers });
     case "check_host_edit": return checkHostEdit(d, { providers });
+    case "suggest_distractors": return suggestDistractors(d, { generator: providers.generator });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
     case "reembed": return reembed(d.waits ?? 0);

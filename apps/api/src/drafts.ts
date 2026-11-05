@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   db, parties, partyPlayers, partyQuestions, partyQuestionEvents, partyDraftViews, partyFiles, questionGenerations,
-  isHostTeam, type Party, type Tx, type User,
+  isHostTeam, syncHostQuestionCount, type Party, type Tx, type User,
 } from "@contestly/db";
 import { payloadSchemas } from "@contestly/game";
 import { checkSafety, parseExclusions, type HostEditCheck, type QuestionFormat } from "@contestly/shared";
@@ -44,7 +44,8 @@ export async function requestDrafts(partyId: string, user: User): Promise<void> 
     const files = await tx.select({ status: partyFiles.status }).from(partyFiles).where(eq(partyFiles.partyId, partyId));
     if (files.some((f) => f.status === "failed")) throw httpError(409, "source_file_failed");
     if (files.some((f) => f.status !== "parsed")) throw httpError(409, "source_file_not_ready");
-    const existing = await tx.select({ id: partyQuestions.id }).from(partyQuestions).where(eq(partyQuestions.partyId, partyId)).limit(1);
+    // The host's own questions (ADR 0015) are already there; the engine drafts the rest around them.
+    const existing = await tx.select({ id: partyQuestions.id }).from(partyQuestions).where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.hostWritten, false))).limit(1);
     if (existing.length) throw httpError(409, "drafts_already_generated");
     await tx.update(parties).set({ questionsStatus: "generating", questionsError: null, forgeProgress: null }).where(eq(parties.id, partyId));
   });
@@ -72,7 +73,7 @@ export async function listDrafts(partyId: string, user: User) {
       const rec = r.sourceRef ? recordOf.get(r.sourceRef) : undefined;
       return {
         id: r.id, idx: r.idx, reserve: r.reserve, status: r.status, format: r.format,
-        payload: r.payload, explanation: r.explanation, hostAuthored: r.hostAuthored,
+        payload: r.payload, explanation: r.explanation, hostAuthored: r.hostAuthored, hostWritten: r.hostWritten,
         verification: rec ? { sources: (rec.verify as { sources?: string[] } | null)?.sources ?? [], difficulty: rec.difficulty } : null,
         editCheck: editCheckOf(r) ? { status: editCheckOf(r)!.status, reasons: editCheckOf(r)!.reasons } : null,
       };
@@ -135,6 +136,7 @@ export async function swapDraft(partyId: string, questionId: string, user: User)
     await tx.update(partyQuestions).set({ idx: out.idx, reserve: false, status: "draft" }).where(eq(partyQuestions.id, incoming.id));
     await tx.update(partyQuestions).set({ idx: incoming.idx, reserve: true, status: "voided" }).where(eq(partyQuestions.id, out.id));
     await log(tx, { partyId, questionId: out.id, kind: "swap", userId: user.id, detail: { replacementId: incoming.id } });
+    if (out.hostWritten) await syncHostQuestionCount(tx, partyId); // a themed reserve took a host-written question's place
   });
 }
 

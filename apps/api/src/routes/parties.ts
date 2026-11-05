@@ -10,6 +10,7 @@ import { potKobo } from "../places.js";
 import { publishLine } from "../chats.js";
 import { valkey } from "../redis.js";
 import { createParty } from "../partyCreate.js";
+import { withTemplate } from "../partyTemplates.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 import { followedCornerIds, hostCornerOf } from "../corners.js";
 
@@ -45,9 +46,11 @@ export async function partiesRoutes(app: FastifyInstance) {
     return { limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host), corner };
   });
 
+  /** The builder. With `template`, anything the host left out of title, brief, cover and dials is the template's (ADR 0015). */
   app.post("/parties", async (req, reply) => {
     const me = requireUser(req);
-    const { party, lines } = await createParty(me, createPartySchema.parse(req.body));
+    const { body, copy } = await withTemplate(req.body);
+    const { party, lines } = await createParty(me, createPartySchema.parse(body), { template: copy });
     for (const line of lines) await publishLine(line);
     const [[summary], corner] = await Promise.all([partySummaries([party], me.id), cornerReach(me.id)]);
     return reply.code(201).send({ ...summary, questions: questionDisclosure(party), postsToCorner: !!corner && postsToCorner(party.visibility), corner });

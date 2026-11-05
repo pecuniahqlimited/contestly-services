@@ -26,7 +26,8 @@ export async function recordPlay(partyId: string): Promise<void> {
       })
       .from(partyAnswers)
       .innerJoin(partyQuestions, eq(partyAnswers.questionId, partyQuestions.id))
-      .where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.status, "played"), isNotNull(partyQuestions.sourceRef)))
+      // Host-authored questions (edits, and host-written ones, ADR 0015) never feed calibration or the bank's stats.
+      .where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.status, "played"), isNotNull(partyQuestions.sourceRef), eq(partyQuestions.hostAuthored, false)))
       .groupBy(partyQuestions.sourceRef);
 
     for (const s of stats) {

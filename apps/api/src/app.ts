@@ -40,6 +40,9 @@ import { socialRoutes } from "./routes/social.js";
 import { adminPaymentsRoutes } from "./routes/adminPayments.js";
 import { mockCheckoutRoutes, paymentWebhookRoutes } from "./routes/paymentWebhooks.js";
 import { assertPaymentsEnv } from "@contestly/payments";
+import { partyTemplatesRoutes } from "./routes/partyTemplates.js";
+import { adminPartyTemplatesRoutes } from "./routes/adminPartyTemplates.js";
+import { queueDistractors, type DistractorSuggester } from "./distractors.js";
 
 export interface AppOptions {
   /** Tests inject how a request becomes a session; the server uses resolveUser (Firebase token or dev header). */
@@ -51,6 +54,8 @@ export interface AppOptions {
   /** GET /config's answer (support contacts); from the environment unless a test passes its own. */
   publicConfig?: PublicEnvConfig;
   trust?: TrustConfig;
+  /** Distractor suggestions for host-written questions: the questions service through its queue, unless a test passes its own. */
+  distractors?: DistractorSuggester;
 }
 
 declare module "fastify" {
@@ -61,6 +66,7 @@ declare module "fastify" {
   interface FastifyInstance {
     /** This app's rate limits (limits.ts), read once at start; routes with their own limits read them here. */
     limits: Limits;
+    distractors: DistractorSuggester;
   }
 }
 
@@ -80,6 +86,7 @@ export async function buildApp(opts: AppOptions = {}) {
   // After the session is resolved (both preHandler, in registration order): per user when signed in, else per client IP.
   const cfg = opts.limits ?? limitsFromEnv();
   app.decorate("limits", cfg);
+  app.decorate("distractors", opts.distractors ?? queueDistractors);
   await app.register(rateLimit, {
     hook: "preHandler",
     timeWindow: "1 minute",
@@ -122,6 +129,8 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(partiesRoutes);
   await app.register(walletRoutes);
   await app.register(questionsRoutes);
+  await app.register(partyTemplatesRoutes);
+  await app.register(adminPartyTemplatesRoutes);
   await app.register(adminRoutes);
   await app.register(climbRoutes);
   await app.register(adminClimbRoutes);

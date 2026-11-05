@@ -6,7 +6,7 @@
  * What it tells the outside world is passed in.
  */
 import { and, asc, eq } from "drizzle-orm";
-import { cancelIfUnplaceable, db, getPartyConfig, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, users } from "@contestly/db";
+import { cancelIfUnplaceable, db, getPartyConfig, holdFlaggedPrizes, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, users } from "@contestly/db";
 import { isGoods, type ChatMessage } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 
@@ -85,7 +85,10 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
         await ledger.post(tx, { userId: prize.userId, kind: "cash", amountKobo: prize.amountKobo, type: "party_prize", refType: "party", refId: p.id, idempotencyKey: `party_prize:${p.id}:${prize.userId}` });
         await tx.update(partyPlayers).set({ prizeKobo: prize.amountKobo }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, prize.userId)));
       }
-      console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)`);
+      // Host-written questions (ADR 0015): a prize to a winner linked to the host who beat the room on the host's own
+      // questions is paid but held for an admin (withdrawals wait), with a warning alert, in this transaction.
+      const held = await holdFlaggedPrizes(tx, p, s.prizes.map((x) => ({ userId: x.userId, place: x.rank, amountKobo: x.amountKobo })));
+      console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)${held.length ? `, ${held.length} held for review` : ""}`);
     }
 
     const endedAt = new Date();
