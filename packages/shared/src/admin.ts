@@ -70,6 +70,8 @@ export const adminUserSearchResponseSchema = z.object({ users: z.array(adminUser
 export const adminUserDetailSchema = z.object({
   user: adminUserRowSchema.extend({
     banReason: z.string().nullable(), emailVerifiedAt: isoOrNull, phoneAdded: z.boolean(),
+    /** ADR 0014: a suspension's end (null: a ban, or not banned), the category the banned screen names, a chat timeout's end. */
+    bannedUntil: isoOrNull, banCategory: z.string().nullable(), chatTimeoutUntil: isoOrNull,
     who: z.string().nullable(), archetype: z.string().nullable(), aboutVersion: z.number().int().nullable(), interests: z.array(z.string()), streakDays: z.number().int(),
   }),
   /** How this account is reached (provider + external id; the Firebase session uid, Google/Apple subjects). */

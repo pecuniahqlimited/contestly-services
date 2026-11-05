@@ -395,9 +395,12 @@ export const linkedIssueClearanceSchema = z.object({
 });
 export const linkedIssueClearanceResponseSchema = z.object({ clearance: linkedIssueClearanceSchema });
 
-/** Banning an admin who holds payments permissions: one admin asks (202 { banRequest }), a different one confirms. */
+/**
+ * Banning (or suspending: `until`; ADR 0014) an admin who holds payments permissions: one admin asks (202 { banRequest }),
+ * a different one confirms.
+ */
 export const adminBanRequestSchema = z.object({
-  id: uuid, userId: uuid, reason: z.string(), status: z.enum(["awaiting_second_admin", "applied"]), requestedBy: uuid, confirmedBy: uuid.nullable(), createdAt: iso, appliedAt: isoOrNull,
+  id: uuid, userId: uuid, reason: z.string(), until: isoOrNull, category: z.string().nullable(), status: z.enum(["awaiting_second_admin", "applied"]), requestedBy: uuid, confirmedBy: uuid.nullable(), createdAt: iso, appliedAt: isoOrNull,
 });
 export const adminBanRequestResponseSchema = z.object({ banRequest: adminBanRequestSchema });
 

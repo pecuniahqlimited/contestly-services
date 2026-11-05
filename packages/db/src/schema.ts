@@ -54,6 +54,12 @@ export const users = pgTable("users", {
   archetype: text("archetype"),
   /** Banned by an admin: can't sign in, join, host or play (assertNotBanned). Unban clears both. */
   bannedAt: timestamp("banned_at", { withTimezone: true }),
+  /** A suspension: a ban until then, lifted by the worker's sweep (ADR 0014). Null with bannedAt set: a ban. */
+  bannedUntil: timestamp("banned_until", { withTimezone: true }),
+  /** The report reason the banned screen names (REPORT_REASONS); banReason is the admin's note, never shown. */
+  banCategory: text("ban_category"),
+  /** No sending in party chat, DMs, crews or corner replies until then (an admin, or an automatic hold; ADR 0014). */
+  chatTimeoutUntil: timestamp("chat_timeout_until", { withTimezone: true }),
   /** Withdrawals frozen because a payout we reversed turned out to have been paid (ADR 0013); cleared when an admin resolves it. */
   withdrawalsFrozenAt: timestamp("withdrawals_frozen_at", { withTimezone: true }),
   banReason: text("ban_reason"),
@@ -598,6 +604,8 @@ export const chatMessages = pgTable("chat_messages", {
   voiceNoteId: uuid("voice_note_id").references(() => voiceNotes.id),
   cardPartyId: uuid("card_party_id").references(() => parties.id, { onDelete: "set null" }),
   clientMsgId: uuid("client_msg_id"),
+  /** Hidden for everyone: held after reports, or removed by an admin (ADR 0014). The row stays. */
+  hiddenAt: timestamp("hidden_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("chat_thread_created_idx").on(t.threadId, t.createdAt),
@@ -605,8 +613,9 @@ export const chatMessages = pgTable("chat_messages", {
 ]);
 
 /**
- * Things a person needs to look at (row 11 reviews them). Today: every voice note's transcript. Reports,
- * flagged text and the rest join with their own `kind`.
+ * The moderation queue (ADR 0014): one item per reported or reviewable thing (kind + ref), with what it looked
+ * like when first reported (snapshot) and who's behind it (userId). Voice notes arrive with their transcript
+ * before anyone reports them. Each reporter is a `reports` row. Status: open, actioned, dismissed.
  */
 export const moderationItems = pgTable("moderation_items", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -617,9 +626,60 @@ export const moderationItems = pgTable("moderation_items", {
   transcript: text("transcript"),
   provider: text("provider"),
   detail: jsonb("detail"),
-  status: text("status").notNull().default("pending"),
+  /** What it looked like at the first report: kept, so a deleted or edited thing can still be reviewed. */
+  snapshot: jsonb("snapshot"),
+  /** Distinct reporters. */
+  reportCount: integer("report_count").notNull().default(0),
+  lastReportedAt: timestamp("last_reported_at", { withTimezone: true }),
+  /** Hidden for everyone by the automatic hold, until an admin releases or removes it. */
+  heldAt: timestamp("held_at", { withTimezone: true }),
+  status: text("status").notNull().default("open"),
+  resolution: text("resolution"),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolvedByUserId: uuid("resolved_by_user_id").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex("moderation_items_ref").on(t.kind, t.refId), index("moderation_items_status_idx").on(t.status, t.createdAt)]);
+}, (t) => [
+  uniqueIndex("moderation_items_ref").on(t.kind, t.refId),
+  index("moderation_items_status_idx").on(t.status, t.createdAt),
+  index("moderation_items_user_idx").on(t.userId),
+]);
+
+/** One person's report of one item. A second report by them is the first one back. */
+export const reports = pgTable("reports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  itemId: uuid("item_id").notNull().references(() => moderationItems.id),
+  reporterId: uuid("reporter_id").notNull().references(() => users.id),
+  reason: text("reason").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex("reports_item_reporter").on(t.itemId, t.reporterId), index("reports_created_idx").on(t.createdAt)]);
+
+/** A block (ADR 0014): its effect is mutual (either side blocked → both rules apply), and silent. */
+export const blocks = pgTable("blocks", {
+  blockerId: uuid("blocker_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  blockedId: uuid("blocked_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.blockerId, t.blockedId] }), index("blocks_blocked_idx").on(t.blockedId)]);
+
+/** A person muted by another (one way): their chat lines and nudges about them stop reaching the muter. Not corner_mutes. */
+export const personMutes = pgTable("person_mutes", {
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  mutedUserId: uuid("muted_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.userId, t.mutedUserId] })]);
+
+/** Something the app shows a person once (ADR 0014): an admin's warning, or what came of their report. */
+export const userNotices = pgTable("user_notices", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  /** A warning's reason category; a report outcome's "action_taken" or "reviewed". */
+  category: text("category"),
+  outcome: text("outcome"),
+  itemId: uuid("item_id").references(() => moderationItems.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  seenAt: timestamp("seen_at", { withTimezone: true }),
+}, (t) => [index("user_notices_user_idx").on(t.userId, t.seenAt)]);
 
 /**
  * One account per (user, kind, scope). balance is materialised and only ever changed inside ledger.journal().
@@ -897,6 +957,9 @@ export const adminBanRequests = pgTable("admin_ban_requests", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id),
   reason: text("reason").notNull(),
+  /** A suspension's end (ADR 0014); null for a ban. */
+  until: timestamp("until", { withTimezone: true }),
+  category: text("category"),
   status: text("status", { enum: ["awaiting_second_admin", "applied"] }).notNull(),
   requestedByUserId: uuid("requested_by_user_id").notNull().references(() => users.id),
   confirmedByUserId: uuid("confirmed_by_user_id").references(() => users.id),
@@ -1426,6 +1489,8 @@ export const cornerPosts = pgTable("corner_posts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   deletedByUserId: uuid("deleted_by_user_id").references(() => users.id),
+  /** Held after reports or removed by an admin (ADR 0014): hidden for everyone, the author included. */
+  hiddenAt: timestamp("hidden_at", { withTimezone: true }),
 }, (t) => [index("corner_posts_corner_created_idx").on(t.cornerId, t.createdAt)]);
 
 /** One reaction per person per post, changeable. `muted`: sent while muted in the corner, so only its sender sees it. */
@@ -1448,6 +1513,8 @@ export const cornerPostReplies = pgTable("corner_post_replies", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   deletedByUserId: uuid("deleted_by_user_id").references(() => users.id),
+  /** Held after reports or removed by an admin (ADR 0014). */
+  hiddenAt: timestamp("hidden_at", { withTimezone: true }),
 }, (t) => [index("corner_post_replies_post_idx").on(t.postId, t.createdAt), uniqueIndex("corner_post_replies_client").on(t.userId, t.clientMsgId)]);
 
 /** A follower muted in a corner by its host: their replies and reactions there reach only themselves. They aren't told. */
@@ -1466,6 +1533,7 @@ export type CrewMember = typeof crewMembers.$inferSelect;
 export type PartyInvite = typeof partyInvites.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type AdminActionRow = typeof adminActions.$inferSelect;
+export type ModerationItem = typeof moderationItems.$inferSelect;
 export type Topup = typeof topups.$inferSelect;
 export type Payout = typeof payouts.$inferSelect;
 export type PayoutAccount = typeof payoutAccounts.$inferSelect;

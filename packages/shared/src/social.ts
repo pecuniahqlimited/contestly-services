@@ -120,6 +120,9 @@ export const profileSocialSchema = z.object({
   canMessage: z.enum(["direct", "request", "refused"]).nullable(),
   /** A live party they're playing that the viewer can see. */
   playingNow: z.object({ id: z.string().uuid(), title: z.string() }).nullable(),
+  /** The viewer has blocked them / muted them (ADR 0014), for Unblock and Unmute. False signed out or on your own profile. */
+  blockedByYou: z.boolean(),
+  mutedByYou: z.boolean(),
 });
 
 /** POST /users/:id/challenge → 201: the party made for the two of you; they're invited and it's in your DM. */

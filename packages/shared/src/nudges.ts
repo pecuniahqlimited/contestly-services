@@ -263,7 +263,7 @@ export type NudgeChannel = (typeof NUDGE_CHANNELS)[number];
  * - in_app: a push-only nudge while the app is open. unavailable: the account is banned or deleted.
  * - money: its copy mentioned money (a party title, say), so it never goes out.
  */
-export const NUDGE_SKIP_REASONS = ["toggle_off", "kind_cap", "daily_cap", "quiet_hours", "no_device", "push_failed", "not_needed", "stale", "in_app", "unavailable", "money"] as const;
+export const NUDGE_SKIP_REASONS = ["toggle_off", "kind_cap", "daily_cap", "quiet_hours", "no_device", "push_failed", "not_needed", "stale", "in_app", "unavailable", "money", "blocked", "muted"] as const;
 export type NudgeSkipReason = (typeof NUDGE_SKIP_REASONS)[number];
 
 // ---- config ----------------------------------------------------------------------------

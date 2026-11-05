@@ -18,6 +18,8 @@ export * from "./partyLeave.js";
 export * from "./rateLimits.js";
 export * from "./payments.js";
 export * from "./nudges.js";
+export * from "./moderation.js";
+export * from "./nameFilter.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { CORNER_STATUSES, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
@@ -289,6 +291,8 @@ export const MSG = {
   chatMessage: "chat:message",
   /** To the sender only: their line was kept, or had been already (chatAckSchema). */
   chatAck: "chat:ack",
+  /** A line was held after reports or removed by an admin: drop it from the thread (chatHiddenSchema). */
+  chatHidden: "chat:hidden",
   /** Inbox room: a line landed in one of the user's DM or crew threads (inboxUpdateSchema). */
   inbox: "inbox",
   /** Inbox room: an in-app banner, the same content and deep link as the push it replaces (nudgeMessageSchema). */
@@ -366,6 +370,11 @@ export type PartyJob =
   | { kind: "record_progress"; partyId: string }
   /** An admin cancelled the party: refund and cancel through the same path as every other cancel. */
   | { kind: "admin_cancel"; partyId: string; reason: string }
+  /**
+   * A ban or suspension committed (ADR 0014): cancel and refund the person's hosted open parties, free and refund
+   * their seats in others' open parties, hold their requested withdrawals. Idempotent.
+   */
+  | { kind: "ban_effects"; userId: string }
   /** Every minute: starts or cancels any open party past its startsAt whose start job was lost. */
   | { kind: "sweep" };
 /**
@@ -375,7 +384,9 @@ export type PartyJob =
  * (does nothing while that's unset; ADR 0010). `deliver_alerts`, every few seconds: send admin alerts that are
  * due (apps/worker/src/alertDelivery.ts).
  */
-export type HousekeepingJob = { kind: "purge_email_sends" } | { kind: "purge_voice_notes" } | { kind: "purge_deleted_archives" } | { kind: "deliver_alerts" };
+export type HousekeepingJob = { kind: "purge_email_sends" } | { kind: "purge_voice_notes" } | { kind: "purge_deleted_archives" } | { kind: "deliver_alerts" }
+  /** Every minute: lift suspensions and chat timeouts that have run out (ADR 0014). */
+  | { kind: "lift_expired" };
 /**
  * Questions-service jobs (ADR 0002). `generate_set` builds and seals the set when the party is
  * created (curate: when the host asks for drafts) and publishes the set's state on

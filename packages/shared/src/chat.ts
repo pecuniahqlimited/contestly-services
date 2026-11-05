@@ -191,6 +191,8 @@ export interface DmFacts {
   shareCrew: boolean;
   /** The recipient joined a party the sender hosted (what lets a brand write). */
   joinedSendersParty: boolean;
+  /** Either has blocked the other (ADR 0014): nothing gets through, not even a request. */
+  blocked: boolean;
 }
 
 /**
@@ -200,7 +202,7 @@ export interface DmFacts {
  * Row 11's blocks refuse here too.
  */
 export function dmPermission(f: DmFacts): DmPermission {
-  if (f.recipient.isDeleted) return "refused";
+  if (f.recipient.isDeleted || f.blocked) return "refused";
   if (f.sender.isGuest || f.recipient.isGuest || f.sender.isSystem || f.recipient.isSystem) return "refused";
   if (f.sender.isBrand) return f.joinedSendersParty ? "direct" : "refused";
   if (f.contacts || f.playedTogether || f.shareCrew) return "direct";
