@@ -61,7 +61,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const [[summary], invitedBy, hostCorner] = await Promise.all([partySummaries([p], me?.id), pendingInviter(p.id, me?.id), hostCornerOf(publicHostId(p), me?.id)]);
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
     const threadId = await partyThreadId(db, p.id);
-    const { messages } = await messagesPage(threadId, { limit: PARTY_DETAIL_CHAT_LINES });
+    const { messages } = await messagesPage(threadId, { limit: PARTY_DETAIL_CHAT_LINES, viewerId: me?.id });
     return { ...summary, brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, hostCorner, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages };
   });
 

@@ -1,17 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, ilike, inArray, or, type SQL } from "drizzle-orm";
 import {
-  archivedCrewInvites, archivedFollows, climbAwards, corners, cornersAfterStandingChange, crews, climbWeeks, db, ledger, parties, partyPlayers, recordAdminAction, unbanUser, userIdentities, users,
+  archivedCrewInvites, archivedFollows, climbAwards, corners, crews, climbWeeks, db, ledger, liftChatTimeout, parties, partyPlayers, recordAdminAction, setChatTimeout, unbanUser, userIdentities, users,
 } from "@contestly/db";
-import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
 import {
-  adminBanRequestResponseSchema, adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema, adminUserSearchSchema, normalisePhone, type AdminEvent,
+  adminBanBodySchema, adminBanRequestResponseSchema, adminLedgerPageSchema, adminLedgerQuerySchema, adminReasonBodySchema, adminTimedBodySchema, adminUserDetailSchema, adminUserSearchResponseSchema,
+  adminUserSearchSchema, normalisePhone,
 } from "@contestly/shared";
 import { sql } from "drizzle-orm";
 import { requireAdmin, uuidParam } from "../auth.js";
 import { adminUserRow } from "../adminViews.js";
 import { httpError } from "../httpError.js";
-import { valkey } from "../redis.js";
+import { afterBan, afterUnban } from "../standing.js";
 import { banOrRequestBan, confirmPaymentsAdminBan } from "@contestly/payments";
 
 const SEARCH_LIMIT = 20;
@@ -76,7 +76,7 @@ async function userDetail(id: string) {
   const connections = u.deletedAt ? await archivedConnections(id) : null;
   return adminUserDetailSchema.parse({
     user: {
-      ...adminUserRow(u), banReason: u.banReason, emailVerifiedAt: u.emailVerifiedAt?.toISOString() ?? null, phoneAdded: !!u.phoneVerifiedAt,
+      ...adminUserRow(u), banReason: u.banReason, bannedUntil: u.bannedUntil?.toISOString() ?? null, banCategory: u.banCategory, chatTimeoutUntil: u.chatTimeoutUntil?.toISOString() ?? null, emailVerifiedAt: u.emailVerifiedAt?.toISOString() ?? null, phoneAdded: !!u.phoneVerifiedAt,
       who: u.who, archetype: u.archetype, aboutVersion: u.aboutVersion, interests: u.interests, streakDays: u.streakDays,
     },
     identities: identities.map((i) => ({ provider: i.provider, externalId: i.externalId, createdAt: i.createdAt.toISOString(), disabledAt: i.disabledAt?.toISOString() ?? null })),
@@ -91,12 +91,6 @@ async function userDetail(id: string) {
     climbWeeks: weeks.map((w) => ({ week: w.week, points: w.points, bestRunStages: w.bestRunStages })),
     climbAwards: awards.map((a) => ({ id: a.id, week: a.week, place: a.place, amountKobo: a.amountKobo, status: a.status, paidAt: a.paidAt?.toISOString() ?? null })),
   });
-}
-
-/** Rooms drop a banned user (after the ban has committed). */
-async function publishBan(userId: string) {
-  const ev: AdminEvent = { kind: "user_banned", userId };
-  await valkey().publish(ADMIN_EVENTS_CHANNEL, JSON.stringify(ev));
 }
 
 export async function adminUsersRoutes(app: FastifyInstance) {
@@ -131,28 +125,60 @@ export async function adminUsersRoutes(app: FastifyInstance) {
    */
   app.post("/admin/users/:id/ban", async (req, reply) => {
     const admin = requireAdmin(req);
-    const { reason } = adminReasonBodySchema.parse(req.body);
+    const { reason, category } = adminBanBodySchema.parse(req.body);
     const id = uuidParam(req);
-    const out = await banOrRequestBan(admin.id, id, reason);
+    const out = await banOrRequestBan(admin.id, id, reason, { category });
     if ("banRequest" in out) return reply.code(202).send(adminBanRequestResponseSchema.parse(out));
-    await publishBan(id);
-    await cornersAfterStandingChange(id);
+    await afterBan(id);
     return userDetail(id);
   });
   app.post("/admin/users/ban-requests/:id/confirm", async (req) => {
     const admin = requireAdmin(req);
     const done = await confirmPaymentsAdminBan(admin.id, uuidParam(req));
-    await publishBan(done.userId);
-    await cornersAfterStandingChange(done.userId);
+    await afterBan(done.userId);
     return { ...adminBanRequestResponseSchema.parse({ banRequest: done }), user: await userDetail(done.userId) };
   });
 
-  app.post("/admin/users/:id/unban", async (req) => {
+  /**
+   * Suspend: a ban for `hours` (ADR 0014), with the same effects, lifted by the worker when it runs out. A payments
+   * admin's waits for a second admin (202), like a ban.
+   */
+  app.post("/admin/users/:id/suspend", async (req, reply) => {
+    const admin = requireAdmin(req);
+    const { reason, hours, category } = adminTimedBodySchema.parse(req.body);
+    const id = uuidParam(req);
+    const out = await banOrRequestBan(admin.id, id, reason, { until: new Date(Date.now() + hours * 3_600_000), category });
+    if ("banRequest" in out) return reply.code(202).send(adminBanRequestResponseSchema.parse(out));
+    await afterBan(id);
+    return userDetail(id);
+  });
+
+  /** Unban, or end a suspension early (the same: the account and its wallet open again; payments permissions don't come back). */
+  for (const path of ["unban", "unsuspend"]) {
+    app.post(`/admin/users/:id/${path}`, async (req) => {
+      const admin = requireAdmin(req);
+      const { reason } = adminReasonBodySchema.parse(req.body);
+      const id = uuidParam(req);
+      await unbanUser(admin.id, id, reason);
+      await afterUnban(id);
+      return userDetail(id);
+    });
+  }
+
+  /** No sending in party chat, DMs, crews or corner replies for `hours`. */
+  app.post("/admin/users/:id/chat-timeout", async (req) => {
+    const admin = requireAdmin(req);
+    const { reason, hours } = adminTimedBodySchema.parse(req.body);
+    const id = uuidParam(req);
+    await db.transaction((tx) => setChatTimeout(tx, { adminUserId: admin.id, action: "user.chat_timeout", reason }, id, new Date(Date.now() + hours * 3_600_000)));
+    return userDetail(id);
+  });
+  /** Lift a chat timeout, an admin's or the automatic one. */
+  app.post("/admin/users/:id/chat-timeout/lift", async (req) => {
     const admin = requireAdmin(req);
     const { reason } = adminReasonBodySchema.parse(req.body);
     const id = uuidParam(req);
-    await unbanUser(admin.id, id, reason);
-    await cornersAfterStandingChange(id);
+    await liftChatTimeout(admin.id, id, reason);
     return userDetail(id);
   });
 }

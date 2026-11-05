@@ -86,7 +86,7 @@ export async function recordContactMatches(userId: string, contactIds: string[])
 
 /**
  * Your people (ADR 0012): crew mates, matched contacts (either way), and people you've finished a party with
- * in the last `yourPeopleDays`. Never you, never a deleted account. The one source for the friends boards,
+ * in the last `yourPeopleDays`. Never you, never a deleted account, never someone blocked either way (ADR 0014). The one source for the friends boards,
  * mutuals, the lobby's "who's in", the feed and (row 9) nudges.
  */
 export async function yourPeople(userId: string, conn: Conn = db): Promise<Set<string>> {
@@ -100,7 +100,8 @@ export async function yourPeople(userId: string, conn: Conn = db): Promise<Set<s
       union select user_id from ${contactMatches} where contact_user_id = ${userId}
       union select case when user_a = ${userId} then user_b else user_a end from ${playedWith}
         where (user_a = ${userId} or user_b = ${userId}) and last_played_at >= ${since.toISOString()}::timestamptz
-    ) p join ${users} u on u.id = p.other where p.other <> ${userId} and u.deleted_at is null`);
+    ) p join ${users} u on u.id = p.other where p.other <> ${userId} and u.deleted_at is null
+      and not exists (select 1 from blocks bl where (bl.blocker_id = ${userId} and bl.blocked_id = p.other) or (bl.blocker_id = p.other and bl.blocked_id = ${userId}))`);
   return new Set((rows as unknown as { other: string }[]).map((r) => r.other));
 }
 
@@ -197,7 +198,7 @@ export async function feedFor(userIds: string[], opts: { before?: string; limit:
   const people = userIds.length ? and(ne(feedEvents.kind, "corner_post"), inArray(feedEvents.userId, userIds)) : undefined;
   const posts = cornerIds.length
     ? sql`(${feedEvents.kind} = 'corner_post' and exists (select 1 from corner_posts cp join corners c on c.id = cp.corner_id
-        where cp.id = ${feedEvents.cornerPostId} and cp.deleted_at is null and c.id in ${cornerIds} and c.status = 'unlocked' and c.archived_at is null
+        where cp.id = ${feedEvents.cornerPostId} and cp.deleted_at is null and cp.hidden_at is null and c.id in ${cornerIds} and c.status = 'unlocked' and c.archived_at is null
         and not exists (select 1 from users o where o.id = c.owner_user_id and (o.banned_at is not null or o.deleted_at is not null))))`
     : undefined;
   const rows = await db.select().from(feedEvents).where(and(or(people, posts), cursor, visible, live))

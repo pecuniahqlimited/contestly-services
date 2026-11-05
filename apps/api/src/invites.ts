@@ -4,7 +4,7 @@
  * MAX_INVITES_PER_PARTY per party. The invitee sees it in Chats › Parties until they join or dismiss it.
  */
 import { and, count, eq, inArray, or, sql } from "drizzle-orm";
-import { contactMatches, crewMembers, crews, db, liveUser, partyInvites, partyPlayers, playedWith, users, isHostTeam, type Party, type Tx, type User } from "@contestly/db";
+import { contactMatches, crewMembers, crews, db, liveUser, notBlockedWith, partyInvites, partyPlayers, playedWith, users, isHostTeam, type Party, type Tx, type User } from "@contestly/db";
 import { APP_LINK_SCHEME, MAX_INVITES_PER_PARTY, type PartyLinks } from "@contestly/shared";
 import { personColumns } from "./people.js";
 
@@ -15,9 +15,12 @@ export const partyLinks = (partyId: string): PartyLinks => ({ app: `${APP_LINK_S
 
 const httpError = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
 
-/** Of `ids`, the people `userId` has as contacts (either way), has finished a party with, or shares a crew with. Crew invites use it too. */
+/**
+ * Of `ids`, the people `userId` has as contacts (either way), has finished a party with, or shares a crew with, and
+ * hasn't blocked or been blocked by (ADR 0014). Crew invites use it too.
+ */
 export async function connectedTo(q: Tx | typeof db, userId: string, ids: string[]): Promise<Set<string>> {
-  const rows = await q.select({ id: users.id }).from(users).where(and(inArray(users.id, ids), eq(users.isGuest, false), liveUser, or(
+  const rows = await q.select({ id: users.id }).from(users).where(and(inArray(users.id, ids), eq(users.isGuest, false), liveUser, notBlockedWith(userId, users.id), or(
     sql`exists (select 1 from ${contactMatches} m where (m.user_id = ${userId} and m.contact_user_id = ${users.id}) or (m.user_id = ${users.id} and m.contact_user_id = ${userId}))`,
     sql`exists (select 1 from ${playedWith} w where (w.user_a = ${userId} and w.user_b = ${users.id}) or (w.user_a = ${users.id} and w.user_b = ${userId}))`,
     sql`exists (select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id

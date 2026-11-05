@@ -180,7 +180,7 @@ describe("a deleted account", () => {
     expect(await db.select().from(crewInvites).where(eq(crewInvites.inviteeId, gone.id))).toEqual([]);
     expect(await db.select().from(crewInvites).where(eq(crewInvites.inviterId, gone.id))).toEqual([]);
     expect((await app.inject({ method: "GET", url: "/me/crew-invites", headers: as(friend) })).json()).toEqual([]);
-    expect(await resolveMentions(`hey @${gone.handle} @${deletedHandle}`)).toEqual([]);
+    expect(await resolveMentions(`hey @${gone.handle} @${deletedHandle}`, friend.id)).toEqual([]);
     const contacts = await app.inject({ method: "POST", url: "/me/contacts/match", headers: as(friend), payload: { hashes: [await phoneHash(gonePhone)] } });
     expect(contacts.json().matches).toEqual([]);
   });

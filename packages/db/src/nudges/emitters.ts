@@ -146,7 +146,7 @@ export async function emitCornerParty(partyId: string, hostId: string): Promise<
   for (const f of followers) {
     const r = await nudge(db, {
       userId: f.id, kind: "corner_party", data: { partyId: p.id, title: p.title, cornerId: c.id, cornerName: c.name }, ref: { type: "corner", id: c.id },
-      dedupeKey: `corner_party:${p.id}`,
+      dedupeKey: `corner_party:${p.id}`, about: [hostId],
     });
     if (r === "recorded") n++;
   }
@@ -158,7 +158,7 @@ export async function emitHostCancelled(partyId: string, toUserIds: string[], en
   const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
   if (!p) return 0;
   for (const userId of toUserIds) {
-    await nudge(db, { userId, kind: "host_cancelled", data: { partyId: p.id, title: p.title, entryBack }, ref: { type: "party", id: p.id }, dedupeKey: `host_cancelled:${p.id}` });
+    await nudge(db, { userId, kind: "host_cancelled", data: { partyId: p.id, title: p.title, entryBack }, ref: { type: "party", id: p.id }, dedupeKey: `host_cancelled:${p.id}`, about: [p.createdByUserId] });
   }
   return toUserIds.length;
 }
@@ -257,7 +257,7 @@ export async function emitHeadToHeadRivals(tx: Tx, partyId: string): Promise<num
     const w = await personOf(winner);
     await nudge(tx, {
       userId: loser, kind: "rival", data: { by: "head_to_head", rivalHandle: w.handle, rivalName: w.name, them: winnerWins, you: loserWins },
-      ref: { type: "party", id: partyId }, dedupeKey: `rival:h2h:${partyId}:${winner}`,
+      ref: { type: "party", id: partyId }, dedupeKey: `rival:h2h:${partyId}:${winner}`, about: [winner],
     });
     n++;
   }
@@ -279,7 +279,7 @@ export async function emitClimbRivals(tx: Tx, run: { id: string; userId: string;
   for (const b of bests.filter((x) => x.best > 0 && prev.best <= x.best && x.best < run.stagesCleared)) {
     await nudge(tx, {
       userId: b.userId, kind: "rival", data: { by: "climb", rivalHandle: runner.handle, rivalName: runner.name, stage: run.stagesCleared },
-      dedupeKey: `rival:climb:${run.id}`,
+      dedupeKey: `rival:climb:${run.id}`, about: [run.userId],
     });
     n++;
   }

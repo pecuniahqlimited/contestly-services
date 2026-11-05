@@ -8,6 +8,7 @@ import { and, asc, count, desc, eq, inArray, isNull, lt, ne, or, sql, type SQL }
 import {
   cornerMutes, cornerNewPlayers, cornerParties, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, currentCornerConfig, db, follows, getChatConfig,
   getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, refreshDefaultLane, simVisibleTo, type Corner, type User,
+  assertCanChat, blockedEitherWay, cleanName, cleanOptionalName, notBlockedWith, visibleAuthorTo,
 } from "@contestly/db";
 import { notifyQueue, valkeyCounter } from "@contestly/queue";
 import {
@@ -129,12 +130,13 @@ const SUGGESTION_POOL = 500;
 
 /**
  * Corners to follow (interim, until row 7): shown corners in the viewer's lanes by followers, then the most
- * followed others, leaving out their own and those they follow; never empty while any corner is shown.
+ * followed others, leaving out their own, those they follow and those of anyone blocked either way; never empty
+ * while any corner is shown.
  */
 export async function suggestedCorners(viewer: User | undefined, limit: number): Promise<SuggestedCorners> {
   const n = sql<number>`(select count(*) from ${follows} f join ${users} fu on fu.id = f.follower_id and fu.deleted_at is null where f.corner_id = ${corners.id})`.mapWith(Number);
   const pool = await db.select({ c: corners, owner: personColumns, followers: n }).from(corners).innerJoin(users, eq(users.id, corners.ownerUserId))
-    .where(and(cornerShown, simVisibleTo(viewer, corners.isSim))).orderBy(desc(n), asc(corners.unlockedAt), asc(corners.id)).limit(SUGGESTION_POOL);
+    .where(and(cornerShown, simVisibleTo(viewer, corners.isSim), viewer ? notBlockedWith(viewer.id, corners.ownerUserId) : undefined)).orderBy(desc(n), asc(corners.unlockedAt), asc(corners.id)).limit(SUGGESTION_POOL);
   const followed = new Set(viewer ? (await db.select({ id: follows.cornerId }).from(follows).where(eq(follows.followerId, viewer.id))).map((r) => r.id) : []);
   const lanes = new Set<string>(viewer?.interests ?? []);
   const open = pool.filter((r) => r.c.ownerUserId !== viewer?.id && !followed.has(r.c.id));
@@ -205,7 +207,7 @@ export async function createPost(me: User, cornerId: string, text: string) {
 
 async function livePost(postId: string) {
   const [row] = await db.select({ p: cornerPosts }).from(cornerPosts).innerJoin(corners, eq(corners.id, cornerPosts.cornerId))
-    .where(and(eq(cornerPosts.id, postId), isNull(cornerPosts.deletedAt), cornerShown));
+    .where(and(eq(cornerPosts.id, postId), isNull(cornerPosts.deletedAt), isNull(cornerPosts.hiddenAt), cornerShown));
   if (!row) throw httpError(404, "not_found");
   return row.p;
 }
@@ -217,10 +219,11 @@ export async function deletePost(me: User, postId: string) {
   return { deleted: true };
 }
 
-/** Followers (and the owner) may react and reply. */
+/** Followers (and the owner) may react and reply; never someone blocked either way with the owner (ADR 0014), who sees not_found. */
 async function assertMayTakePart(me: User, cornerId: string) {
   const [c] = await db.select({ ownerUserId: corners.ownerUserId }).from(corners).where(eq(corners.id, cornerId));
   if (c.ownerUserId === me.id) return;
+  if (await blockedEitherWay(db, me.id, c.ownerUserId)) throw httpError(404, "not_found");
   if (!(await followOf(me.id, cornerId))) throw httpError(403, "follow_to_take_part");
 }
 
@@ -255,6 +258,7 @@ export async function reply(me: User, postId: string, text: string, clientMsgId:
   await assertMayTakePart(me, post.cornerId);
   const [dup] = await db.select().from(cornerPostReplies).where(and(eq(cornerPostReplies.userId, me.id), eq(cornerPostReplies.clientMsgId, clientMsgId)));
   if (dup) return { reply: await replyView(dup.id), duplicate: true };
+  await assertCanChat(db, me.id);
   const limited = await chatRateCheck((counter ??= valkeyCounter(valkey())), me.id, await getChatConfig());
   if (limited) throw rateLimited("rate_limited", limited.retryAfter, "chat");
   const muted = await isMuted(post.cornerId, me.id);
@@ -282,23 +286,14 @@ export async function deleteReply(me: User, replyId: string) {
   return { deleted: true };
 }
 
-/** Anyone who can see a reply can report it: it goes to the moderation queue (one item per reply, every report kept). */
-export async function reportReply(me: User, replyId: string, reason: string | undefined) {
-  const [r] = await db.select({ r: cornerPostReplies }).from(cornerPostReplies).innerJoin(cornerPosts, eq(cornerPosts.id, cornerPostReplies.postId))
-    .innerJoin(corners, eq(corners.id, cornerPosts.cornerId)).where(and(eq(cornerPostReplies.id, replyId), isNull(cornerPostReplies.deletedAt), cornerShown));
-  if (!r || (r.r.muted && r.r.userId !== me.id)) throw httpError(404, "not_found");
-  const report = { by: me.id, reason: reason ?? null, at: new Date().toISOString() };
-  await db.insert(moderationItems).values({ kind: "corner_reply", refId: replyId, userId: r.r.userId, transcript: r.r.text, detail: { reports: [report] } })
-    .onConflictDoUpdate({
-      target: [moderationItems.kind, moderationItems.refId],
-      set: { detail: sql`jsonb_set(coalesce(${moderationItems.detail}, '{}'::jsonb), '{reports}', coalesce(${moderationItems.detail} -> 'reports', '[]'::jsonb) || ${JSON.stringify([report])}::jsonb)` },
-    });
-  return { reported: true };
-}
-
-/** What the viewer may see of a corner's replies: not deleted, and not muted unless they wrote it. */
+/**
+ * What the viewer may see of a corner's replies: not deleted, held or removed, not muted unless they wrote it, and
+ * not by someone hidden from them (blocked either way, or muted by them; ADR 0014).
+ */
 const visibleReply = (viewerId: string | undefined) =>
-  and(isNull(cornerPostReplies.deletedAt), viewerId ? or(eq(cornerPostReplies.muted, false), eq(cornerPostReplies.userId, viewerId)) : eq(cornerPostReplies.muted, false));
+  and(isNull(cornerPostReplies.deletedAt), isNull(cornerPostReplies.hiddenAt), viewerId
+    ? and(or(eq(cornerPostReplies.muted, false), eq(cornerPostReplies.userId, viewerId)), visibleAuthorTo(viewerId, cornerPostReplies.userId))
+    : eq(cornerPostReplies.muted, false));
 
 /** Posts as the viewer sees them: reaction counts (a muted follower's only for themselves), their reaction, reply count and the newest replies. */
 async function postViews(posts: (typeof cornerPosts.$inferSelect)[], viewerId: string | undefined): Promise<CornerPost[]> {
@@ -314,7 +309,8 @@ async function postViews(posts: (typeof cornerPosts.$inferSelect)[], viewerId: s
         select r.id, r.post_id, r.text, r.created_at, u.id as uid, u.handle, u.display_name, u.avatar_emoji, u.is_verified,
           row_number() over (partition by r.post_id order by r.created_at desc) as n
         from ${cornerPostReplies} r join ${users} u on u.id = r.user_id
-        where r.post_id in ${ids} and r.deleted_at is null and (not r.muted ${viewerId ? sql`or r.user_id = ${viewerId}` : sql``})
+        where r.post_id in ${ids} and r.deleted_at is null and r.hidden_at is null and (not r.muted ${viewerId ? sql`or r.user_id = ${viewerId}` : sql``})
+          ${viewerId ? sql`and ${visibleAuthorTo(viewerId, sql`r.user_id`)}` : sql``}
       ) x where n <= ${POST_REPLIES_INLINE} order by created_at asc`),
   ]);
   type Row = { id: string; post_id: string; text: string; created_at: Date | string; uid: string; handle: string; display_name: string; avatar_emoji: string; is_verified: boolean };
@@ -348,7 +344,7 @@ export async function postsPage(cornerId: string, viewerId: string | undefined, 
     if (!b) throw httpError(400, "bad_cursor");
     cursor = or(lt(cornerPosts.createdAt, b.createdAt), and(eq(cornerPosts.createdAt, b.createdAt), lt(cornerPosts.id, b.id)));
   }
-  const rows = await db.select().from(cornerPosts).where(and(eq(cornerPosts.cornerId, cornerId), isNull(cornerPosts.deletedAt), cursor))
+  const rows = await db.select().from(cornerPosts).where(and(eq(cornerPosts.cornerId, cornerId), isNull(cornerPosts.deletedAt), isNull(cornerPosts.hiddenAt), cursor))
     .orderBy(desc(cornerPosts.createdAt), desc(cornerPosts.id)).limit(opts.limit + 1);
   const page = rows.slice(0, opts.limit);
   return { posts: await postViews(page, viewerId), before: rows.length > opts.limit ? page.at(-1)!.id : null };
@@ -441,7 +437,7 @@ export async function updateMyCorner(me: User, body: CornerUpdate) {
     if (!c || c.status !== "unlocked") throw httpError(409, "corner_not_unlocked");
     const lane = body.lane === undefined ? {} : body.lane === null ? { laneChosenAt: null } : { lane: body.lane, laneChosenAt: new Date() };
     await tx.update(corners).set({
-      ...(body.name ? { name: body.name } : {}), ...(body.bio !== undefined ? { bio: body.bio } : {}), ...(body.color ? { color: body.color } : {}), ...lane,
+      ...(body.name ? { name: await cleanName("cornerName", body.name, tx) } : {}), ...(body.bio !== undefined ? { bio: await cleanOptionalName("cornerBio", body.bio) } : {}), ...(body.color ? { color: body.color } : {}), ...lane,
     }).where(eq(corners.id, c.id));
     if (body.lane === null) await refreshDefaultLane(tx, me.id);
     return myCorner((await cornerOf(tx, me.id))!);

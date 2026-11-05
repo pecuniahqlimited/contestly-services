@@ -15,8 +15,11 @@ export class NoCredentials extends Unauthorized {}
 export class AccountGone extends Unauthorized { constructor() { super(ACCOUNT_GONE); } }
 
 /** A banned account can't sign in, join, host or play: every door calls this (API sessions, sign-in, rooms). */
-export function assertNotBanned(user: Pick<User, "bannedAt">): void {
-  if (isBanned(user)) throw Object.assign(new Error(ACCOUNT_BANNED), { statusCode: 403 });
+export function assertNotBanned(user: Pick<User, "bannedAt"> & Partial<Pick<User, "bannedUntil" | "banCategory">>): void {
+  if (!isBanned(user)) return;
+  // What the banned screen shows (bannedDetailsSchema): the category and a suspension's end, never the admin's note.
+  const details = { category: user.banCategory ?? null, until: user.bannedUntil?.toISOString() ?? null };
+  throw Object.assign(new Error(ACCOUNT_BANNED), { statusCode: 403, details });
 }
 
 export interface Session {

@@ -7,9 +7,10 @@
  */
 import colyseus from "colyseus";
 import type { Client, Delayed } from "colyseus";
-import { ADMIN_EVENTS_CHANNEL } from "@contestly/queue";
-import { ACCOUNT_BANNED, ACCOUNT_GONE, MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES, type AdminEvent } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL, SAFETY_EVENTS_CHANNEL } from "@contestly/queue";
+import { ACCOUNT_BANNED, ACCOUNT_GONE, MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES, type AdminEvent, type ChatMessage, type SafetyEvent } from "@contestly/shared";
 import { MessageCap, messageCapFromEnv, type MessageCapConfig } from "./messageCap.js";
+import { hiddenAuthors, type HiddenAuthors } from "./hiddenAuthors.js";
 const { Room } = colyseus;
 
 /** What a client is told when its message failed on the server. Never the error itself. */
@@ -47,6 +48,32 @@ export abstract class SafeRoom extends Room {
       }
     }));
   }
+
+  /**
+   * Safety events (ADR 0014): a block or mute changed (who's hidden from whom is reloaded), or a line was held or
+   * removed (`onLineHidden` decides who hears it). Call from onCreate.
+   */
+  protected listenForSafetyEvents(onLineHidden: (threadId: string, messageId: string) => void) {
+    this.presence.subscribe(SAFETY_EVENTS_CHANNEL, this.onSafety = (raw: unknown) => this.run("safety event", () => {
+      const ev = (typeof raw === "string" ? JSON.parse(raw) : raw) as SafetyEvent;
+      if (ev.kind === "people_hidden") this.hidden.forget(ev.userIds);
+      if (ev.kind === "line_hidden") onLineHidden(ev.threadId, ev.messageId);
+    }));
+  }
+  private onSafety?: (raw: unknown) => void;
+
+  /** Drop the safety subscription (from onDispose). */
+  protected stopSafetyEvents() {
+    if (this.onSafety) this.presence.unsubscribe(SAFETY_EVENTS_CHANNEL, this.onSafety);
+  }
+
+  /** A chat line to each of these clients who may see it: never one by someone blocked either way with them or muted by them. */
+  protected async deliverLine(clients: Iterable<Client>, line: ChatMessage) {
+    for (const c of [...clients]) if (await this.hidden.sees(this.userIdOf(c), line.author?.id)) c.send(MSG.chatMessage, line);
+  }
+
+  /** Whose lines each person doesn't see (the process's cache; a test room passes its own). */
+  protected readonly hidden: HiddenAuthors = hiddenAuthors;
 
   /** Users removed from this room (banned or deleted): never let back in by reconnection. */
   protected readonly removed = new Set<string>();

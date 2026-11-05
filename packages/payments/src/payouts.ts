@@ -367,8 +367,7 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
     if (row.status !== "requested") return false;
     const blocked = withdrawBlockReason(u, await withdrawContext(tx, u));
     if (blocked) {
-      await tx.update(payouts).set({ status: "awaiting_approval", holdReason: `blocked:${blocked}`, updatedAt: now }).where(eq(payouts.id, p.id));
-      await adminAlert({ severity: "warning", kind: "payments.payout_held_blocked", subject: "A withdrawal is held: the account can't withdraw", dedupeKey: `payout_held_blocked:${p.id}`, refType: "payout", refId: p.id, details: { reason: blocked }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
+      await holdBlocked(tx, p.id, blocked, now);
       return false;
     }
     await tx.update(payouts).set({ status: "submitted", submittedAt: row.submittedAt ?? now, sendAttempts: row.sendAttempts + 1, lastSentAt: now, nextCheckAt: new Date(now.getTime() + 60_000), updatedAt: now }).where(eq(payouts.id, p.id));
@@ -377,6 +376,28 @@ export async function submitPayout(payoutId: string, now = new Date()): Promise<
   if (!go) return "unchanged";
   const answer = await send(p, account);
   return applyOutcome(payoutId, go > 1 ? onResend(answer) : answer, "send", now);
+}
+
+/** A requested withdrawal the account can no longer make waits for an admin (approve or reject), never reversed by itself. */
+async function holdBlocked(tx: Tx, payoutId: string, blocked: string, now: Date) {
+  await tx.update(payouts).set({ status: "awaiting_approval", holdReason: `blocked:${blocked}`, updatedAt: now }).where(eq(payouts.id, payoutId));
+  await adminAlert({ severity: "warning", kind: "payments.payout_held_blocked", subject: "A withdrawal is held: the account can't withdraw", dedupeKey: `payout_held_blocked:${payoutId}`, refType: "payout", refId: payoutId, details: { reason: blocked }, dedupeWindowSeconds: ONCE_PER_THING_SECONDS }, tx);
+}
+
+/**
+ * A ban or suspension committed (ADR 0014): their withdrawals not yet sent are held at once, the same hold the
+ * send would make, rather than waiting for the worker's next send. One already with the provider is left to finish.
+ * Returns how many were held.
+ */
+export async function holdWithdrawalsOf(userId: string, now = new Date()): Promise<number> {
+  return moneyTransaction(async (tx) => {
+    const u = await lockPerson(tx, userId);
+    const blocked = withdrawBlockReason(u, await withdrawContext(tx, u));
+    if (!blocked) return 0;
+    const open = await tx.select({ id: payouts.id }).from(payouts).where(and(eq(payouts.userId, userId), eq(payouts.status, "requested"))).orderBy(asc(payouts.id)).for("update");
+    for (const p of open) await holdBlocked(tx, p.id, blocked, now);
+    return open.length;
+  });
 }
 
 const send = (p: Payout, account: PayoutAccount) => ask(async () => {

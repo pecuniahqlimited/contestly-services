@@ -4,7 +4,7 @@
  * seated, the party's chat opens, invites go out, and the set starts building (ADR 0002).
  */
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
-import { takeSeat,
+import { takeSeat, cleanName,
   canOfferNonCashPrize, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles, partyInvites,
   partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Party, type Tx, type User,
 } from "@contestly/db";
@@ -50,7 +50,8 @@ async function copySources(tx: Tx, fromPartyId: string, toPartyId: string, uploa
   }
 }
 
-export async function createParty(me: User, body: CreatePartyInput, opts: CreateOptions = {}): Promise<Created> {
+export async function createParty(me: User, input: CreatePartyInput, opts: CreateOptions = {}): Promise<Created> {
+  const body = { ...input, title: await cleanName("partyTitle", input.title) };
   const startsAt = startsAtFor(body);
   // The server decides: the current limits, and whether this host may offer goods (canOfferNonCashPrize, the one place that says).
   const [cfg, host] = await Promise.all([getPartyConfig(), prospectiveHost(me.id)]);

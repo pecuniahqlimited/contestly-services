@@ -29,6 +29,8 @@ import { adminUsersRoutes } from "./routes/adminUsers.js";
 import { adminAlertsRoutes } from "./routes/adminAlerts.js";
 import { adminPartiesRoutes } from "./routes/adminParties.js";
 import { adminQuestionsRoutes } from "./routes/adminQuestions.js";
+import { safetyRoutes } from "./routes/safety.js";
+import { adminModerationRoutes } from "./routes/adminModeration.js";
 import { chatsRoutes } from "./routes/chats.js";
 import { crewsRoutes } from "./routes/crews.js";
 import { cornersRoutes } from "./routes/corners.js";
@@ -130,6 +132,8 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(adminPartiesRoutes);
   await app.register(adminQuestionsRoutes);
   await app.register(chatsRoutes);
+  await app.register(safetyRoutes);
+  await app.register(adminModerationRoutes);
   await app.register(crewsRoutes);
   await app.register(socialRoutes);
   await app.register(cornersRoutes);

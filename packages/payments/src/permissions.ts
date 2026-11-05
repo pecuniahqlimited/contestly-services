@@ -22,7 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import {
-  adminAlert, adminBanRequests, adminPermissions, banUserIn, CONFIG_HOLDER_FLOOR, configHolderCount, db, liveUser, lockPaymentPermissions as lockPermissions, paymentPermissionGrants, recordAdminAction, systemActorId, users,
+  adminAlert, adminBanRequests, adminPermissions, banUserIn, type BanTerms, CONFIG_HOLDER_FLOOR, configHolderCount, db, liveUser, lockPaymentPermissions as lockPermissions, paymentPermissionGrants, recordAdminAction, systemActorId, users,
   type AdminBanRequest, type PaymentPermissionGrant, type Tx, type User,
 } from "@contestly/db";
 import { OWN_TRANSACTION, SECOND_ADMIN_REQUIRED, type PaymentPermission } from "@contestly/shared";
@@ -144,7 +144,7 @@ export async function listPermissionGrants(limit: number) {
 // ---- Banning a payments admin: two admins ----
 
 const banRequestView = (b: AdminBanRequest) => ({
-  id: b.id, userId: b.userId, reason: b.reason, status: b.status, requestedBy: b.requestedByUserId, confirmedBy: b.confirmedByUserId,
+  id: b.id, userId: b.userId, reason: b.reason, until: iso(b.until), category: b.category, status: b.status, requestedBy: b.requestedByUserId, confirmedBy: b.confirmedByUserId,
   createdAt: b.createdAt.toISOString(), appliedAt: iso(b.appliedAt),
 });
 
@@ -153,18 +153,21 @@ const banRequestView = (b: AdminBanRequest) => ({
  * banUserIn); one that holds any becomes a request a different admin confirms. Decided inside the
  * transaction under the permissions lock, so a grant confirmed at the same moment can't slip past it.
  */
-export async function banOrRequestBan(adminUserId: string, userId: string, reason: string): Promise<{ banned: User } | { banRequest: ReturnType<typeof banRequestView> }> {
+export async function banOrRequestBan(adminUserId: string, userId: string, reason: string, terms: BanTerms = {}): Promise<{ banned: User } | { banRequest: ReturnType<typeof banRequestView> }> {
   if (adminUserId === userId) throw paymentsError(409, "cannot_ban_self");
   return db.transaction(async (tx) => {
     await lockPermissions(tx);
     const held = await currentOf(tx, userId);
-    if (!held.length) return { banned: await banUserIn(tx, adminUserId, userId, reason) };
-    return { banRequest: await requestBanIn(tx, adminUserId, userId, reason, held) };
+    if (!held.length) return { banned: await banUserIn(tx, adminUserId, userId, reason, terms) };
+    return { banRequest: await requestBanIn(tx, adminUserId, userId, reason, held, terms) };
   });
 }
 
-/** Ask to ban an admin who holds payments permissions. Nothing changes until a different admin confirms. */
-async function requestBanIn(tx: Tx, adminUserId: string, userId: string, reason: string, held: PaymentPermission[]) {
+/**
+ * Ask to ban (or suspend: `terms.until`; ADR 0014) an admin who holds payments permissions. Nothing changes until
+ * a different admin confirms.
+ */
+async function requestBanIn(tx: Tx, adminUserId: string, userId: string, reason: string, held: PaymentPermission[], terms: BanTerms) {
   const [target] = await tx.select().from(users).where(eq(users.id, userId)).for("no key update");
   if (!target || target.isSystem) throw paymentsError(404, "not_found");
   // Refused up front when it could never be confirmed; checked again at the confirm.
@@ -174,8 +177,8 @@ async function requestBanIn(tx: Tx, adminUserId: string, userId: string, reason:
   }
   const [open] = await tx.select({ id: adminBanRequests.id }).from(adminBanRequests).where(and(eq(adminBanRequests.userId, userId), eq(adminBanRequests.status, "awaiting_second_admin")));
   if (open) throw paymentsError(409, "ban_pending", { banRequestId: open.id });
-  const [b] = await tx.insert(adminBanRequests).values({ userId, reason, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
-  await recordAdminAction(tx, { adminUserId, action: "user.ban_requested", targetType: "user", targetId: userId, reason, before: null, after: { banRequestId: b.id, permissions: held } });
+  const [b] = await tx.insert(adminBanRequests).values({ userId, reason, until: terms.until ?? null, category: terms.category ?? null, status: "awaiting_second_admin", requestedByUserId: adminUserId }).returning();
+  await recordAdminAction(tx, { adminUserId, action: "user.ban_requested", targetType: "user", targetId: userId, reason, before: null, after: { banRequestId: b.id, permissions: held, until: iso(b.until) } });
   return banRequestView(b);
 }
 
@@ -198,7 +201,7 @@ export async function confirmPaymentsAdminBan(adminUserId: string, banRequestId:
       const holders = await configHolderCount(tx);
       if (holders - 1 < CONFIG_HOLDER_FLOOR) throw floorError(holders);
     }
-    await banUserIn(tx, adminUserId, b.userId, b.reason);
+    await banUserIn(tx, adminUserId, b.userId, b.reason, { until: b.until, category: b.category });
     const [done] = await tx.update(adminBanRequests).set({ status: "applied", confirmedByUserId: adminUserId, appliedAt: now }).where(eq(adminBanRequests.id, b.id)).returning();
     return banRequestView(done);
   });

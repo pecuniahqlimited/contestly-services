@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, or, sql } from "drizzle-orm";
-import { canWithdraw, db, liveUser, playedWith, users, ledger } from "@contestly/db";
+import { canWithdraw, cleanName, cleanOptionalName, db, liveUser, playedWith, users, ledger } from "@contestly/db";
 import { addEmailResponseSchema, addPhoneSchema, contactsMatchSchema, emailStartResponseSchema, emailStartSchema, emailVerifySchema, deleteAccountResponseSchema, deleteAccountSchema, deletionStatusSchema, guestNameSchema, upsertMeSchema } from "@contestly/shared";
 import { requireSession, requireUser } from "../auth.js";
 import { httpError } from "../httpError.js";
@@ -8,6 +8,11 @@ import { addPhone, matchContacts, myContacts } from "../phone.js";
 import { myParties } from "../myParties.js";
 import { personColumns } from "../people.js";
 import { publicUser } from "./users.js";
+
+/** Name and face through the name filter (ADR 0014): a slur anywhere is refused; milder words are masked, but refused in a handle. */
+async function cleanProfile<T extends { displayName: string; handle: string; bio?: string }>(body: T): Promise<T> {
+  return { ...body, handle: await cleanName("handle", body.handle), displayName: await cleanName("displayName", body.displayName), bio: await cleanOptionalName("bio", body.bio) };
+}
 import { deleteAccount, deletionStatus } from "../accountDeletion.js";
 import { withdrawContext } from "@contestly/payments";
 import { startAddEmail, verifyAddEmail } from "../signin/addEmail.js";
@@ -47,7 +52,7 @@ export async function meRoutes(app: FastifyInstance) {
   /** Name and face (and Me edits): display name, @handle, avatar, bio, interests. Signed-up accounts only. */
   app.post("/me", async (req) => {
     const me = requireUser(req);
-    const body = upsertMeSchema.parse(req.body);
+    const body = await cleanProfile(upsertMeSchema.parse(req.body));
     try {
       const [u] = await db.update(users).set(body).where(eq(users.id, me.id)).returning();
       return { ...publicUser(u), wallet: await ledger.balances(u.id) };
@@ -61,7 +66,7 @@ export async function meRoutes(app: FastifyInstance) {
   app.post("/me/guest", async (req) => {
     const me = requireSession(req);
     if (!me.isGuest) throw httpError(409, "not_a_guest");
-    const { displayName } = guestNameSchema.parse(req.body);
+    const displayName = await cleanName("displayName", guestNameSchema.parse(req.body).displayName);
     const [u] = await db.update(users).set({ displayName }).where(eq(users.id, me.id)).returning();
     return { ...publicUser(u), isGuest: true };
   });

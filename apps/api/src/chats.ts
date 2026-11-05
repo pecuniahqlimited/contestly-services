@@ -3,8 +3,8 @@
  * Parties. Lines are written only through postMessage (rooms) and systemLine; this file only reads, plus
  * publishing the API's own system lines to the room.
  */
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import { chatMembers, chatMessages, chatThreads, db, lineDeliveries, users, voiceNotes } from "@contestly/db";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { chatMembers, chatMessages, chatThreads, db, lineDeliveries, notBlockedWith, users, voiceNotes } from "@contestly/db";
 import { MY_RECENT_DAYS, UNREAD_CAP, type ChatMessage, type ChatPreview, type ChatUnread, type DmThread } from "@contestly/shared";
 import { personColumns } from "./people.js";
 import { valkey } from "./redis.js";
@@ -16,18 +16,18 @@ export async function publishLine(message: ChatMessage) {
 
 const capped = (n: unknown) => Math.min(Number(n), UNREAD_CAP);
 
-/** Lines after the member's last read, not their own. */
+/** Lines after the member's last read, not their own, not held or removed. */
 const unreadOf = (userId: string) =>
-  sql<number>`(select count(*) from ${chatMessages} x where x.thread_id = ${chatMembers.threadId} and x.created_at > ${chatMembers.lastReadAt} and x.user_id is distinct from ${userId})`;
+  sql<number>`(select count(*) from ${chatMessages} x where x.thread_id = ${chatMembers.threadId} and x.created_at > ${chatMembers.lastReadAt} and x.user_id is distinct from ${userId} and x.hidden_at is null)`;
 
-/** Each thread's last line, for list rows. */
+/** Each thread's last line that's still shown, for list rows. */
 export async function previews(threadIds: string[]): Promise<Map<string, ChatPreview>> {
   if (!threadIds.length) return new Map();
   const rows = await db.selectDistinctOn([chatMessages.threadId], {
     threadId: chatMessages.threadId, kind: chatMessages.kind, text: chatMessages.text, sticker: chatMessages.sticker, createdAt: chatMessages.createdAt,
     handle: users.handle, displayName: users.displayName, voiceDurationMs: voiceNotes.durationMs,
   }).from(chatMessages).leftJoin(users, eq(users.id, chatMessages.userId)).leftJoin(voiceNotes, eq(voiceNotes.id, chatMessages.voiceNoteId))
-    .where(inArray(chatMessages.threadId, threadIds)).orderBy(chatMessages.threadId, desc(chatMessages.createdAt));
+    .where(and(inArray(chatMessages.threadId, threadIds), isNull(chatMessages.hiddenAt))).orderBy(chatMessages.threadId, desc(chatMessages.createdAt));
   return new Map(rows.map((r) => [r.threadId, {
     author: r.handle && r.displayName ? { handle: r.handle, displayName: r.displayName } : null,
     kind: r.kind, text: r.text, sticker: r.sticker, voiceDurationMs: r.voiceDurationMs, createdAt: r.createdAt.toISOString(),
@@ -36,7 +36,8 @@ export async function previews(threadIds: string[]): Promise<Map<string, ChatPre
 
 /**
  * The viewer's DMs that have a line in them, newest first. `requests`: only the ones someone asked them
- * (Messages › Requests); otherwise everything else, their own pending requests included. Declined ones never show.
+ * (Messages › Requests); otherwise everything else, their own pending requests included. Declined ones never show,
+ * nor one with someone blocked either way (ADR 0014).
  */
 export async function dmThreads(userId: string, which: "messages" | "requests"): Promise<DmThread[]> {
   const other = sql`(select o.user_id from ${chatMembers} o where o.thread_id = ${chatThreads.id} and o.user_id <> ${userId})`;
@@ -45,7 +46,7 @@ export async function dmThreads(userId: string, which: "messages" | "requests"):
     .from(chatThreads)
     .innerJoin(chatMembers, and(eq(chatMembers.threadId, chatThreads.id), eq(chatMembers.userId, userId)))
     .innerJoin(users, sql`${users.id} = ${other}`)
-    .where(and(eq(chatThreads.kind, "dm"), sql`${chatThreads.lastMessageAt} is not null`, eq(chatMembers.state, which === "requests" ? "request" : "active")))
+    .where(and(eq(chatThreads.kind, "dm"), sql`${chatThreads.lastMessageAt} is not null`, eq(chatMembers.state, which === "requests" ? "request" : "active"), notBlockedWith(userId, users.id)))
     .orderBy(desc(chatThreads.lastMessageAt));
   const last = await previews(rows.map((r) => r.id));
   return rows.map((r) => ({

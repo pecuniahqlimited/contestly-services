@@ -11,6 +11,8 @@ import { chatMembers, chatMessages, chatThreads, crewMembers, crews, parties, pa
 import { areContacts, playedTogether as finishedAPartyTogether } from "./social.js";
 import { hostTeamOf } from "./host.js";
 import { resolveMentions } from "./mentions.js";
+import { blockedEitherWay, visibleAuthorTo } from "./safety/people.js";
+import { assertCanChat } from "./safety/standing.js";
 
 type Conn = Tx | typeof db;
 
@@ -63,7 +65,7 @@ const exists = (q: Conn, query: ReturnType<typeof sql>) => q.execute(sql`select 
 /** Loads the facts dmPermission() decides on. */
 export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient: Pick<User, "id" | "isGuest" | "isSystem" | "deletedAt">): Promise<DmPermission> {
   if (sender.id === recipient.id) return "refused";
-  const [contacts, playedTogether, shareCrew, joinedSendersParty] = await Promise.all([
+  const [contacts, playedTogether, shareCrew, joinedSendersParty, blocked] = await Promise.all([
     areContacts(q, sender.id, recipient.id),
     finishedAPartyTogether(q, sender.id, recipient.id),
     exists(q, sql`select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id
@@ -72,9 +74,10 @@ export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient
       ? q.select({ id: partyPlayers.partyId }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId))
         .where(and(eq(partyPlayers.userId, recipient.id), hostTeamOf(sender.id))).limit(1).then((r) => r.length > 0)
       : false,
+    blockedEitherWay(q, sender.id, recipient.id),
   ]);
   return dmPermission({
-    sender, recipient: { isGuest: recipient.isGuest, isSystem: recipient.isSystem, isDeleted: recipient.deletedAt !== null }, contacts, playedTogether, shareCrew, joinedSendersParty,
+    sender, recipient: { isGuest: recipient.isGuest, isSystem: recipient.isSystem, isDeleted: recipient.deletedAt !== null }, contacts, playedTogether, shareCrew, joinedSendersParty, blocked,
   });
 }
 
@@ -144,15 +147,19 @@ export async function messageById(q: Conn, id: string): Promise<ChatMessage> {
   return toWire(r as MessageRow);
 }
 
-/** One page of a thread, oldest first, ending just before `before` (a message id), and the cursor for the page before it. */
-export async function messagesPage(threadId: string, opts: { before?: string; limit: number }): Promise<{ messages: ChatMessage[]; before: string | null }> {
+/**
+ * One page of a thread as the viewer sees it, oldest first, ending just before `before` (a message id), and the
+ * cursor for the page before it. Never a held or removed line, nor one by someone hidden from the viewer
+ * (blocked either way, or muted by them; ADR 0014).
+ */
+export async function messagesPage(threadId: string, opts: { before?: string; limit: number; viewerId?: string }): Promise<{ messages: ChatMessage[]; before: string | null }> {
   let cursor;
   if (opts.before) {
     const [b] = await db.select({ createdAt: chatMessages.createdAt, id: chatMessages.id }).from(chatMessages).where(and(eq(chatMessages.id, opts.before), eq(chatMessages.threadId, threadId)));
     if (!b) throw chatError("bad_cursor", 400);
     cursor = or(lt(chatMessages.createdAt, b.createdAt), and(eq(chatMessages.createdAt, b.createdAt), lt(chatMessages.id, b.id)));
   }
-  const rows = await selectMessages(db).where(and(eq(chatMessages.threadId, threadId), cursor))
+  const rows = await selectMessages(db).where(and(eq(chatMessages.threadId, threadId), cursor, isNull(chatMessages.hiddenAt), opts.viewerId ? visibleAuthorTo(opts.viewerId, chatMessages.userId) : undefined))
     .orderBy(desc(chatMessages.createdAt), desc(chatMessages.id)).limit(opts.limit + 1);
   const more = rows.length > opts.limit;
   const page = rows.slice(0, opts.limit).reverse().map((r) => toWire(r as MessageRow));
@@ -255,6 +262,7 @@ export async function postMessage(input: PostInput, deps: PostDeps): Promise<Pos
 
   const mine = await memberOf(db, thread.id, sender.id);
   if (!mine) throw chatError("not_in_thread");
+  await assertCanChat(db, sender.id);
   if (thread.kind === "dm") await checkDm(thread, sender, mine, input, deps);
 
   let note: VoiceNote | undefined;
@@ -264,7 +272,7 @@ export async function postMessage(input: PostInput, deps: PostDeps): Promise<Pos
     if (!(await deps.voiceUploaded(note))) throw chatError("voice_not_uploaded", 409);
   }
   const text = input.text ? maskProfanity(input.text) : undefined;
-  const mentions = await resolveMentions(text);
+  const mentions = await resolveMentions(text, sender.id);
   const kind = note ? "voice" : input.sticker ? "sticker" : "text";
 
   return db.transaction(async (tx) => {

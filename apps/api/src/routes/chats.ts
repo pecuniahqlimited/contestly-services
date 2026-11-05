@@ -40,7 +40,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.get("/chats/:id/messages", async (req) => {
     const me = requireSession(req);
     const thread = await readableThread(uuidParam(req), me.id);
-    return messagesPage(thread.id, chatPageQuerySchema.parse(req.query ?? {}));
+    return messagesPage(thread.id, { ...chatPageQuerySchema.parse(req.query ?? {}), viewerId: me.id });
   });
 
   /** The viewer has read the thread up to now. */

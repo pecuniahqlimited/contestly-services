@@ -2,7 +2,7 @@ import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import {
   db, parties, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
-  emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, getAccountsConfig, currentEmailConfig } from "@contestly/db";
+  emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, cornersAfterStandingChange, liftExpiredSuspensions, getAccountsConfig, currentEmailConfig } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyHereKey, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
@@ -15,6 +15,7 @@ import { sendersFromEnv } from "@contestly/email";
 import { ALERT_DELIVERY_EVERY_MS, alertChannelsFromEnv, alertDeliveryConfigFromEnv, deliverAlerts } from "./alertDelivery.js";
 import { selectPushSender } from "./push/index.js";
 import "./payments.js";
+import { applyBanEffects, type BanEffectDeps } from "./banEffects.js";
 
 const connection = makeRedis();
 const pub = makeRedis();
@@ -145,6 +146,11 @@ const settleDeps: SettleDeps = {
   queueRecordProgress: (partyId, jobId) => partyJobs.add("record_progress", { kind: "record_progress", partyId }, { jobId }),
 };
 const settle = (partyId: string) => settleWith(settleDeps, partyId);
+const banDeps: BanEffectDeps = {
+  announceCancelled: (partyId, line) => announceCancelled(startDeps, partyId, line),
+  publishLine,
+  emitSeats: (ev) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev)),
+};
 
 /** Every minute, the sweep for any open party whose start job never ran. */
 const SWEEP_EVERY_MS = 60_000;
@@ -169,6 +175,11 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   if (d.kind === "watchdog") return watchdog(d.partyId, job.id);
   if (d.kind === "cancel_generation_failed") return cancelFailedGeneration(startDeps, d.partyId);
   if (d.kind === "admin_cancel") return adminCancel(d.partyId);
+  if (d.kind === "ban_effects") {
+    const out = await applyBanEffects(banDeps, d.userId);
+    console.log(`[safety] ban effects for ${d.userId}: ${out.cancelled} hosted cancelled, ${out.seatsFreed} seats refunded, ${out.withdrawalsHeld} withdrawals held`);
+    return out;
+  }
 }, { connection, prefix: QUEUE_PREFIX });
 await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "sweep", data: { kind: "sweep" } });
 
@@ -207,6 +218,10 @@ const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, asyn
   } else if (job.data.kind === "purge_voice_notes") {
     const out = await purgeVoiceNotes(store);
     if (out.unsent || out.expired) console.log(`[housekeeping] voice notes: ${out.unsent} unsent upload(s) deleted, ${out.expired} expired`);
+  } else if (job.data.kind === "lift_expired") {
+    const lifted = await liftExpiredSuspensions();
+    for (const id of lifted) await cornersAfterStandingChange(id);
+    if (lifted.length) console.log(`[safety] ${lifted.length} suspension(s) ran out and were lifted`);
   } else if (job.data.kind === "purge_deleted_archives") {
     const { deletedArchiveRetentionDays: days } = await getAccountsConfig();
     if (days === null) return; // shipped off: no period until the privacy policy sets one
@@ -215,6 +230,9 @@ const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, asyn
   }
 }, { connection, prefix: QUEUE_PREFIX });
 await housekeepingJobs.upsertJobScheduler("deliver_alerts", { every: ALERT_DELIVERY_EVERY_MS }, { name: "deliver_alerts", data: { kind: "deliver_alerts" } });
+/** Suspensions are lifted within a minute of running out (they stop counting as a ban at once; ADR 0014). */
+const LIFT_EXPIRED_EVERY_MS = 60_000;
+await housekeepingJobs.upsertJobScheduler("lift_expired", { every: LIFT_EXPIRED_EVERY_MS }, { name: "lift_expired", data: { kind: "lift_expired" } });
 
 /** Every day at 03:00 Lagos, when nobody's playing. */
 const PURGE_EMAIL_SENDS = "0 3 * * *";

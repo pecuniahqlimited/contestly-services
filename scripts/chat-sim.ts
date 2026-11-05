@@ -110,7 +110,7 @@ ok((await call(B, "GET", `/voice-notes/${up.voiceNoteId}`)).status === 404, "and
 const reused = await sendAC({ voiceNoteId: up.voiceNoteId });
 ok(!acked(reused) && reused.error === "voice_note_invalid", "a voice note is sent once");
 const transcript = await waitFor(async () => (await db.select().from(moderationItems).where(eq(moderationItems.refId, up.voiceNoteId)))[0], { tries: 40, everyMs: 250 });
-ok(!!transcript?.transcript && transcript.status === "pending", "the worker transcribes it into the moderation queue");
+ok(!!transcript?.transcript && transcript.status === "open", "the worker transcribes it into the moderation queue (open, ADR 0014)");
 
 // ---- 3. unread, history, mentions -----------------------------------------------------------
 

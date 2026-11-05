@@ -12,8 +12,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { and, desc, eq, isNull, lt } from "drizzle-orm";
-import { db, moneyTransaction, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User, adminAlert } from "@contestly/db";
-import { BELOW_MINIMUM, CURRENCY, EMAIL_REQUIRED, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, TOPUP_REFUSED, type TopupView } from "@contestly/shared";
+import { isWalletFrozen, db, moneyTransaction, getPaymentsConfig, ledger, topups, users, type Topup, type Tx, type User, adminAlert } from "@contestly/db";
+import { WALLET_FROZEN, BELOW_MINIMUM, CURRENCY, EMAIL_REQUIRED, LIMIT_REACHED, PAYMENTS_PAUSED, PROVIDER_UNAVAILABLE, SIGN_UP_REQUIRED, TOPUP_REFUSED, type TopupView } from "@contestly/shared";
 import { backoffMs, paymentsError, ONCE_PER_THING_SECONDS } from "./common.js";
 import { currentSettings } from "./settings.js";
 import { providerNamed } from "./providers/index.js";
@@ -50,6 +50,7 @@ export const START_GRACE_MS = 5 * 60_000;
  * have moved, so the row is failed at once with the reason and nothing keeps verifying it.
  */
 export async function createTopup(user: User, amountKobo: number, opts: CreateTopupOptions): Promise<Topup> {
+  if (isWalletFrozen(user)) throw paymentsError(403, WALLET_FROZEN);
   const email = topupEmail(user);
   const now = opts.now ?? new Date();
   const [settings, cfg] = await Promise.all([currentSettings(), getPaymentsConfig()]);
@@ -60,7 +61,8 @@ export async function createTopup(user: User, amountKobo: number, opts: CreateTo
   if (!provider.collection) throw paymentsError(409, "provider_not_configured", { provider: provider.name });
 
   const row = await moneyTransaction(async (tx) => {
-    await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for("no key update"); // one top-up start at a time per person (the daily cap holds), without blocking FK checks
+    const [me] = await tx.select({ bannedAt: users.bannedAt, bannedUntil: users.bannedUntil }).from(users).where(eq(users.id, user.id)).for("no key update"); // one top-up start at a time per person (the daily cap holds), without blocking FK checks
+    if (me && isWalletFrozen(me)) throw paymentsError(403, WALLET_FROZEN); // ADR 0014: a banned account's wallet takes nothing in
     const total = await topupsTodayKobo(tx, user.id, now);
     if (total + amountKobo > cfg.topup.dailyCapKobo) throw paymentsError(409, LIMIT_REACHED, { limit: "topup_daily", dailyCapKobo: cfg.topup.dailyCapKobo, usedKobo: total });
     const [t] = await tx.insert(topups).values({

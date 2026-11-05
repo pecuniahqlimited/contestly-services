@@ -29,6 +29,8 @@ export interface Limits {
   guestsPerIpPerHour: number;
   /** Not a limit: an admin alert (warning, code_sends_spike) when the codes sent in one clock hour, everyone together, pass this. */
   codeSendsAlertPerHour: number;
+  /** Reports filed per user per hour (POST /reports). */
+  reportsPerHour: number;
 }
 
 /**
@@ -48,6 +50,8 @@ export interface Limits {
  *   budget; 300 is generous for one CGNAT address (Firebase itself allows 100 new accounts per IP an hour
  *   by default, and that quota can be raised in its console, so ours mostly stops tokens minted
  *   elsewhere and brought to one address).
+ * - 20 reports per user an hour. Someone being harassed in a busy party can report every line they see; past
+ *   that it's someone using reports as a weapon, and holds count distinct reporters anyway.
  * - The code-send alert at 2,000 an hour across everyone: sends cost money and a sudden spike is either
  *   a launch moment or someone spraying addresses from many IPs; either way an admin should know.
  */
@@ -61,4 +65,5 @@ export const limitsFromEnv = (env = process.env): Limits => ({
   oauthPerIpPer10Min: int("RATE_LIMIT_OAUTH_PER_IP_PER_10_MIN", 120, env),
   guestsPerIpPerHour: int("RATE_LIMIT_GUESTS_PER_IP_PER_HOUR", 300, env),
   codeSendsAlertPerHour: int("ALERT_CODE_SENDS_PER_HOUR", 2000, env),
+  reportsPerHour: int("RATE_LIMIT_REPORTS_PER_HOUR", 20, env),
 });

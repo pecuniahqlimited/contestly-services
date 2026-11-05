@@ -16,7 +16,7 @@ import { as, clientAddress as ip, makeUser, tag, testApp } from "./harness.js";
 const HIGH = 100_000;
 const base: Limits = {
   userPerMinute: HIGH, ipPerMinute: HIGH, codeSendsPerIpPerHour: HIGH, codeSendsPerEmailPerHour: HIGH,
-  codeChecksPerIpPer10Min: HIGH, codeChecksPerEmailPer10Min: HIGH, oauthPerIpPer10Min: HIGH, guestsPerIpPerHour: HIGH, codeSendsAlertPerHour: HIGH,
+  codeChecksPerIpPer10Min: HIGH, codeChecksPerEmailPer10Min: HIGH, oauthPerIpPer10Min: HIGH, guestsPerIpPerHour: HIGH, codeSendsAlertPerHour: HIGH, reportsPerHour: HIGH,
 };
 const CADDY = "10.9.9.9";
 let general: Awaited<ReturnType<typeof testApp>>["app"];

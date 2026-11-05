@@ -2,12 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   cornerFollowAlertSchema, cornerFollowersQuerySchema, cornerMuteBodySchema, cornerPageQuerySchema, cornerPostBodySchema, cornerPostDetailSchema, cornerReactionBodySchema, cornerReplyBodySchema,
-  cornerReportBodySchema, cornerUpdateSchema, followerInviteOptionsSchema, followerInviteResultSchema, followerInviteSchema, suggestedCornersQuerySchema,
+  cornerUpdateSchema, followerInviteOptionsSchema, followerInviteResultSchema, followerInviteSchema, suggestedCornersQuerySchema,
 } from "@contestly/shared";
 import { askToFollow, followAskOptions } from "@contestly/db";
 import { requireUser, uuidParam } from "../auth.js";
 import {
-  cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postDetail, postsPage, progressOf, react, reply, repliesPage, reportReply, setAlerts, shownCorner,
+  cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postDetail, postsPage, progressOf, react, reply, repliesPage, setAlerts, shownCorner,
   unfollow, unmute, unreact, updateMyCorner, celebrationSeen, suggestedCorners,
 } from "../corners.js";
 
@@ -51,7 +51,6 @@ export async function cornersRoutes(app: FastifyInstance) {
     return res.code(out.duplicate ? 200 : 201).send(out);
   });
   app.delete("/corner-replies/:id", async (req) => deleteReply(requireUser(req), uuidParam(req)));
-  app.post("/corner-replies/:id/report", async (req) => reportReply(requireUser(req), uuidParam(req), cornerReportBodySchema.parse(req.body ?? {}).reason));
 
   /** The owner mutes a follower in their corner. The follower isn't told. */
   app.get("/corners/:id/mutes", async (req) => mutesOf(requireUser(req), uuidParam(req)));

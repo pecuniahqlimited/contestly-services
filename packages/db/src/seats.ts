@@ -6,9 +6,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq } from "drizzle-orm";
-import { HOST_MUST_CANCEL, NOT_IN_PARTY, PARTY_CLOSED, PARTY_LOCKED, leaveWindow, type ChatMessage } from "@contestly/shared";
+import { HOST_MUST_CANCEL, NOT_IN_PARTY, PARTY_CLOSED, PARTY_LOCKED, WALLET_FROZEN, leaveWindow, type ChatMessage } from "@contestly/shared";
 import type { Tx } from "./client.js";
-import { chatMembers, partyLeaves, partyPlayers, type Party } from "./schema.js";
+import { chatMembers, partyLeaves, partyPlayers, users, type Party } from "./schema.js";
+import { isWalletFrozen } from "./payable.js";
 import { isHostTeam } from "./host.js";
 import { partyThreadId, systemLine } from "./chat.js";
 import * as ledger from "./ledger.js";
@@ -18,8 +19,13 @@ type Seat = Pick<typeof partyPlayers.$inferSelect, "partyId" | "userId" | "entry
 /** The key a seat's entry was charged under. Seats from before leaving existed used one per party and player. */
 export const entryChargeKey = (s: Seat) => s.entryKey ?? `party_entry:${s.partyId}:${s.userId}`;
 
-/** Take a seat: charge the entry (bonus first, then cash; InsufficientFunds if short) and seat the player. */
+/**
+ * Take a seat: charge the entry (bonus first, then cash; InsufficientFunds if short) and seat the player. A frozen
+ * wallet (a banned or suspended account, ADR 0014) takes no entry, whichever door it came through.
+ */
 export async function takeSeat(tx: Tx, p: Pick<Party, "id">, userId: string, amountKobo: number) {
+  const [u] = await tx.select({ bannedAt: users.bannedAt, bannedUntil: users.bannedUntil }).from(users).where(eq(users.id, userId));
+  if (u && isWalletFrozen(u)) throw Object.assign(new Error(WALLET_FROZEN), { statusCode: 403 });
   const id = randomUUID();
   const entryKey = `party_entry:${id}`;
   const paid = await ledger.charge(tx, { userId, amountKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: entryKey });
@@ -54,11 +60,27 @@ export async function leaveSeat(tx: Tx, p: Party, user: { id: string; displayNam
   const window = leaveWindow(p, now);
   if (window === "closed") return { ok: false, status: 409, error: PARTY_CLOSED };
   if (window === "locked") return { ok: false, status: 409, error: PARTY_LOCKED };
+  return freeSeat(tx, p, seat, user, now);
+}
 
+/** The seat goes: its entry refunded as paid (keyed by the seat), the leave recorded, the party chat left, a line written. */
+async function freeSeat(tx: Tx, p: Party, seat: typeof partyPlayers.$inferSelect, user: { id: string; displayName: string }, now: Date): Promise<LeaveOutcome & { ok: true }> {
   const { toBonus, toCash } = await ledger.refund(tx, { chargeKey: entryChargeKey(seat), type: "party_leave_refund", refType: "party", refId: p.id, idempotencyKey: `party_leave_refund:${seat.id}` });
   await tx.delete(partyPlayers).where(eq(partyPlayers.id, seat.id));
   await tx.insert(partyLeaves).values({ entryId: seat.id, partyId: p.id, userId: user.id, joinedAt: seat.joinedAt, refundedBonusKobo: toBonus, refundedCashKobo: toCash, leftAt: now });
   await tx.delete(chatMembers).where(and(eq(chatMembers.threadId, await partyThreadId(tx, p.id)), eq(chatMembers.userId, user.id)));
   const line = await systemLine(tx, p.id, `${user.displayName} left`);
   return { ok: true, replayed: false, refund: { toBonusKobo: toBonus, toCashKobo: toCash }, taken: await seatsTaken(tx, p.id), line };
+}
+
+/**
+ * A banned or suspended player's seat in someone else's open party (ADR 0014): freed and refunded as paid, the
+ * leave's refund without its time lock (they can't be in the room anyway). Null when there's no seat, the party
+ * isn't open any more (live and finished parties keep their rules), or they're its host (their party is cancelled instead).
+ * Caller holds the party row lock.
+ */
+export async function removeSeat(tx: Tx, p: Party, user: { id: string; displayName: string }, now = new Date()) {
+  if (p.status !== "open" || isHostTeam(p, user.id)) return null;
+  const [seat] = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, user.id)));
+  return seat ? freeSeat(tx, p, seat, user, now) : null;
 }

@@ -13,7 +13,7 @@ type Conn = Tx | typeof db;
 export interface AdminActionInput {
   adminUserId: string;
   action: string;
-  targetType: "user" | "party" | "question" | "config" | "alert" | "payout" | "topup" | "payment_finalization" | "payment_recon_item" | "invariant" | "corner";
+  targetType: "user" | "party" | "question" | "config" | "alert" | "payout" | "topup" | "payment_finalization" | "payment_recon_item" | "invariant" | "corner" | "moderation_item";
   targetId: string;
   reason?: string | null;
   before?: unknown;
@@ -41,22 +41,28 @@ export async function adminActionsFor(filter: { targetType?: string; targetId?: 
 }
 
 const httpError = (statusCode: number, code: string) => Object.assign(new Error(code), { statusCode });
-const banState = (u: User) => ({ bannedAt: u.bannedAt?.toISOString() ?? null, banReason: u.banReason });
+const banState = (u: User) => ({ bannedAt: u.bannedAt?.toISOString() ?? null, bannedUntil: u.bannedUntil?.toISOString() ?? null, banCategory: u.banCategory, banReason: u.banReason });
+
+/** A ban (no end) or a suspension (until), and the reason category the banned screen names (ADR 0014). */
+export interface BanTerms { until?: Date | null; category?: string | null }
 
 /** Ban: the account can't sign in, join, host or play from now on. Admins can't ban themselves. */
-export async function banUser(adminUserId: string, userId: string, reason: string): Promise<User> {
-  return db.transaction((tx) => banUserIn(tx, adminUserId, userId, reason));
+export async function banUser(adminUserId: string, userId: string, reason: string, terms: BanTerms = {}): Promise<User> {
+  return db.transaction((tx) => banUserIn(tx, adminUserId, userId, reason, terms));
 }
 
 /** The ban, in the caller's transaction (a payments admin's ban is confirmed by a second admin: packages/payments). */
-export async function banUserIn(tx: Tx, adminUserId: string, userId: string, reason: string): Promise<User> {
+export async function banUserIn(tx: Tx, adminUserId: string, userId: string, reason: string, terms: BanTerms = {}): Promise<User> {
   if (adminUserId === userId) throw httpError(409, "cannot_ban_self");
   await lockPaymentPermissions(tx);
   const [u] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
   if (!u || u.isSystem) throw httpError(404, "not_found");
-  if (u.bannedAt) return u; // already banned: nothing changes, nothing logged
-  const [after] = await tx.update(users).set({ bannedAt: new Date(), banReason: reason }).where(eq(users.id, userId)).returning();
-  await recordAdminAction(tx, { adminUserId, action: "user.ban", targetType: "user", targetId: userId, reason, before: banState(u), after: banState(after) });
+  const until = terms.until ?? null;
+  // Already banned for good: nothing changes, nothing logged. A suspension can be lengthened, or made a ban.
+  if (u.bannedAt && !u.bannedUntil) return u;
+  if (u.bannedAt && u.bannedUntil && until && until <= u.bannedUntil) return u;
+  const [after] = await tx.update(users).set({ bannedAt: u.bannedAt ?? new Date(), bannedUntil: until, banReason: reason, banCategory: terms.category ?? "other" }).where(eq(users.id, userId)).returning();
+  await recordAdminAction(tx, { adminUserId, action: until ? "user.suspend" : "user.ban", targetType: "user", targetId: userId, reason, before: banState(u), after: banState(after) });
   await removePaymentPermissions(tx, adminUserId, userId, reason);
   return after;
 }
@@ -99,13 +105,14 @@ async function removePaymentPermissions(tx: Tx, adminUserId: string, userId: str
   });
 }
 
+/** Unban, or end a suspension early (unsuspend): the account and its wallet open again. Payments permissions don't come back (ADR 0013). */
 export async function unbanUser(adminUserId: string, userId: string, reason: string): Promise<User> {
   return db.transaction(async (tx) => {
     const [u] = await tx.select().from(users).where(eq(users.id, userId)).for("update");
     if (!u || u.isSystem) throw httpError(404, "not_found");
     if (!u.bannedAt) return u;
-    const [after] = await tx.update(users).set({ bannedAt: null, banReason: null }).where(eq(users.id, userId)).returning();
-    await recordAdminAction(tx, { adminUserId, action: "user.unban", targetType: "user", targetId: userId, reason, before: banState(u), after: banState(after) });
+    const [after] = await tx.update(users).set({ bannedAt: null, bannedUntil: null, banReason: null, banCategory: null }).where(eq(users.id, userId)).returning();
+    await recordAdminAction(tx, { adminUserId, action: u.bannedUntil ? "user.unsuspend" : "user.unban", targetType: "user", targetId: userId, reason, before: banState(u), after: banState(after) });
     return after;
   });
 }

@@ -9,6 +9,7 @@ import { MoneyInNudge, NUDGE_KINDS, renderNudge, type NudgeActor, type NudgeCont
 import { db, type Tx } from "../client.js";
 import { getNudgeConfig } from "../config.js";
 import { nudges } from "../schema.js";
+import { nudgeHiddenReason } from "../safety/people.js";
 
 type Conn = Tx | typeof db;
 
@@ -23,9 +24,11 @@ export type NudgeInput<K extends NudgeKind> = {
   batchKey?: string;
   /** Who it's about, for batched copy ("Ada and 2 others"). */
   actor?: NudgeActor;
+  /** Anyone else it's about (a host, a rival): with the actor, never sent to someone blocked either way with them or who muted them (ADR 0014). */
+  about?: string[];
   dueAt?: Date;
 };
-export type Recorded = "recorded" | "merged" | "duplicate" | "skipped_money";
+export type Recorded = "recorded" | "merged" | "duplicate" | "skipped_money" | "skipped_hidden";
 
 /** The guarded copy, or the unguarded copy and the fact it mentions money (kept on the skipped record). */
 function render<K extends NudgeKind>(kind: K, data: NudgeData[K], actors: NudgeActor[]): { content: NudgeContent; money: boolean } {
@@ -39,6 +42,16 @@ function render<K extends NudgeKind>(kind: K, data: NudgeData[K], actors: NudgeA
 
 export async function nudge<K extends NudgeKind>(conn: Conn, input: NudgeInput<K>, now = new Date()): Promise<Recorded> {
   const def = NUDGE_KINDS[input.kind] as NudgeKindDef<K>;
+  const hidden = await nudgeHiddenReason(conn, input.userId, [...(input.actor ? [input.actor.id] : []), ...(input.about ?? [])]);
+  if (hidden) {
+    // Kept as a skipped record (no batch or dedupe key, so it holds nothing up), so the log shows why.
+    const { content } = render(input.kind, input.data, input.actor ? [input.actor] : []);
+    await conn.insert(nudges).values({
+      userId: input.userId, kind: input.kind, category: def.category, refType: input.ref?.type, refId: input.ref?.id, data: input.data as Record<string, unknown>,
+      actors: input.actor ? [input.actor] : [], ...content, dueAt: now, status: "skipped", skipReason: hidden, decidedAt: now,
+    });
+    return "skipped_hidden";
+  }
   const batchKey = def.batchGap ? input.batchKey : undefined;
   if (batchKey) {
     const merged = await mergeIntoPending(conn, input, batchKey);

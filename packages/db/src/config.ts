@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
-  DEFAULT_ABOUT, DEFAULT_ACCOUNTS_CONFIG, DEFAULT_CHAT_CONFIG, DEFAULT_PAYMENTS_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_SOCIAL_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG, DEFAULT_NUDGE_CONFIG, nudgeConfigSchema,
+  DEFAULT_ABOUT, DEFAULT_ACCOUNTS_CONFIG, DEFAULT_CHAT_CONFIG, DEFAULT_PAYMENTS_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_SOCIAL_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG, DEFAULT_NUDGE_CONFIG, nudgeConfigSchema, DEFAULT_SAFETY_CONFIG, safetyConfigSchema,
   aboutConfigSchemaFor, accountsConfigSchema, chatConfigSchema, paymentsConfigSchema, climbSettingsSchema, socialConfigSchema, partyConfigSchema, questionsConfigSchema,
   type AboutAudience, type AboutConfig,
 } from "@contestly/shared";
@@ -69,6 +69,11 @@ export const setSocialConfig = social.set;
 const nudgeCfg = configEntry("nudges", nudgeConfigSchema, DEFAULT_NUDGE_CONFIG);
 export const getNudgeConfig = nudgeCfg.get;
 export const setNudgeConfig = nudgeCfg.set;
+
+/** Trust and safety (ADR 0014): report holds, the automatic chat timeout, ops' extra name-filter terms. */
+const safety = configEntry("safety", safetyConfigSchema, DEFAULT_SAFETY_CONFIG);
+export const getSafetyConfig = safety.get;
+export const setSafetyConfig = safety.set;
 
 export interface AboutConfigRow { audience: AboutAudience; version: number; config: AboutConfig; createdAt: Date }
 const asRow = (r: typeof aboutConfigs.$inferSelect): AboutConfigRow => ({ audience: r.audience as AboutAudience, version: r.version, config: r.config, createdAt: r.createdAt });

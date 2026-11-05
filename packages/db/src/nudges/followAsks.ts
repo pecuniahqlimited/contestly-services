@@ -1,7 +1,8 @@
 /**
  * A host asks recent players of their parties to follow their corner (from corner setup and the corner page).
  * Each player is asked at most once per corner, ever (the nudge's dedupe key), and a host asks at most
- * followAsksPerDay players a day (their own day). Only players who don't follow it yet and were never asked.
+ * followAsksPerDay players a day (their own day). Only players who don't follow it yet and were never asked,
+ * and never someone blocked either way with the host (ADR 0014).
  */
 import { and, count, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { startOfLocalDay, type NudgeConfig } from "@contestly/shared";
@@ -11,6 +12,7 @@ import { liveUser } from "../accounts.js";
 import { cornerShown } from "../corners.js";
 import { corners, follows, nudges, parties, partyPlayers, users, type User } from "../schema.js";
 import { nudge } from "./record.js";
+import { notBlockedWith } from "../safety/people.js";
 
 const DAY = 24 * 60 * 60_000;
 export const followAskKey = (cornerId: string) => `corner_follow_ask:${cornerId}`;
@@ -30,7 +32,7 @@ async function candidates(hostId: string, cornerId: string, cfg: NudgeConfig, no
     .from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).innerJoin(users, eq(users.id, partyPlayers.userId))
     .where(and(
       eq(parties.createdByUserId, hostId), eq(parties.status, "finished"), gt(parties.endedAt, since),
-      ne(users.id, hostId), eq(users.isGuest, false), liveUser, isNull(users.bannedAt),
+      ne(users.id, hostId), eq(users.isGuest, false), liveUser, isNull(users.bannedAt), notBlockedWith(hostId, users.id),
       sql`not exists (select 1 from ${follows} f where f.corner_id = ${cornerId} and f.follower_id = ${users.id})`,
       sql`not exists (select 1 from ${nudges} x where x.user_id = ${users.id} and x.dedupe_key = ${followAskKey(cornerId)})`,
     ))
@@ -69,7 +71,7 @@ export async function askToFollow(host: User, userIds: string[], now = new Date(
     for (const userId of ids) {
       await nudge(tx, {
         userId, kind: "corner_follow_ask", data: { cornerId: c.id, cornerName: c.name, hostName: host.displayName },
-        ref: { type: "corner", id: c.id }, dedupeKey: followAskKey(c.id),
+        ref: { type: "corner", id: c.id }, dedupeKey: followAskKey(c.id), about: [host.id],
       }, now);
     }
   });

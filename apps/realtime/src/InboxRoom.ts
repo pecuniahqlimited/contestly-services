@@ -14,7 +14,7 @@ import { MSG, SIGN_UP_REQUIRED, chatThreadChannel, chatUserChannel, inboxSendSch
 import { nudgeChannel } from "@contestly/queue";
 import { SafeRoom } from "./SafeRoom.js";
 import { firstSighting, parsePublished, sendLine } from "./chat.js";
-import type { ChatMessage } from "@contestly/shared";
+import type { ChatMessage, InboxUpdate } from "@contestly/shared";
 
 /** A user's devices share their inbox room. */
 const MAX_DEVICES = 10;
@@ -30,7 +30,11 @@ export class InboxRoom extends SafeRoom {
     return `inbox ${this.userId ?? "?"}`;
   }
 
-  private onInbox = (raw: unknown) => this.run("inbox update", () => this.broadcast(MSG.inbox, parsePublished(raw)));
+  /** A DM or crew line for this user's inbox, unless its author is hidden from them (ADR 0014). */
+  private onInbox = (raw: unknown) => this.run("inbox update", async () => {
+    const update = parsePublished<InboxUpdate>(raw);
+    if (await this.hidden.sees(this.userId, update.message.author?.id)) this.broadcast(MSG.inbox, update);
+  });
   private onNudge = (raw: unknown) => this.run("nudge", () => this.broadcast(MSG.nudge, parsePublished(raw)));
 
   onCreate(options: { userId?: string }) {
@@ -42,6 +46,10 @@ export class InboxRoom extends SafeRoom {
     this.presence.subscribe(chatUserChannel(this.userId), this.onInbox);
     this.presence.subscribe(nudgeChannel(this.userId), this.onNudge);
     this.listenForAdminEvents();
+    this.listenForSafetyEvents((threadId, messageId) => {
+      const w = this.watching.get(threadId);
+      if (w) for (const c of this.clients) if (w.sessions.has(c.sessionId)) c.send(MSG.chatHidden, { threadId, messageId });
+    });
 
     this.handle(MSG.chat, async (client, raw) => {
       const parsed = inboxSendSchema.safeParse(raw);
@@ -87,6 +95,7 @@ export class InboxRoom extends SafeRoom {
     this.presence.unsubscribe(nudgeChannel(this.userId), this.onNudge);
     for (const [threadId, w] of this.watching) this.presence.unsubscribe(chatThreadChannel(threadId), w.listener);
     this.watching.clear();
+    this.stopSafetyEvents();
   }
 
   /** A party thread is written from its room while the party is live; from here only before it and for a while after. */
@@ -103,10 +112,10 @@ export class InboxRoom extends SafeRoom {
     if (existing) return void existing.sessions.add(sessionId);
     const sessions = new Set([sessionId]);
     const first = firstSighting();
-    const listener = (raw: unknown) => this.run("thread line", () => {
+    const listener = (raw: unknown) => this.run("thread line", async () => {
       const line = parsePublished<ChatMessage>(raw);
       if (!first(line.id)) return; // a republished line
-      for (const c of this.clients) if (sessions.has(c.sessionId)) c.send(MSG.chatMessage, line);
+      await this.deliverLine(this.clients.filter((c) => sessions.has(c.sessionId)), line);
     });
     this.watching.set(threadId, { sessions, listener });
     this.presence.subscribe(chatThreadChannel(threadId), listener);

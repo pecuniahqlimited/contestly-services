@@ -8,14 +8,19 @@ import type { User } from "./schema.js";
 export const canBePaidCash = (u: Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "deletedAt">) =>
   !u.isSystem && !u.isGuest && !u.deletedAt && !!u.emailVerifiedAt;
 
-/** Banned by an admin (assertNotBanned refuses them at every door). */
-export const isBanned = (u: Pick<User, "bannedAt">) => !!u.bannedAt;
+type BanFields = Pick<User, "bannedAt"> & Partial<Pick<User, "bannedUntil">>;
 
 /**
- * A wallet nothing may leave. Today that's a banned account; row 11 (trust and safety) adds its own freeze
- * here, and every withdrawal (at request and again before it's sent) already asks.
+ * Banned or suspended by an admin (assertNotBanned refuses them at every door). A suspension counts until its
+ * end, even before the worker's sweep has lifted it (ADR 0014).
  */
-export const isWalletFrozen = (u: Pick<User, "bannedAt">) => isBanned(u);
+export const isBanned = (u: BanFields, now = new Date()) => !!u.bannedAt && (!u.bannedUntil || u.bannedUntil > now);
+
+/**
+ * A wallet nothing goes into or out of (ADR 0014): a banned or suspended account. Cash stays where it is.
+ * Asked by every withdrawal (at request and again before it's sent), top-up creation and taking a seat.
+ */
+export const isWalletFrozen = (u: BanFields) => isBanned(u);
 
 /** Withdrawals frozen by payments itself: a payout we reversed was paid after all, until an admin resolves it (ADR 0013). */
 export const isUnderPaymentReview = (u: Pick<User, "withdrawalsFrozenAt">) => !!u.withdrawalsFrozenAt;

@@ -58,7 +58,7 @@ export async function signIn(session: User | null, v: VerifiedSignIn): Promise<S
 
 /** The session token for the account a sign-in landed on: the guest's own uid, or the existing account's. */
 export async function withSessionToken(o: SignInOutcome): Promise<SignInResult> {
-  const [account] = await db.select({ bannedAt: users.bannedAt }).from(users).where(eq(users.id, o.userId));
+  const [account] = await db.select({ bannedAt: users.bannedAt, bannedUntil: users.bannedUntil, banCategory: users.banCategory }).from(users).where(eq(users.id, o.userId));
   assertNotBanned(account); // a banned account can't be signed into, by any route
   const uid = await db.transaction((tx) => firebaseUidFor(o.userId, tx));
   return { customToken: await createCustomToken(uid), account: o.account };

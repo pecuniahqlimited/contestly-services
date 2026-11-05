@@ -131,6 +131,9 @@ export class PartyRoom extends SafeRoom {
     this.presence.subscribe(chatThreadChannel(this.thread.id), this.onLine);
 
     this.listenForAdminEvents();
+    this.listenForSafetyEvents((threadId, messageId) => {
+      if (threadId === this.thread.id) this.broadcast(MSG.chatHidden, { threadId, messageId });
+    });
 
     // Worker → realtime: party lifecycle events over Valkey, never HTTP.
     // RedisPresence JSON-parses published messages before invoking callbacks (LocalPresence doesn't),
@@ -181,9 +184,10 @@ export class PartyRoom extends SafeRoom {
   }
 
   private firstLine = firstSighting();
-  private onLine = (raw: unknown) => this.run("chat line", () => {
+  /** Each client gets the line unless its author is hidden from them (ADR 0014: filtered per recipient, on the server). */
+  private onLine = (raw: unknown) => this.run("chat line", async () => {
     const line = parsePublished<ChatMessage>(raw);
-    if (this.firstLine(line.id)) this.broadcast(MSG.chatMessage, line);
+    if (this.firstLine(line.id)) await this.deliverLine(this.clients, line);
   });
 
   /** Dev header or Firebase token, same as the API. Only seated players (and the creator) may enter the room. */
@@ -230,6 +234,7 @@ export class PartyRoom extends SafeRoom {
     this.heartbeat?.clear();
     this.run("presence: here", () => this.presence.del(partyHereKey(this.partyId)));
     if (this.thread) this.presence.unsubscribe(chatThreadChannel(this.thread.id), this.onLine);
+    this.stopSafetyEvents();
   }
 
   /**

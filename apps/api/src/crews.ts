@@ -6,7 +6,7 @@
  * leaves a line in the crew's chat; callers publish the returned lines after the reply.
  */
 import { and, asc, count, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
-import {
+import { cleanName,
   chatMembers, climbRuns, climbWeekResults, crewInvites, crewLine, crewMembers, crewThreadId, crews, db, getSocialConfig, joinThread, ladderAt,
   parties, partyPlayers, socialScores, users, type Crew, type Tx, type User,
 } from "@contestly/db";
@@ -56,8 +56,9 @@ async function invite(tx: Tx, crewId: string, inviter: User, ids: string[]): Pro
 const lockCrew = (tx: Tx, crewId: string) => tx.select({ id: crews.id }).from(crews).where(eq(crews.id, crewId)).for("update");
 
 export async function createCrew(me: User, input: CreateCrewInput) {
+  const name = await cleanName("crewName", input.name);
   return db.transaction(async (tx) => {
-    const [crew] = await tx.insert(crews).values({ name: input.name, emoji: input.emoji, color: input.color, createdByUserId: me.id }).returning();
+    const [crew] = await tx.insert(crews).values({ name, emoji: input.emoji, color: input.color, createdByUserId: me.id }).returning();
     await tx.insert(crewMembers).values({ crewId: crew.id, userId: me.id, role: "creator" });
     await joinThread(tx, await crewThreadId(tx, crew.id), me.id);
     const invited = await invite(tx, crew.id, me, input.inviteUserIds);
@@ -69,7 +70,7 @@ export async function createCrew(me: User, input: CreateCrewInput) {
 export async function updateCrew(me: User, crewId: string, patch: Partial<Pick<Crew, "name" | "emoji" | "color">>) {
   const { role } = await membership(db, crewId, me.id);
   if (role === "member") throw httpError(403, "crew_admins_only");
-  await db.update(crews).set(patch).where(eq(crews.id, crewId));
+  await db.update(crews).set({ ...patch, ...(patch.name ? { name: await cleanName("crewName", patch.name) } : {}) }).where(eq(crews.id, crewId));
 }
 
 export async function inviteToCrew(me: User, crewId: string, ids: string[]) {

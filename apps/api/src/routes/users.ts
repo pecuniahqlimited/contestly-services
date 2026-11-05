@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, asc, count, desc, eq, inArray, min, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { climbRuns, climbWeeks, db, dmPermissionBetween, liveUser, users, parties, partyPlayers, partiesHostedBy, yourPeople } from "@contestly/db";
+import { climbRuns, climbWeeks, db, dmPermissionBetween, liveUser, users, parties, partyPlayers, partiesHostedBy, viewerSafetyState, yourPeople } from "@contestly/db";
 import { currentStreak, feedQuerySchema, lagosDay, MAX_PROFILE_RECENT_PARTIES, type Person } from "@contestly/shared";
 import { requireUser } from "../auth.js";
 import { publicParty } from "../partyView.js";
@@ -93,13 +93,14 @@ export async function usersRoutes(app: FastifyInstance) {
       playingNow(u.id, me?.id),
       me && me.id !== u.id ? dmPermissionBetween(db, me, u) : null,
     ]);
+    const safety = me && me.id !== u.id ? await viewerSafetyState(me.id, u.id) : { blockedByYou: false, mutedByYou: false };
     const hosting = hosted.filter((p) => (p.status === "open" || p.status === "live") && (p.visibility === "public" || me?.id === u.id))
       .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime()).map(publicParty);
     return {
       ...publicUser(u),
       stats: { parties: Number(stats.parties), wins: Number(stats.wins), bestRank: stats.bestRank === null ? null : Number(stats.bestRank) },
       corner, headToHead: h2h, recent, hosting,
-      climb, streak: { current: currentStreak(u.lastPlayedOn, u.streakDays, lagosDay()), best: u.bestStreakDays }, mutuals: mutual, canMessage, playingNow: live,
+      climb, streak: { current: currentStreak(u.lastPlayedOn, u.streakDays, lagosDay()), best: u.bestStreakDays }, mutuals: mutual, canMessage, playingNow: live, ...safety,
     };
   });
 

@@ -6,7 +6,7 @@ describe("limitsFromEnv", () => {
     expect(limitsFromEnv({})).toEqual({
       userPerMinute: 600, ipPerMinute: 300, codeSendsPerIpPerHour: 500, codeSendsPerEmailPerHour: 5,
       codeChecksPerIpPer10Min: 200, codeChecksPerEmailPer10Min: 15, oauthPerIpPer10Min: 120, guestsPerIpPerHour: 300,
-      codeSendsAlertPerHour: 2000,
+      codeSendsAlertPerHour: 2000, reportsPerHour: 20,
     });
   });
   it("reads each from the environment, and refuses nonsense", () => {

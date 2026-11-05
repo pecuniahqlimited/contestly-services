@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql as dsql } from "drizzle-orm";
 import {
   adminActions, adminAlerts, becomeMember, nudges, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
-  follows, getChatConfig, moderationItems, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
+  follows, getChatConfig, moderationItems, reports, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
 import { DEFAULT_CHAT_CONFIG, DEFAULT_CORNER_UNLOCK, DEFAULT_SOCIAL_CONFIG, CORNER_COLORS, celebrationSeenSchema, cornerPostDetailSchema, lagosDay, myContactsSchema, myCornerSchema, suggestedCornersSchema, weekOf } from "@contestly/shared";
@@ -817,12 +817,13 @@ describe("host posts", () => {
     expect((await app.inject({ method: "PUT", url: `/corner-posts/${postId}/reaction`, headers: as(fan), payload: { emoji: "💩" } })).statusCode).toBe(400);
   });
 
-  it("a reply can be reported: one moderation item, every report kept", async () => {
+  it("a reply can be reported (the 6c route, now POST /reports underneath): one moderation item, every reporter kept", async () => {
     const replyId = (await say(fan, "report me")).json().reply.id;
-    for (const u of [outsider, owner]) expect((await app.inject({ method: "POST", url: `/corner-replies/${replyId}/report`, headers: as(u), payload: { reason: "spam" } })).json()).toEqual({ reported: true });
+    for (const u of [outsider, owner]) expect((await app.inject({ method: "POST", url: `/corner-replies/${replyId}/report`, headers: as(u), payload: { reason: "spam" } })).json()).toMatchObject({ reported: true, replayed: false });
     const [item] = await db.select().from(moderationItems).where(and(eq(moderationItems.kind, "corner_reply"), eq(moderationItems.refId, replyId)));
-    expect(item).toMatchObject({ userId: fan.id, transcript: "report me", status: "pending" });
-    expect((item.detail as { reports: { by: string }[] }).reports.map((r) => r.by)).toEqual([outsider.id, owner.id]);
+    expect(item).toMatchObject({ userId: fan.id, snapshot: { text: "report me" }, status: "open", reportCount: 2 });
+    const filed = await db.select().from(reports).where(eq(reports.itemId, item.id));
+    expect(filed.map((r) => [r.reporterId, r.reason, r.note]).sort()).toEqual([[outsider.id, "other", "spam"], [owner.id, "other", "spam"]].sort());
   });
 
   it("the host deletes a reply; nobody else can", async () => {
