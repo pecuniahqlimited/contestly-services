@@ -351,6 +351,13 @@
       "when": 1794056971027,
       "tag": "0049_people_search",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794057031027,
+      "tag": "0050_party_templates",
+      "breakpoints": true
     }
   ]
 }

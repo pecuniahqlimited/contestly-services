@@ -20,6 +20,8 @@ export * from "./payments.js";
 export * from "./nudges.js";
 export * from "./moderation.js";
 export * from "./nameFilter.js";
+export * from "./templates.js";
+export * from "./questionKinds.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
 import { CORNER_STATUSES, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
@@ -28,6 +30,7 @@ import { CATEGORIES, type Category } from "./categories.js";
 import { owedSchema } from "./payments.js";
 import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX } from "./accounts.js";
 import { DEFAULT_PROVIDERS_CONFIG, providersConfigSchema } from "./providers.js";
+import { MAX_HOST_QUESTIONS, hostQuestionSchema, templateRefSchema } from "./templates.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
 const KOBO_PER_NAIRA = 100;
@@ -166,12 +169,7 @@ export const editDraftSchema = z.object({
 });
 
 
-/** Question formats — one source of truth for the engine, the game rules and the app. */
-export const QUESTION_FORMATS = ["pick_one", "pick_all", "order", "match", "picture"] as const;
-export type QuestionFormat = (typeof QUESTION_FORMATS)[number];
-
-export const DIFFICULTIES = ["easy", "mixed", "hard", "brutal"] as const;
-export type Difficulty = (typeof DIFFICULTIES)[number];
+import { DIFFICULTIES, QUESTION_FORMATS, type Difficulty, type QuestionFormat } from "./questionKinds.js";
 
 /** Width of bank-question and file-chunk embeddings (text-embedding-3-small's size, so a real embedder needs no migration). */
 export const EMBEDDING_DIM = 1536;
@@ -269,6 +267,13 @@ export const createPartySchema = z.object({
   inviteUserIds: z.array(z.string().uuid()).max(20).default([]),
   /** A crew party: you must be a member; every other member is invited and the party is posted in the crew's chat. */
   crewId: z.string().uuid().optional(),
+  /**
+   * Made from a template (ADR 0015): the API fills in whatever of title, brief, cover and dials the host left out
+   * from that version of it, and the party keeps a copy. A template party is never free.
+   */
+  template: templateRefSchema.optional(),
+  /** Questions only the host can answer (pick-one). Any at all makes it a curate party (the host doesn't play), never free. */
+  hostQuestions: z.array(hostQuestionSchema).max(MAX_HOST_QUESTIONS).default([]),
 }).refine((p) => p.funding === "pooled" ? p.prizeKind === "cash" && p.hostPoolKobo === 0 : p.entryKobo === 0, { message: "pooled parties pay cash from the entries; host-funded parties are free to enter" })
   .refine((p) => p.prizeKind === "cash" ? p.places.length === 0 : p.hostPoolKobo === 0, { message: "a cash prize has no goods places, and goods carry no cash prize" })
   .refine((p) => p.startsAt === undefined || startWindowHolds(new Date(p.startsAt)), { message: `a party starts between ${MIN_START_LEAD_MINUTES} minute and ${MAX_START_LEAD_DAYS} days from now`, path: ["startsAt"] });
@@ -407,6 +412,8 @@ export type QuestionsJob =
   | { kind: "regenerate_one"; partyId: string; partyQuestionId: string; requestedBy: string }
   /** The API has read a source file (or failed to): embed its chunks, then build a set that was waiting for it. */
   | { kind: "file_read"; fileId: string }
+  /** Three wrong options for a host-written question (ADR 0015): a generation call, then the safety filter. The API waits for the result. */
+  | { kind: "suggest_distractors"; question: string; answer: string; brief: string }
   /** A question was voided by flags in a room: take it out of retrieval pending review. */
   | { kind: "question_voided"; partyQuestionId: string; flags: number }
   /** An admin edited a bank question: re-check it (verify, safety, dedupe) and apply it only if it passes. */
@@ -596,15 +603,18 @@ export const questionDisclosureSchema = z.object({
   error: z.string().nullable(),
   /** While the set is being made and once it's ready; null before, and when it failed. */
   forge: forgeProgressSchema.nullable(),
+  /** "Includes host-written questions" (ADR 0015): the host wrote some of the set and knows those answers, so they host it and don't play. */
+  hostWritten: z.boolean(),
 });
 
 /** The disclosure for a party row. One builder for the API and the room. */
-export const questionDisclosure = (p: { mode: "sealed" | "curate"; questionsStatus: QuestionsStatus; questionsError: string | null; forgeProgress: ForgeProgress | null }): z.infer<typeof questionDisclosureSchema> => ({
+export const questionDisclosure = (p: { mode: "sealed" | "curate"; questionsStatus: QuestionsStatus; questionsError: string | null; forgeProgress: ForgeProgress | null; hostQuestionCount: number }): z.infer<typeof questionDisclosureSchema> => ({
   aiGenerated: true,
   review: p.mode === "curate" ? "host_reviewed" : "sealed",
   status: p.questionsStatus,
   error: p.questionsStatus === "failed" ? p.questionsError : null,
   forge: p.questionsStatus === "generating" || p.questionsStatus === "ready" ? p.forgeProgress : null,
+  hostWritten: p.hostQuestionCount > 0,
 });
 
 /** POST /parties/:id/questions/retry → 202: the set is being made again. */
@@ -1044,6 +1054,8 @@ const draftFields = {
   status: z.enum(PARTY_QUESTION_STATUSES),
   explanation: z.string().nullable(),
   hostAuthored: z.boolean(),
+  /** Written from scratch by the host (ADR 0015): pick-one, never fact-checked, never in the bank. Edits of generated questions are hostAuthored only. */
+  hostWritten: z.boolean(),
   /** The independent fact-check: the sources it checked against. Null for host-authored questions. */
   verification: z.object({ sources: z.array(z.string()), difficulty: z.unknown() }).nullable(),
   /** The model safety check on the host's edit; null when it wasn't edited. */

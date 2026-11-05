@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -14,7 +14,8 @@ export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "
 export const partyMode = pgEnum("party_mode", ["sealed", "curate"]);
 export const questionsStatus = pgEnum("questions_status", QUESTIONS_STATUSES);
 export const partyFileStatus = pgEnum("party_file_status", PARTY_FILE_STATUSES);
-export const questionEventKind = pgEnum("question_event_kind", ["flag", "void", "replace", "approve", "edit", "swap", "regenerate"]);
+/** "author": the host wrote a question themselves (ADR 0015). */
+export const questionEventKind = pgEnum("question_event_kind", ["flag", "void", "replace", "approve", "edit", "swap", "regenerate", "author"]);
 export const inviteStatus = pgEnum("invite_status", ["pending", "accepted", "dismissed"]);
 export const prizeKind = pgEnum("prize_kind", PRIZE_KINDS);
 export const fulfilmentStatus = pgEnum("fulfilment_status", ["awarded", "arranged", "delivered", "disputed"]);
@@ -212,6 +213,17 @@ export const aboutConfigs = pgTable("about_configs", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.audience, t.version] })]);
 
+/**
+ * Party templates (ADR 0015): one immutable row per admin save of the whole config (templates and the
+ * host-written rules); the highest version is current. A party keeps its own copy of the template it used.
+ */
+export const partyTemplateConfigs = pgTable("party_template_configs", {
+  version: integer("version").primaryKey(),
+  config: jsonb("config").$type<PartyTemplatesConfig>().notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Which email provider sends first: one immutable row per admin save; the newest is current. The other is the fallback. */
 export const emailConfigs = pgTable("email_configs", {
   version: serial("version").primaryKey(),
@@ -330,6 +342,15 @@ export const parties = pgTable("parties", {
   playStatsRecordedAt: timestamp("play_stats_recorded_at", { withTimezone: true }),
   /** Set when record_progress has written who played whom and the host's corner progress (job idempotency). */
   progressRecordedAt: timestamp("progress_recorded_at", { withTimezone: true }),
+  /** The party's copy of the template it was made from (ADR 0015); null for a party made without one. */
+  template: jsonb("template").$type<PartyTemplateCopy>(),
+  /** The host-written rules (caps, outlier margin) when this party was created; later changes never apply to it. */
+  hostRules: jsonb("host_rules").$type<HostWrittenRules>(),
+  /**
+   * Host-written questions in the play order (party_questions.host_written, reserves out), kept by
+   * syncHostQuestionCount() whenever they change. Over 0: curate, never free, the caps and the settlement check.
+   */
+  hostQuestionCount: integer("host_question_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("parties_status_starts_idx").on(t.status, t.startsAt)]);
 
@@ -393,13 +414,15 @@ export const partyQuestions = pgTable("party_questions", {
   reserve: boolean("reserve").notNull().default(false),
   /** The bank question this came from (the bank row cites its file chunk). Null for host-authored edits, which stay out of the bank. */
   sourceRef: text("source_ref"),
-  /** Edited by the host in curate mode. */
+  /** Edited by the host in curate mode, or written by them (hostWritten). Never enters the bank. */
   hostAuthored: boolean("host_authored").notNull().default(false),
   /**
    * The model safety check on the host's latest edit (HostEditCheck in shared: id, checking | passed | failed,
    * reasons). Null when the question was never edited. An edited draft can't be approved until it passed.
    */
   editCheck: jsonb("edit_check"),
+  /** Written from scratch by the host (ADR 0015): pick-one, its answer known only to the host, never fact-checked. */
+  hostWritten: boolean("host_written").notNull().default(false),
 }, (t) => [uniqueIndex("party_questions_party_idx").on(t.partyId, t.idx)]);
 
 /**
@@ -1676,3 +1699,34 @@ export type ClimbChallengeRow = typeof climbChallenges.$inferSelect;
 export type ClimbAttemptRow = typeof climbChallengeAttempts.$inferSelect;
 export type ClimbAwardRow = typeof climbAwards.$inferSelect;
 export type ClimbWordRow = typeof climbWords.$inferSelect;
+
+/**
+ * A cash prize held for an admin (ADR 0015): a party with host-written questions paid it to a winner linked to the
+ * host who did far better than the room on the host's questions. The prize was credited (party_prize); while this
+ * row is held the winner can't withdraw (withdrawBlockReason: prize_under_review) or spend below it. Cleared: nothing
+ * moves. Rejected: taken back and passed on by the rule in ADR 0015's implementation notes, every movement keyed by
+ * this row's id. One per winner per party.
+ */
+export const heldPrizes = pgTable("held_prizes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  partyId: uuid("party_id").notNull().references(() => parties.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  hostUserId: uuid("host_user_id").notNull().references(() => users.id),
+  place: integer("place").notNull(),
+  amountKobo: integer("amount_kobo").notNull(),
+  status: text("status", { enum: HELD_PRIZE_STATUSES }).notNull().default("held"),
+  evidence: jsonb("evidence").$type<HeldPrizeEvidence>().notNull(),
+  decidedByUserId: uuid("decided_by_user_id").references(() => users.id),
+  reason: text("reason"),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  /** What a reject did with the money. */
+  outcome: jsonb("outcome").$type<HeldPrizeOutcome>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("held_prizes_party_user_idx").on(t.partyId, t.userId),
+  index("held_prizes_user_status_idx").on(t.userId, t.status),
+  index("held_prizes_status_idx").on(t.status, t.createdAt),
+  check("held_prizes_amount_positive", sql`${t.amountKobo} > 0`),
+  check("held_prizes_status_known", sql`${t.status} in ('held', 'cleared', 'rejected')`),
+]);
+export type HeldPrize = typeof heldPrizes.$inferSelect;
