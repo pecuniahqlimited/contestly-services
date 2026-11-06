@@ -1,8 +1,8 @@
 /**
  * The anti-collusion check for parties with host-written questions (ADR 0015), pure. The host knows every answer
- * they wrote, so a winner who is linked to the host (one of their people, or the same install or IP) and who did
- * far better than the room on the host's own questions has their cash prize held for an admin. A winner who isn't
- * linked, or who did about as well as everyone else on those questions, is paid as normal.
+ * they wrote (and, in curate mode, every generated one), so a winner who is linked to the host and who did far
+ * better than the room, on the host's own questions or on the whole set, has their cash prize held for an admin. A
+ * winner who isn't linked, or who did about as well as everyone else, is paid as normal.
  *
  * Also the reject rule's arithmetic: who a rejected prize passes to, and an even refund.
  */
@@ -24,31 +24,37 @@ export interface PrizeReview {
   evidence: HeldPrizeEvidence;
 }
 
+/** The winner's mean correctness and the room's (everyone else seated; nobody counts as 0) over these answers. */
+function compare(answers: GradedAnswer[], winnerId: string) {
+  const mine = answers.filter((a) => a.userId === winnerId).map((a) => a.correctnessPct);
+  const room = answers.filter((a) => a.userId !== winnerId).map((a) => a.correctnessPct);
+  const winner = mean(mine) ?? 0;
+  const others = mean(room) ?? 0;
+  return { played: mine.length, winner, room: others, margin: winner - others };
+}
+
 /**
  * Review one cash prize. `answers` are every seated player's graded answers on the played questions (a no-answer is
- * a row at 0). The room is everyone else seated. Flagged only when linked, at least one host-written question was
- * played, and the winner's accuracy on them is at least `marginPct` points above the room's (a room with nobody
- * else counts as 0).
+ * a row at 0). Two comparisons, because the host knows the answers they wrote and, in curate mode, every generated
+ * one too (ADR 0003): on the host-written questions, and on the whole set. Flagged when linked and either margin is
+ * at least `marginPct` points (the host-written one only if at least one was played).
  */
 export function reviewPrize(input: { winnerId: string; links: PrizeLinkKind[]; answers: GradedAnswer[]; marginPct: number }): PrizeReview {
-  const host = input.answers.filter((a) => a.hostWritten);
-  const mine = host.filter((a) => a.userId === input.winnerId).map((a) => a.correctnessPct);
-  const room = host.filter((a) => a.userId !== input.winnerId).map((a) => a.correctnessPct);
-  const themed = input.answers.filter((a) => !a.hostWritten && a.userId === input.winnerId).map((a) => a.correctnessPct);
-  const winnerAccuracyPct = mean(mine) ?? 0;
-  const roomAccuracyPct = mean(room) ?? 0;
-  const marginPct = winnerAccuracyPct - roomAccuracyPct;
-  const themedMean = mean(themed);
+  const host = compare(input.answers.filter((a) => a.hostWritten), input.winnerId);
+  const all = compare(input.answers, input.winnerId);
+  const over: HeldPrizeEvidence["flaggedOn"] = [
+    ...(host.played > 0 && host.margin >= input.marginPct ? ["host_written" as const] : []),
+    ...(all.played > 0 && all.margin >= input.marginPct ? ["all" as const] : []),
+  ];
+  const flaggedOn = input.links.length > 0 ? over : [];
   const evidence: HeldPrizeEvidence = {
     links: [...input.links],
-    hostQuestionsPlayed: mine.length,
-    winnerAccuracyPct: round1(winnerAccuracyPct),
-    roomAccuracyPct: round1(roomAccuracyPct),
-    marginPct: round1(marginPct),
+    hostQuestionsPlayed: host.played, winnerAccuracyPct: round1(host.winner), roomAccuracyPct: round1(host.room), marginPct: round1(host.margin),
+    questionsPlayed: all.played, winnerAllAccuracyPct: round1(all.winner), roomAllAccuracyPct: round1(all.room), allMarginPct: round1(all.margin),
     thresholdPct: input.marginPct,
-    winnerThemedAccuracyPct: themedMean === null ? null : round1(themedMean),
+    flaggedOn,
   };
-  return { flagged: input.links.length > 0 && mine.length > 0 && marginPct >= input.marginPct, evidence };
+  return { flagged: flaggedOn.length > 0, evidence };
 }
 
 /** A seat at settlement: its final rank (null if unranked) and whether it can be paid a prize at all. */

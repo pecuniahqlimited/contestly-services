@@ -143,8 +143,13 @@ export const hostWrittenRulesSchema = z.object({
   maxHostPrizeKobo: z.number().int().positive(),
   /** Host-written questions as a share of the play order, in basis points (5000 = half). */
   maxHostShareBps: z.number().int().min(0).max(BPS),
-  /** A linked winner whose accuracy on host-written questions is at least this many points above the room's is held. */
+  /**
+   * A linked winner whose accuracy is at least this many points above the room's, on the host-written questions or
+   * on the whole set (a curate host sees every answer), is held.
+   */
   outlierMarginPct: z.number().int().min(1).max(PERCENT),
+  /** A block between host and winner made this many days or fewer before the party counts as a link (a block is no alibi). */
+  recentBlockDays: z.number().int().min(0).max(90).default(7),
 });
 export type HostWrittenRules = z.infer<typeof hostWrittenRulesSchema>;
 export const DEFAULT_HOST_WRITTEN_RULES: HostWrittenRules = {
@@ -152,6 +157,7 @@ export const DEFAULT_HOST_WRITTEN_RULES: HostWrittenRules = {
   maxHostPrizeKobo: toKobo(50_000),
   maxHostShareBps: 5_000,
   outlierMarginPct: 30,
+  recentBlockDays: 7,
 };
 
 export const partyTemplatesConfigSchema = z.object({
@@ -251,7 +257,7 @@ export function checkHostWrittenStakes(s: HostWrittenStakesInput, rules: HostWri
 export const partyTemplatesResponseSchema = z.object({
   version: z.number().int(),
   templates: z.array(partyTemplateSchema.omit({ hidden: true })),
-  rules: hostWrittenRulesSchema.omit({ outlierMarginPct: true }),
+  rules: hostWrittenRulesSchema.omit({ outlierMarginPct: true, recentBlockDays: true }),
 });
 export type PartyTemplatesResponse = z.infer<typeof partyTemplatesResponseSchema>;
 
@@ -286,24 +292,34 @@ export function templateProblems(t: PartyTemplate, rules: HostWrittenRules): str
 
 // ---- held prizes (anti-collusion) --------------------------------------------------------------
 
-/** How a winner is linked to the host: one of the host's people, or the same install or IP. */
-export const PRIZE_LINK_KINDS = ["people", "install", "ip"] as const;
+/**
+ * How a winner is linked to the host, from the raw relationships (never yourPeople(), which drops blocked pairs):
+ * crew mates, contacts either way, played together within yourPeopleDays, a block between them made shortly
+ * before the party, or the same install id or IP.
+ */
+export const PRIZE_LINK_KINDS = ["crew", "contact", "played_with", "recent_block", "install", "ip"] as const;
 export type PrizeLinkKind = (typeof PRIZE_LINK_KINDS)[number];
 export const HELD_PRIZE_STATUSES = ["held", "cleared", "rejected"] as const;
 export type HeldPrizeStatus = (typeof HELD_PRIZE_STATUSES)[number];
 /** Withdrawals wait while a prize is held (withdraw_not_allowed, reason prize_under_review). */
 export const PRIZE_UNDER_REVIEW = "prize_under_review";
 
-/** The evidence an admin reviews: how they're linked, and their accuracy on the host's questions against the room's. */
+/** Which comparison put a winner over the threshold: the host-written questions, the whole set, or both. */
+export const OUTLIER_ON = ["host_written", "all"] as const;
+
+/** The evidence an admin reviews: how they're linked, and their accuracy against the room's, on the host's questions and on the whole set. */
 export const heldPrizeEvidenceSchema = z.object({
   links: z.array(z.enum(PRIZE_LINK_KINDS)),
   hostQuestionsPlayed: z.number().int(),
   winnerAccuracyPct: z.number(),
   roomAccuracyPct: z.number(),
   marginPct: z.number(),
+  questionsPlayed: z.number().int(),
+  winnerAllAccuracyPct: z.number(),
+  roomAllAccuracyPct: z.number(),
+  allMarginPct: z.number(),
   thresholdPct: z.number().int(),
-  /** Their accuracy on the themed questions too, for contrast. */
-  winnerThemedAccuracyPct: z.number().nullable(),
+  flaggedOn: z.array(z.enum(OUTLIER_ON)),
 });
 export type HeldPrizeEvidence = z.infer<typeof heldPrizeEvidenceSchema>;
 
@@ -323,6 +339,8 @@ export const adminHeldPrizeSchema = z.object({
   amountKobo: z.number().int(),
   status: z.enum(HELD_PRIZE_STATUSES),
   evidence: heldPrizeEvidenceSchema,
+  /** At or above the second-admin threshold (ADR 0013), the first admin's request to clear, waiting for a second. */
+  clearRequest: z.object({ by: personSchema, reason: z.string(), at: z.string() }).nullable(),
   decidedBy: personSchema.nullable(),
   reason: z.string().nullable(),
   decidedAt: z.string().nullable(),
@@ -333,8 +351,12 @@ export type AdminHeldPrize = z.infer<typeof adminHeldPrizeSchema>;
 export const adminHeldPrizesQuerySchema = z.object({ status: z.enum(HELD_PRIZE_STATUSES).optional(), limit: z.coerce.number().int().min(1).max(100).default(50) });
 export const adminHeldPrizesResponseSchema = z.object({ prizes: z.array(adminHeldPrizeSchema) });
 export const heldPrizeDecisionSchema = z.object({ reason: z.string().trim().min(3).max(500) });
-/** POST …/clear or …/reject → the prize as it now stands; `replayed` when it had already been decided that way. */
-export const heldPrizeDecisionResponseSchema = z.object({ prize: adminHeldPrizeSchema, replayed: z.boolean() });
+/**
+ * POST …/clear or …/reject → the prize as it now stands; `replayed` when it had already been decided that way (or
+ * the same admin asked again). `awaitingSecondAdmin`: a clear at or above the second-admin threshold that a
+ * different admin must confirm with their own POST …/clear.
+ */
+export const heldPrizeDecisionResponseSchema = z.object({ prize: adminHeldPrizeSchema, replayed: z.boolean(), awaitingSecondAdmin: z.boolean() });
 
 // ---- the starting set (seed data, not code: version 1 is written by migration 0046 and db:seed) ------
 

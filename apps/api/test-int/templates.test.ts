@@ -2,14 +2,16 @@
  * Party templates and host-written questions (ADR 0015): templates prefill and edit down to empty, distractor
  * suggestions (through the real questions queue too), the safety filter failing closed on the host's words,
  * host-written questions never in the bank, forced curate and its lockout, free refused, each cap, the link check
- * (people, install, IP), the outlier flag, a held prize that can't be withdrawn or spent, clear and reject (idempotent).
+ * (crew, contacts, played with, a recent block, install id, IP; never yourPeople()), the outlier flag on the host's
+ * questions and on the whole set, a held prize that can't be withdrawn or spent, clear (one admin below the
+ * second-admin threshold, two at or above it, never the host or the winner) and reject (idempotent).
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Worker } from "bullmq";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, bankQuestions, contactMatches, db, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
+  adminActions, adminAlerts, bankQuestions, blocks, contactMatches, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
   savePartyTemplates, currentPartyTemplates, takeSeat, users, withdrawBlockReason, type Party, type User,
 } from "@contestly/db";
 import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
@@ -17,6 +19,7 @@ import {
   DEFAULT_HOST_WRITTEN_RULES, DEFAULT_PARTY_TEMPLATES, QUEUES, hostSlots, kobo, partyTemplatesResponseSchema, type DistractorRequest, type HostQuestion, type QuestionsJob,
 } from "@contestly/shared";
 import { requestPayout, withdrawContext } from "@contestly/payments";
+import { getSocialConfig } from "@contestly/db";
 import { settle } from "../../worker/src/partySettle.js";
 import { generateSet } from "../../questions/src/pipeline/generateSet.js";
 import { recordPlay } from "../../questions/src/pipeline/recordPlay.js";
@@ -27,7 +30,7 @@ import { as, makeUser, tag, testApp } from "./harness.js";
 
 let app: Awaited<ReturnType<typeof testApp>>["app"];
 const asked: DistractorRequest[] = [];
-let host: User, admin: User;
+let host: User, admin: User, admin2: User;
 let version: number;
 let n = 0;
 const name = (p: string) => `${p}${++n}`;
@@ -46,6 +49,7 @@ beforeAll(async () => {
   ({ app } = await testApp({ distractors: async (req) => { asked.push(req); return { distractors: ["Office", "Gym", "Wedding"] }; } }));
   host = await makeUser("tplhost");
   admin = await makeUser("tpladmin", { isAdmin: true });
+  admin2 = await makeUser("tpladmin2", { isAdmin: true });
   version = (await currentPartyTemplates()).version;
 });
 afterAll(async () => { await app.close(); });
@@ -288,7 +292,7 @@ const ACE = [100, 100, 0, 0];
 const MISS = [0, 0, 100, 100];
 
 describe("the link check and the outlier flag at settlement", () => {
-  it("holds a winner who is one of the host's people and beat the room on the host's questions (and alerts)", async () => {
+  it("holds a winner who is the host's contact and beat the room on the host's questions (and alerts)", async () => {
     const h = await makeUser(name("hosta"));
     const [w, a, b] = [await makeUser(name("wina")), await makeUser(name("pa")), await makeUser(name("pb"))];
     await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
@@ -296,7 +300,7 @@ describe("the link check and the outlier flag at settlement", () => {
     expect(p.status).toBe("finished");
     const [held] = await heldIn(p.id);
     expect(held).toMatchObject({ userId: w.id, hostUserId: h.id, place: 1, status: "held", amountKobo: (await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, w.id))))[0].prizeKobo });
-    expect(held.evidence).toMatchObject({ links: ["people"], hostQuestionsPlayed: 2, winnerAccuracyPct: 100, roomAccuracyPct: 0, winnerThemedAccuracyPct: 0 });
+    expect(held.evidence).toMatchObject({ links: ["contact"], hostQuestionsPlayed: 2, winnerAccuracyPct: 100, roomAccuracyPct: 0, questionsPlayed: 4, winnerAllAccuracyPct: 50, roomAllAccuracyPct: 50, flaggedOn: ["host_written"] });
     // Credited all the same.
     expect(await cash(w)).toBe(held.amountKobo);
     const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `prize_held:${held.id}`));
@@ -315,16 +319,64 @@ describe("the link check and the outlier flag at settlement", () => {
     }
   });
 
-  it("pays as normal: an unlinked winner however well they did, and a linked one within the margin", async () => {
+  it("pays as normal: an unlinked winner however well they did, and a linked one within the margin on both comparisons", async () => {
     const h = await makeUser(name("hostc"));
     const stranger = await makeUser(name("stranger"));
     const p1 = await playedParty({ hostUser: h, seats: [{ u: stranger, correct: ACE }, { u: await makeUser(name("py")), correct: MISS }] });
     expect(await heldIn(p1.id)).toEqual([]);
     const friend = await makeUser(name("friend"));
     await db.insert(contactMatches).values({ userId: friend.id, contactUserId: h.id }); // either way makes them contacts
-    // Friend 50% on the host's questions, the room 50%: no margin.
-    const p2 = await playedParty({ hostUser: h, seats: [{ u: friend, correct: [100, 0, 100, 100] }, { u: await makeUser(name("pz")), correct: [0, 100, 0, 0] }] });
+    // 50% against 50%, on the host's questions and on the set.
+    const p2 = await playedParty({ hostUser: h, seats: [{ u: friend, correct: [100, 0, 100, 0] }, { u: await makeUser(name("pz")), correct: [0, 100, 0, 100] }] });
     expect(await heldIn(p2.id)).toEqual([]);
+  });
+
+  it("holds on the whole set: level on the host's questions, far ahead on the generated ones (a curate host knows them too)", async () => {
+    const h = await makeUser(name("hostall"));
+    const w = await makeUser(name("winall"));
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: [100, 0, 100, 100] }, { u: await makeUser(name("pall")), correct: [100, 0, 0, 0] }] });
+    const [held] = await heldIn(p.id);
+    expect(held?.evidence).toMatchObject({ marginPct: 0, allMarginPct: 50, flaggedOn: ["all"] });
+  });
+});
+
+describe("the link check reads the raw relationships, blocks included", () => {
+  const linkOf = async (setUp: (h: User, w: User) => Promise<unknown>) => {
+    const h = await makeUser(name("hostl"));
+    const w = await makeUser(name("winl"));
+    await setUp(h, w);
+    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("pl")), correct: MISS }] });
+    return (await heldIn(p.id))[0]?.evidence.links ?? [];
+  };
+  const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000);
+  const pair = (a: User, b: User) => (a.id < b.id ? { userA: a.id, userB: b.id } : { userA: b.id, userB: a.id });
+
+  it("crew mates", async () => {
+    expect(await linkOf(async (h, w) => {
+      const [c] = await db.insert(crews).values({ name: `Crew ${randomUUID().slice(0, 6)}`, emoji: "🎉", color: "#7B5CFF", createdByUserId: h.id }).returning();
+      await db.insert(crewMembers).values([{ crewId: c.id, userId: h.id, role: "creator" }, { crewId: c.id, userId: w.id, role: "member" }]);
+    })).toEqual(["crew"]);
+  });
+
+  it("played together within yourPeopleDays, not before", async () => {
+    const { yourPeopleDays } = await getSocialConfig();
+    expect(await linkOf((h, w) => db.insert(playedWith).values({ ...pair(h, w), parties: 1, lastPlayedAt: daysAgo(yourPeopleDays - 1) }))).toEqual(["played_with"]);
+    expect(await linkOf((h, w) => db.insert(playedWith).values({ ...pair(h, w), parties: 1, lastPlayedAt: daysAgo(yourPeopleDays + 1) }))).toEqual([]);
+  });
+
+  it("a block doesn't hide a link: contacts who blocked each other long ago are still contacts", async () => {
+    expect(await linkOf(async (h, w) => {
+      await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+      await db.insert(blocks).values({ blockerId: h.id, blockedId: w.id, createdAt: daysAgo(60) });
+    })).toEqual(["contact"]);
+  });
+
+  it("a block made within recentBlockDays before the party is a link itself, either way; an older one isn't", async () => {
+    const days = DEFAULT_HOST_WRITTEN_RULES.recentBlockDays;
+    expect(await linkOf((h, w) => db.insert(blocks).values({ blockerId: h.id, blockedId: w.id, createdAt: daysAgo(days - 1) }))).toEqual(["recent_block"]);
+    expect(await linkOf((h, w) => db.insert(blocks).values({ blockerId: w.id, blockedId: h.id, createdAt: daysAgo(1) }))).toEqual(["recent_block"]);
+    expect(await linkOf((h, w) => db.insert(blocks).values({ blockerId: h.id, blockedId: w.id, createdAt: daysAgo(days + 1) }))).toEqual([]);
   });
 });
 
@@ -360,7 +412,7 @@ describe("a held prize", () => {
     expect((await app.inject({ method: "GET", url: "/admin/party-templates/held-prizes", headers: as(w) })).statusCode).toBe(403);
     const list = (await app.inject({ method: "GET", url: "/admin/party-templates/held-prizes?status=held", headers: as(admin) })).json();
     const mine = list.prizes.find((x: { id: string }) => x.id === heldId);
-    expect(mine).toMatchObject({ status: "held", place: 1, winner: { id: w.id }, host: { id: h.id }, party: { id: p.id }, evidence: { links: ["people"] } });
+    expect(mine).toMatchObject({ status: "held", place: 1, winner: { id: w.id }, host: { id: h.id }, party: { id: p.id }, clearRequest: null, evidence: { links: ["contact"] } });
   });
 
   it("reject: taken back and passed to the next placed player, once, however many times it's asked", async () => {
@@ -369,7 +421,8 @@ describe("a held prize", () => {
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: {} })).statusCode).toBe(400); // a reason
     const first = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: { reason: "Fed the answers by the host" } });
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toMatchObject({ replayed: false, prize: { status: "rejected", reason: "Fed the answers by the host", outcome: { kind: "passed_on", to: [{ userId: second.id, amountKobo: amount }] }, decidedBy: { id: admin.id } } });
+    expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(w), payload: { reason: "mine" } })).statusCode).toBe(403); // not an admin anyway
+    expect(first.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "rejected", reason: "Fed the answers by the host", outcome: { kind: "passed_on", to: [{ userId: second.id, amountKobo: amount }] }, decidedBy: { id: admin.id } } });
     expect(await cash(w)).toBe(wBefore - amount);
     expect(await cash(second)).toBe(sBefore + amount);
     const entries = () => db.select().from(ledgerEntries).where(like(ledgerEntries.idempotencyKey, `held_prize_reject:${heldId}%`));
@@ -397,12 +450,38 @@ describe("clear, and the other reject outcomes", () => {
     const [held] = await heldIn(p.id);
     const before = await cash(w);
     const res = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "Checked: they're just good" } });
-    expect(res.json()).toMatchObject({ replayed: false, prize: { status: "cleared", reason: "Checked: they're just good" } });
+    expect(held.amountKobo).toBeLessThan((await getPaymentsConfig()).finalize.secondAdminThresholdKobo);
+    expect(res.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "cleared", reason: "Checked: they're just good", decidedBy: { id: admin.id } } });
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "again" } })).json()).toMatchObject({ replayed: true, prize: { reason: "Checked: they're just good" } });
     expect(await cash(w)).toBe(before);
     const [u] = await db.select().from(users).where(eq(users.id, w.id));
     expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "changed my mind" } })).json().error).toBe("prize_already_decided");
+  });
+
+  it("clear at or above the second-admin threshold (ADR 0013): one asks, a different one confirms; never the host or the winner", async () => {
+    const threshold = (await getPaymentsConfig()).finalize.secondAdminThresholdKobo;
+    const h = await makeUser(name("hostm"), { isAdmin: true });
+    const w = await makeUser(name("winm"), { isAdmin: true, phone: `+23480${randomUUID().replace(/\D/g, "").slice(0, 8)}`, phoneVerifiedAt: new Date() });
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    const p = await playedParty({ hostUser: h, funding: "host", hostPoolKobo: threshold, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("pm")), correct: MISS }] });
+    const [held] = await heldIn(p.id);
+    expect(held.amountKobo).toBe(threshold);
+    const clear = (as_: User, reason: string) => app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(as_), payload: { reason } });
+    // Neither the winner nor the host, though both are admins; for reject too.
+    expect((await clear(w, "mine")).json().error).toBe("own_transaction");
+    expect((await clear(h, "my friend")).json().error).toBe("own_transaction");
+    expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(h), payload: { reason: "give it back" } })).json().error).toBe("own_transaction");
+    const asked = await clear(admin, "Looks fine to me");
+    expect(asked.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: true, prize: { status: "held", clearRequest: { by: { id: admin.id }, reason: "Looks fine to me" } } });
+    const [u] = await db.select().from(users).where(eq(users.id, w.id));
+    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBe("prize_under_review"); // still held
+    expect((await clear(admin, "again")).json()).toMatchObject({ replayed: true, awaitingSecondAdmin: true, prize: { status: "held" } });
+    const confirmed = await clear(admin2, "Confirmed: checked their history");
+    expect(confirmed.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "cleared", decidedBy: { id: admin2.id } } });
+    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
+    const logs = await db.select().from(adminActions).where(and(eq(adminActions.targetType, "held_prize"), eq(adminActions.targetId, held.id)));
+    expect(logs.map((l) => [l.action, l.adminUserId]).sort()).toEqual([["party_templates.held_prize_clear", admin2.id], ["party_templates.held_prize_clear_requested", admin.id]].sort());
   });
 
   it("a host's cash prize to a linked winner: checked the same, and back to the host when nobody's left to pass it to", async () => {

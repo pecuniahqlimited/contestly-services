@@ -13,7 +13,7 @@ export const templatesVersionView = (row: PartyTemplatesRow): PartyTemplatesVers
 /** GET /party-templates: the current version's templates, hidden ones left out, and the caps the Stakes scene shows. */
 export async function offeredTemplates(): Promise<PartyTemplatesResponse> {
   const { version, config } = await currentPartyTemplates();
-  const { outlierMarginPct: _kept, ...rules } = config.rules;
+  const { outlierMarginPct: _margin, recentBlockDays: _blocks, ...rules } = config.rules;
   return { version, templates: config.templates.filter((t) => !t.hidden).map(({ hidden: _h, ...t }) => t), rules };
 }
 

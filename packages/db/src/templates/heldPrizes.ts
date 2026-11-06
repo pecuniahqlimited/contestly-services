@@ -15,25 +15,45 @@
  */
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { evenShares, nextPlaced, reviewPrize, type GradedAnswer } from "@contestly/game";
-import { DEFAULT_HOST_WRITTEN_RULES, type HeldPrizeOutcome, type PrizeLinkKind } from "@contestly/shared";
+import { DEFAULT_HOST_WRITTEN_RULES, OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeOutcome, type PrizeLinkKind } from "@contestly/shared";
 import type { Tx } from "../client.js";
-import { heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, userSignals, users, type HeldPrize, type Party } from "../schema.js";
+import { blocks, contactMatches, crewMembers, crews, heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, playedWith, userSignals, users, type HeldPrize, type Party } from "../schema.js";
 import { adminAlert } from "../alerts.js";
 import { recordAdminAction } from "../admin.js";
 import { moneyTransaction } from "../retry.js";
-import { yourPeople } from "../social.js";
+import { getPaymentsConfig, getSocialConfig } from "../config.js";
 import * as ledger from "../ledger.js";
 
 export const HELD_PRIZE_ALERT_KIND = "templates.prize_held";
+const DAY_MS = 86_400_000;
 const httpError = (statusCode: number, code: string, details?: Record<string, unknown>) => Object.assign(new Error(code), { statusCode, ...(details ? { details } : {}) });
 
-/** How `userId` is linked to the host: one of their people, or an install id or IP seen on both accounts. */
-async function linksToHost(tx: Tx, hostId: string, userId: string, people: ReadonlySet<string>): Promise<PrizeLinkKind[]> {
-  const shared = await tx.execute(sql`
-    select distinct a.kind from ${userSignals} a join ${userSignals} b on b.kind = a.kind and b.value = a.value
-    where a.user_id = ${hostId} and b.user_id = ${userId}`) as unknown as { kind: "install" | "ip" }[];
-  const kinds = new Set(shared.map((r) => r.kind));
-  return [...(people.has(userId) ? ["people" as const] : []), ...(kinds.has("install") ? ["install" as const] : []), ...(kinds.has("ip") ? ["ip" as const] : [])];
+/**
+ * How `userId` is linked to the host, from the raw relationships rather than yourPeople() (which drops blocked
+ * pairs, so a host could block a friend to dodge it): crew mates in a live crew, contacts either way, played
+ * together within yourPeopleDays before the party, a block either way made in the `recentBlockDays` before the
+ * party (or since), and an install id or IP seen on both accounts.
+ */
+async function linksToHost(tx: Tx, p: Party, userId: string, recentBlockDays: number): Promise<PrizeLinkKind[]> {
+  const hostId = p.createdByUserId;
+  const partyAt = p.liveAt ?? p.startsAt;
+  const { yourPeopleDays } = await getSocialConfig(tx);
+  const playedSince = new Date(partyAt.getTime() - yourPeopleDays * DAY_MS);
+  const blockedSince = new Date(partyAt.getTime() - recentBlockDays * DAY_MS);
+  const [row] = await tx.execute(sql`
+    select
+      exists(select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id and c.archived_at is null
+        where a.user_id = ${hostId} and b.user_id = ${userId}) as crew,
+      exists(select 1 from ${contactMatches} where (user_id = ${hostId} and contact_user_id = ${userId}) or (user_id = ${userId} and contact_user_id = ${hostId})) as contact,
+      exists(select 1 from ${playedWith} where user_a = least(${hostId}::uuid, ${userId}::uuid) and user_b = greatest(${hostId}::uuid, ${userId}::uuid)
+        and last_played_at >= ${playedSince.toISOString()}::timestamptz) as played_with,
+      exists(select 1 from ${blocks} where ((blocker_id = ${hostId} and blocked_id = ${userId}) or (blocker_id = ${userId} and blocked_id = ${hostId}))
+        and created_at >= ${blockedSince.toISOString()}::timestamptz) as recent_block,
+      exists(select 1 from ${userSignals} a join ${userSignals} b on b.kind = a.kind and b.value = a.value
+        where a.kind = 'install' and a.user_id = ${hostId} and b.user_id = ${userId}) as install,
+      exists(select 1 from ${userSignals} a join ${userSignals} b on b.kind = a.kind and b.value = a.value
+        where a.kind = 'ip' and a.user_id = ${hostId} and b.user_id = ${userId}) as ip`) as unknown as Record<PrizeLinkKind, boolean>[];
+  return PRIZE_LINK_KINDS.filter((k) => row[k]);
 }
 
 /** Every seated player's graded answers on the party's played questions, marked host-written or not. */
@@ -54,12 +74,13 @@ export interface CashPrize { userId: string; place: number; amountKobo: number }
 export async function holdFlaggedPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Promise<HeldPrize[]> {
   const paid = prizes.filter((x) => x.amountKobo > 0);
   if (p.hostQuestionCount <= 0 || !paid.length) return [];
-  const rules = p.hostRules ?? DEFAULT_HOST_WRITTEN_RULES;
+  // Rules copied before recentBlockDays existed take its default.
+  const rules = { ...DEFAULT_HOST_WRITTEN_RULES, ...p.hostRules };
   const hostId = p.createdByUserId;
-  const [answers, people] = await Promise.all([gradedAnswers(tx, p.id), yourPeople(hostId, tx)]);
+  const answers = await gradedAnswers(tx, p.id);
   const held: HeldPrize[] = [];
   for (const prize of paid) {
-    const links = await linksToHost(tx, hostId, prize.userId, people);
+    const links = await linksToHost(tx, p, prize.userId, rules.recentBlockDays);
     const review = reviewPrize({ winnerId: prize.userId, links, answers, marginPct: rules.outlierMarginPct });
     if (!review.flagged) continue;
     const [row] = await tx.insert(heldPrizes).values({ partyId: p.id, userId: prize.userId, hostUserId: hostId, place: prize.place, amountKobo: prize.amountKobo, evidence: review.evidence })
@@ -83,18 +104,42 @@ async function lockHeld(tx: Tx, id: string) {
   return row;
 }
 
-/** An admin clears a held prize: the winner keeps it and may withdraw again (if nothing else holds them). Logged. */
-export async function clearHeldPrize(adminUserId: string, id: string, reason: string): Promise<{ row: HeldPrize; replayed: boolean }> {
+/** Neither the host nor the winner decides their own held prize (ADR 0013's own-transaction rule). */
+function refuseOwn(row: HeldPrize, adminUserId: string) {
+  if (adminUserId === row.userId || adminUserId === row.hostUserId) throw httpError(403, OWN_TRANSACTION);
+}
+
+export interface ClearOutcome { row: HeldPrize; replayed: boolean; awaitingSecondAdmin: boolean }
+
+/**
+ * An admin clears a held prize: the winner keeps it and may withdraw again (if nothing else holds them). Clearing
+ * loosens a payments control, so ADR 0013's maker-checker applies: below `finalize.secondAdminThresholdKobo` one
+ * admin clears; at or above it the first admin's clear is a request (the prize stays held) and a different admin's
+ * clear confirms it. Neither may be the host or the winner. The same admin asking again is a replay. Logged.
+ */
+export async function clearHeldPrize(adminUserId: string, id: string, reason: string): Promise<ClearOutcome> {
   return moneyTransaction(async (tx) => {
     const [pre] = await tx.select({ userId: heldPrizes.userId }).from(heldPrizes).where(eq(heldPrizes.id, id));
     if (!pre) throw httpError(404, "not_found");
     await lockUsers(tx, [pre.userId]);
     const row = await lockHeld(tx, id);
-    if (row.status === "cleared") return { row, replayed: true };
+    if (row.status === "cleared") return { row, replayed: true, awaitingSecondAdmin: false };
     if (row.status !== "held") throw httpError(409, "prize_already_decided", { status: row.status });
-    const [done] = await tx.update(heldPrizes).set({ status: "cleared", decidedByUserId: adminUserId, reason, decidedAt: new Date() }).where(eq(heldPrizes.id, id)).returning();
-    await recordAdminAction(tx, { adminUserId, action: "party_templates.held_prize_clear", targetType: "held_prize", targetId: id, reason, before: { status: row.status }, after: { status: done.status, userId: row.userId, amountKobo: row.amountKobo } });
-    return { row: done, replayed: false };
+    refuseOwn(row, adminUserId);
+    const now = new Date();
+    const log = (action: string, after: Record<string, unknown>) => recordAdminAction(tx, { adminUserId, action, targetType: "held_prize", targetId: id, reason, before: { status: row.status, clearRequestedBy: row.clearRequestedByUserId }, after: { ...after, userId: row.userId, amountKobo: row.amountKobo } });
+    const { secondAdminThresholdKobo } = (await getPaymentsConfig(tx)).finalize;
+    if (row.amountKobo >= secondAdminThresholdKobo) {
+      if (!row.clearRequestedByUserId) {
+        const [asked] = await tx.update(heldPrizes).set({ clearRequestedByUserId: adminUserId, clearRequestReason: reason, clearRequestedAt: now }).where(eq(heldPrizes.id, id)).returning();
+        await log("party_templates.held_prize_clear_requested", { status: "held", thresholdKobo: secondAdminThresholdKobo });
+        return { row: asked, replayed: false, awaitingSecondAdmin: true };
+      }
+      if (row.clearRequestedByUserId === adminUserId) return { row, replayed: true, awaitingSecondAdmin: true };
+    }
+    const [done] = await tx.update(heldPrizes).set({ status: "cleared", decidedByUserId: adminUserId, reason, decidedAt: now }).where(eq(heldPrizes.id, id)).returning();
+    await log("party_templates.held_prize_clear", { status: done.status, requestedBy: row.clearRequestedByUserId });
+    return { row: done, replayed: false, awaitingSecondAdmin: false };
   }, { label: "held prize clear" });
 }
 
@@ -144,6 +189,7 @@ export async function rejectHeldPrize(adminUserId: string, id: string, reason: s
     const held = await lockHeld(tx, id);
     if (held.status === "rejected") return { row: held, replayed: true };
     if (held.status !== "held") throw httpError(409, "prize_already_decided", { status: held.status });
+    refuseOwn(held, adminUserId); // a host rejecting a host-funded prize would get it back
     const plan = await planReject(tx, held, p);
     if (JSON.stringify(plan.outcome) !== JSON.stringify(planned.outcome)) throw httpError(409, "party_changed_try_again");
 

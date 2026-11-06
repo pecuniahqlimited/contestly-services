@@ -69,11 +69,22 @@ questions; one with host-written questions is never free, and its entry, the hos
 stay under the caps, at creation and at every add.
 
 **The settlement check** (`holdFlaggedPrizes`, in the settle transaction, after prizes are posted): only for
-parties with host-written questions, only cash prizes (goods move no money). Linked: in `yourPeople(host)`, or a
-`user_signals` install id or IP shared with the host. Flagged: linked, at least one host-written question played,
-and the winner's mean correctness on them at least `outlierMarginPct` points above everyone else seated
-(`reviewPrize` in packages/game). A flagged prize is still posted as `party_prize`; a `held_prizes` row and a
-`templates.prize_held` warning alert commit with it.
+parties with host-written questions, only cash prizes (goods move no money).
+
+- *Linked* reads the raw relationships, never `yourPeople()` (which drops blocked pairs, so a host could block a
+  friend before the party to dodge the link): crew mates in a live crew (`crew`), contacts either way (`contact`),
+  played together within `yourPeopleDays` before the party (`played_with`), and an install id or IP seen on both
+  accounts (`install`, `ip`). A block either way made within `recentBlockDays` (host-written rules, default 7)
+  before the party, or since, is a link itself (`recent_block`); an older block hides nothing, since the other
+  relationships are still read through it. "The party" is when it went live (else its start time). A block lifted
+  before settlement leaves no row to see.
+- *Flagged*: linked, and the winner's mean correctness at least `outlierMarginPct` points above everyone else
+  seated on either of two comparisons (`reviewPrize` in packages/game): the host-written questions (when at least
+  one was played), or the whole set, because a curate host has seen every generated answer too (ADR 0003). The
+  evidence carries both comparisons and which one tripped (`flaggedOn`).
+
+A flagged prize is still posted as `party_prize`; a `held_prizes` row and a `templates.prize_held` warning alert
+commit with it.
 
 **The hold** uses the payments block, not a new money path: `withdrawContext()` reports `prizeUnderReview` and
 `withdrawBlockReason()` answers `prize_under_review`, so the request, its in-transaction recheck, the send-time
@@ -82,8 +93,13 @@ can always take the prize back, cash can't be spent below what's held: `assertHe
 entry's cash charge (`takeSeat`) and a host's prize hold, refusing with 409 `prize_under_review`. Bonus coins and
 cash above the held amount stay spendable. Ledger internals are unchanged (journals with explicit legs).
 
-**Clear and reject** (`/admin/party-templates/held-prizes`, one admin, a reason, `admin_actions`). Clear moves
-nothing. **Reject, the rule:** the prize is taken back from the winner into the party's pot
+**Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). Neither may be done by the
+host or the winner (403 `own_transaction`; for a reject too, since rejecting a host-funded prize can return it to
+the host). Clear moves nothing, but it loosens a payments control, so it follows ADR 0013's maker-checker: below
+the payments config's `finalize.secondAdminThresholdKobo` one admin clears; at or above it, the first admin's clear
+is a request (`clear_requested_by_user_id`, the prize stays held, `awaitingSecondAdmin`), the same admin asking
+again is a replay, and a different admin's clear confirms it; both steps are logged. A reject needs one admin
+(it tightens). **Reject, the rule:** the prize is taken back from the winner into the party's pot
 (`held_prize_reject:<id>`), then
 
 1. passed to the best-ranked seat that is signed up, not banned, has no prize from this party and wasn't rejected
@@ -100,8 +116,8 @@ re-planned under the locks; a different plan is 409 `party_changed_try_again`), 
 the ledger. If the winner's cash somehow can't cover it (a payments contradiction hold took it), 409
 `prize_not_recoverable` and it stays held.
 
-**Bent, for review.** (a) A clear is one admin (this ADR) although ADR 0013 asks two for loosening a payments
-control. (b) `yourPeople()` leaves out pairs where either has blocked the other, so a host could block a friend
-before the party to dodge the "people" link (install id and IP still link them). (c) In curate mode the host sees
-the generated questions' answers too (ADR 0003); only host-written accuracy is checked. (d) The seeded set is six
-templates as decided here; the roadmap row listed five (no Reunion).
+**Changed before review.** Three points first built differently: the outlier check compared host-written
+questions only (now the whole set as well); the link used `yourPeople()` (now the raw relationships and recent
+blocks); and a clear was one admin whatever the amount, as Decision 7 reads (now ADR 0013's maker-checker, which
+this note supersedes for clearing). Still open: the seeded set is six templates as decided here; the roadmap row
+listed five (no Reunion).

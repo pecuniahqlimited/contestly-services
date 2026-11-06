@@ -358,6 +358,13 @@
       "when": 1794057031027,
       "tag": "0050_party_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1794057091027,
+      "tag": "0051_held_prize_clear_requests",
+      "breakpoints": true
     }
   ]
 }

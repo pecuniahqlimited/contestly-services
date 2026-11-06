@@ -1704,8 +1704,8 @@ export type ClimbWordRow = typeof climbWords.$inferSelect;
  * A cash prize held for an admin (ADR 0015): a party with host-written questions paid it to a winner linked to the
  * host who did far better than the room on the host's questions. The prize was credited (party_prize); while this
  * row is held the winner can't withdraw (withdrawBlockReason: prize_under_review) or spend below it. Cleared: nothing
- * moves. Rejected: taken back and passed on by the rule in ADR 0015's implementation notes, every movement keyed by
- * this row's id. One per winner per party.
+ * moves (one admin below ADR 0013's second-admin threshold, two at or above it). Rejected: taken back and passed on
+ * by the rule in ADR 0015's implementation notes, every movement keyed by this row's id. One per winner per party.
  */
 export const heldPrizes = pgTable("held_prizes", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1716,6 +1716,13 @@ export const heldPrizes = pgTable("held_prizes", {
   amountKobo: integer("amount_kobo").notNull(),
   status: text("status", { enum: HELD_PRIZE_STATUSES }).notNull().default("held"),
   evidence: jsonb("evidence").$type<HeldPrizeEvidence>().notNull(),
+  /**
+   * At or above the second-admin threshold (ADR 0013): the first admin's request to clear. The prize stays held
+   * until a different admin (neither the host nor the winner) confirms.
+   */
+  clearRequestedByUserId: uuid("clear_requested_by_user_id").references(() => users.id),
+  clearRequestReason: text("clear_request_reason"),
+  clearRequestedAt: timestamp("clear_requested_at", { withTimezone: true }),
   decidedByUserId: uuid("decided_by_user_id").references(() => users.id),
   reason: text("reason"),
   decidedAt: timestamp("decided_at", { withTimezone: true }),
