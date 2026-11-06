@@ -399,6 +399,31 @@ describe("the moderation queue", () => {
     expect(await db.select().from(adminActions).where(and(eq(adminActions.targetId, r.item.id), eq(adminActions.action, "moderation.dismiss")))).toHaveLength(1);
   });
 
+  it("bulk dismiss: by filter (transcripts nobody reported) or by ids, each logged; a held item shows again", async () => {
+    const bulk = (payload: Record<string, unknown>) => app.inject({ method: "POST", url: "/admin/moderation/bulk-dismiss", headers: as(admin), payload });
+    const author = await person("bulkv");
+    const transcripts = await db.insert(moderationItems).values([1, 2].map(() => ({ kind: "voice_note", refId: randomUUID(), userId: author.id, transcript: "hello" }))).returning();
+    const reportedOne = await reported("bulkr");
+    const out = await bulk({ filter: { type: "voice_note", unreported: true }, reason: "transcripts carried over from the old queue" });
+    expect(out.statusCode, out.body).toBe(200);
+    expect(out.json().dismissed).toEqual(expect.arrayContaining(transcripts.map((t) => t.id)));
+    expect(out.json().dismissed).not.toContain(reportedOne.item.id);
+    for (const t of transcripts) expect((await item("voice_note", t.refId))).toMatchObject({ status: "dismissed", resolution: "dismiss", resolvedByUserId: admin.id });
+    const logged = await db.select().from(adminActions).where(and(eq(adminActions.targetId, transcripts[0].id), eq(adminActions.action, "moderation.dismiss")));
+    expect(logged).toMatchObject([{ reason: "transcripts carried over from the old queue", after: { bulk: true } }]);
+
+    const held = await reported("bulkh");
+    await db.update(moderationItems).set({ heldAt: new Date() }).where(eq(moderationItems.id, held.item.id));
+    await db.update(chatMessages).set({ hiddenAt: new Date() }).where(eq(chatMessages.id, held.line.id));
+    const byIds = await bulk({ ids: [held.item.id, transcripts[0].id], reason: "banter" });
+    expect(byIds.json()).toEqual({ dismissed: [held.item.id], more: false }); // the transcript wasn't open any more
+    expect(await history(held.host, held.t)).toContain("bulkh said something");
+    expect(await notices(held.reps[0])).toMatchObject([{ outcome: "reviewed" }]);
+
+    expect((await bulk({ filter: {}, reason: "everything" })).statusCode).toBe(400); // never "everything"
+    expect((await bulk({ ids: [held.item.id] })).statusCode).toBe(400); // a reason is required
+  });
+
   it("remove: hidden for good, 'action taken', and a deleted line can still be reviewed", async () => {
     const r = await reported("remove");
     await act(r.item.id, { action: "remove", reason: "hate speech" });

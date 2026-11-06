@@ -181,6 +181,27 @@ export const moderationActionResponseSchema = z.object({
   banRequestId: uuid.nullable(),
 });
 
+/** At most this many items in one bulk dismiss; a larger filter dismisses the oldest first and says there are more. */
+export const BULK_DISMISS_MAX = 500;
+/** Which open items a bulk dismiss takes: at least one condition, so it never means "everything". */
+export const bulkDismissFilterSchema = z.object({
+  type: z.enum(MODERATION_KINDS).optional(),
+  reason: z.enum(REPORT_REASONS).optional(),
+  /** Only items nobody reported (a voice note's transcript, say). */
+  unreported: z.boolean().optional(),
+  createdBefore: iso.optional(),
+}).strict().refine((f) => Object.values(f).some((v) => v !== undefined && v !== false), "give at least one condition");
+export type BulkDismissFilter = z.infer<typeof bulkDismissFilterSchema>;
+/** POST /admin/moderation/bulk-dismiss: open items by id or by filter, with a reason; each is logged as a dismiss. */
+export const bulkDismissBodySchema = z.union([
+  z.object({ ids: z.array(uuid).min(1).max(BULK_DISMISS_MAX), reason: reasonSchema }).strict(),
+  z.object({ filter: bulkDismissFilterSchema, reason: reasonSchema }).strict(),
+]);
+export type BulkDismissBody = z.infer<typeof bulkDismissBodySchema>;
+/** What was dismissed. Ids that weren't open are skipped; `more` when the filter matched past BULK_DISMISS_MAX. */
+export const bulkDismissResponseSchema = z.object({ dismissed: z.array(uuid), more: z.boolean() });
+export type BulkDismissResponse = z.infer<typeof bulkDismissResponseSchema>;
+
 // ---- config -------------------------------------------------------------------------------
 
 /**

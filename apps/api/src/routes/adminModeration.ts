@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { actOnItem, db, getSafetyConfig, moderationDetail, moderationItemView, moderationPage, recordAdminAction, releaseHold, setSafetyConfig, topReason } from "@contestly/db";
+import { actOnItem, bulkDismiss, db, getSafetyConfig, moderationDetail, moderationItemView, moderationPage, recordAdminAction, releaseHold, setSafetyConfig, topReason } from "@contestly/db";
 import { banOrRequestBan } from "@contestly/payments";
 import {
-  VOICE_PLAYBACK_URL_SECONDS, adminReasonBodySchema, moderationActionBodySchema, moderationActionResponseSchema, moderationItemDetailSchema, moderationPageSchema, moderationQuerySchema,
+  VOICE_PLAYBACK_URL_SECONDS, adminReasonBodySchema, bulkDismissBodySchema, bulkDismissResponseSchema, moderationActionBodySchema, moderationActionResponseSchema, moderationItemDetailSchema, moderationPageSchema, moderationQuerySchema,
   reasonSchema, safetyConfigSchema, type ModerationActionBody,
 } from "@contestly/shared";
 import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
@@ -48,6 +48,15 @@ export async function adminModerationRoutes(app: FastifyInstance) {
       ...detail,
       voice: voice ? { transcript: voice.transcript, provider: voice.provider, audioUrl: audio?.url ?? null, expiresAt: audio?.expiresAt ?? null } : null,
     });
+  });
+
+  /** Dismiss open items by id or by filter (e.g. transcripts nobody reported), with one reason; each is logged. */
+  app.post("/admin/moderation/bulk-dismiss", async (req) => {
+    const admin = requireAdmin(req);
+    const { reason, ...by } = bulkDismissBodySchema.parse(req.body);
+    const { events, ...out } = await bulkDismiss(admin.id, by, reason);
+    await publishSafety(events);
+    return bulkDismissResponseSchema.parse(out);
   });
 
   /** Dismiss, remove, warn, chat timeout, suspend or ban, with a reason. Reporters hear "action taken" or "reviewed". */

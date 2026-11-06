@@ -4,7 +4,7 @@
  * are applied by the caller first (they go through packages/payments for payments admins) and recorded here.
  */
 import { and, asc, count, desc, eq, gt, inArray, lt, ne, sql, type SQL } from "drizzle-orm";
-import type { ModerationAction, ModerationItemView, ModerationKind, ModerationStatus, ReportReason, SafetyEvent } from "@contestly/shared";
+import { BULK_DISMISS_MAX, type BulkDismissFilter, type ModerationAction, type ModerationItemView, type ModerationKind, type ModerationStatus, type ReportReason, type SafetyEvent } from "@contestly/shared";
 import { db, type Tx } from "../client.js";
 import { adminActions, chatMessages, moderationItems, reports, users, voiceNotes, type ModerationItem } from "../schema.js";
 import { recordAdminAction } from "../admin.js";
@@ -111,7 +111,7 @@ const RESOLUTION: Record<ModerationAction, { status: ModerationStatus; outcome: 
 /** The item's most-reported reason: what a warning or a ban names unless the admin picks another. */
 export const topReason = (v: ModerationItemView): ReportReason => v.reasons[0]?.reason ?? "other";
 
-export interface ActInput { action: ModerationAction; reason: string; hours?: number; category: ReportReason; resolution?: string }
+export interface ActInput { action: ModerationAction; reason: string; hours?: number; category: ReportReason; resolution?: string; bulk?: boolean }
 
 /**
  * An admin acts on an item. Dismiss shows a held item again; remove hides it for good; warn leaves a notice;
@@ -122,25 +122,54 @@ export async function actOnItem(adminUserId: string, itemId: string, a: ActInput
   return db.transaction(async (tx) => {
     const [item] = await tx.select().from(moderationItems).where(eq(moderationItems.id, itemId)).for("update");
     if (!item) throw httpError(404, "not_found");
-    const subject = item.userId;
-    if (!subject && a.action !== "dismiss" && a.action !== "remove") throw httpError(409, "no_subject");
-    let events: SafetyEvent[] = [];
-    if (a.action === "dismiss" && item.heldAt) events = await showItem(tx, item);
-    if (a.action === "remove") events = await hideItem(tx, item);
-    if (a.action === "warn") await warnUser(tx, subject!, a.category, item.id);
-    if (a.action === "chat_timeout") {
-      await setChatTimeout(tx, { adminUserId, action: "user.chat_timeout", reason: a.reason }, subject!, new Date(now.getTime() + a.hours! * 3_600_000));
+    return { events: await applyAction(tx, adminUserId, item, a, now) };
+  });
+}
+
+/** One action on a locked item, in the caller's transaction: its effect, the resolution, the log row, the reporters' note. */
+async function applyAction(tx: Tx, adminUserId: string, item: ModerationItem, a: ActInput, now: Date): Promise<SafetyEvent[]> {
+  const subject = item.userId;
+  if (!subject && a.action !== "dismiss" && a.action !== "remove") throw httpError(409, "no_subject");
+  let events: SafetyEvent[] = [];
+  if (a.action === "dismiss" && item.heldAt) events = await showItem(tx, item);
+  if (a.action === "remove") events = await hideItem(tx, item);
+  if (a.action === "warn") await warnUser(tx, subject!, a.category, item.id);
+  if (a.action === "chat_timeout") {
+    await setChatTimeout(tx, { adminUserId, action: "user.chat_timeout", reason: a.reason }, subject!, new Date(now.getTime() + a.hours! * 3_600_000));
+  }
+  const { status, outcome } = RESOLUTION[a.action];
+  await tx.update(moderationItems).set({ status, resolution: a.resolution ?? a.action, resolvedAt: now, resolvedByUserId: adminUserId, heldAt: a.action === "dismiss" ? null : item.heldAt })
+    .where(eq(moderationItems.id, item.id));
+  await recordAdminAction(tx, {
+    adminUserId, action: `moderation.${a.action}`, targetType: "moderation_item", targetId: item.id, reason: a.reason,
+    before: { status: item.status, resolution: item.resolution, heldAt: iso(item.heldAt) },
+    after: { status, resolution: a.resolution ?? a.action, subject, ...(a.hours ? { hours: a.hours } : {}), category: a.category, ...(a.bulk ? { bulk: true } : {}) },
+  });
+  await tellReporters(tx, await unnotifiedReporters(tx, item.id), item.id, outcome);
+  return events;
+}
+
+/**
+ * Dismiss open items in one go (the transcripts nobody reported, say): by id, or by a filter, oldest first, at
+ * most BULK_DISMISS_MAX. Each is a dismiss like any other (a held one shows again, its reporters hear "reviewed",
+ * its own log row, marked bulk). Ids that aren't open are skipped.
+ */
+export async function bulkDismiss(adminUserId: string, by: { ids: string[] } | { filter: BulkDismissFilter }, reason: string, now = new Date()) {
+  return db.transaction(async (tx) => {
+    const where: SQL[] = [eq(moderationItems.status, "open")];
+    if ("ids" in by) where.push(inArray(moderationItems.id, by.ids));
+    else {
+      const f = by.filter;
+      if (f.type) where.push(eq(moderationItems.kind, f.type));
+      if (f.reason) where.push(sql`exists (select 1 from ${reports} r where r.item_id = ${moderationItems.id} and r.reason = ${f.reason})`);
+      if (f.unreported) where.push(eq(moderationItems.reportCount, 0));
+      if (f.createdBefore) where.push(lt(moderationItems.createdAt, new Date(f.createdBefore)));
     }
-    const { status, outcome } = RESOLUTION[a.action];
-    await tx.update(moderationItems).set({ status, resolution: a.resolution ?? a.action, resolvedAt: now, resolvedByUserId: adminUserId, heldAt: a.action === "dismiss" ? null : item.heldAt })
-      .where(eq(moderationItems.id, item.id));
-    await recordAdminAction(tx, {
-      adminUserId, action: `moderation.${a.action}`, targetType: "moderation_item", targetId: item.id, reason: a.reason,
-      before: { status: item.status, resolution: item.resolution, heldAt: iso(item.heldAt) },
-      after: { status, resolution: a.resolution ?? a.action, subject, ...(a.hours ? { hours: a.hours } : {}), category: a.category },
-    });
-    await tellReporters(tx, await unnotifiedReporters(tx, item.id), item.id, outcome);
-    return { events };
+    const rows = await tx.select().from(moderationItems).where(and(...where)).orderBy(asc(moderationItems.createdAt)).limit(BULK_DISMISS_MAX + 1).for("update");
+    const taken = rows.slice(0, BULK_DISMISS_MAX);
+    const events: SafetyEvent[] = [];
+    for (const item of taken) events.push(...await applyAction(tx, adminUserId, item, { action: "dismiss", reason, category: "other", bulk: true }, now));
+    return { dismissed: taken.map((r) => r.id), more: rows.length > BULK_DISMISS_MAX, events };
   });
 }
 
