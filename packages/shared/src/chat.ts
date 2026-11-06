@@ -236,3 +236,6 @@ export const INBOX_ROOM = "inbox";
 /** Valkey channels: every line of a thread, and one person's inbox updates (DMs and crews only). */
 export const chatThreadChannel = (threadId: string) => `chat:thread:${threadId}`;
 export const chatUserChannel = (userId: string) => `chat:user:${userId}`;
+/** MSG.chatHidden: a line was held after reports or removed by an admin; drop it from the thread. */
+export const chatHiddenSchema = z.object({ threadId: z.string().uuid(), messageId: z.string().uuid() });
+export type ChatHidden = z.infer<typeof chatHiddenSchema>;

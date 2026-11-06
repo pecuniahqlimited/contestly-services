@@ -14,6 +14,11 @@
       "types": "./dist/nudges.d.ts",
       "import": "./dist/nudges.js",
       "default": "./dist/nudges.js"
+    },
+    "./moderation": {
+      "types": "./dist/moderation.d.ts",
+      "import": "./dist/moderation.js",
+      "default": "./dist/moderation.js"
     }
   },
   "scripts": {

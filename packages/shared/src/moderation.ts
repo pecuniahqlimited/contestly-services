@@ -207,10 +207,8 @@ export const DEFAULT_SAFETY_CONFIG: SafetyConfig = {
 export const SAFETY_EVENTS_CHANNEL = "safety:events";
 /**
  * `people_hidden`: a block or mute between these people changed, so rooms reload who they hide from whom.
- * `line_hidden`: a line was held or removed; rooms tell clients to drop it (MSG.chatHidden).
+ * `line_hidden`: a line was held or removed; rooms tell clients to drop it (MSG.chatHidden, chatHiddenSchema in chat.ts).
  */
 export type SafetyEvent =
   | { kind: "people_hidden"; userIds: string[] }
   | { kind: "line_hidden"; threadId: string; messageId: string };
-/** MSG.chatHidden's payload. */
-export const chatHiddenSchema = z.object({ threadId: uuid, messageId: uuid });
