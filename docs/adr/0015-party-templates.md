@@ -37,3 +37,71 @@ Hosts throw parties for occasions: a birthday, a bridal shower, an office party.
 - Brand templates and the feedback poll format (after row 8).
 - Formats beyond pick-one for host-authored questions.
 - Whether free template parties should be allowed later (today: never).
+
+## Implementation notes (row 13, built Nov 2026)
+
+**Data.** `party_template_configs` holds one immutable row per admin save of the whole config: the templates (in
+picker order; reorder, hide with `hidden`, remove by leaving one out) and the host-written rules (`maxEntryKobo`,
+`maxHostPrizeKobo`, `maxHostShareBps` default 5000, `outlierMarginPct` default 30). Version 1 (six templates) is
+written by migration 0046 and `db:seed`. A party keeps `parties.template` (id, version, name, occasion, themed
+spec) and `parties.host_rules` (the rules when it was made). Host-written questions are `party_questions` rows
+with `host_written` (and `host_authored`, so every existing "out of the bank" rule applies); `host_authored` alone
+still means a host's edit of a generated question (ADR 0003), which counts for none of the rules here.
+`parties.host_question_count` is recomputed from the rows by `syncHostQuestionCount()` after every change.
+
+**The builder.** `GET /party-templates`; `POST /parties` with `template: { id, version }` lays the host's fields
+over the template's (`withTemplate`), and `hostQuestions` (pick-one: question, answer, three distractors). Any
+host-written question forces curate. `POST /parties/host-questions/distractors` needs no party; the API checks
+the host's words, queues `suggest_distractors` and waits (15 s) for the questions service, which checks them
+again, makes one `Generator.distract()` call and filters every candidate through the safety filter (failing
+closed: fewer than three safe is an error, never a short list). `POST/PUT/DELETE /parties/:id/host-questions`
+while a curate party is open and not generating. Before the engine has drafted the rest, an added question takes a
+themed slot and a removed one is deleted; after, an added one lengthens the play order and a removed one shortens
+it (voided, kept for the record, never below 3). A sealed party can't take host-written questions later
+(`sealed_party_no_host_questions`): its host is seated and may have paid.
+
+**Generation.** `generate_set` makes `questionCount − hostWritten` plus the reserves and spreads the host's
+questions through the play order (`hostSlots`). A template's themed spec adds its audience, tone and exclusions.
+`record_play` skips host-authored rows explicitly.
+
+**Stakes** (`checkHostWrittenStakes`, with `checkStakes`): a template party is never free even with no host-written
+questions; one with host-written questions is never free, and its entry, the host's cash prize and the host's share
+stay under the caps, at creation and at every add.
+
+**The settlement check** (`holdFlaggedPrizes`, in the settle transaction, after prizes are posted): only for
+parties with host-written questions, only cash prizes (goods move no money). Linked: in `yourPeople(host)`, or a
+`user_signals` install id or IP shared with the host. Flagged: linked, at least one host-written question played,
+and the winner's mean correctness on them at least `outlierMarginPct` points above everyone else seated
+(`reviewPrize` in packages/game). A flagged prize is still posted as `party_prize`; a `held_prizes` row and a
+`templates.prize_held` warning alert commit with it.
+
+**The hold** uses the payments block, not a new money path: `withdrawContext()` reports `prizeUnderReview` and
+`withdrawBlockReason()` answers `prize_under_review`, so the request, its in-transaction recheck, the send-time
+recheck (held for a payments admin as `blocked:prize_under_review`) and `GET /me` all refuse it. So that a reject
+can always take the prize back, cash can't be spent below what's held: `assertHeldPrizesKept()` runs after an
+entry's cash charge (`takeSeat`) and a host's prize hold, refusing with 409 `prize_under_review`. Bonus coins and
+cash above the held amount stay spendable. Ledger internals are unchanged (journals with explicit legs).
+
+**Clear and reject** (`/admin/party-templates/held-prizes`, one admin, a reason, `admin_actions`). Clear moves
+nothing. **Reject, the rule:** the prize is taken back from the winner into the party's pot
+(`held_prize_reject:<id>`), then
+
+1. passed to the best-ranked seat that is signed up, not banned, has no prize from this party and wasn't rejected
+   before, keyed `party_prize:<party>:<user>` like settlement's own prizes; that player goes through the same check
+   and may be held in turn;
+2. with nobody to pass it to, a host's cash prize goes back to the host (`held_prize_returned_to_host:<id>:<user>`);
+   a pooled prize is refunded evenly to the other seats, the remainder to the best-ranked
+   (`held_prize_refunded:<id>:<user>`);
+3. with no other seat at all, forfeited to the treasury.
+
+The held row is locked; a second reject answers the first (`replayed`), a clear after a reject (or the other way)
+is 409 `prize_already_decided`. Lock order (ADR 0013): the people's `users` rows (planned before locking, then
+re-planned under the locks; a different plan is 409 `party_changed_try_again`), the party and the held row, then
+the ledger. If the winner's cash somehow can't cover it (a payments contradiction hold took it), 409
+`prize_not_recoverable` and it stays held.
+
+**Bent, for review.** (a) A clear is one admin (this ADR) although ADR 0013 asks two for loosening a payments
+control. (b) `yourPeople()` leaves out pairs where either has blocked the other, so a host could block a friend
+before the party to dodge the "people" link (install id and IP still link them). (c) In curate mode the host sees
+the generated questions' answers too (ADR 0003); only host-written accuracy is checked. (d) The seeded set is six
+templates as decided here; the roadmap row listed five (no Reunion).
