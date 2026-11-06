@@ -8,7 +8,7 @@ import type { Client } from "colyseus";
 import { getChatConfig, lineDeliveries, postMessage, type ChatSender, type ChatThread } from "@contestly/db";
 import { chatQueue, makeRedis, notifyQueue, valkeyCounter } from "@contestly/queue";
 import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
-import { MSG, chatRateCheck, type ChatMessage, type ChatSend, type WindowCounter } from "@contestly/shared";
+import { MSG, chatRateCheck, type ChatMessage, type ChatSend, type RoomError, type WindowCounter } from "@contestly/shared";
 
 /** What a room publishes on: its Colyseus presence (Valkey). */
 export interface Publisher {
@@ -22,7 +22,14 @@ const storage = () => (store ??= objectStoreFromEnv());
 const notify = notifyQueue();
 const chatJobs = chatQueue();
 
-const isRefusal = (e: unknown): e is Error & { statusCode: number } => e instanceof Error && typeof (e as { statusCode?: unknown }).statusCode === "number";
+type Refusal = Error & { statusCode: number; details?: { until?: string } };
+const isRefusal = (e: unknown): e is Refusal => e instanceof Error && typeof (e as { statusCode?: unknown }).statusCode === "number";
+
+/** A refused line as MSG.error: the code, which line, and a chat timeout's end (details.until), as HTTP sends it. */
+export function refusalMessage(e: Refusal, clientMsgId: string): RoomError {
+  const until = e.details?.until;
+  return { error: e.message, clientMsgId, ...(until ? { until } : {}) };
+}
 
 export async function sendLine(presence: Publisher, client: Client, thread: ChatThread, sender: ChatSender, body: ChatSend): Promise<void> {
   const cfg = await getChatConfig();
@@ -38,7 +45,7 @@ export async function sendLine(presence: Publisher, client: Client, thread: Chat
     });
   } catch (e) {
     if (!isRefusal(e)) throw e;
-    return void client.send(MSG.error, { error: e.message, clientMsgId: body.clientMsgId });
+    return void client.send(MSG.error, refusalMessage(e, body.clientMsgId));
   }
   client.send(MSG.chatAck, { clientMsgId: body.clientMsgId, duplicate: posted.duplicate, message: posted.message });
   if (posted.duplicate) return;

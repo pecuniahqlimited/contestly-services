@@ -418,9 +418,12 @@ describe("the moderation queue", () => {
 
   it("chat timeout: no sending in party chat, DMs, crews or corner replies until it runs out", async () => {
     const r = await reported("timeout");
+    const meTimeout = async () => (await app.inject({ url: "/me", headers: as(r.subject) })).json().chatTimeoutUntil;
+    expect(await meTimeout()).toBeNull();
     const res = await act(r.item.id, { action: "chat_timeout", reason: "cool off", hours: 2 });
     expect(res.statusCode, res.body).toBe(200);
     const u = await reload(r.subject);
+    expect(await meTimeout()).toBe(u.chatTimeoutUntil!.toISOString()); // composers can say so before a send
     expect(u.chatTimeoutUntil!.getTime()).toBeGreaterThan(Date.now() + 3_500_000);
     expect(await refusal(say(u, r.t, "still here"))).toBe("chat_timeout");
     const c = await unlockedCorner(r.host);

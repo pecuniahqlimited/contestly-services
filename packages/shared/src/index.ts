@@ -434,6 +434,8 @@ export const sessionMeResponseSchema = meResponseSchema.extend({
   /** A verified number is on the account (it's never shown). */
   phoneAdded: z.boolean(),
   canWithdraw: z.boolean(),
+  /** An active chat timeout's end (ISO), so composers can say so before a send is refused; null when there's none. */
+  chatTimeoutUntil: z.string().datetime().nullable().default(null),
 });
 export type SessionMe = z.infer<typeof sessionMeResponseSchema>;
 /** POST /me/guest: the guest's name for a free party. */
@@ -957,13 +959,15 @@ export const roomPresenceSchema = z.object({ partyId: z.string().uuid(), online:
 export const roomVoidedSchema = z.object({ questionId: z.string().uuid(), idx: z.number().int(), replacementAdded: z.boolean(), total: z.number().int() });
 /** MSG.questionsStatus: the set's state changed. Same shape as the disclosure on party detail. */
 export const roomQuestionsStatusSchema = questionDisclosureSchema;
-/** not_open, too_late, chat_closed, flag_closed, validation, rate_limited, cannot_message, request_pending, … */
+/** not_open, too_late, chat_closed, flag_closed, validation, rate_limited, chat_timeout, cannot_message, request_pending, … */
 export const roomErrorSchema = z.object({
   error: z.string(),
   /** A refused chat line: which one, so the composer can mark it. */
   clientMsgId: z.string().uuid().optional(),
   /** rate_limited: seconds until sending works again. */
   retryAfter: z.number().int().optional(),
+  /** chat_timeout: when the sender's chat timeout ends (ISO), as the HTTP refusal's details.until. */
+  until: z.string().datetime().optional(),
 });
 
 export type QuestionView<F extends QuestionFormat = QuestionFormat> = z.infer<(typeof questionViewSchemas)[F]>;

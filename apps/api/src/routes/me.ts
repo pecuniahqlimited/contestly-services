@@ -30,6 +30,7 @@ export async function meRoutes(app: FastifyInstance) {
     return {
       ...publicUser(u), isGuest: u.isGuest, isAdmin: u.isAdmin, email: u.email, phoneAdded: !!u.phoneVerifiedAt,
       canWithdraw: canWithdraw(u, await withdrawContext(db, u)), wallet: await ledger.balances(u.id),
+      chatTimeoutUntil: u.chatTimeoutUntil && u.chatTimeoutUntil > new Date() ? u.chatTimeoutUntil.toISOString() : null,
     };
   });
 
