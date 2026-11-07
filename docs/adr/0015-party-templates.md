@@ -75,8 +75,10 @@ parties with host-written questions, only cash prizes (goods move no money).
 
 - *Linked* reads the raw relationships, never `yourPeople()` (which drops blocked pairs, so a host could block a
   friend before the party to dodge the link): crew mates in a live crew (`crew`), contacts either way (`contact`),
-  played together within `yourPeopleDays` before the party (`played_with`), and an install id or IP seen on both
-  accounts (`install`, `ip`). A block either way made within `recentBlockDays` (host-written rules, default 7)
+  played together within `yourPeopleDays` before the party (`played_with`), an account younger than
+  `newAccountDays` (default 14) that came in through the host's invite to this party or signed up from the host's
+  invite (`invited_new`: a second account the host brought in), and an install id or IP seen on both accounts
+  (`install`, `ip`). Each is a link like the others: it holds a prize only with an outlier score. A block either way made within `recentBlockDays` (host-written rules, default 7)
   before the party, or since, is a link itself (`recent_block`); an older block hides nothing, since the other
   relationships are still read through it. "The party" is when it went live (else its start time). A block lifted
   before settlement leaves no row to see.

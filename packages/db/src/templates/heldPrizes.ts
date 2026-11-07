@@ -16,9 +16,9 @@
  */
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { evenShares, nextPlaced, reviewPrize, type GradedAnswer } from "@contestly/game";
-import { DEFAULT_HOST_WRITTEN_RULES, OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeOutcome, type PrizeLinkKind } from "@contestly/shared";
+import { DEFAULT_HOST_WRITTEN_RULES, OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeOutcome, type HostWrittenRules, type PrizeLinkKind } from "@contestly/shared";
 import type { Tx } from "../client.js";
-import { blocks, contactMatches, crewMembers, crews, heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, playedWith, userSignals, users, type HeldPrize, type Party } from "../schema.js";
+import { blocks, contactMatches, cornerNewPlayers, crewMembers, crews, partyInvites, heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, playedWith, userSignals, users, type HeldPrize, type Party } from "../schema.js";
 import { adminAlert } from "../alerts.js";
 import { recordAdminAction } from "../admin.js";
 import { moneyTransaction } from "../retry.js";
@@ -33,14 +33,16 @@ const httpError = (statusCode: number, code: string, details?: Record<string, un
  * How `userId` is linked to the host, from the raw relationships rather than yourPeople() (which drops blocked
  * pairs, so a host could block a friend to dodge it): crew mates in a live crew, contacts either way, played
  * together within yourPeopleDays before the party, a block either way made in the `recentBlockDays` before the
- * party (or since), and an install id or IP seen on both accounts.
+ * party (or since), an account younger than `newAccountDays` that came in through the host's invite to this party
+ * or signed up from the host's invite (invited_new), and an install id or IP seen on both accounts.
  */
-async function linksToHost(tx: Tx, p: Party, userId: string, recentBlockDays: number): Promise<PrizeLinkKind[]> {
+async function linksToHost(tx: Tx, p: Party, userId: string, rules: HostWrittenRules): Promise<PrizeLinkKind[]> {
   const hostId = p.createdByUserId;
   const partyAt = p.liveAt ?? p.startsAt;
   const { yourPeopleDays } = await getSocialConfig(tx);
   const playedSince = new Date(partyAt.getTime() - yourPeopleDays * DAY_MS);
-  const blockedSince = new Date(partyAt.getTime() - recentBlockDays * DAY_MS);
+  const blockedSince = new Date(partyAt.getTime() - rules.recentBlockDays * DAY_MS);
+  const newSince = new Date(partyAt.getTime() - rules.newAccountDays * DAY_MS);
   const [row] = await tx.execute(sql`
     select
       exists(select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id and c.archived_at is null
@@ -50,6 +52,9 @@ async function linksToHost(tx: Tx, p: Party, userId: string, recentBlockDays: nu
         and last_played_at >= ${playedSince.toISOString()}::timestamptz) as played_with,
       exists(select 1 from ${blocks} where ((blocker_id = ${hostId} and blocked_id = ${userId}) or (blocker_id = ${userId} and blocked_id = ${hostId}))
         and created_at >= ${blockedSince.toISOString()}::timestamptz) as recent_block,
+      (exists(select 1 from ${users} where id = ${userId} and created_at >= ${newSince.toISOString()}::timestamptz)
+        and (exists(select 1 from ${partyInvites} where party_id = ${p.id} and inviter_id = ${hostId} and invitee_id = ${userId})
+          or exists(select 1 from ${cornerNewPlayers} where user_id = ${userId} and host_user_id = ${hostId} and via = 'invite'))) as invited_new,
       exists(select 1 from ${userSignals} a join ${userSignals} b on b.kind = a.kind and b.value = a.value
         where a.kind = 'install' and a.user_id = ${hostId} and b.user_id = ${userId}) as install,
       exists(select 1 from ${userSignals} a join ${userSignals} b on b.kind = a.kind and b.value = a.value
@@ -96,7 +101,7 @@ export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Prom
   for (const prize of paid) {
     const key = `party_prize:${p.id}:${prize.userId}`;
     const review = checked ? reviewPrize({
-      winnerId: prize.userId, links: await linksToHost(tx, p, prize.userId, rules.recentBlockDays), answers, marginPct: rules.outlierMarginPct,
+      winnerId: prize.userId, links: await linksToHost(tx, p, prize.userId, rules), answers, marginPct: rules.outlierMarginPct,
       repeat: { priorWins: await priorWins(tx, p, prize.userId, rules.repeatWindowDays), max: rules.repeatWinsMax },
     }) : null;
     if (review?.flagged) {

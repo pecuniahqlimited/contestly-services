@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Worker } from "bullmq";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, bankQuestions, ledgerAccounts, blocks, contactMatches, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
+  adminActions, adminAlerts, bankQuestions, ledgerAccounts, blocks, contactMatches, cornerNewPlayers, partyInvites, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
   savePartyTemplates, currentPartyTemplates, takeSeat, users, withdrawBlockReason, type Party, type User,
 } from "@contestly/db";
 import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
@@ -272,7 +272,7 @@ const settleDeps = { emit: async () => undefined, publishLine: async () => undef
  * A live party with host-written questions as the room leaves it: every seat paid and ranked in the order given,
  * two host-written and two themed questions played, with each seat's correctness on them ([host, host, themed, themed]).
  */
-async function playedParty(opts: { hostUser: User; seats: { u: User; correct: number[] }[]; funding?: "pooled" | "host"; hostPoolKobo?: number; split?: number[] }): Promise<Party> {
+async function playedParty(opts: { hostUser: User; seats: { u: User; correct: number[] }[]; funding?: "pooled" | "host"; hostPoolKobo?: number; split?: number[]; beforeSettle?: (p: Party) => Promise<unknown> }): Promise<Party> {
   const funding = opts.funding ?? "pooled";
   const [p] = await db.insert(parties).values({
     createdByUserId: opts.hostUser.id, title: `Held ${randomUUID().slice(0, 6)}`, category: "General knowledge", entryKobo: funding === "pooled" ? ENTRY : 0, maxPlayers: 10,
@@ -292,6 +292,7 @@ async function playedParty(opts: { hostUser: User; seats: { u: User; correct: nu
     const [pq] = await db.insert(partyQuestions).values({ partyId: p.id, idx, format: "pick_one", payload: { question: `q${idx}`, options: ["a", "b"], correctIndex: 0 }, seconds: 10, status: "played", hostWritten: idx < 2, hostAuthored: idx < 2 }).returning();
     await db.insert(partyAnswers).values(opts.seats.map((s) => ({ partyId: p.id, questionId: pq.id, userId: s.u.id, correctness: s.correct[idx], points: s.correct[idx] })));
   }
+  await opts.beforeSettle?.(p);
   await settle(settleDeps, p.id);
   settled.push(p.id);
   return (await partyRow(p.id))!;
@@ -372,11 +373,12 @@ describe("repeat winners", () => {
 });
 
 describe("the link check reads the raw relationships, blocks included", () => {
-  const linkOf = async (setUp: (h: User, w: User) => Promise<unknown>) => {
+  const linkOf = async (setUp: (h: User, w: User) => Promise<unknown>, opts: { winner?: Partial<typeof users.$inferInsert>; beforeSettle?: (p: Party, h: User, w: User) => Promise<unknown>; correct?: number[][] } = {}) => {
     const h = await makeUser(name("hostl"));
-    const w = await makeUser(name("winl"));
+    const w = await makeUser(name("winl"), opts.winner);
     await setUp(h, w);
-    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("pl")), correct: MISS }] });
+    const [mine, theirs] = opts.correct ?? [ACE, MISS];
+    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: mine }, { u: await makeUser(name("pl")), correct: theirs }], beforeSettle: opts.beforeSettle && ((party) => opts.beforeSettle!(party, h, w)) });
     return (await heldIn(p.id))[0]?.evidence.links ?? [];
   };
   const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000);
@@ -400,6 +402,20 @@ describe("the link check reads the raw relationships, blocks included", () => {
       await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
       await db.insert(blocks).values({ blockerId: h.id, blockedId: w.id, createdAt: daysAgo(60) });
     })).toEqual(["contact"]);
+  });
+
+  it("invited_new: a young account in through the host's invite (to this party) or referral; an old account or no invite isn't", async () => {
+    const nothing = async () => undefined;
+    const invite = (p: Party, h: User, w: User) => db.insert(partyInvites).values({ partyId: p.id, inviteeId: w.id, inviterId: h.id, status: "accepted" });
+    const referral = (h: User, w: User) => db.insert(cornerNewPlayers).values({ userId: w.id, hostUserId: h.id, via: "invite" });
+    expect(await linkOf(nothing, { beforeSettle: invite })).toEqual(["invited_new"]);
+    expect(await linkOf(referral)).toEqual(["invited_new"]);
+    const old = { createdAt: daysAgo(DEFAULT_HOST_WRITTEN_RULES.newAccountDays + 1) };
+    expect(await linkOf(nothing, { winner: old, beforeSettle: invite })).toEqual([]);
+    expect(await linkOf(referral, { winner: old })).toEqual([]);
+    expect(await linkOf(nothing)).toEqual([]); // young, but nobody brought them
+    // A link like the others: without an outlier score, paid as normal.
+    expect(await linkOf(referral, { correct: [[100, 0, 100, 0], [0, 100, 0, 100]] })).toEqual([]);
   });
 
   it("a block made within recentBlockDays before the party is a link itself, either way; an older one isn't", async () => {

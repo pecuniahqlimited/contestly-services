@@ -157,6 +157,8 @@ export const hostWrittenRulesSchema = z.object({
    * `repeatWindowDays` has the next prize held whatever they scored, linked or not.
    */
   repeatWinsMax: z.number().int().min(1).max(50).default(2),
+  /** invited_new: a winner who came in through the host's invite or referral counts as linked while their account is this young. */
+  newAccountDays: z.number().int().min(0).max(365).default(14),
   repeatWindowDays: z.number().int().min(1).max(365).default(30),
 });
 export type HostWrittenRules = z.infer<typeof hostWrittenRulesSchema>;
@@ -169,6 +171,7 @@ export const DEFAULT_HOST_WRITTEN_RULES: HostWrittenRules = {
   recentBlockDays: 7,
   repeatWinsMax: 2,
   repeatWindowDays: 30,
+  newAccountDays: 14,
 };
 
 export const partyTemplatesConfigSchema = z.object({
@@ -313,9 +316,9 @@ export function templateProblems(t: PartyTemplate, rules: HostWrittenRules): str
 /**
  * How a winner is linked to the host, from the raw relationships (never yourPeople(), which drops blocked pairs):
  * crew mates, contacts either way, played together within yourPeopleDays, a block between them made shortly
- * before the party, or the same install id or IP.
+ * before the party, a new account that came in through the host's invite or referral, or the same install id or IP.
  */
-export const PRIZE_LINK_KINDS = ["crew", "contact", "played_with", "recent_block", "install", "ip"] as const;
+export const PRIZE_LINK_KINDS = ["crew", "contact", "played_with", "recent_block", "invited_new", "install", "ip"] as const;
 export type PrizeLinkKind = (typeof PRIZE_LINK_KINDS)[number];
 export const HELD_PRIZE_STATUSES = ["held", "cleared", "rejected"] as const;
 export type HeldPrizeStatus = (typeof HELD_PRIZE_STATUSES)[number];
