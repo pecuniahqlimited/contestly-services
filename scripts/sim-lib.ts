@@ -49,6 +49,11 @@ export async function putBack() {
   }
 }
 
+/** The stack generates with the mock deck (its planted bad questions and fill-the-gap file drafts), read from the same .env. */
+export const MOCK_GENERATOR = (process.env.QUESTIONS_GENERATOR ?? "mock") === "mock";
+/** waitFor tries (every 500 ms) for a question set to be made: real providers take minutes, the mocks a moment. */
+export const GENERATION_TRIES = MOCK_GENERATOR ? 120 : 720;
+
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A party's startsAt, this many minutes from now. */
 export const inMinutes = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();

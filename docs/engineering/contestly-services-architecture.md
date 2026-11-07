@@ -161,6 +161,6 @@ Build order, matching the roadmap already in `CLAUDE.md`:
 
 - [ ] **Host entity** — one `host` owner that is a user or a brand (Akinola's view), or the brand as public host with the creating staff user recorded underneath. Decide at party-creation time and write a short ADR.
 - [ ] **Concurrency targets** — how many concurrent parties and players per `realtime` instance to load-test against before launch.
-- [ ] **LLM and transcription providers** — which models sit behind `questions` and the voice-note moderation job, and their cost per party.
+- [x] **LLM and transcription providers** — decided (ADR 0016): Claude generates; Gemini verifies with Google Search, embeds, checks safety and transcribes voice notes. Cost per call in `provider_calls`; per-party and daily caps in questions config; the console's usage view (`/admin/questions/usage`).
 - [ ] **Read replica for recsys** — read-only role on the primary at launch, or a replica once Home queries show up in Postgres load.
 - [x] **Climb content** — decided: puzzle game types (pattern, scramble, word hunt, quick maths, memory, pattern recall, word search) as a registry in `packages/game`, generated in code from per-stage settings (ADR 0011) and the admin word list; no trivia in runs (Today's challenge is the quiz).

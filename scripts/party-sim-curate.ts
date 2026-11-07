@@ -20,7 +20,7 @@ import {
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MAX_UPLOAD_BYTES, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, putBack, putBackLater, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
+import { GENERATION_TRIES, MOCK_GENERATOR, RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, putBack, putBackLater, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 import { minimalPdf } from "./sim-pdf.js";
 
 const HOST = "tunde";
@@ -108,7 +108,7 @@ ok(chunks.length >= 1 && chunks.every((c) => c.text.length > 0 && c.embedding !=
 // ---- curate review --------------------------------------------------------------------------
 
 await api(HOST, "POST", `/parties/${partyId}/drafts`);
-const drafted = await waitFor(async () => { const d = await api(HOST, "GET", `/parties/${partyId}/drafts`); return d.questions.length ? d : null; });
+const drafted = await waitFor(async () => { const d = await api(HOST, "GET", `/parties/${partyId}/drafts`); return d.questions.length ? d : null; }, { tries: GENERATION_TRIES });
 const drafts: any[] = drafted?.questions ?? [];
 ok(drafts.length === 6 && drafts.every((q) => q.status === "draft"), `4 questions + 2 reserves drafted for review (${drafts.length})`);
 ok(/only from your file/.test(drafted?.specSummary ?? ""), `spec summary says the set comes from the file ("${drafted?.specSummary}")`);
@@ -116,9 +116,11 @@ const draftRows = await db.select().from(partyQuestions).where(eq(partyQuestions
 const bankRows = await db.select().from(bankQuestions).where(inArray(bankQuestions.id, draftRows.map((r) => r.sourceRef!).filter(Boolean)));
 const chunkIds = new Set(chunks.map((c) => c.id));
 ok(bankRows.length === draftRows.length && bankRows.every((b) => b.sourceChunkId && chunkIds.has(b.sourceChunkId)), "every drafted question cites a chunk of the uploaded file");
-/** Put the correct option back into the gap: the result must be a sentence from the file. */
+/** The mock generator's fill-the-gap drafts: put the correct option back and the result is a sentence from the file. */
 const filledIn = (p: any) => (/"(.*)"$/.exec(p.question)?.[1] ?? "").split("____").join(p.options[p.correctIndex]);
-ok(drafts.every((q) => FACTS.includes(filledIn(q.payload))), "every draft is answerable from a sentence in the file");
+if (MOCK_GENERATOR) ok(drafts.every((q) => FACTS.includes(filledIn(q.payload))), "every draft is answerable from a sentence in the file");
+// A real generator writes its own wording; its answerability from the file is the verifier's job (each was checked against its chunk).
+else ok(drafts.every((q) => q.verification?.sources?.some((s: string) => s.startsWith("chunk:"))), "every draft was verified against its cited chunk, not the web");
 
 ok((await call(PLAYERS[0], "GET", `/parties/${partyId}/drafts`)).status === 403, "drafts are visible to the host's team only");
 const late = await sendFile(HOST, partyId, { filename: "Other.pdf", contentType: PDF, bytes: pdf });
@@ -136,7 +138,7 @@ ok(approveRes.status === 204, "approve a draft");
 const q1 = slot(1);
 ok((await call(HOST, "PATCH", `/parties/${partyId}/drafts/${q1.id}`, { payload: { ...q1.payload, correctIndex: 9 } })).status === 400, "an edit whose answer points outside the options is refused");
 ok((await call(HOST, "PATCH", `/parties/${partyId}/drafts/${q1.id}`, { payload: { ...q1.payload, question: `${q1.payload.question} Bet at the casino!` } })).status === 422, "an edit that fails the safety filter is refused");
-const editedQuestion = q1.payload.question.replace("Fill the gap, from the file", "Host's version — fill the gap");
+const editedQuestion = `Host's version: ${q1.payload.question}`;
 ok((await call(HOST, "PATCH", `/parties/${partyId}/drafts/${q1.id}`, { payload: { ...q1.payload, question: editedQuestion }, explanation: "Edited by the host." })).status === 204, "edit a draft");
 const [q1row] = await db.select().from(partyQuestions).where(eq(partyQuestions.id, q1.id));
 ok(q1row.hostAuthored && q1row.sourceRef === null && q1row.status === "draft", "edited question is host-authored, out of the bank, back to draft");
@@ -154,7 +156,7 @@ ok((await call(HOST, "POST", `/parties/${partyId}/drafts/${q3.id}/regenerate`)).
 const regenerated = await waitFor(async () => {
   const [r] = await db.select().from(partyQuestions).where(eq(partyQuestions.id, q3.id));
   return JSON.stringify(r.payload) !== JSON.stringify(q3.payload) ? r : null;
-});
+}, { tries: GENERATION_TRIES });
 ok(!!regenerated && regenerated.status === "draft" && !!regenerated.sourceRef, "regenerated draft replaced in place, from the bank-gated pipeline");
 
 // approve everything still in draft (play order and the remaining reserve)
