@@ -4,9 +4,9 @@
  * by construction so unit tests and the party sim can assert against it.
  *
  * Planted on purpose, keyed by the BAD_IDS below so MockVerifier and the sim agree on them:
- *   - a question with two correct answers            → verifier "fail"
- *   - a question whose answer is in the question     → verifier "fail"
- *   - a question resting on an unverifiable claim    → verifier "needs_source"
+ *   - a question with two correct answers            → verifier "ambiguous"
+ *   - a question whose answer is in the question     → verifier "incorrect"
+ *   - a question resting on an unverifiable claim    → verifier "unverifiable"
  * plus one near-duplicate pair (dup-capital-a/b) whose wording is close enough that the mock
  * embedder's cosine similarity trips the dedupe step.
  */

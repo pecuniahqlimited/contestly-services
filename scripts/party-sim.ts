@@ -23,7 +23,7 @@ import { notifyQueue, partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import { isOptionFormat, type QuestionFormat } from "@contestly/game";
 import { isKnownBadQuestion } from "../apps/questions/src/providers/mock/deck.js";
-import { RT, api, call, correctAnswer, failureCount, inMinutes, leaks, ok, partyNetKobo, waitFor, wrongAnswer } from "./sim-lib.js";
+import { GENERATION_TRIES, MOCK_GENERATOR, RT, api, call, correctAnswer, failureCount, inMinutes, leaks, ok, partyNetKobo, waitFor, wrongAnswer } from "./sim-lib.js";
 
 const HANDLES = ["tunde", "ada.o", "kemz"];
 const BRIEF = "Nigerian general knowledge — cities, food, music, football";
@@ -80,7 +80,7 @@ async function waitForSet(partyId: string, label: string, until: "ready" | "fail
   const detail = await waitFor(async () => {
     const d = await api("tunde", "GET", `/parties/${partyId}`);
     return d.questions?.status === until || d.questions?.status === (until === "ready" ? "failed" : "ready") ? d : null;
-  }, { tries: 120 });
+  }, { tries: GENERATION_TRIES });
   ok(detail?.questions?.status === until, `${label}: set is ${until} on party detail (${detail?.questions?.status}${detail?.questions?.error ? `: ${detail.questions.error}` : ""})`);
   return detail;
 }
@@ -291,8 +291,14 @@ async function playParty(round: number, partyId: string, party: { split: number[
   console.log(`  play order: ${fromBank} from the bank, ${played.length - fromBank} newly generated (${gens.length} drafts judged)`);
   if (gens.some((g) => g.outcome === "rejected_verify" || g.outcome === "accepted")) {
     const outcomes = gens.map((g) => g.outcome);
-    ok(outcomes.filter((o) => o === "rejected_verify").length >= 3, "the planted bad questions were rejected by independent verification");
-    ok(gens.some((g) => (g.verify as any)?.verdict === "needs_source"), "the unverifiable claim was marked needs_source");
+    // The planted bad questions exist only in the mock deck; a real generator's rejections are whatever they are.
+    if (MOCK_GENERATOR) {
+      ok(outcomes.filter((o) => o === "rejected_verify").length >= 3, "the planted bad questions were rejected by independent verification");
+      ok(gens.some((g) => (g.verify as any)?.verdict === "unverifiable"), "the unverifiable claim was marked unverifiable");
+    } else {
+      ok(gens.filter((g) => g.outcome === "accepted").every((g) => (g.verify as any)?.verdict === "correct" && (g.verify as any)?.sources?.length > 0), "every accepted draft was verified correct, with sources");
+      ok(gens.every((g) => (g.draft as any)?.generatedBy?.model), "every record names the model that wrote it");
+    }
     ok(gens.filter((g) => g.outcome === "accepted").every((g) => g.bankQuestionId), "every accepted generation landed in the bank");
     ok(gens.every((g) => g.spec && g.draft && g.outcome), "each record carries brief, spec, draft and gate outcome");
   }

@@ -10,6 +10,7 @@ export const bankRow = (j: JudgedDraft, spec: GenerationSpec) => ({
   categoryTag: spec.categoryTag,
   language: spec.language,
   embedding: j.embedding,
+  embeddingModel: j.embeddingModel,
   difficulty: j.difficulty.value,
   sourceChunkId: j.draft.sourceChunkId ?? null,
 });
@@ -20,7 +21,7 @@ export const generationRecord = (j: JudgedDraft, ctx: { partyId: string; brief: 
   bankQuestionId: ctx.banked && j.outcome === "accepted" ? j.bankId : null,
   brief: ctx.brief,
   spec: ctx.spec,
-  draft: { format: j.draft.format, payload: j.draft.payload, explanation: j.draft.explanation, claim: j.draft.claim, sourceChunkId: j.draft.sourceChunkId },
+  draft: { format: j.draft.format, payload: j.draft.payload, explanation: j.draft.explanation, claim: j.draft.claim, sourceChunkId: j.draft.sourceChunkId, generatedBy: j.draft.generatedBy },
   verify: j.verify,
   dedupe: j.nearest,
   difficulty: j.difficulty,

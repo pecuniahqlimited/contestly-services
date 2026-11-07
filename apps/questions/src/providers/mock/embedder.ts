@@ -25,6 +25,7 @@ function embedOne(text: string): number[] {
 }
 
 export const mockEmbedder: Embedder = {
+  model: "mock",
   async embed(texts) {
     return texts.map(embedOne);
   },

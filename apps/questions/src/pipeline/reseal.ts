@@ -50,7 +50,7 @@ export async function resealForRoster(partyId: string, deps: ResealDeps): Promis
     : null;
   if (spec && fill && fill.picked.length < stillNeeded.length) {
     await db.transaction((tx) => persistFill(tx, fill, { partyId, brief: party.brief, spec, banked: false }));
-    assertSetFilled(fill.picked.length, stillNeeded.length);
+    assertSetFilled(fill.picked.length, stillNeeded.length, fill.unavailable);
   }
 
   await db.transaction(async (tx) => {

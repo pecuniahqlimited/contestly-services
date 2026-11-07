@@ -55,7 +55,7 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
   if (fill.picked.length < need) {
     // Keep the audit trail of the failed attempt (nothing enters the bank or the party set), then fail closed.
     await db.transaction((tx) => persistFill(tx, fill, { partyId, brief: party.brief, spec, banked: false }));
-    assertSetFilled(fill.picked.length, need);
+    assertSetFilled(fill.picked.length, need, fill.unavailable);
   }
 
   const wentLive = await db.transaction(async (tx) => {
@@ -83,7 +83,7 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
   if (wentLive === null) return;
 
   const bankCount = fill.retrievedCount;
-  console.log(`[questions] ${party.title}: ${party.mode === "sealed" ? "sealed" : "drafted"} ${party.questionCount}+${need - party.questionCount} reserve (${bankCount} from bank, ${seen.length} skipped as already seen, ${need - bankCount} generated${spec.sourceScope === "open" ? "" : " from file"}, ${fill.judged.length - fill.accepted.length} rejected)`);
+  console.log(`[questions] ${party.title}: ${party.mode === "sealed" ? "sealed" : "drafted"} ${party.questionCount}+${need - party.questionCount} reserve (${bankCount} from bank, ${seen.length} skipped as already seen, ${need - bankCount} generated${spec.sourceScope === "open" ? "" : " from file"}, ${fill.judged.length - fill.accepted.length} rejected${fill.unavailable.length ? `; ${fill.unavailable.join(", ")} unavailable, bank-only from there` : ""})`);
   if (wentLive) await resealForRoster(partyId, deps);
   else await deps.publish({ partyId, status: "questions_ready" });
 }

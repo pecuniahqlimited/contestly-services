@@ -67,7 +67,7 @@ describe("MockGenerator once the deck is exhausted", () => {
     const { embeddingText } = await import("../src/pipeline/text.js");
     for (const d of fresh) {
       expect(payloadSchemas.pick_one.safeParse(d.payload).success).toBe(true);
-      expect((await mockVerifier.verify(d)).verdict).toBe("pass");
+      expect((await mockVerifier.verify(d)).verdict).toBe("correct");
     }
     const vecs = await mockEmbedder.embed(fresh.map((d) => embeddingText(d.format, d.payload)));
     const cos = (x: number[], y: number[]) => x.reduce((s, v, i) => s + v * y[i], 0);
@@ -94,11 +94,11 @@ describe("MockVerifier", () => {
   };
 
   it("fails the fixed bad ids and nothing else", async () => {
-    expect((await mockVerifier.verify(draftOf(BAD_IDS.twoCorrect))).verdict).toBe("fail");
-    expect((await mockVerifier.verify(draftOf(BAD_IDS.answerInQuestion))).verdict).toBe("fail");
-    expect((await mockVerifier.verify(draftOf(BAD_IDS.unverifiable))).verdict).toBe("needs_source");
+    expect((await mockVerifier.verify(draftOf(BAD_IDS.twoCorrect))).verdict).toBe("ambiguous");
+    expect((await mockVerifier.verify(draftOf(BAD_IDS.answerInQuestion))).verdict).toBe("incorrect");
+    expect((await mockVerifier.verify(draftOf(BAD_IDS.unverifiable))).verdict).toBe("unverifiable");
     const pass = await mockVerifier.verify(draftOf("po-keshi"));
-    expect(pass.verdict).toBe("pass");
+    expect(pass.verdict).toBe("correct");
     expect(pass.sources.length).toBeGreaterThanOrEqual(2);
   });
 });

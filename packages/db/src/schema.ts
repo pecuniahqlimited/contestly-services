@@ -440,6 +440,8 @@ export const fileChunks = pgTable("file_chunks", {
   text: text("text").notNull(),
   /** Null until the questions service has embedded it (file status "parsing"). */
   embedding: vector("embedding", { dimensions: EMBEDDING_DIM }),
+  /** The model that made `embedding`; only vectors of the current model are compared (ADR 0016). */
+  embeddingModel: text("embedding_model"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex("file_chunks_file_idx").on(t.fileId, t.idx)]);
 
@@ -472,6 +474,8 @@ export const bankQuestions = pgTable("bank_questions", {
   categoryTag: text("category_tag").notNull(),
   language: text("language").notNull().default("en"),
   embedding: vector("embedding", { dimensions: EMBEDDING_DIM }).notNull(),
+  /** The model that made `embedding` ("mock" for rows from before ADR 0016); retrieval and dedupe compare only the current model's. */
+  embeddingModel: text("embedding_model").notNull().default("mock"),
   /** 0 (everyone gets it) … 1 (nobody does). Marked by provenance: a model estimate until real answer rates recalibrate it. */
   difficulty: real("difficulty").notNull(),
   difficultySource: difficultySource("difficulty_source").notNull().default("model_estimate"),
@@ -491,6 +495,7 @@ export const bankQuestions = pgTable("bank_questions", {
 }, (t) => [
   index("bank_questions_status_category_idx").on(t.status, t.categoryTag),
   index("bank_questions_embedding_idx").using("hnsw", t.embedding.op("vector_cosine_ops")),
+  index("bank_questions_embedding_model_idx").on(t.embeddingModel),
 ]);
 
 /**
@@ -1092,6 +1097,42 @@ export const prizeFulfilments = pgTable("prize_fulfilments", {
   awardedAt: timestamp("awarded_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [uniqueIndex("prize_fulfilments_party_place").on(t.partyId, t.place)]);
+
+/**
+ * One row per AI provider call (ADR 0016): which model, for which step, for which party (when there is one) and
+ * job, tokens, search queries, latency, estimated cost in micro-USD and the outcome. Budgets sum these; the
+ * admin usage view groups them. Prompts and answers are never stored here.
+ */
+export const providerCalls = pgTable("provider_calls", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  step: text("step").notNull(),
+  partyId: uuid("party_id").references(() => parties.id, { onDelete: "set null" }),
+  job: text("job"),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
+  searchQueries: integer("search_queries").notNull().default(0),
+  latencyMs: integer("latency_ms").notNull(),
+  costMicros: bigint("cost_micros", { mode: "number" }).notNull().default(0),
+  attempts: integer("attempts").notNull().default(1),
+  outcome: text("outcome").notNull(), // ok | rate_limited | timeout | server | network | bad_request | auth | malformed | refused | budget | circuit_open
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("provider_calls_created_idx").on(t.createdAt), index("provider_calls_party_idx").on(t.partyId)]);
+
+/**
+ * Verification results per question (ADR 0016), keyed by a hash of the verifier model, format, payload, claim and
+ * source text: the same question checked again (a reseal, a regenerate, an edit that changed nothing, the eval)
+ * costs nothing. Only definite verdicts are cached; an unavailable verifier is never cached.
+ */
+export const verificationCache = pgTable("verification_cache", {
+  key: text("key").primaryKey(),
+  model: text("model").notNull(),
+  verdict: jsonb("verdict").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 /** Admin-editable settings, one JSON document per key (e.g. "payout"). Read through packages/db/src/config.ts, which validates. */
 export const appConfig = pgTable("app_config", {

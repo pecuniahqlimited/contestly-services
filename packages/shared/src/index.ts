@@ -27,6 +27,7 @@ import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { owedSchema } from "./payments.js";
 import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX } from "./accounts.js";
+import { DEFAULT_PROVIDERS_CONFIG, providersConfigSchema } from "./providers.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
 const KOBO_PER_NAIRA = 100;
@@ -115,6 +116,8 @@ export const questionsConfigSchema = z.object({
   retireFlagCount: z.number().int().min(1),
   /** A party's source-file chunks are deleted this many days after it finishes (kept that long for disputes and flag review). */
   sourceRetentionDays: z.number().int().min(1).max(365),
+  /** AI providers: per-step models and the spend caps (ADR 0016). */
+  providers: providersConfigSchema,
 });
 export type QuestionsConfig = z.infer<typeof questionsConfigSchema>;
 export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
@@ -128,9 +131,11 @@ export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
   retireAboveSkipPct: 50,
   retireFlagCount: 5,
   sourceRetentionDays: 30,
+  providers: DEFAULT_PROVIDERS_CONFIG,
 };
 
 export * from "./safety.js";
+export * from "./providers.js";
 
 /** Why a player flagged a question. */
 export const FLAG_REASONS = ["wrong_answer", "multiple_correct", "unclear", "out_of_date", "inappropriate"] as const;
@@ -409,7 +414,10 @@ export type QuestionsJob =
   /** Repeatable: retire flagged and underperforming bank questions. */
   | { kind: "retire_sweep" }
   /** Repeatable: delete the source chunks of parties that finished more than sourceRetentionDays ago. */
-  | { kind: "source_sweep" };
+  | { kind: "source_sweep" }
+  /** Re-embed bank questions and file chunks whose embedding came from another model; re-queues itself until none are left (ADR 0016). */
+  /** waits: rate-limited batches in a row, for the backoff (ADR 0016). */
+  | { kind: "reembed"; waits?: number };
 
 /** Response shapes. The UI's api-client parses every response with these. */
 export const healthResponseSchema = z.object({ ok: z.boolean(), service: z.string(), time: z.string() });

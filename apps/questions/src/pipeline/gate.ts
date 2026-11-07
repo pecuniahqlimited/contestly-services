@@ -1,9 +1,9 @@
 /**
- * The automated review gate for sealed mode, pure: a draft is accepted only when its payload is
- * schema-valid, the independent verification passed, it duplicates nothing, and the safety filter
- * passed. Precedence mirrors the pipeline order, so the recorded outcome names the first step
- * that killed a draft. "needs_source" is a rejection here: in sealed mode nobody can supply the
- * missing source, so it fails closed (a host edit can rescue it in curate mode, step 2b).
+ * The automated review gate, pure: a draft is accepted only when its payload is schema-valid, the
+ * independent verification found it correct with at least one source, it duplicates nothing, and the
+ * safety checks passed. Precedence mirrors the pipeline order, so the recorded outcome names the first
+ * step that killed a draft. "unverifiable" is a rejection in both modes: nobody can supply the missing
+ * source (rescuing it with a host edit isn't built, ADR 0003).
  */
 import type { VerifyVerdict } from "../providers/types.js";
 import { isDuplicate, type Neighbour } from "./dedupe.js";
@@ -21,7 +21,7 @@ export interface GateInput {
 
 export function gateDraft(d: GateInput): GateOutcome {
   if (!d.payloadValid) return "rejected_invalid";
-  if (d.verify.verdict !== "pass") return "rejected_verify";
+  if (d.verify.verdict !== "correct" || d.verify.sources.length === 0) return "rejected_verify";
   if (isDuplicate(d.nearest, d.dedupeThreshold)) return "rejected_dedupe";
   if (!d.safety.passed) return "rejected_safety";
   return "accepted";
@@ -29,11 +29,12 @@ export function gateDraft(d: GateInput): GateOutcome {
 
 /** The set is only sealable when play order and reserves are both fully covered. */
 export class SetUnderfilled extends Error {
-  constructor(have: number, need: number) {
-    super(`gate filled ${have} of ${need} questions (count + reserves); failing closed`);
+  /** `unavailable`: provider steps that couldn't answer, so the fill was bank-only from there. */
+  constructor(have: number, need: number, readonly unavailable: string[] = []) {
+    super(`gate filled ${have} of ${need} questions (count + reserves)${unavailable.length ? `, ${unavailable.join(", ")} unavailable` : ""}; failing closed`);
   }
 }
 
-export function assertSetFilled(have: number, need: number): void {
-  if (have < need) throw new SetUnderfilled(have, need);
+export function assertSetFilled(have: number, need: number, unavailable: string[] = []): void {
+  if (have < need) throw new SetUnderfilled(have, need, unavailable);
 }

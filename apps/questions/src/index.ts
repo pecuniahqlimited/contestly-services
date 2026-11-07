@@ -10,7 +10,8 @@ import { eq } from "drizzle-orm";
 import { db, parties } from "@contestly/db";
 import { makeRedis, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { QUEUES, type QuestionsJob } from "@contestly/shared";
-import { selectProviders } from "./providers/index.js";
+import { ProviderUnavailable, withCallContext } from "@contestly/ai";
+import { providerNames, selectProviders } from "./providers/index.js";
 import { generateSet } from "./pipeline/generateSet.js";
 import { resealForRoster } from "./pipeline/reseal.js";
 import { SetUnderfilled } from "./pipeline/gate.js";
@@ -22,6 +23,7 @@ import { reviewEdit } from "./pipeline/reviewEdit.js";
 import { embedFile } from "./files/embedFile.js";
 import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
+import { needsReembed, reembedBackoffMs, reembedBatch, REEMBED_MAX_WAIT_MS, staleRows } from "./pipeline/reembed.js";
 
 /** Daily, at 04:00 server time: retire flagged and underperforming bank questions. */
 const RETIRE_SWEEP_CRON = "0 4 * * *";
@@ -36,8 +38,42 @@ const questionJobs = questionsQueue();
 const providers = selectProviders();
 const publish = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 
+/** Re-embedding is one chain: each batch queues the next, after a backoff when the provider was rate-limited. */
+const queueReembed = (waits = 0, delay = 0) => questionJobs.add("reembed", { kind: "reembed", waits }, { jobId: `reembed-${Date.now()}`, delay });
+
+/** At start: a chain already waiting (from before a restart) carries on, so starting one more would double the rate. */
+async function startReembed() {
+  const pending = await questionJobs.getJobs(["waiting", "delayed", "prioritized", "active"]);
+  if (pending.some((j) => j.data.kind === "reembed")) return;
+  await startReembed();
+}
+
+async function reembed(waits: number) {
+  const t0 = Date.now();
+  let moved: number;
+  try {
+    moved = await reembedBatch({ embedder: providers.embedder });
+  } catch (err) {
+    if (!(err instanceof ProviderUnavailable)) throw err;
+    // A daily quota says when it resets: wait for that rather than knocking every half hour.
+    const delay = Math.max(reembedBackoffMs(waits + 1), Math.min(err.retryAfterMs ?? 0, REEMBED_MAX_WAIT_MS));
+    console.warn(`[reembed] ${err.message}; next batch in ${Math.round(delay / 1000)} s`);
+    await queueReembed(waits + 1, delay);
+    return;
+  }
+  if (!moved) return console.log(`[reembed] done: every row is on ${providers.embedder.model}`);
+  const left = await staleRows(providers.embedder.model);
+  console.log(`[reembed] ${moved} rows in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${left} left`);
+  await queueReembed();
+}
+
 const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
   const d = job.data;
+  // Every provider call this job makes is recorded against its party (budgets, the usage view) and its kind.
+  return withCallContext({ partyId: "partyId" in d ? d.partyId : null, job: d.kind }, () => run(d));
+}, { connection, prefix: QUEUE_PREFIX });
+
+async function run(d: QuestionsJob) {
   switch (d.kind) {
     case "generate_set": return generateSet(d.partyId, { providers, publish });
     case "reseal_for_roster": return resealForRoster(d.partyId, { providers, publish });
@@ -51,8 +87,9 @@ const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
     case "review_edit": return reviewEdit(d, { providers });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
+    case "reembed": return reembed(d.waits ?? 0);
   }
-}, { connection, prefix: QUEUE_PREFIX });
+}
 
 worker.on("failed", async (job, err) => {
   console.error(`[questions] job ${job?.id} failed:`, err.message);
@@ -82,6 +119,7 @@ async function setFailed(partyId: string, err: Error) {
 
 /** What the host is told, in words they can act on. Never anything from the questions themselves. */
 function hostReason(err: Error): string {
+  if (err instanceof SetUnderfilled && err.unavailable.length) return "We couldn't make your questions just now. Try again in a few minutes.";
   if (err instanceof SetUnderfilled) return "We couldn't make enough good questions from this brief. Try a broader brief, or allow more question types.";
   if (err instanceof FilesNotReady) return "Your source file isn't ready (it's still being read, or it couldn't be read). Check it, then try again.";
   return "Something went wrong making your questions. Try again.";
@@ -90,4 +128,8 @@ function hostReason(err: Error): string {
 await questionJobs.upsertJobScheduler("retire-sweep", { pattern: RETIRE_SWEEP_CRON }, { name: "retire_sweep", data: { kind: "retire_sweep" } });
 await questionJobs.upsertJobScheduler("source-sweep", { pattern: SOURCE_SWEEP_CRON }, { name: "source_sweep", data: { kind: "source_sweep" } });
 
-console.log(`questions running: queue ${QUEUES.questions}, providers ${process.env.QUESTIONS_GENERATOR ?? "mock"}/${process.env.QUESTIONS_VERIFIER ?? "mock"}/${process.env.QUESTIONS_EMBEDDER ?? "mock"}`);
+// Rows embedded by another model aren't compared with this one's; move them over in the background.
+await startReembed();
+
+const names = providerNames();
+console.log(`questions running: queue ${QUEUES.questions}, providers generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);

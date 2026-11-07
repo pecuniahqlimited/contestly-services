@@ -22,7 +22,7 @@ export async function regenerateOne(job: { partyId: string; partyQuestionId: str
   const cfg = await getQuestionsConfig();
   const spec = await specFor(party);
   const [specEmbedding] = await deps.providers.embedder.embed([`${spec.topic} · ${spec.categoryTag}`]);
-  const sources = spec.sourceScope === "open" ? undefined : await retrieveChunks(spec.sourceScope.fileIds, specEmbedding);
+  const sources = spec.sourceScope === "open" ? undefined : await retrieveChunks(spec.sourceScope.fileIds, specEmbedding, deps.providers.embedder.model);
   const current = await db.select({ payload: partyQuestions.payload }).from(partyQuestions).where(eq(partyQuestions.partyId, job.partyId));
 
   const { judged, accepted } = await draftAndJudge({

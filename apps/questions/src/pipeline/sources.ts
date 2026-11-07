@@ -3,7 +3,7 @@
  * must be read and indexed first — a party whose file is still being read, or couldn't be, does not
  * quietly fall back to open knowledge (fail closed).
  */
-import { asc, cosineDistance, eq, inArray } from "drizzle-orm";
+import { and, asc, cosineDistance, eq, inArray } from "drizzle-orm";
 import { db, partyFiles, fileChunks } from "@contestly/db";
 import type { SourceChunk } from "../providers/types.js";
 
@@ -23,12 +23,12 @@ export async function partyFileIds(partyId: string): Promise<string[]> {
   return files.map((f) => f.id);
 }
 
-/** The chunks closest to the spec, in file order — retrieval for file-scoped generation. */
-export async function retrieveChunks(fileIds: string[], specEmbedding: number[]): Promise<SourceChunk[]> {
+/** The chunks closest to the spec, in file order — retrieval for file-scoped generation. Only chunks embedded by `model`. */
+export async function retrieveChunks(fileIds: string[], specEmbedding: number[], model: string): Promise<SourceChunk[]> {
   const rows = await db
     .select({ id: fileChunks.id, text: fileChunks.text, fileId: fileChunks.fileId, idx: fileChunks.idx })
     .from(fileChunks)
-    .where(inArray(fileChunks.fileId, fileIds))
+    .where(and(inArray(fileChunks.fileId, fileIds), eq(fileChunks.embeddingModel, model)))
     .orderBy(cosineDistance(fileChunks.embedding, specEmbedding))
     .limit(MAX_SOURCE_CHUNKS);
   rows.sort((a, b) => fileIds.indexOf(a.fileId) - fileIds.indexOf(b.fileId) || a.idx - b.idx);

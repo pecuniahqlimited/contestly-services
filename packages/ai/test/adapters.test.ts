@@ -1,0 +1,127 @@
+import { describe, expect, it } from "vitest";
+import { claudeClient, claudeJson, geminiClient, geminiEmbed, geminiGenerate, ProviderError } from "../src/index.js";
+
+type Handler = (url: string, init: RequestInit) => Response | Promise<Response>;
+const fetchOf = (h: Handler) => (async (url: string | URL | Request, init?: RequestInit) => h(String(url), init ?? {})) as typeof fetch;
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+const signal = new AbortController().signal;
+
+const claudeMessage = (text: string, stop = "end_turn") => ({
+  id: "msg_1", type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text }],
+  stop_reason: stop, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+});
+const req = { model: "claude-sonnet-5-5", system: "s", user: "u", schema: { type: "object" }, maxTokens: 100, effort: "medium" as const };
+
+describe("claudeJson", () => {
+  it("sends structured output and adaptive thinking, and parses the JSON", async () => {
+    let body: Record<string, unknown> = {};
+    const client = claudeClient({ apiKey: "test-key", fetch: fetchOf((_u, init) => { body = JSON.parse(String(init.body)); return json(claudeMessage('{"questions":[]}')); }) });
+    const out = await claudeJson(client, req, signal);
+    expect(out.value).toEqual({ json: { questions: [] }, results: [] });
+    expect(out.usage).toMatchObject({ inputTokens: 100, outputTokens: 50, searchQueries: 0 });
+    expect(body.output_config).toEqual({ effort: "medium", format: { type: "json_schema", schema: { type: "object" } } });
+    expect(body.thinking).toEqual({ type: "adaptive" });
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("with web search: sends the tool, keeps the results Claude saw, counts the searches, resumes a paused turn", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const searched = {
+      ...claudeMessage(""), stop_reason: "pause_turn",
+      content: [
+        { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "q" } },
+        { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [
+          { type: "web_search_result", url: "https://a.example/x", title: "A", encrypted_content: "e" },
+          { type: "web_search_result", url: "https://b.example/y", title: "B", encrypted_content: "e" },
+        ] },
+      ],
+      usage: { input_tokens: 5000, output_tokens: 20, server_tool_use: { web_search_requests: 1 } },
+    };
+    const done = { ...claudeMessage(""), content: [{ type: "text", text: "Let me check." }, { type: "text", text: '{"verdict":"correct"}' }], usage: { input_tokens: 6000, output_tokens: 80, server_tool_use: { web_search_requests: 0 } } };
+    const replies = [searched, done];
+    const client = claudeClient({ apiKey: "k", fetch: fetchOf((_u, init) => { bodies.push(JSON.parse(String(init.body))); return json(replies.shift()); }) });
+    const out = await claudeJson(client, { ...req, webSearch: { maxUses: 3 } }, signal);
+    expect(out.value).toEqual({ json: { verdict: "correct" }, results: [{ url: "https://a.example/x", title: "A" }, { url: "https://b.example/y", title: "B" }] });
+    expect(out.usage).toMatchObject({ inputTokens: 11000, outputTokens: 100, searchQueries: 1 });
+    expect(bodies[0].tools).toEqual([{ type: "web_search_20260209", name: "web_search", max_uses: 3, allowed_callers: ["direct"] }]);
+    // The resumed call sends the paused assistant turn back unchanged.
+    expect((bodies[1].messages as { role: string }[]).map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("maps malformed output, refusals, rate limits and overload to their kinds", async () => {
+    const run = (r: Response) => claudeJson(claudeClient({ apiKey: "k", fetch: fetchOf(() => r) }), req, signal).catch((e: ProviderError) => e);
+    expect(await run(json(claudeMessage("not json")))).toMatchObject({ kind: "malformed" });
+    expect(await run(json(claudeMessage("", "refusal")))).toMatchObject({ kind: "refused" });
+    expect(await run(json(claudeMessage("{", "max_tokens")))).toMatchObject({ kind: "malformed" });
+    expect(await run(json({ type: "error", error: { type: "rate_limit_error", message: "slow down" } }, 429, { "retry-after": "2" }))).toMatchObject({ kind: "rate_limited", retryAfterMs: 2000 });
+    expect(await run(json({ type: "error", error: { type: "overloaded_error", message: "busy" } }, 529))).toMatchObject({ kind: "server" });
+    expect(await run(json({ type: "error", error: { type: "invalid_request_error", message: "bad" } }, 400))).toMatchObject({ kind: "bad_request" });
+  });
+
+  it("never puts the key in an error", async () => {
+    const err = await claudeJson(claudeClient({ apiKey: "sk-secret-123", fetch: fetchOf(() => json({ error: { message: "nope" } }, 401)) }), req, signal).catch((e) => e);
+    expect(String(err.message)).not.toContain("sk-secret-123");
+  });
+});
+
+describe("geminiGenerate", () => {
+  const answer = (text: string, extra: Record<string, unknown> = {}) => ({
+    candidates: [{ content: { parts: [{ text: "thinking…", thought: true }, { text }] }, finishReason: "STOP", ...extra }],
+    usageMetadata: { promptTokenCount: 200, candidatesTokenCount: 30, thoughtsTokenCount: 20, toolUsePromptTokenCount: 500 },
+  });
+
+  it("sends the key as a header, grounds with search, and returns JSON with its sources", async () => {
+    let seen: { url: string; headers: Headers; body: Record<string, unknown> } | null = null;
+    const client = geminiClient({ apiKey: "g-secret", fetch: fetchOf((url, init) => {
+      seen = { url, headers: new Headers(init.headers), body: JSON.parse(String(init.body)) };
+      return json(answer('{"verdict":"correct"}', { groundingMetadata: { webSearchQueries: ["a", "b"], groundingChunks: [{ web: { uri: "https://x.test/1", title: "x.test" } }] } }));
+    }) });
+    const out = await geminiGenerate(client, { model: "gemini-3.8-flash", parts: [{ text: "q" }], schema: { type: "object" }, search: true }, signal);
+    expect(seen!.url).not.toContain("g-secret");
+    expect(seen!.headers.get("x-goog-api-key")).toBe("g-secret");
+    expect(seen!.body.tools).toEqual([{ googleSearch: {} }]);
+    expect(out.value.json).toEqual({ verdict: "correct" });
+    expect(out.value.sources).toEqual([{ url: "https://x.test/1", title: "x.test" }]);
+    expect(out.usage).toMatchObject({ inputTokens: 700, outputTokens: 50, searchQueries: 2 });
+  });
+
+  it("maps blocked, cut-off, malformed and HTTP failures", async () => {
+    const run = (r: Response) => geminiGenerate(geminiClient({ apiKey: "k", fetch: fetchOf(() => r) }), { model: "m", parts: [{ text: "q" }], schema: {} }, signal).catch((e: ProviderError) => e);
+    expect(await run(json({ promptFeedback: { blockReason: "SAFETY" } }))).toMatchObject({ kind: "refused" });
+    expect(await run(json({ candidates: [{ content: { parts: [{ text: "{" }] }, finishReason: "MAX_TOKENS" }] }))).toMatchObject({ kind: "malformed" });
+    expect(await run(json(answer("not json")))).toMatchObject({ kind: "malformed" });
+    expect(await run(json({ error: { code: 429, message: "quota" } }, 429))).toMatchObject({ kind: "rate_limited" });
+    expect(await run(new Response("<html>bad gateway</html>", { status: 502 }))).toMatchObject({ kind: "server" });
+    expect(await run(new Response("{oops", { status: 200 }))).toMatchObject({ kind: "malformed" });
+  });
+
+  it("a network failure is transient, an abort a timeout", async () => {
+    const down = await geminiGenerate(geminiClient({ apiKey: "k", fetch: fetchOf(() => { throw new TypeError("fetch failed"); }) }), { model: "m", parts: [] }, signal).catch((e) => e);
+    expect(down.kind).toBe("network");
+    const abort = await geminiGenerate(geminiClient({ apiKey: "k", fetch: fetchOf(() => { throw Object.assign(new Error("aborted"), { name: "AbortError" }); }) }), { model: "m", parts: [] }, signal).catch((e) => e);
+    expect(abort.kind).toBe("timeout");
+  });
+});
+
+describe("geminiEmbed", () => {
+  it("returns one vector per text and rejects the wrong width", async () => {
+    const ok = geminiClient({ apiKey: "k", fetch: fetchOf(() => json({ embedding: { values: [0.6, 0.8] }, usageMetadata: { promptTokenCount: 3 } })) });
+    const out = await geminiEmbed(ok, { model: "gemini-embedding-2", texts: ["a", "b"], dimensions: 2 }, signal);
+    expect(out.value).toEqual([[0.6, 0.8], [0.6, 0.8]]);
+    expect(out.usage.inputTokens).toBe(6);
+    await expect(geminiEmbed(ok, { model: "gemini-embedding-2", texts: ["a"], dimensions: 3 }, signal)).rejects.toMatchObject({ kind: "malformed" });
+  });
+});
+
+describe("Gemini quota errors", () => {
+  it("name the quota and carry its reset as the retry delay", async () => {
+    const body = { error: { code: 429, message: "You exceeded your current quota", details: [
+      { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "EmbedContentRequestsPerDayPerUserPerProjectPerModel-FreeTier" }] },
+      { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "72006s" },
+    ] } };
+    const client = geminiClient({ apiKey: "g", fetch: fetchOf(() => json(body, 429)) });
+    const err = await geminiEmbed(client, { model: "gemini-embedding-2", texts: ["a"], dimensions: 8 }, signal).catch((e) => e);
+    expect(err).toMatchObject({ kind: "rate_limited", retryAfterMs: 72_006_000 });
+    expect(err.message).toContain("EmbedContentRequestsPerDay");
+  });
+});

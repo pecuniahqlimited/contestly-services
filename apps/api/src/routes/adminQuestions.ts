@@ -70,6 +70,20 @@ async function lockQuestion(tx: Tx, id: string): Promise<BankQuestion> {
 
 const statusOf = (q: BankQuestion) => ({ status: q.status, flagCount: q.flagCount, retiredReason: q.retiredReason });
 
+type Who = { provider: string; model: string; cached?: boolean };
+interface Verified { verdict?: string; sources?: string[]; citations?: { url: string; title?: string }[]; verifiedBy?: Who }
+
+/** Who wrote and who checked a draft, and what the check found, from its record (ADR 0016). Older records have none of it. */
+function provenance(draft: unknown, verify: unknown) {
+  const v = (verify ?? {}) as Verified;
+  return {
+    generatedBy: (draft as { generatedBy?: Who } | null)?.generatedBy ?? null,
+    verifiedBy: v.verifiedBy ?? null,
+    verdict: v.verdict ?? null,
+    sources: v.citations ?? (v.sources ?? []).map((url) => ({ url })),
+  };
+}
+
 async function questionDetail(id: string) {
   const [q] = await db.select().from(bankQuestions).where(eq(bankQuestions.id, id));
   if (!q) throw httpError(404, "not_found");
@@ -95,6 +109,7 @@ async function questionDetail(id: string) {
     return {
       partyId: g.partyId, brief: g.brief, spec: g.spec, draft: g.draft, sourceChunk: chunk ?? null, verify: g.verify, dedupe: g.dedupe,
       difficulty: g.difficulty, safety: g.safety, outcome: g.outcome,
+      ...provenance(g.draft, g.verify),
       approvedBy: approval ? { kind: "host" as const, person: toPerson(approval.u) } : { kind: "gate" as const },
       createdAt: g.createdAt.toISOString(),
     };

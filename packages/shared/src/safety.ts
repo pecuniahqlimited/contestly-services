@@ -33,7 +33,8 @@ const POLITICS = ["election", "ballot", "vote for", "apc", "pdp", "political par
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const mentions = (text: string, term: string) => new RegExp(`\\b${escape(term)}\\b`).test(text);
 
-const wantsPolitics = (brief: SafetyBrief) =>
+/** The brief itself asked for politics (and didn't rule it out): the one case political questions are allowed. */
+export const wantsPolitics = (brief: SafetyBrief) =>
   POLITICS.some((t) => mentions(brief.topic.toLowerCase(), t)) && !brief.exclusions.includes("politics");
 
 /** Every player-visible and server-side string in the question, lowercased. */
