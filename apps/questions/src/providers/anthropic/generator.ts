@@ -28,13 +28,29 @@ interface Batch {
   count: number;
 }
 
-/** The count spread across formats as evenly as possible (earlier formats take the remainder), split into calls of at most MAX_PER_CALL. */
-export function planBatches(count: number, formats: QuestionFormat[]): Batch[] {
-  if (!formats.length || count <= 0) return [];
-  const base = Math.floor(count / formats.length);
-  const extra = count % formats.length;
-  return formats.flatMap((format, i) => {
-    let n = base + (i < extra ? 1 : 0);
+/**
+ * The count spread across formats as evenly as possible (earlier formats take the remainder), a capped
+ * format giving what it can't take to the others (or dropping it when every format is capped), split into
+ * calls of at most MAX_PER_CALL.
+ */
+export function planBatches(count: number, formats: QuestionFormat[], maxPerFormat: Partial<Record<QuestionFormat, number>> = {}): Batch[] {
+  const shares = new Map<QuestionFormat, number>();
+  let open = formats.filter((f) => (maxPerFormat[f] ?? Infinity) > 0);
+  let left = count;
+  while (left > 0 && open.length) {
+    const base = Math.floor(left / open.length);
+    const extra = left % open.length;
+    left = 0;
+    for (const [i, f] of open.entries()) {
+      const want = (shares.get(f) ?? 0) + base + (i < extra ? 1 : 0);
+      const cap = maxPerFormat[f] ?? Infinity;
+      shares.set(f, Math.min(want, cap));
+      left += Math.max(0, want - cap);
+    }
+    open = open.filter((f) => (shares.get(f) ?? 0) < (maxPerFormat[f] ?? Infinity));
+  }
+  return formats.flatMap((format) => {
+    let n = shares.get(format) ?? 0;
     const out: Batch[] = [];
     while (n > 0) {
       out.push({ format, count: Math.min(n, MAX_PER_CALL) });
@@ -46,10 +62,11 @@ export function planBatches(count: number, formats: QuestionFormat[]): Batch[] {
 
 export function anthropicGenerator(deps: AnthropicGeneratorDeps): Generator {
   return {
-    async draft({ spec, count, avoid, sources }) {
-      // Picture rounds need a pool image; a file has none, so file-scoped sets skip that format.
+    async draft({ spec, count, avoid, sources, maxPerFormat = {} }) {
+      // Picture rounds need a pool image; a file has none, so file-scoped sets skip that format. One call
+      // never asks for more pictures than there are images.
       const formats = spec.formats.filter((f) => f !== "picture" || (!sources && IMAGE_POOL.length > 0));
-      const batches = planBatches(count, formats);
+      const batches = planBatches(count, formats, { ...maxPerFormat, picture: Math.min(maxPerFormat.picture ?? Infinity, IMAGE_POOL.length) });
       if (!batches.length) return [];
       const model = await deps.model();
       const results = await Promise.allSettled(batches.map((b) => draftBatch(deps, model, spec, b, avoid, sources)));

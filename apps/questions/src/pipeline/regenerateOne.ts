@@ -12,6 +12,8 @@ import { bankRow, generationRecord } from "./records.js";
 import { retrieveChunks } from "./sources.js";
 import { specFor } from "./partySpec.js";
 import { questionText } from "./text.js";
+import { pictureLimit } from "./pictures.js";
+import { IMAGE_POOL } from "../providers/imagePool.js";
 
 export async function regenerateOne(job: { partyId: string; partyQuestionId: string; requestedBy: string }, deps: { providers: Providers }): Promise<void> {
   const [party] = await db.select().from(parties).where(eq(parties.id, job.partyId));
@@ -23,11 +25,14 @@ export async function regenerateOne(job: { partyId: string; partyQuestionId: str
   const spec = await specFor(party);
   const [specEmbedding] = await deps.providers.embedder.embed([`${spec.topic} · ${spec.categoryTag}`]);
   const sources = spec.sourceScope === "open" ? undefined : await retrieveChunks(spec.sourceScope.fileIds, specEmbedding, deps.providers.embedder.model);
-  const current = await db.select({ payload: partyQuestions.payload }).from(partyQuestions).where(eq(partyQuestions.partyId, job.partyId));
+  const current = await db.select({ id: partyQuestions.id, format: partyQuestions.format, payload: partyQuestions.payload, status: partyQuestions.status }).from(partyQuestions).where(eq(partyQuestions.partyId, job.partyId));
+  // The rest of the live set counts toward the picture cap; the slot being replaced and swapped-out rows don't.
+  const rest = current.filter((q) => q.id !== slot.id && q.status !== "voided");
 
   const { judged, accepted } = await draftAndJudge({
     spec, providers: deps.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: 1,
     avoid: current.map((q) => questionText(q.payload)), sources,
+    pictures: { limit: pictureLimit(rest.length + 1, IMAGE_POOL.length), inSet: rest },
   });
   const chosen = accepted[0];
   if (!chosen) {
@@ -44,6 +49,7 @@ export async function regenerateOne(job: { partyId: string; partyQuestionId: str
       explanation: chosen.draft.explanation ?? null,
       sourceRef: chosen.bankId,
       hostAuthored: false,
+      editCheck: null,
       status: "draft",
     }).where(eq(partyQuestions.id, slot.id));
     await tx.insert(partyQuestionEvents).values({ partyId: party.id, questionId: slot.id, kind: "regenerate", userId: job.requestedBy, detail: { replacedBankId: slot.sourceRef, newBankId: chosen.bankId } });

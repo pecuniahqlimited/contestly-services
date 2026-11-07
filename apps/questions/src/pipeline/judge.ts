@@ -18,6 +18,7 @@ import { estimateDifficulty, type DifficultyEstimate } from "./difficulty.js";
 import { gateDraft, type GateOutcome } from "./gate.js";
 import { nearestInBank } from "./retrieve.js";
 import { embeddingText, questionText } from "./text.js";
+import { pictureRoom, withinPictureCap } from "./pictures.js";
 
 /** Extra drafts requested beyond the gap, so rejections don't force a second round. */
 const QUALITY_BUFFER = 6;
@@ -56,6 +57,8 @@ export interface DraftRequest {
   sources?: SourceChunk[];
   /** Bank questions not to count as duplicates (the question being re-judged after an edit). */
   excludeBankIds?: string[];
+  /** The picture cap for the set (pictures.ts): how many it may hold, and what's in it already. Absent: no cap. */
+  pictures?: { limit: number; inSet: { format: string; payload: unknown }[] };
 }
 
 /** One question, judged exactly like a fresh draft: shape, verify, safety, then dedupe and the gate. An admin's edit goes through this. */
@@ -81,15 +84,21 @@ export async function draftAndJudge(req: DraftRequest, progress?: DraftProgress)
   const checks = new Checks(req);
   const formats = () => accepted.map((a) => a.draft.format);
   for (let round = 0; round < MAX_DRAFT_ROUNDS && accepted.length < req.want && !checks.down.size; round++) {
+    // Pictures left in the cap, counting what's been accepted so far; none left means none are asked for.
+    const room = req.pictures ? pictureRoom([...req.pictures.inSet, ...accepted.map((a) => a.draft)], req.pictures.limit) : null;
+    const spec = room && room.left === 0 ? { ...req.spec, formats: req.spec.formats.filter((f) => f !== "picture") } : req.spec;
+    if (!spec.formats.length) break;
     await progress?.("drafting", formats());
     let drafts: DraftQuestion[];
     try {
-      drafts = await req.providers.generator.draft({ spec: req.spec, count: req.want - accepted.length + QUALITY_BUFFER, avoid, sources: req.sources });
+      drafts = await req.providers.generator.draft({ spec, count: req.want - accepted.length + QUALITY_BUFFER, avoid, sources: req.sources, ...(room ? { maxPerFormat: { picture: room.left } } : {}) });
     } catch (err) {
       if (!(err instanceof ProviderUnavailable)) throw err;
       checks.down.add("generate");
       break;
     }
+    // Over the cap or a repeated image: dropped before verification, so nothing is paid for them.
+    if (room) drafts = withinPictureCap(drafts, room).kept;
     await progress?.("checking", formats());
     for (const d of drafts) avoid.push(questionText(d.payload));
     const checked = await checks.review(await mapLimit(drafts, VERIFY_CONCURRENCY, (d) => checks.check(d)));

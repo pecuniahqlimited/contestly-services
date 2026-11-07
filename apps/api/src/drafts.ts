@@ -5,13 +5,14 @@
  * drafts is recorded in party_draft_views and can't play the party. Every action is logged in
  * party_question_events so an admin can see who approved what.
  */
+import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   db, parties, partyPlayers, partyQuestions, partyQuestionEvents, partyDraftViews, partyFiles, questionGenerations,
   isHostTeam, type Party, type Tx, type User,
 } from "@contestly/db";
 import { payloadSchemas } from "@contestly/game";
-import { checkSafety, parseExclusions, type QuestionFormat } from "@contestly/shared";
+import { checkSafety, parseExclusions, type HostEditCheck, type QuestionFormat } from "@contestly/shared";
 import { questionsQueue } from "@contestly/queue";
 
 const questionJobs = questionsQueue();
@@ -73,27 +74,36 @@ export async function listDrafts(partyId: string, user: User) {
         id: r.id, idx: r.idx, reserve: r.reserve, status: r.status, format: r.format,
         payload: r.payload, explanation: r.explanation, hostAuthored: r.hostAuthored,
         verification: rec ? { sources: (rec.verify as { sources?: string[] } | null)?.sources ?? [], difficulty: rec.difficulty } : null,
+        editCheck: editCheckOf(r) ? { status: editCheckOf(r)!.status, reasons: editCheckOf(r)!.reasons } : null,
       };
     }),
   };
 }
+
+const editCheckOf = (q: { editCheck: unknown }) => q.editCheck as HostEditCheck | null;
 
 export async function approveDraft(partyId: string, questionId: string, user: User): Promise<void> {
   await db.transaction(async (tx) => {
     await lockCurateParty(tx, partyId, user);
     const q = await draftRow(tx, partyId, questionId);
     if (q.status !== "draft") throw httpError(409, "not_a_draft");
+    // A host edit is approved only once the model safety check has passed it.
+    const check = editCheckOf(q);
+    if (check?.status === "checking") throw httpError(409, "edit_check_pending");
+    if (check?.status === "failed") throw httpError(409, "edit_failed_safety");
     await tx.update(partyQuestions).set({ status: "pending" }).where(eq(partyQuestions.id, q.id));
     await log(tx, { partyId, questionId: q.id, kind: "approve", userId: user.id });
   });
 }
 
 /**
- * A host edit: the payload must fit its format and pass the same safety filter as generated
- * questions. Edited questions are host-authored, go back to draft for approval, and stay out of
- * the shared bank (they're party-specific and unverified).
+ * A host edit: the payload must fit its format and pass the term filter here, then the same model safety
+ * check as generated questions, which the questions service runs (an API request never calls a provider).
+ * Until that passes, the edit can't be approved. Edited questions are host-authored, go back to draft for
+ * approval, and stay out of the shared bank (they're party-specific and unverified).
  */
 export async function editDraft(partyId: string, questionId: string, user: User, edit: { payload: Record<string, unknown>; explanation?: string }): Promise<void> {
+  const check: HostEditCheck = { id: randomUUID(), status: "checking", reasons: [] };
   await db.transaction(async (tx) => {
     const p = await lockCurateParty(tx, partyId, user);
     const q = await draftRow(tx, partyId, questionId);
@@ -101,9 +111,10 @@ export async function editDraft(partyId: string, questionId: string, user: User,
     const payload = payloadSchemas[q.format as QuestionFormat].parse(edit.payload);
     const safety = checkSafety({ topic: p.brief, exclusions: parseExclusions(p.brief) }, payload, edit.explanation);
     if (!safety.passed) throw httpError(422, `unsafe: ${safety.reasons.join(", ")}`);
-    await tx.update(partyQuestions).set({ payload, explanation: edit.explanation ?? q.explanation, hostAuthored: true, sourceRef: null, status: "draft" }).where(eq(partyQuestions.id, q.id));
-    await log(tx, { partyId, questionId: q.id, kind: "edit", userId: user.id, detail: { before: { payload: q.payload, explanation: q.explanation, sourceRef: q.sourceRef } } });
+    await tx.update(partyQuestions).set({ payload, explanation: edit.explanation ?? q.explanation, hostAuthored: true, sourceRef: null, status: "draft", editCheck: check }).where(eq(partyQuestions.id, q.id));
+    await log(tx, { partyId, questionId: q.id, kind: "edit", userId: user.id, detail: { before: { payload: q.payload, explanation: q.explanation, sourceRef: q.sourceRef }, checkId: check.id } });
   });
+  await questionJobs.add("check_host_edit", { kind: "check_host_edit", partyId, partyQuestionId: questionId, checkId: check.id }, { jobId: `check-edit-${check.id}`, attempts: 3, backoff: { type: "exponential", delay: 5_000 } });
 }
 
 /**

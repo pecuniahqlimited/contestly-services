@@ -53,6 +53,8 @@ export async function putBack() {
 export const MOCK_GENERATOR = (process.env.QUESTIONS_GENERATOR ?? "mock") === "mock";
 /** waitFor tries (every 500 ms) for a question set to be made: real providers take minutes, the mocks a moment. */
 export const GENERATION_TRIES = MOCK_GENERATOR ? 120 : 720;
+/** A real model safety check (QUESTIONS_SAFETY=live): the sims then also check what only a model would catch. */
+export const MODEL_SAFETY = !["mock", undefined].includes(process.env.QUESTIONS_SAFETY);
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A party's startsAt, this many minutes from now. */

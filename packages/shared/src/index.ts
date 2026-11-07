@@ -411,6 +411,8 @@ export type QuestionsJob =
   | { kind: "question_voided"; partyQuestionId: string; flags: number }
   /** An admin edited a bank question: re-check it (verify, safety, dedupe) and apply it only if it passes. */
   | { kind: "review_edit"; reviewId: string }
+  /** A curate host edited a draft: the model safety check on it (the term filter already ran in the API). Stale checkIds are ignored. */
+  | { kind: "check_host_edit"; partyId: string; partyQuestionId: string; checkId: string }
   /** Repeatable: retire flagged and underperforming bank questions. */
   | { kind: "retire_sweep" }
   /** Repeatable: delete the source chunks of parties that finished more than sourceRetentionDays ago. */
@@ -997,6 +999,21 @@ export type RoomError = z.infer<typeof roomErrorSchema>;
 
 /** Curate review (host's team only): drafts carry full payloads, so they come after the payload schemas. */
 export const PARTY_QUESTION_STATUSES = ["draft", "pending", "played", "voided"] as const;
+
+/**
+ * The model safety check on a host's edit (ADR 0016): checking until the questions service has run it, then
+ * passed or failed with the reasons. Fail closed: a check that couldn't run is failed ("safety_unavailable"),
+ * and the host edits again or swaps. Only a passed edit can be approved.
+ */
+export const HOST_EDIT_CHECK_STATUSES = ["checking", "passed", "failed"] as const;
+export const hostEditCheckSchema = z.object({
+  id: z.string().uuid(),
+  status: z.enum(HOST_EDIT_CHECK_STATUSES),
+  reasons: z.array(z.string()),
+  reviewedBy: z.string().optional(),
+  checkedAt: z.string().optional(),
+});
+export type HostEditCheck = z.infer<typeof hostEditCheckSchema>;
 const draftFields = {
   id: z.string().uuid(),
   idx: z.number().int(),
@@ -1008,6 +1025,8 @@ const draftFields = {
   hostAuthored: z.boolean(),
   /** The independent fact-check: the sources it checked against. Null for host-authored questions. */
   verification: z.object({ sources: z.array(z.string()), difficulty: z.unknown() }).nullable(),
+  /** The model safety check on the host's edit; null when it wasn't edited. */
+  editCheck: hostEditCheckSchema.pick({ status: true, reasons: true }).nullable(),
 };
 /** One curate draft, answers included (host's team only; looking bars the viewer from playing). */
 export const draftQuestionSchema = z.discriminatedUnion("format", [

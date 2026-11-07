@@ -330,6 +330,13 @@
       "when": 1794046056800,
       "tag": "0046_question_providers",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794052496442,
+      "tag": "0047_host_edit_checks",
+      "breakpoints": true
     }
   ]
 }
