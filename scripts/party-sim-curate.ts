@@ -20,7 +20,7 @@ import {
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MAX_UPLOAD_BYTES, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { GENERATION_TRIES, MOCK_GENERATOR, RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, putBack, putBackLater, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
+import { GENERATION_TRIES, MOCK_GENERATOR, MODEL_SAFETY, RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, putBack, putBackLater, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 import { minimalPdf } from "./sim-pdf.js";
 
 const HOST = "tunde";
@@ -142,6 +142,20 @@ const editedQuestion = `Host's version: ${q1.payload.question}`;
 ok((await call(HOST, "PATCH", `/parties/${partyId}/drafts/${q1.id}`, { payload: { ...q1.payload, question: editedQuestion }, explanation: "Edited by the host." })).status === 204, "edit a draft");
 const [q1row] = await db.select().from(partyQuestions).where(eq(partyQuestions.id, q1.id));
 ok(q1row.hostAuthored && q1row.sourceRef === null && q1row.status === "draft", "edited question is host-authored, out of the bank, back to draft");
+// The edit gets the model safety check in the questions service; it can't be approved until that passes.
+const editCheck = async (id: string) => (await api(HOST, "GET", `/parties/${partyId}/drafts`)).questions.find((q: any) => q.id === id)?.editCheck;
+const checked = await waitFor(async () => { const c = await editCheck(q1.id); return c?.status !== "checking" ? c : null; }, { tries: GENERATION_TRIES });
+ok(checked?.status === "passed", `the edit passed the model safety check (${checked?.status}${checked?.reasons?.length ? `: ${checked.reasons.join(", ")}` : ""})`);
+if (MODEL_SAFETY) {
+  // Nothing the term filter knows, but a real private individual: only the model catches it.
+  const q4 = slot(0); // approved earlier: an edit sends it back to draft
+  ok((await call(HOST, "PATCH", `/parties/${partyId}/drafts/${q4.id}`, { payload: { ...q4.payload, question: "What is the home address of my neighbour Tolu Bamidele on Adeola Street?" } })).status === 204, "a host edit the term filter lets through");
+  const refused = await waitFor(async () => { const c = await editCheck(q4.id); return c?.status !== "checking" ? c : null; }, { tries: GENERATION_TRIES });
+  ok(refused?.status === "failed", `the model safety check fails it (${refused?.reasons?.join(", ")})`);
+  ok((await call(HOST, "POST", `/parties/${partyId}/drafts/${q4.id}/approve`)).status === 409, "an edit that failed the check can't be approved");
+  ok((await call(HOST, "POST", `/parties/${partyId}/drafts/${q4.id}/regenerate`)).status === 202, "the host regenerates that slot instead");
+  await waitFor(async () => { const d = (await api(HOST, "GET", `/parties/${partyId}/drafts`)).questions.find((q: any) => q.id === q4.id); return d && !d.editCheck && !d.hostAuthored ? d : null; }, { tries: GENERATION_TRIES });
+}
 
 // swap
 const q2 = slot(2);
@@ -164,7 +178,8 @@ const toApprove = (await api(HOST, "GET", `/parties/${partyId}/drafts`)).questio
 for (const q of toApprove) await api(HOST, "POST", `/parties/${partyId}/drafts/${q.id}/approve`);
 const events = await db.select().from(partyQuestionEvents).where(eq(partyQuestionEvents.partyId, partyId));
 const kinds = (k: string) => events.filter((e) => e.kind === k);
-ok(kinds("approve").length === 1 + toApprove.length && kinds("edit").length === 1 && kinds("swap").length === 1 && kinds("regenerate").length === 1,
+const extra = MODEL_SAFETY ? 1 : 0; // the edit the model refused, and the regenerate that replaced it
+ok(kinds("approve").length === 1 + toApprove.length && kinds("edit").length === 1 + extra && kinds("swap").length === 1 && kinds("regenerate").length === 1 + extra,
   `review actions logged per party (approve ${kinds("approve").length}, edit ${kinds("edit").length}, swap ${kinds("swap").length}, regenerate ${kinds("regenerate").length})`);
 ok(kinds("approve").every((e) => e.userId), "every approval records who approved");
 

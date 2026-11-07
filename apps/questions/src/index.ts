@@ -20,6 +20,7 @@ import { recordPlay } from "./pipeline/recordPlay.js";
 import { regenerateOne } from "./pipeline/regenerateOne.js";
 import { questionVoided, retireSweep } from "./pipeline/retire.js";
 import { reviewEdit } from "./pipeline/reviewEdit.js";
+import { checkHostEdit } from "./pipeline/checkHostEdit.js";
 import { embedFile } from "./files/embedFile.js";
 import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
@@ -85,6 +86,7 @@ async function run(d: QuestionsJob) {
       return sealWhenFilesRead(d.fileId, (partyId) => questionJobs.add("generate_set", { kind: "generate_set", partyId }, { jobId: `generate-set-${partyId}-${Date.now()}` }));
     case "question_voided": return questionVoided(d);
     case "review_edit": return reviewEdit(d, { providers });
+    case "check_host_edit": return checkHostEdit(d, { providers });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
     case "reembed": return reembed(d.waits ?? 0);

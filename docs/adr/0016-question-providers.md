@@ -50,7 +50,11 @@ step 3 and the spec (topic, audience, tone, difficulty, exclusions, register, Ni
 lane is Nigerian). File-scoped specs get only the retrieved chunks and must cite one per question; a draft
 citing a chunk it wasn't given is invalid. Picture questions are written only about images in the image pool
 (a code list with alt text until a licensed pool exists); a draft naming any other image is invalid, so the
-engine never hot-links. The `Generator` interface stays general: the client underneath is a plain
+engine never hot-links. Because the pool is short, a set holds at most a quarter of its questions as
+pictures (rounded up), never more than the pool's images, and never one image twice (`pipeline/pictures.ts`):
+retrieved bank pictures over the cap are dropped (generation fills the gap with other formats), the
+generator is asked for no more pictures than the room left, and its pictures over the cap or repeating an
+image are dropped before verification, so none is paid for. The `Generator` interface stays general: the client underneath is a plain
 "structured call" so the templates branch's `distract()` is a template and a method, not a new client.
 
 **Verification.** A separate call per question, never the generator's call and never the generator's model
@@ -67,7 +71,12 @@ so a reseal, a regenerate, an eval re-run or an admin edit that changes nothing 
 **Safety.** The term filter in `@contestly/shared` runs first. Drafts that pass it and verification then go to
 the model check for everything in step 7 (profanity, hate, sexual content, real private individuals,
 gambling or alcohol promotion, politics unless asked, the brief's exclusions). Fail closed: an unavailable,
-malformed or partial answer rejects the draft with the reason recorded.
+malformed or partial answer rejects the draft with the reason recorded. **Curate host edits** get the same
+model check: the API runs the term filter (refusing at once) and marks the edit `checking`; the questions
+service's `check_host_edit` job runs the model and marks it `passed` or `failed` with the reasons
+(`party_questions.edit_check`, migration 0047; failed with `safety_unavailable` when the model can't
+answer). Only a passed edit can be approved (409 `edit_check_pending`, `edit_failed_safety`); a newer edit
+replaces the check, and a regenerate clears it. The API never calls a provider itself.
 
 **Embeddings on Gemini's free tier.** Without billing the project gets 100 embed requests a minute and
 **1,000 a day** per model (the 429 names the quota, `EmbedContentRequestsPerMinute…-FreeTier` or

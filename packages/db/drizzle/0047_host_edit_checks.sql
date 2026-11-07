@@ -1,0 +1,1 @@
+ALTER TABLE "party_questions" ADD COLUMN "edit_check" jsonb;

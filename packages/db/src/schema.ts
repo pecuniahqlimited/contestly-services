@@ -390,6 +390,11 @@ export const partyQuestions = pgTable("party_questions", {
   sourceRef: text("source_ref"),
   /** Edited by the host in curate mode. */
   hostAuthored: boolean("host_authored").notNull().default(false),
+  /**
+   * The model safety check on the host's latest edit (HostEditCheck in shared: id, checking | passed | failed,
+   * reasons). Null when the question was never edited. An edited draft can't be approved until it passed.
+   */
+  editCheck: jsonb("edit_check"),
 }, (t) => [uniqueIndex("party_questions_party_idx").on(t.partyId, t.idx)]);
 
 /**
