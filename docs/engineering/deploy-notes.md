@@ -56,8 +56,10 @@ then. `--force` grants anyway; the `admin_actions` row and the alert both record
   reason, and the critical alert reached `ADMIN_ALERT_PAYMENTS_EMAILS` (and the general channels as a
   subject and console link). Then revoke the grant through the console. This proves the image, the
   container's database access and the alert path before anyone needs it for real.
-- **Real question providers (ADR 0016).** Migration 0046 is additive and rolls. Switching
-  `QUESTIONS_EMBEDDER` from mock to gemini changes the embedding space: until the background `reembed` job
+- **Real question providers (ADR 0016).** Migrations 0046–0048 are additive and roll. Production runs
+  `AI_PROFILE=paid` and **must set `AI_PAID_CAP_USD`** (the hard daily ceiling on paid calls, above the
+  console's daily cap or equal to it): at 0 or unset the paid profile won't start, and every paid call is
+  refused. Moving from the mock profile changes the embedding space: until the background `reembed` job
   has moved the bank (`embedding_model`), retrieval finds no bank questions and every set is generated, so
   switch before there's traffic, or watch the job's log. The Gemini key must be on a billing-enabled
   project (Google Search grounding has no unpaid quota and is capped at 1,500 grounded requests a day). Set

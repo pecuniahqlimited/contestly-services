@@ -9,19 +9,22 @@
  * writes an HTML page of every question with its answer, distractors, verdict and sources to
  * docs/engineering/eval/.
  *
- *   npm run questions:eval                    real providers from .env (QUESTIONS_GENERATOR=anthropic, QUESTIONS_VERIFIER=live, …)
- *   npm run questions:eval -- --max-usd 5     stop starting new sets past this spend (default 15)
- *   npm run questions:eval -- --mock          the mocks, to check the harness itself (free)
+ *   npm run questions:eval -- --free --small  Gemini's free tier, a sample that fits its daily limits (costs nothing)
+ *   npm run questions:eval -- --free          the free tier, every set (may run into the daily limits; fails closed)
+ *   npm run questions:eval -- --mock          the mocks, to check the harness itself
+ *   npm run questions:eval                    the profile in .env (AI_PROFILE). The paid profile spends money only
+ *                                             with AI_PAID_CAP_USD above 0; --max-usd stops starting new sets past
+ *                                             this spend (default 15)
  */
 import { mkdir, writeFile } from "node:fs/promises";
-import { Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, MemorySink, withCallContext, type BudgetGate, type CallDeps, type CallRecord, type UsageSink } from "@contestly/ai";
-import { dbBudgetGate, dbUsageSink, getQuestionsConfig } from "@contestly/db";
-import { DIFFICULTIES, QUESTION_FORMATS, type Difficulty, type QuestionFormat } from "@contestly/shared";
+import { Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, Limiters, MemorySink, withCallContext, type BudgetGate, type CallDeps, type CallRecord, type UsageSink } from "@contestly/ai";
+import { dbBudgetGate, dbFreeQuota, dbUsageSink, freeRequestsToday, getQuestionsConfig } from "@contestly/db";
+import { DIFFICULTIES, FREE_PROFILE_MODELS, FREE_TIER_LIMITS, QUESTION_FORMATS, type Difficulty, type PricedModel, type QuestionFormat } from "@contestly/shared";
 import { draftAndJudge, type JudgedDraft } from "../apps/questions/src/pipeline/judge.js";
 import { buildSpec } from "../apps/questions/src/pipeline/spec.js";
 import { answerKeyText } from "../apps/questions/src/pipeline/text.js";
 import { mapLimit } from "../apps/questions/src/pipeline/concurrency.js";
-import { providerNames, selectProviders, STEP_RETRY, STEP_TIMEOUT_MS } from "../apps/questions/src/providers/index.js";
+import { aiProfile, providerNames, selectProviders, STEP_RETRY, STEP_TIMEOUT_MS } from "../apps/questions/src/providers/index.js";
 import type { GenerationSpec, SourceChunk } from "../apps/questions/src/providers/types.js";
 import { readChunks } from "../apps/api/src/sources/readChunks.js";
 import { minimalPdf } from "./sim-pdf.js";
@@ -31,10 +34,19 @@ const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
 const value = (name: string, fallback: string) => { const i = args.indexOf(`--${name}`); return i >= 0 && args[i + 1] ? args[i + 1] : fallback; };
 
-if (flag("mock")) for (const k of ["QUESTIONS_GENERATOR", "QUESTIONS_VERIFIER", "QUESTIONS_EMBEDDER", "QUESTIONS_SAFETY"]) process.env[k] = "mock";
+if (flag("mock")) process.env.AI_PROFILE = "mock";
+if (flag("free")) process.env.AI_PROFILE = "free";
+const SMALL = flag("small");
 const MAX_USD = Number(value("max-usd", "15"));
 /** Accepted questions each set asks for (the pipeline drafts this plus its quality buffer). */
-const WANT_PER_SET = 5;
+const WANT_PER_SET = SMALL ? 3 : 5;
+/** --small: every lane at mixed difficulty, plus the file. */
+const SMALL_DIFFICULTIES: Difficulty[] = ["mixed"];
+/**
+ * Free-tier requests a set can take at most, per step (two draft rounds of want + the quality buffer of 6;
+ * a generate call per format per round; one safety call per round). What the pre-flight checks against.
+ */
+const perSetRequests = (formats: number) => ({ generate: 2 * formats, verify: 2 * (WANT_PER_SET + 6), safety: 2, embed: 2 * (WANT_PER_SET + 6) });
 const SET_CONCURRENCY = 4;
 const SECONDS = 20;
 
@@ -116,14 +128,20 @@ async function main() {
   const startedAt = new Date().toISOString();
   const memory = new MemorySink();
   const breakers = new Breakers(DEFAULT_BREAKER);
-  const deps = (step: keyof typeof STEP_TIMEOUT_MS): CallDeps => ({ sink: teeSink(memory), budget: evalBudget(memory), breakers, retry: STEP_RETRY[step] ?? DEFAULT_RETRY, timeoutMs: STEP_TIMEOUT_MS[step] });
-  const providers = selectProviders(deps);
+  const limiters = new Limiters((m) => FREE_TIER_LIMITS[m]?.rpm);
+  const deps = (step: keyof typeof STEP_TIMEOUT_MS): CallDeps => ({
+    sink: teeSink(memory), budget: evalBudget(memory), freeQuota: dbFreeQuota, limiters, breakers, retry: STEP_RETRY[step] ?? DEFAULT_RETRY, timeoutMs: STEP_TIMEOUT_MS[step],
+  });
+  const profile = aiProfile();
+  const providers = selectProviders(deps, profile);
   const cfg = await getQuestionsConfig();
-  const names = providerNames();
-  console.log(`[eval] providers ${JSON.stringify(names)}, models ${JSON.stringify(cfg.providers.models)}, embed ${providers.embedder.model}, ceiling $${MAX_USD}`);
+  const names = providerNames(profile);
+  const models = profile === "free" ? { generate: FREE_PROFILE_MODELS.generate, verify: FREE_PROFILE_MODELS.verify, safety: FREE_PROFILE_MODELS.safety }
+    : profile === "paid" ? cfg.providers.models : { generate: "mock", verify: "mock", safety: "mock" };
+  console.log(`[eval] profile ${profile}, providers ${JSON.stringify(names)}, models ${JSON.stringify(models)}, embed ${providers.embedder.model}${profile === "paid" ? `, ceiling $${MAX_USD}` : ""}`);
 
   const sets: SetDef[] = [];
-  for (const { lane, brief } of LANES) for (const difficulty of DIFFICULTIES) {
+  for (const { lane, brief } of LANES) for (const difficulty of SMALL ? SMALL_DIFFICULTIES : DIFFICULTIES) {
     sets.push({ id: `${lane} · ${difficulty}`, lane, difficulty, spec: buildSpec({ brief, difficulty, formats: [...QUESTION_FORMATS], questionCount: WANT_PER_SET, questionSeconds: SECONDS }) });
   }
   const sources = await fileSources();
@@ -133,7 +151,8 @@ async function main() {
     spec: buildSpec({ brief: "Lagos bridges, from the attached notes", difficulty: "mixed", formats: fileFormats, questionCount: WANT_PER_SET, questionSeconds: SECONDS, fileIds: ["sample"] }),
   });
 
-  const result: EvalResult = { startedAt, finishedAt: "", providers: { ...names, embedModel: providers.embedder.model }, models: cfg.providers.models, maxUsd: MAX_USD, sets: [], questions: [], calls: memory.records };
+  if (profile === "free") await freeTierPreflight(sets);
+  const result: EvalResult = { startedAt, finishedAt: "", providers: { ...names, embedModel: providers.embedder.model }, models, maxUsd: MAX_USD, sets: [], questions: [], calls: memory.records };
   await mapLimit(sets, SET_CONCURRENCY, async (s) => {
     const spent = memory.records.reduce((a, r) => a + r.costMicros, 0) / 1_000_000;
     if (spent >= MAX_USD) {
@@ -157,12 +176,43 @@ async function main() {
   const day = startedAt.slice(0, 10);
   const dir = new URL("../docs/engineering/eval/", import.meta.url);
   await mkdir(dir, { recursive: true });
-  const base = `questions-eval-${day}${flag("mock") ? "-mock" : ""}`;
+  const base = `questions-eval-${day}${profile === "paid" ? "" : `-${profile}`}${SMALL ? "-small" : ""}`;
   const { html, summary } = renderReport(result);
   await writeFile(new URL(`${base}.html`, dir), html);
   await writeFile(new URL(`${base}.json`, dir), JSON.stringify({ ...result, questions: result.questions.map(({ embedding: _e, ...q }) => q) }, null, 2));
   console.log(`\n${summary}\n\n[eval] report: docs/engineering/eval/${base}.html`);
+  if (profile === "free") {
+    const used = new Map<string, number>();
+    for (const r of memory.records) used.set(r.model, (used.get(r.model) ?? 0) + r.requests);
+    console.log(`[eval] free-tier requests: ${[...used].map(([m, n]) => `${m} ${n}`).join(", ")}; cost $0`);
+  }
   process.exit(0);
+}
+
+/**
+ * The free profile: stop before starting if the run could take a model past its free daily quota (what's
+ * left today, counted across every process), rather than failing closed halfway through.
+ */
+async function freeTierPreflight(sets: SetDef[]) {
+  const need: Record<string, number> = {};
+  const add = (model: PricedModel, n: number) => { need[model] = (need[model] ?? 0) + n; };
+  for (const s of sets) {
+    const r = perSetRequests(s.spec.formats.length);
+    add(FREE_PROFILE_MODELS.generate, r.generate);
+    add(FREE_PROFILE_MODELS.verify, r.verify);
+    add(FREE_PROFILE_MODELS.safety, r.safety);
+    add(FREE_PROFILE_MODELS.embed, r.embed);
+  }
+  const short: string[] = [];
+  for (const [model, n] of Object.entries(need)) {
+    const left = (FREE_TIER_LIMITS[model as PricedModel]?.rpd ?? 0) - (await freeRequestsToday(model));
+    console.log(`[eval] ${model}: up to ${n} requests, ${left} left today`);
+    if (n > left) short.push(`${model} needs up to ${n}, ${left} left`);
+  }
+  if (short.length) {
+    console.error(`[eval] the free tier's daily limits won't cover this run (${short.join("; ")}). Try --small, or after midnight Pacific.`);
+    process.exit(2);
+  }
 }
 
 main().catch((err) => {

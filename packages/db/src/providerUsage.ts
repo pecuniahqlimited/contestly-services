@@ -3,8 +3,8 @@
  * verification cache. The shapes match @contestly/ai's UsageSink and BudgetGate structurally, so this package
  * doesn't depend on the provider code. Days are Africa/Lagos.
  */
-import { desc, eq, gte, sql } from "drizzle-orm";
-import { addDays, dayStartsAt, lagosDay, MICRO_USD_PER_CENT, type ProviderStep } from "@contestly/shared";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { addDays, dayStartsAt, FREE_TIER_LIMITS, FREE_TIER_TIME_ZONE, lagosDay, MICRO_USD_PER_CENT, MICRO_USD_PER_USD, type CallTier, type PricedModel, type ProviderStep } from "@contestly/shared";
 import { db } from "./client.js";
 import { parties, providerCalls, verificationCache } from "./schema.js";
 import { getQuestionsConfig } from "./config.js";
@@ -42,11 +42,22 @@ export async function partySpendMicros(partyId: string): Promise<number> {
  */
 const PARTY_CAP_EXEMPT: ReadonlySet<ProviderStep> = new Set(["embed"]);
 
+/** AI_PAID_CAP_USD in micro-USD (0 when unset or unreadable; providerCall refuses a bad value outright). */
+function envPaidCapMicros(): number {
+  const usd = Number(process.env.AI_PAID_CAP_USD?.trim() || 0);
+  return Number.isFinite(usd) && usd > 0 ? Math.round(usd * MICRO_USD_PER_USD) : 0;
+}
+
 export const dbBudgetGate = {
-  async check({ partyId, step }: { partyId: string | null; step: ProviderStep }): Promise<string | null> {
+  async check({ partyId, step, tier = "paid" }: { partyId: string | null; step: ProviderStep; tier?: CallTier }): Promise<string | null> {
+    // Free calls cost nothing; their limit is the free tier's quota (dbFreeQuota), not money.
+    if (tier === "free") return null;
     const { providers } = await getQuestionsConfig();
     const day = lagosDay();
-    const dayCap = providers.dailyCents * MICRO_USD_PER_CENT;
+    // AI_PAID_CAP_USD above 0 is a ceiling under the admin's cap. At 0, paid calls never get this far (providerCall refuses them first).
+    const envCap = envPaidCapMicros();
+    const adminCap = providers.dailyCents * MICRO_USD_PER_CENT;
+    const dayCap = envCap > 0 ? Math.min(adminCap, envCap) : adminCap;
     const today = await daySpendMicros(day);
     const usd = (m: number) => `$${(m / 1_000_000).toFixed(2)}`;
     if (today >= dayCap) {
@@ -71,6 +82,37 @@ export const dbBudgetGate = {
       details: { partyId, spentMicros: party, capMicros: partyCap }, dedupeKey: `ai.party_budget:${partyId}`, refType: "party", refId: partyId,
     });
     return `this party's provider budget (${usd(partyCap)}) is spent`;
+  },
+};
+
+/** Midnight Pacific time (when Google's free daily quotas reset) at the start of `now`'s Pacific day. */
+export function freeTierDayStart(now = new Date()): Date {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: FREE_TIER_TIME_ZONE, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(now).map((p) => [p.type, p.value]));
+  const asUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+  const offsetMs = asUtc - Math.floor(now.getTime() / 1000) * 1000; // Pacific minus UTC
+  return new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day) - offsetMs);
+}
+
+/** Requests sent to this model since the free tier's day began, across every process (they all record here). */
+export async function freeRequestsToday(model: string, now = new Date()): Promise<number> {
+  const [row] = await db.select({ n: sql<number>`coalesce(sum(${providerCalls.requests}), 0)::int` }).from(providerCalls)
+    .where(and(eq(providerCalls.model, model), eq(providerCalls.tier, "free"), gte(providerCalls.createdAt, freeTierDayStart(now))));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * The free tier's daily quota, held to before Google's: a call that would take the model past its requests a
+ * day is refused (fail closed) until midnight Pacific. A model with no known limit isn't a free model: refused.
+ */
+export const dbFreeQuota = {
+  async check({ model, requests }: { model: PricedModel; requests: number }): Promise<string | null> {
+    const limit = FREE_TIER_LIMITS[model];
+    if (!limit) return `${model} has no free tier we know of`;
+    const used = await freeRequestsToday(model);
+    if (used + requests > limit.rpd) return `${model}'s free daily quota is spent (${used} of ${limit.rpd} requests; resets at midnight Pacific)`;
+    return null;
   },
 };
 

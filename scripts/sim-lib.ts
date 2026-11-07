@@ -50,11 +50,18 @@ export async function putBack() {
 }
 
 /** The stack generates with the mock deck (its planted bad questions and fill-the-gap file drafts), read from the same .env. */
-export const MOCK_GENERATOR = (process.env.QUESTIONS_GENERATOR ?? "mock") === "mock";
+/** The stack's AI profile (ADR 0016), from the same .env: mock unless set. */
+export const AI_PROFILE = process.env.AI_PROFILE?.trim() || "mock";
+// The sims never spend money by accident: against a paid stack they stop unless asked for in so many words.
+if (AI_PROFILE === "paid" && process.env.SIM_ALLOW_PAID !== "1") {
+  console.error("The stack's AI_PROFILE is paid: the sims would spend money. Use the mock or free profile, or set SIM_ALLOW_PAID=1 to mean it.");
+  process.exit(2);
+}
+export const MOCK_GENERATOR = AI_PROFILE === "mock";
 /** waitFor tries (every 500 ms) for a question set to be made: real providers take minutes, the mocks a moment. */
 export const GENERATION_TRIES = MOCK_GENERATOR ? 120 : 720;
-/** A real model safety check (QUESTIONS_SAFETY=live): the sims then also check what only a model would catch. */
-export const MODEL_SAFETY = !["mock", undefined].includes(process.env.QUESTIONS_SAFETY);
+/** A real model safety check (any profile but mock): the sims then also check what only a model would catch. */
+export const MODEL_SAFETY = AI_PROFILE !== "mock";
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A party's startsAt, this many minutes from now. */

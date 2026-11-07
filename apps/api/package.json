@@ -14,6 +14,7 @@
     "@fastify/cors": "^10.0.1",
     "@fastify/rate-limit": "^10.1.1",
     "@contestly/auth": "*",
+    "@contestly/ai": "*",
     "@contestly/db": "*",
     "@contestly/queue": "*",
     "@contestly/shared": "*",

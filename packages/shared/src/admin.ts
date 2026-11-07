@@ -168,6 +168,8 @@ export const adminQuestionDetailSchema = z.object({
     /** What verification found: the verdict and the sources behind it (URLs, with titles where the provider gave them). */
     verdict: z.string().nullable(),
     sources: z.array(z.object({ url: z.string(), title: z.string().optional() })),
+    /** Checked from a model's knowledge with no sources (the free dev profile, ADR 0016): never a production verdict. */
+    checkedWithoutSources: z.boolean(),
     approvedBy: z.union([z.object({ kind: z.literal("gate") }), z.object({ kind: z.literal("host"), person: personSchema })]),
     createdAt: iso,
   })),

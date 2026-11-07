@@ -36,3 +36,29 @@ describe("provider budget gate", () => {
     expect(await dbBudgetGate.check({ partyId: null, step: "transcribe" })).toMatch(/today's provider budget/);
   });
 });
+
+describe("the free tier's daily quota", () => {
+  it("counts requests since midnight Pacific and refuses past the model's limit", async () => {
+    const { dbFreeQuota, freeTierDayStart } = await import("@contestly/db");
+    const { FREE_TIER_LIMITS } = await import("@contestly/shared");
+    const model = "gemini-3.6-flash" as const;
+    const rpd = FREE_TIER_LIMITS[model]!.rpd;
+    const before = await dbFreeQuota.check({ model, requests: 1 });
+    // A free call earlier today that used all but one of the day's requests (what's already there counts too).
+    const { freeRequestsToday } = await import("@contestly/db");
+    const used = await freeRequestsToday(model);
+    await db.insert(providerCalls).values({ provider: "gemini", model, step: "verify", tier: "free", requests: Math.max(0, rpd - used - 1), latencyMs: 1, outcome: "ok" });
+    expect(before).toBeNull();
+    expect(await dbFreeQuota.check({ model, requests: 1 })).toBeNull();
+    expect(await dbFreeQuota.check({ model, requests: 2 })).toMatch(/free daily quota is spent/);
+    // Yesterday's (Pacific) requests don't count.
+    expect(freeTierDayStart(new Date("2026-11-07T12:00:00Z")).toISOString()).toBe("2026-11-07T08:00:00.000Z");
+    expect(freeTierDayStart(new Date("2026-11-07T07:59:00Z")).toISOString()).toBe("2026-11-06T08:00:00.000Z");
+    expect(await dbFreeQuota.check({ model: "claude-opus-5-5", requests: 1 })).toMatch(/no free tier/);
+  });
+
+  it("free calls aren't held to the spend caps", async () => {
+    await setQuestionsConfig({ ...saved, providers: { ...saved.providers, dailyCents: 1 } });
+    expect(await dbBudgetGate.check({ partyId, step: "verify", tier: "free" })).toBeNull();
+  });
+});

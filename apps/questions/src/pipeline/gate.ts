@@ -3,7 +3,8 @@
  * independent verification found it correct with at least one source, it duplicates nothing, and the
  * safety checks passed. Precedence mirrors the pipeline order, so the recorded outcome names the first
  * step that killed a draft. "unverifiable" is a rejection in both modes: nobody can supply the missing
- * source (rescuing it with a host edit isn't built, ADR 0003).
+ * source (rescuing it with a host edit isn't built, ADR 0003). A "correct" checked without sources passes
+ * only when the providers allow it, which only the free profile does (ADR 0016).
  */
 import type { VerifyVerdict } from "../providers/types.js";
 import { isDuplicate, type Neighbour } from "./dedupe.js";
@@ -17,11 +18,14 @@ export interface GateInput {
   nearest: Neighbour | null;
   dedupeThreshold: number;
   safety: SafetyResult;
+  /** The free profile: accept a "correct" that was checked without sources. */
+  allowUnsourced?: boolean;
 }
 
 export function gateDraft(d: GateInput): GateOutcome {
   if (!d.payloadValid) return "rejected_invalid";
-  if (d.verify.verdict !== "correct" || d.verify.sources.length === 0) return "rejected_verify";
+  const sourced = d.verify.sources.length > 0 || (d.allowUnsourced === true && d.verify.unsourced === true);
+  if (d.verify.verdict !== "correct" || !sourced) return "rejected_verify";
   if (isDuplicate(d.nearest, d.dedupeThreshold)) return "rejected_dedupe";
   if (!d.safety.passed) return "rejected_safety";
   return "accepted";

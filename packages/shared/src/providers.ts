@@ -9,6 +9,20 @@ import { z } from "zod";
 export const PROVIDER_NAMES = ["anthropic", "gemini"] as const;
 export type ProviderName = (typeof PROVIDER_NAMES)[number];
 
+/**
+ * Which providers run (ADR 0016), one switch: AI_PROFILE. mock (the default: tests, sims, dev) calls nothing;
+ * free uses only Gemini's free tier; paid is the production setup (Claude generates, verifies with web
+ * search and checks safety; Gemini embeds and transcribes) and needs AI_PAID_CAP_USD above 0.
+ */
+export const AI_PROFILES = ["mock", "free", "paid"] as const;
+export type AiProfile = (typeof AI_PROFILES)[number];
+
+/**
+ * Whether a call costs money. Free: a free-tier Gemini model with no paid feature (no grounding), on a key
+ * whose project has no billing. Every Anthropic call, grounding, and the paid profile's Gemini calls are paid.
+ */
+export type CallTier = "free" | "paid";
+
 /** What a call was for. One row per call in provider_calls, tied to a party when there is one. */
 export const PROVIDER_STEPS = ["generate", "verify", "safety", "embed", "transcribe"] as const;
 export type ProviderStep = (typeof PROVIDER_STEPS)[number];
@@ -34,6 +48,7 @@ export const PROVIDER_PRICES = {
   "claude-sonnet-5-5": { provider: "anthropic", use: "chat", inputPerM: 2, outputPerM: 10, cachedInputPerM: 0.1 },
   "claude-haiku-5-5": { provider: "anthropic", use: "chat", inputPerM: 0.1, outputPerM: 0.5, cachedInputPerM: 0.01 },
   "gemini-4-argon": { provider: "gemini", use: "chat", inputPerM: 2, outputPerM: 10, cachedInputPerM: 0.1 },
+  "gemini-3.6-flash": { provider: "gemini", use: "chat", inputPerM: 0.75, outputPerM: 3.75, cachedInputPerM: 0.075 },
   "gemini-3.8-flash": { provider: "gemini", use: "chat", inputPerM: 0.75, outputPerM: 3.75, cachedInputPerM: 0.075 },
   "gemini-3.5-flash-lite": { provider: "gemini", use: "chat", inputPerM: 0.3, outputPerM: 2.5, cachedInputPerM: 0.03 },
   "gemini-3.1-flash-lite": { provider: "gemini", use: "chat", inputPerM: 0.25, outputPerM: 1.5, cachedInputPerM: 0.025, audioInputPerM: 0.5 },
@@ -42,6 +57,33 @@ export const PROVIDER_PRICES = {
 } as const satisfies Record<string, ModelPrice>;
 export type PricedModel = keyof typeof PROVIDER_PRICES;
 export const PRICED_MODELS = Object.keys(PROVIDER_PRICES) as PricedModel[];
+
+/**
+ * The free profile's models (ADR 0016), fixed in code: each has a free tier and answered on 7 Nov 2026
+ * (gemini-3.8-flash and 3.7-flash were refusing free-tier calls with 503 "high demand"). Verification runs on
+ * a stronger model than generation, as in the paid profile.
+ */
+export const FREE_PROFILE_MODELS = {
+  generate: "gemini-3.5-flash-lite",
+  verify: "gemini-3.6-flash",
+  safety: "gemini-3.1-flash-lite",
+  embed: "gemini-embedding-2",
+  transcribe: "gemini-3.5-transcribe",
+} as const satisfies Record<"generate" | "verify" | "safety" | "embed" | "transcribe", PricedModel>;
+
+/**
+ * Gemini free-tier limits we hold ourselves to, per model: requests a minute and a day (the day is Pacific
+ * time, as Google's). Embeddings are as Google's 429 stated them on 7 Nov 2026; the rest aren't published,
+ * so they're cautious guesses, and Google's own 429 still fails the call closed.
+ */
+export const FREE_TIER_LIMITS: Partial<Record<PricedModel, { rpm: number; rpd: number }>> = {
+  "gemini-embedding-2": { rpm: 90, rpd: 1_000 },
+  "gemini-3.5-flash-lite": { rpm: 10, rpd: 500 },
+  "gemini-3.6-flash": { rpm: 8, rpd: 200 },
+  "gemini-3.1-flash-lite": { rpm: 10, rpd: 500 },
+  "gemini-3.5-transcribe": { rpm: 5, rpd: 100 },
+};
+export const FREE_TIER_TIME_ZONE = "America/Los_Angeles";
 
 /**
  * Web search, per query the model runs, on top of tokens: Claude's web search tool ($10 per 1000) and Gemini's

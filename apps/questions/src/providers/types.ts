@@ -1,6 +1,5 @@
 /**
- * The provider seams of the question engine, each chosen by env (QUESTIONS_GENERATOR, QUESTIONS_VERIFIER,
- * QUESTIONS_EMBEDDER, QUESTIONS_SAFETY; ADR 0016). Vendor-neutral by construction: plain structured input and
+ * The provider seams of the question engine, chosen together by AI_PROFILE (mock, free or paid; ADR 0016). Vendor-neutral by construction: plain structured input and
  * output, no provider SDK types. A real provider is a new folder in providers/ plus a registry entry and an
  * env change. A provider that can't answer now throws ProviderUnavailable (@contestly/ai); the pipeline
  * falls back to the bank (generation) or fails the draft closed (checks).
@@ -74,6 +73,11 @@ export interface VerifyVerdict {
   note?: string;
   /** Which provider and model judged it, and whether the result came from the cache. */
   verifiedBy?: { provider: string; model: string; cached?: boolean };
+  /**
+   * Checked from the model's knowledge with no sources (the free profile, ADR 0016): recorded as "checked
+   * without sources", and accepted at the gate only when the providers allow it (Providers.allowUnsourced).
+   */
+  unsourced?: boolean;
 }
 
 export interface VerifyInput {
@@ -111,4 +115,6 @@ export interface Providers {
   verifier: Verifier;
   embedder: Embedder;
   safety: SafetyReviewer;
+  /** The free profile only: a "correct" checked without sources passes the gate. */
+  allowUnsourced?: boolean;
 }
