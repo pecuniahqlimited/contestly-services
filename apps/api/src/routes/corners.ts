@@ -2,9 +2,10 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   cornerFollowAlertSchema, cornerFollowersQuerySchema, cornerMuteBodySchema, cornerPageQuerySchema, cornerPostBodySchema, cornerPostDetailSchema, cornerReactionBodySchema, cornerReplyBodySchema,
-  cornerUpdateSchema, followerInviteOptionsSchema, followerInviteResultSchema, followerInviteSchema, suggestedCornersQuerySchema,
+  cornerUpdateSchema, followerInviteOptionsSchema, followerInviteQuerySchema, followerInviteResultSchema, followerInviteSchema, suggestedCornersQuerySchema,
 } from "@contestly/shared";
 import { askToFollow, followAskOptions } from "@contestly/db";
+import { countSearch } from "../peopleSearch.js";
 import { requireUser, uuidParam } from "../auth.js";
 import {
   cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postDetail, postsPage, progressOf, react, reply, repliesPage, setAlerts, shownCorner,
@@ -66,8 +67,16 @@ export async function cornersRoutes(app: FastifyInstance) {
   /** The unlock celebration has been shown; the progress view's celebrationSeenAt is set from then on. */
   app.post("/me/corner/celebration-seen", async (req) => celebrationSeen(requireUser(req)));
 
-  /** Ask recent players of your parties to follow your corner (row 9): who you can ask, then ask them. */
-  app.get("/me/corner/invite-followers", async (req) => followerInviteOptionsSchema.parse(await followAskOptions(requireUser(req))));
+  /**
+   * Ask people to follow your corner: with q, anyone signed up you can ask (people search, so its per-user
+   * limit applies); without, your recent players. Then ask the chosen ones.
+   */
+  app.get("/me/corner/invite-followers", async (req) => {
+    const me = requireUser(req);
+    const { q, limit } = followerInviteQuerySchema.parse(req.query);
+    if (q) await countSearch(me.id, app.limits.peopleSearchPerMinute);
+    return followerInviteOptionsSchema.parse(await followAskOptions(me, { q, limit }));
+  });
   app.post("/me/corner/invite-followers", async (req) =>
     followerInviteResultSchema.parse(await askToFollow(requireUser(req), followerInviteSchema.parse(req.body).userIds)));
 }

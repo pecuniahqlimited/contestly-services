@@ -7,12 +7,12 @@
 import { and, asc, count, countDistinct, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import {
   clusteredPlayers, cornerUnlockConfigSchema, mostlyAbout, newPlayerVerdict, partyCountsForCorner, unlockProgress, UNLOCK_CLUSTER_MIN_PLAYERS,
-  type CornerCounts, type CornerUnlockConfig,
+  type CornerCounts, type CornerReach, type CornerUnlockConfig,
 } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import { nudge } from "./nudges/record.js";
 import {
-  cornerConfigs, cornerNewPlayers, cornerParties, cornerPartyPlayers, corners, parties, partyAnswers, partyPlayers, userSignals, users, type Corner, type Party,
+  cornerConfigs, cornerNewPlayers, cornerParties, cornerPartyPlayers, corners, follows, parties, partyAnswers, partyPlayers, userSignals, users, type Corner, type Party,
 } from "./schema.js";
 import { publicHostId, publiclyHostedBy } from "./host.js";
 import { adminAlert } from "./alerts.js";
@@ -50,6 +50,20 @@ export const cornerShown = and(
   eq(corners.status, "unlocked"), isNull(corners.archivedAt),
   sql`not exists (select 1 from users o where o.id = ${corners.ownerUserId} and (o.banned_at is not null or o.deleted_at is not null))`,
 )!;
+
+/** The parties a corner lists and pings for: public ones only (postsToCorner in shared, as a query condition). */
+export const onCorner = eq(parties.visibility, "public");
+
+/** The host's shown corner and how far a public party of theirs reaches; null without a shown corner. */
+export async function cornerReach(hostId: string, q: Conn = db): Promise<CornerReach | null> {
+  const [c] = await q.select({ id: corners.id }).from(corners).where(and(eq(corners.ownerUserId, hostId), cornerShown));
+  if (!c) return null;
+  const [r] = await q.select({
+    all: sql<number>`count(*)::int`,
+    pinged: sql<number>`(count(*) filter (where ${follows.notify}))::int`,
+  }).from(follows).innerJoin(users, eq(users.id, follows.followerId)).where(and(eq(follows.cornerId, c.id), isNull(users.deletedAt)));
+  return { cornerId: c.id, followerCount: Number(r?.all ?? 0), pingCount: Number(r?.pinged ?? 0) };
+}
 
 /** The account's corner, made locked (named after them) the first time it's needed. */
 export async function ensureCorner(q: Conn, ownerUserId: string): Promise<Corner> {

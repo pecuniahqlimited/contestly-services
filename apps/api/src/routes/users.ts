@@ -2,7 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { and, asc, count, desc, eq, inArray, min, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { climbRuns, climbWeeks, db, dmPermissionBetween, liveUser, users, parties, partyPlayers, partiesHostedBy, viewerSafetyState, yourPeople } from "@contestly/db";
-import { currentStreak, feedQuerySchema, lagosDay, MAX_PROFILE_RECENT_PARTIES, type Person } from "@contestly/shared";
+import { currentStreak, feedQuerySchema, lagosDay, MAX_PROFILE_RECENT_PARTIES, peopleSearchQuerySchema, peopleSearchResponseSchema, type Person } from "@contestly/shared";
+import { countSearch, findPeople } from "../peopleSearch.js";
 import { requireUser } from "../auth.js";
 import { publicParty } from "../partyView.js";
 import { personColumns } from "../people.js";
@@ -77,6 +78,14 @@ async function userByHandle(req: FastifyRequest, reply: FastifyReply) {
 }
 
 export async function usersRoutes(app: FastifyInstance) {
+  /** People search: signed-up accounts only, rate-limited per user (RATE_LIMIT_PEOPLE_SEARCH_PER_MINUTE). */
+  app.get("/users/search", async (req) => {
+    const me = requireUser(req);
+    const { q, limit } = peopleSearchQuerySchema.parse(req.query);
+    await countSearch(me.id, app.limits.peopleSearchPerMinute);
+    return peopleSearchResponseSchema.parse({ people: await findPeople(me, q, limit) });
+  });
+
   app.get("/users/:handle", async (req, reply) => {
     const u = await userByHandle(req, reply);
     if (!u) return reply;

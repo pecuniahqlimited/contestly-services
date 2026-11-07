@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
-import { db, deviceView, getNudgeConfig, registerDevice, removeDevicesOf, reportNudge, unregisterDevice, users } from "@contestly/db";
-import { NUDGE_CATEGORIES, deviceRegisterSchema, deviceSchema, notificationSettingsPatchSchema, notificationSettingsSchema, nudgeReportSchema, quietHoursIn, togglesFromOff } from "@contestly/shared";
+import { activityFor, db, deviceView, getNudgeConfig, registerDevice, removeDevicesOf, reportNudge, unregisterDevice, users } from "@contestly/db";
+import { activityPageSchema, activityQuerySchema, NUDGE_CATEGORIES, deviceRegisterSchema, deviceSchema, notificationSettingsPatchSchema, notificationSettingsSchema, nudgeReportSchema, quietHoursIn, togglesFromOff } from "@contestly/shared";
 import { requireSession, uuidParam } from "../auth.js";
 import { httpError } from "../httpError.js";
 import { installIdOf } from "../signals.js";
@@ -43,6 +43,12 @@ export async function notificationsRoutes(app: FastifyInstance) {
     const me = requireSession(req);
     const installId = installIdOf(req);
     return { devicesRemoved: installId ? Number(await unregisterDevice(me.id, installId)) : await removeDevicesOf(db, me.id) };
+  });
+
+  /** Chats › Activity: the nudges that list there, whatever became of their push (the toggles only turn pushes off). */
+  app.get("/me/activity", async (req) => {
+    const me = requireSession(req);
+    return activityPageSchema.parse(await activityFor(me.id, activityQuerySchema.parse(req.query)));
   });
 
   app.get("/me/notifications", async (req) => {

@@ -108,6 +108,11 @@ export const users = pgTable("users", {
 }, (t) => [
   index("users_archived_email_idx").on(t.archivedEmail), index("users_archived_handle_idx").on(t.archivedHandle),
   index("users_archived_email_key_idx").on(t.archivedEmailKey), index("users_archived_phone_hmac_idx").on(t.archivedPhoneHmac),
+  // People search (GET /users/search): prefix on the folded handle and name (lower case, accents off; the
+  // contestly_fold function in migration 0049), and any word of the name by trigram.
+  index("users_handle_fold_idx").on(sql`contestly_fold(${t.handle}) text_pattern_ops`),
+  index("users_name_fold_idx").on(sql`contestly_fold(${t.displayName}) text_pattern_ops`),
+  index("users_name_fold_trgm_idx").using("gin", sql`contestly_fold(${t.displayName}) gin_trgm_ops`),
 ]);
 
 /**

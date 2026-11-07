@@ -6,14 +6,15 @@ let redis: ReturnType<typeof makeRedis> | undefined;
 export const valkey = () => (redis ??= makeRedis());
 
 /**
- * A fixed-window counter: counts `by` against `name:subject` and refuses past `max` in `windowSeconds` with
+ * A fixed-window counter (resolves to the count so far in this window): counts `by` against `name:subject` and refuses past `max` in `windowSeconds` with
  * 429 `error` and details.retryAfterSeconds (the error handler sends it as Retry-After too, and logs `name`).
  * Counted before the check, so hammering a closed window keeps it closed.
  */
-export async function limit(name: string, subject: string, max: number, windowSeconds: number, error: string = RATE_LIMITED, by = 1): Promise<void> {
+export async function limit(name: string, subject: string, max: number, windowSeconds: number, error: string = RATE_LIMITED, by = 1): Promise<number> {
   const key = `limit:${name}:${subject}`;
   const [[, n], , [, ttl]] = (await valkey().multi().incrby(key, by).expire(key, windowSeconds, "NX").ttl(key).exec()) as [[null, number], unknown, [null, number]];
   if (n > max) throw rateLimited(error, ttl > 0 ? ttl : windowSeconds, name);
+  return n;
 }
 
 /**

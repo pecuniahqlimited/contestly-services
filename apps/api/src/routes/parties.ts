@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo } from "@contestly/db";
-import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits } from "@contestly/shared";
+import { db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach } from "@contestly/db";
+import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits, postsToCorner } from "@contestly/shared";
 import { notifyQueue, PARTY_EVENTS_CHANNEL } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
 import { barredFromPlaying } from "../drafts.js";
@@ -41,16 +41,16 @@ export async function partiesRoutes(app: FastifyInstance) {
   /** What the signed-in host may choose in the Stakes scene now, the rake a pot preview takes, and whether they may offer goods. */
   app.get("/parties/limits", async (req) => {
     const me = requireUser(req);
-    const [cfg, host] = await Promise.all([getPartyConfig(), prospectiveHost(me.id)]);
-    return { limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host) };
+    const [cfg, host, corner] = await Promise.all([getPartyConfig(), prospectiveHost(me.id), cornerReach(me.id)]);
+    return { limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host), corner };
   });
 
   app.post("/parties", async (req, reply) => {
     const me = requireUser(req);
     const { party, lines } = await createParty(me, createPartySchema.parse(req.body));
     for (const line of lines) await publishLine(line);
-    const [summary] = await partySummaries([party], me.id);
-    return reply.code(201).send({ ...summary, questions: questionDisclosure(party) });
+    const [[summary], corner] = await Promise.all([partySummaries([party], me.id), cornerReach(me.id)]);
+    return reply.code(201).send({ ...summary, questions: questionDisclosure(party), postsToCorner: !!corner && postsToCorner(party.visibility), corner });
   });
 
   app.get("/parties/:id", async (req, reply) => {

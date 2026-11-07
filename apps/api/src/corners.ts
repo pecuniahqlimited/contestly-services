@@ -8,7 +8,7 @@ import { and, asc, count, desc, eq, inArray, isNull, lt, ne, or, sql, type SQL }
 import {
   cornerMutes, cornerNewPlayers, cornerParties, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, currentCornerConfig, db, follows, getChatConfig,
   getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, refreshDefaultLane, simVisibleTo, type Corner, type User,
-  assertCanChat, blockedEitherWay, cleanName, cleanOptionalName, notBlockedWith, visibleAuthorTo,
+  assertCanChat, blockedEitherWay, cleanName, cleanOptionalName, notBlockedWith, onCorner, visibleAuthorTo,
 } from "@contestly/db";
 import { notifyQueue, valkeyCounter } from "@contestly/queue";
 import {
@@ -412,7 +412,7 @@ async function regulars(hostId: string) {
 export async function cornerPage(cornerId: string, viewer: User | undefined) {
   const { c, owner } = await shownCorner(cornerId);
   const people = await peopleOf(viewer?.id);
-  const upcoming = await db.select().from(parties).where(and(publiclyHostedBy(c.ownerUserId), inArray(parties.status, ["open", "live"]), eq(parties.visibility, "public")))
+  const upcoming = await db.select().from(parties).where(and(publiclyHostedBy(c.ownerUserId), inArray(parties.status, ["open", "live"]), onCorner))
     .orderBy(asc(parties.startsAt)).limit(CORNER_UP_NEXT_SHOWN);
   const [upNext, win, regs, fc, mine, f, posts] = await Promise.all([
     partySummaries(upcoming, viewer?.id), winners(c.ownerUserId), regulars(c.ownerUserId), followerCount(c.id), yourPeopleFollowing(c.id, people),

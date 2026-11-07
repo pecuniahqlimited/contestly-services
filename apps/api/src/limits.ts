@@ -31,6 +31,8 @@ export interface Limits {
   codeSendsAlertPerHour: number;
   /** Reports filed per user per hour (POST /reports). */
   reportsPerHour: number;
+  /** People searches per user per minute (GET /users/search, and the corner follow-ask search). */
+  peopleSearchPerMinute: number;
 }
 
 /**
@@ -52,6 +54,9 @@ export interface Limits {
  *   elsewhere and brought to one address).
  * - 20 reports per user an hour. Someone being harassed in a busy party can report every line they see; past
  *   that it's someone using reports as a weapon, and holds count distinct reporters anyway.
+ * - 60 people searches per user a minute. The app searches as you type (debounced), so a person looking for a
+ *   few friends makes a dozen or two; past 60 a minute it's someone walking the user list. Use past
+ *   three-quarters of it is logged (heavy use) before anything is refused.
  * - The code-send alert at 2,000 an hour across everyone: sends cost money and a sudden spike is either
  *   a launch moment or someone spraying addresses from many IPs; either way an admin should know.
  */
@@ -66,4 +71,5 @@ export const limitsFromEnv = (env = process.env): Limits => ({
   guestsPerIpPerHour: int("RATE_LIMIT_GUESTS_PER_IP_PER_HOUR", 300, env),
   codeSendsAlertPerHour: int("ALERT_CODE_SENDS_PER_HOUR", 2000, env),
   reportsPerHour: int("RATE_LIMIT_REPORTS_PER_HOUR", 20, env),
+  peopleSearchPerMinute: int("RATE_LIMIT_PEOPLE_SEARCH_PER_MINUTE", 60, env),
 });

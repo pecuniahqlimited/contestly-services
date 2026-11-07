@@ -9,7 +9,7 @@ import { takeSeat, cleanName,
   partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Party, type Tx, type User,
 } from "@contestly/db";
 import { notifyQueue, partyQueue } from "@contestly/queue";
-import { SPLITS, checkStakes, inferCategory, isGoods, startsAtFor, type ChatMessage, type CreatePartyInput } from "@contestly/shared";
+import { SPLITS, checkStakes, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { inviteToParty } from "./invites.js";
 import { enqueueSealedSet } from "./questionSet.js";
@@ -88,7 +88,8 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
     }
     return { party: p, invited };
   });
-  if (party.visibility === "public") await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
+  // A public party goes up on the host's corner and pings its followers; a private one does neither (postsToCorner).
+  if (postsToCorner(party.visibility)) await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
   if (invited.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: invited });
   // Sealed sets are built now, so they're ready long before start and a failure reaches the host in time (ADR 0002).
   // With files on the way, the questions service builds it once they're read (sealWhenFilesRead).

@@ -42,14 +42,23 @@ const publish = (ev: { partyId: string; status: string }) => pub.publish(PARTY_E
 /** Re-embedding is one chain: each batch queues the next, after a backoff when the provider was rate-limited. */
 const queueReembed = (waits = 0, delay = 0) => questionJobs.add("reembed", { kind: "reembed", waits }, { jobId: `reembed-${Date.now()}`, delay });
 
+/**
+ * The mock embedder never re-embeds: its vectors are throwaway, and moving real ones into it would discard
+ * work a real embedder (and its free quota) did. Under the mock profile, rows of other models just sit unused.
+ */
+const reembedsInto = (model: string) => model !== "mock";
+
 /** At start: a chain already waiting (from before a restart) carries on, so starting one more would double the rate. */
 async function startReembed() {
+  if (!reembedsInto(providers.embedder.model)) return;
   const pending = await questionJobs.getJobs(["waiting", "delayed", "prioritized", "active"]);
   if (pending.some((j) => j.data.kind === "reembed")) return;
   await startReembed();
 }
 
 async function reembed(waits: number) {
+  // A chain queued under a real embedder, picked up after a switch to the mock: it stops here.
+  if (!reembedsInto(providers.embedder.model)) return console.log("[reembed] the mock embedder doesn't re-embed; stopping the chain");
   const t0 = Date.now();
   let moved: number;
   try {
