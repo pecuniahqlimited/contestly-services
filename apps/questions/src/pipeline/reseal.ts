@@ -46,6 +46,7 @@ export async function resealForRoster(partyId: string, deps: ResealDeps): Promis
         spec, providers: deps.providers, want: stillNeeded.length,
         excludeBankIds: [...seen.map((s) => s.bankId), ...all.map((q) => q.sourceRef!).filter(Boolean)],
         avoidPayloads: [...seen.map((s) => s.payload), ...all.map((q) => q.payload)],
+        inSet: all.filter((q) => !q.reserve && !stillNeeded.some((n) => n.id === q.id) && q.status !== "voided"),
       })
     : null;
   if (spec && fill && fill.picked.length < stillNeeded.length) {

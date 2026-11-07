@@ -53,8 +53,9 @@ export interface Generator {
   /**
    * Draft `count` candidate questions for the spec, steering clear of the `avoid` texts. With
    * `sources` (a file-scoped spec), every draft must be answerable from one chunk and cite it.
+   * `maxPerFormat` caps a format's share (picture rounds, ADR 0016); the rest goes to the other formats.
    */
-  draft(input: { spec: GenerationSpec; count: number; avoid: string[]; sources?: SourceChunk[] }): Promise<DraftQuestion[]>;
+  draft(input: { spec: GenerationSpec; count: number; avoid: string[]; sources?: SourceChunk[]; maxPerFormat?: Partial<Record<QuestionFormat, number>> }): Promise<DraftQuestion[]>;
 }
 
 export interface VerifyVerdict {

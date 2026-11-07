@@ -13,6 +13,8 @@ import { bankRow, generationRecord } from "./records.js";
 import { retrieveFromBank, reusableAmong } from "./retrieve.js";
 import { retrieveChunks } from "./sources.js";
 import { questionText } from "./text.js";
+import { pictureLimit, pictureRoom, withinPictureCap } from "./pictures.js";
+import { IMAGE_POOL } from "../providers/imagePool.js";
 
 export interface FillRequest {
   spec: GenerationSpec;
@@ -22,6 +24,8 @@ export interface FillRequest {
   excludeBankIds: string[];
   /** Question texts the generator must steer clear of, for the same reasons. */
   avoidPayloads: unknown[];
+  /** Questions already in the party's set that stay (a reseal's kept slots): they count toward the picture cap. */
+  inSet?: { format: string; payload: unknown }[];
   /** Told each stage the fill reaches, with the formats of the questions it has so far (bank picks first). */
   progress?: FillProgress;
 }
@@ -55,12 +59,17 @@ export async function fillQuestions(req: FillRequest): Promise<Fill> {
   if (req.spec.sourceScope === "open") retrieved = await retrieveFromBank(req.spec, specEmbedding, req.want, req.excludeBankIds, model);
   else sources = await retrieveChunks(req.spec.sourceScope.fileIds, specEmbedding, model);
 
+  // The picture cap covers the whole set: what stays, what the bank gave, then what's generated.
+  const inSet = req.inSet ?? [];
+  const limit = pictureLimit(inSet.length + req.want, IMAGE_POOL.length);
+  retrieved = withinPictureCap(retrieved, pictureRoom(inSet, limit)).kept;
+
   const gap = req.want - retrieved.length;
   const avoid = [...retrieved.map((q) => questionText(q.payload)), ...req.avoidPayloads.map(questionText)];
   const fromRetrieval = retrieved.map((q) => q.format);
   const { judged, accepted, unavailable } = gap > 0
     ? await draftAndJudge(
-      { spec: req.spec, providers: req.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: gap, avoid, sources },
+      { spec: req.spec, providers: req.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: gap, avoid, sources, pictures: { limit, inSet: [...inSet, ...retrieved] } },
       req.progress && ((stage, formats) => req.progress!(stage, [...fromRetrieval, ...formats])),
     )
     : { judged: [], accepted: [], unavailable: [] };
