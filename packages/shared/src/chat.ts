@@ -193,19 +193,25 @@ export interface DmFacts {
   joinedSendersParty: boolean;
   /** Either has blocked the other (ADR 0014): nothing gets through, not even a request. */
   blocked: boolean;
+  /**
+   * They already talk: their DM has a line in it and the recipient's side is open (they accepted the
+   * sender's request, or they wrote first, so replying is no request).
+   */
+  talking: boolean;
 }
 
 /**
  * The one place the DM rule lives. Nobody writes to a deleted account. Guests and system accounts never DM. A brand writes only to people
  * who joined its parties, and never sends requests (no cold messages). Anyone else is direct when the
- * two are contacts, they've finished a party together or share a crew; otherwise a request (ADR 0012).
- * Row 11's blocks refuse here too.
+ * two are contacts, they've finished a party together or share a crew, or already talk (an accepted request);
+ * otherwise a request (ADR 0012). A decline isn't shown to the sender: it stays a request for them. Row 11's
+ * blocks refuse here too.
  */
 export function dmPermission(f: DmFacts): DmPermission {
   if (f.recipient.isDeleted || f.blocked) return "refused";
   if (f.sender.isGuest || f.recipient.isGuest || f.sender.isSystem || f.recipient.isSystem) return "refused";
   if (f.sender.isBrand) return f.joinedSendersParty ? "direct" : "refused";
-  if (f.contacts || f.playedTogether || f.shareCrew) return "direct";
+  if (f.contacts || f.playedTogether || f.shareCrew || f.talking) return "direct";
   return "request";
 }
 

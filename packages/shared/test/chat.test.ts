@@ -3,7 +3,7 @@ import { chatSendSchema, dmKey, dmPermission, maskProfanity, partyChatFromOutsid
 
 const person = { isGuest: false, isBrand: false, isSystem: false };
 const facts = (over: Partial<DmFacts> = {}): DmFacts => ({
-  sender: person, recipient: { ...person, isDeleted: false }, contacts: false, playedTogether: false, shareCrew: false, joinedSendersParty: false, ...over,
+  sender: person, recipient: { ...person, isDeleted: false }, contacts: false, playedTogether: false, shareCrew: false, joinedSendersParty: false, blocked: false, talking: false, ...over,
 });
 
 describe("dmPermission", () => {
@@ -28,6 +28,11 @@ describe("dmPermission", () => {
     expect(dmPermission(facts({ sender: brand, joinedSendersParty: true }))).toBe("direct");
     expect(dmPermission(facts({ sender: brand }))).toBe("refused");
     expect(dmPermission(facts({ sender: brand, contacts: true, playedTogether: true }))).toBe("refused");
+  });
+  it("is direct once the two already talk (an accepted request), unless blocked", () => {
+    expect(dmPermission(facts({ talking: true }))).toBe("direct");
+    expect(dmPermission(facts({ talking: true, blocked: true }))).toBe("refused");
+    expect(dmPermission(facts({ talking: true, recipient: { ...person, isDeleted: true } }))).toBe("refused");
   });
 });
 

@@ -4,7 +4,7 @@
  * publishing the API's own system lines to the room.
  */
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { chatMembers, chatMessages, chatThreads, db, lineDeliveries, notBlockedWith, users, voiceNotes } from "@contestly/db";
+import { chatMembers, chatMessages, chatThreads, db, lineDeliveries, notBlockedWith, requestStateFor, users, voiceNotes } from "@contestly/db";
 import { MY_RECENT_DAYS, UNREAD_CAP, type ChatMessage, type ChatPreview, type ChatUnread, type DmThread } from "@contestly/shared";
 import { personColumns } from "./people.js";
 import { valkey } from "./redis.js";
@@ -51,7 +51,7 @@ export async function dmThreads(userId: string, which: "messages" | "requests"):
   const last = await previews(rows.map((r) => r.id));
   return rows.map((r) => ({
     id: r.id, with: r.with, unread: capped(r.unread), lastMessage: last.get(r.id) ?? null,
-    request: r.mine !== "active" ? "received" : r.theirs !== "active" ? "sent" : "none",
+    request: requestStateFor({ state: r.mine }, { state: r.theirs }, true),
   }));
 }
 

@@ -56,13 +56,13 @@ export const onCorner = eq(parties.visibility, "public");
 
 /** The host's shown corner and how far a public party of theirs reaches; null without a shown corner. */
 export async function cornerReach(hostId: string, q: Conn = db): Promise<CornerReach | null> {
-  const [c] = await q.select({ id: corners.id }).from(corners).where(and(eq(corners.ownerUserId, hostId), cornerShown));
+  const [c] = await q.select({ id: corners.id, name: corners.name, color: corners.color }).from(corners).where(and(eq(corners.ownerUserId, hostId), cornerShown));
   if (!c) return null;
   const [r] = await q.select({
     all: sql<number>`count(*)::int`,
     pinged: sql<number>`(count(*) filter (where ${follows.notify}))::int`,
   }).from(follows).innerJoin(users, eq(users.id, follows.followerId)).where(and(eq(follows.cornerId, c.id), isNull(users.deletedAt)));
-  return { cornerId: c.id, followerCount: Number(r?.all ?? 0), pingCount: Number(r?.pinged ?? 0) };
+  return { cornerId: c.id, name: c.name, color: c.color, followerCount: Number(r?.all ?? 0), pingCount: Number(r?.pinged ?? 0) };
 }
 
 /** The account's corner, made locked (named after them) the first time it's needed. */
