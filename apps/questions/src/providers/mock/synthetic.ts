@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import type { DraftQuestion } from "../types.js";
 
 /** ~200 words, so two questions rarely share three of their four options (which dedupe would catch). */
-const WORDS = [
+export const WORDS = [
   // cities and towns
   "Lagos", "Kano", "Ibadan", "Enugu", "Jos", "Calabar", "Owerri", "Abeokuta", "Sokoto", "Maiduguri", "Yola", "Makurdi",
   "Asaba", "Benin", "Warri", "Ilorin", "Osogbo", "Akure", "Uyo", "Lokoja", "Minna", "Bauchi", "Gombe", "Jalingo",

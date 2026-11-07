@@ -15,7 +15,7 @@ import { users, parties, partyPlayers, partyPrizes, chatMessages, appConfig, cli
 import { seedCorners } from "./seedCorners.js";
 import * as ledger from "./ledger.js";
 import { currentPrizes, savePrizes } from "./climb.js";
-import { seedAboutConfigs } from "./config.js";
+import { seedAboutConfigs, seedPartyTemplates } from "./config.js";
 import { joinThread, partyThreadId, systemLine } from "./chat.js";
 import { takeSeat } from "./seats.js";
 import { devAdminHandles, grantDevAdmins } from "./devAdmins.js";
@@ -129,6 +129,7 @@ await db.transaction(async (tx) => {
   }
   await tx.insert(appConfig).values({ key: "party", value: DEFAULT_PARTY_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_PARTY_CONFIG, updatedAt: new Date() } });
   await seedAboutConfigs(tx); // About you, version 1 of each set (the prototype's questions), unless an admin has saved one
+  await seedPartyTemplates(tx); // Party templates, version 1 (ADR 0015), unless an admin has saved one
   await tx.insert(appConfig).values({ key: "questions", value: DEFAULT_QUESTIONS_CONFIG }).onConflictDoUpdate({ target: appConfig.key, set: { value: DEFAULT_QUESTIONS_CONFIG, updatedAt: new Date() } });
 });
 

@@ -2,11 +2,12 @@ import { and, desc, eq } from "drizzle-orm";
 import type { z } from "zod";
 import {
   DEFAULT_ABOUT, DEFAULT_ACCOUNTS_CONFIG, DEFAULT_CHAT_CONFIG, DEFAULT_PAYMENTS_CONFIG, DEFAULT_CLIMB_SETTINGS, DEFAULT_SOCIAL_CONFIG, DEFAULT_PARTY_CONFIG, DEFAULT_QUESTIONS_CONFIG, DEFAULT_NUDGE_CONFIG, nudgeConfigSchema, DEFAULT_SAFETY_CONFIG, safetyConfigSchema,
+  DEFAULT_PARTY_TEMPLATES, partyTemplatesConfigSchema, type PartyTemplatesConfig,
   aboutConfigSchemaFor, accountsConfigSchema, chatConfigSchema, paymentsConfigSchema, climbSettingsSchema, socialConfigSchema, partyConfigSchema, questionsConfigSchema,
   type AboutAudience, type AboutConfig,
 } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
-import { aboutConfigs, appConfig } from "./schema.js";
+import { aboutConfigs, appConfig, partyTemplateConfigs } from "./schema.js";
 
 type Conn = Tx | typeof db;
 
@@ -110,4 +111,36 @@ export async function seedAboutConfigs(conn: Conn = db) {
   for (const audience of ["person", "brand"] as const) {
     await conn.insert(aboutConfigs).values({ audience, version: 1, config: aboutConfigSchemaFor(audience).parse(DEFAULT_ABOUT[audience]) }).onConflictDoNothing();
   }
+}
+
+export interface PartyTemplatesRow { version: number; config: PartyTemplatesConfig; createdAt: Date }
+const templatesRow = (r: typeof partyTemplateConfigs.$inferSelect): PartyTemplatesRow => ({ version: r.version, config: partyTemplatesConfigSchema.parse(r.config), createdAt: r.createdAt });
+
+/**
+ * Party templates and the host-written rules (ADR 0015): the newest version is current. Version 1 comes from
+ * migration 0050 (and db:seed), so a missing config is a broken database: an error, never a write here.
+ */
+export async function currentPartyTemplates(conn: Conn = db): Promise<PartyTemplatesRow> {
+  const [row] = await conn.select().from(partyTemplateConfigs).orderBy(desc(partyTemplateConfigs.version)).limit(1);
+  if (!row) throw new Error("party_templates_missing: no party template config (run db:migrate, or db:seed)");
+  return templatesRow(row);
+}
+
+/** One version, as a party was made against. Null if there's no such version. */
+export async function partyTemplatesVersion(version: number, conn: Conn = db): Promise<PartyTemplatesRow | null> {
+  const [row] = await conn.select().from(partyTemplateConfigs).where(eq(partyTemplateConfigs.version, version));
+  return row ? templatesRow(row) : null;
+}
+
+/** Save a new version (the next number). Rows are never changed; two saves at once: the second fails on the key. */
+export async function savePartyTemplates(tx: Tx, config: unknown, byUserId: string | null): Promise<PartyTemplatesRow> {
+  const parsed = partyTemplatesConfigSchema.parse(config);
+  const current = await currentPartyTemplates(tx);
+  const [row] = await tx.insert(partyTemplateConfigs).values({ version: current.version + 1, config: parsed, createdByUserId: byUserId }).returning();
+  return templatesRow(row);
+}
+
+/** The seed: version 1 (DEFAULT_PARTY_TEMPLATES), if it isn't there yet; the same row migration 0050 writes. */
+export async function seedPartyTemplates(conn: Conn = db) {
+  await conn.insert(partyTemplateConfigs).values({ version: 1, config: partyTemplatesConfigSchema.parse(DEFAULT_PARTY_TEMPLATES) }).onConflictDoNothing();
 }

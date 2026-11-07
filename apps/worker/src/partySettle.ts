@@ -6,7 +6,7 @@
  * What it tells the outside world is passed in.
  */
 import { and, asc, eq } from "drizzle-orm";
-import { cancelIfUnplaceable, db, getPartyConfig, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, users } from "@contestly/db";
+import { cancelIfUnplaceable, db, getPartyConfig, lockPeopleRows, payCashPrizes, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, recordPartyFinish, users } from "@contestly/db";
 import { isGoods, type ChatMessage } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 
@@ -35,6 +35,13 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
   let event: { partyId: string; status: "finished" | "cancelled" } | undefined;
   let replayedFinish = false;
   const settled = await db.transaction(async (tx) => {
+    // ADR 0013's lock order: the people money reaches (the seated players and the host, for a prize or the host
+    // cut) before the party row, so a withdrawal of theirs runs wholly before or after this settle. Seats don't
+    // change once a party is live; a seat that did would be caught below and the job retried.
+    const seatedNow = (await tx.select({ userId: partyPlayers.userId }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId))).map((s) => s.userId);
+    const [pre] = await tx.select({ hostId: parties.createdByUserId }).from(parties).where(eq(parties.id, partyId));
+    const locked = new Set(pre ? [pre.hostId, ...seatedNow] : seatedNow);
+    if (locked.size) await lockPeopleRows(tx, [...locked]);
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (p?.status === "finished") {
       line = (await partyLineByKey(tx, partyId, "finished")) ?? undefined;
@@ -80,12 +87,11 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
       const s = computeSettlement({ funding: p.funding, entryKobo: p.entryKobo, playerCount: players.length, hostPoolKobo: p.hostPoolKobo, split: p.split, ranked }, cfg);
       if (s.rakeKobo > 0) await ledger.post(tx, { userId: await ledger.treasuryUserId(tx), kind: "cash", amountKobo: s.rakeKobo, type: "party_rake", refType: "party", refId: p.id, idempotencyKey: `party_rake:${p.id}` });
       if (s.hostCutKobo > 0) await ledger.post(tx, { userId: p.createdByUserId, kind: "cash", amountKobo: s.hostCutKobo, type: "party_host_cut", refType: "party", refId: p.id, idempotencyKey: `party_host_cut:${p.id}` });
-      for (const prize of s.prizes) {
-        if (prize.amountKobo <= 0) continue;
-        await ledger.post(tx, { userId: prize.userId, kind: "cash", amountKobo: prize.amountKobo, type: "party_prize", refType: "party", refId: p.id, idempotencyKey: `party_prize:${p.id}:${prize.userId}` });
-        await tx.update(partyPlayers).set({ prizeKobo: prize.amountKobo }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, prize.userId)));
-      }
-      console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)`);
+      if (s.prizes.some((x) => !locked.has(x.userId))) throw new Error(`settle ${partyId}: a winner's row wasn't locked (seats changed); retrying`);
+      // Each prize is decided, then paid: to cash, or (host-written questions, ADR 0015) a flagged winner's into
+      // their prize hold for an admin, with a warning alert, in this transaction.
+      const held = await payCashPrizes(tx, p, s.prizes.map((x) => ({ userId: x.userId, place: x.rank, amountKobo: x.amountKobo })));
+      console.log(`[party] ${p.title} settled: pot ${s.potKobo}, rake ${s.rakeKobo}, host cut ${s.hostCutKobo}, ${s.prizes.length} prize(s)${held.length ? `, ${held.length} held for review` : ""}`);
     }
 
     const endedAt = new Date();

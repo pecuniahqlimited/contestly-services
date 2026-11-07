@@ -1,0 +1,44 @@
+ALTER TYPE "public"."question_event_kind" ADD VALUE 'author';--> statement-breakpoint
+CREATE TABLE "held_prizes" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"party_id" uuid NOT NULL,
+	"user_id" uuid NOT NULL,
+	"host_user_id" uuid NOT NULL,
+	"place" integer NOT NULL,
+	"amount_kobo" integer NOT NULL,
+	"status" text DEFAULT 'held' NOT NULL,
+	"evidence" jsonb NOT NULL,
+	"decided_by_user_id" uuid,
+	"reason" text,
+	"decided_at" timestamp with time zone,
+	"outcome" jsonb,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "held_prizes_amount_positive" CHECK ("held_prizes"."amount_kobo" > 0),
+	CONSTRAINT "held_prizes_status_known" CHECK ("held_prizes"."status" in ('held', 'cleared', 'rejected'))
+);
+--> statement-breakpoint
+CREATE TABLE "party_template_configs" (
+	"version" integer PRIMARY KEY NOT NULL,
+	"config" jsonb NOT NULL,
+	"created_by_user_id" uuid,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "parties" ADD COLUMN "template" jsonb;--> statement-breakpoint
+ALTER TABLE "parties" ADD COLUMN "host_rules" jsonb;--> statement-breakpoint
+ALTER TABLE "parties" ADD COLUMN "host_question_count" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "party_questions" ADD COLUMN "host_written" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "held_prizes" ADD CONSTRAINT "held_prizes_party_id_parties_id_fk" FOREIGN KEY ("party_id") REFERENCES "public"."parties"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "held_prizes" ADD CONSTRAINT "held_prizes_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "held_prizes" ADD CONSTRAINT "held_prizes_host_user_id_users_id_fk" FOREIGN KEY ("host_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "held_prizes" ADD CONSTRAINT "held_prizes_decided_by_user_id_users_id_fk" FOREIGN KEY ("decided_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "party_template_configs" ADD CONSTRAINT "party_template_configs_created_by_user_id_users_id_fk" FOREIGN KEY ("created_by_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "held_prizes_party_user_idx" ON "held_prizes" USING btree ("party_id","user_id");--> statement-breakpoint
+CREATE INDEX "held_prizes_user_status_idx" ON "held_prizes" USING btree ("user_id","status");--> statement-breakpoint
+CREATE INDEX "held_prizes_status_idx" ON "held_prizes" USING btree ("status","created_at");--> statement-breakpoint
+-- Party templates, version 1: the six personal templates and the host-written rules (DEFAULT_PARTY_TEMPLATES in
+-- packages/shared/src/templates.ts, as of this migration). Every database has a current version from here on;
+-- db:seed writes the same row if it's missing, and a read that finds none is an error. An admin's saves are left alone.
+INSERT INTO "party_template_configs" ("version", "config") VALUES
+  (1, '{"templates":[{"id":"birthday","name":"Birthday","pitch":"How well does everyone know the birthday star?","occasion":"birthday","hidden":false,"title":"Birthday quiz","brief":"A birthday party quiz: birthday traditions, cakes, famous birthdays and party songs, light and fun.","cover":{"color":"#FF6B9A","emoji":"🎂"},"dials":{"difficulty":"easy","secondsPerQuestion":20,"questionCount":10,"formats":["pick_one","pick_all","order"]},"hostPrompts":[{"prompt":"What is [name]''s go-to order at a restaurant?","hint":"The dish they always pick"},{"prompt":"Which city was [name] born in?","hint":""},{"prompt":"What did [name] want to be when they grew up?","hint":"Their childhood dream job"},{"prompt":"What is [name]''s favourite song right now?","hint":"The one on repeat"},{"prompt":"Who is [name]''s celebrity crush?","hint":""}],"themed":{"audience":"friends and family at a birthday","tone":"warm and playful","exclusions":["politics","age jokes"]}},{"id":"bridal-shower","name":"Bridal shower","pitch":"Test the squad on the bride, the groom and the big day.","occasion":"wedding","hidden":false,"title":"Bridal shower quiz","brief":"A bridal shower quiz: wedding traditions, love songs, famous couples and Nigerian wedding customs, sweet and fun.","cover":{"color":"#F2B8C6","emoji":"💍"},"dials":{"difficulty":"easy","secondsPerQuestion":20,"questionCount":12,"formats":["pick_one","pick_all"]},"hostPrompts":[{"prompt":"Where did [name] and [name] first meet?","hint":"Their first meeting spot"},{"prompt":"Who said \"I love you\" first, [name] or [name]?","hint":""},{"prompt":"What was [name] and [name]''s first date?","hint":"Where they went or what they did"},{"prompt":"What is [name]''s pet name for [name]?","hint":""},{"prompt":"Which country are [name] and [name] dreaming of for the honeymoon?","hint":""},{"prompt":"How long have [name] and [name] been together?","hint":"In years"}],"themed":{"audience":"the bride''s friends and family","tone":"sweet and celebratory","exclusions":["politics","exes"]}},{"id":"couples","name":"Couples'' hangout","pitch":"Which couple really knows each other best?","occasion":"couples","hidden":false,"title":"Couples'' quiz night","brief":"A couples'' hangout quiz: famous couples, love songs, romance films and date-night trivia, playful.","cover":{"color":"#E5484D","emoji":"💞"},"dials":{"difficulty":"mixed","secondsPerQuestion":15,"questionCount":10,"formats":["pick_one","pick_all","match"]},"hostPrompts":[{"prompt":"Which couple here has been together the longest?","hint":"Name the couple"},{"prompt":"Where did [name] propose to [name]?","hint":""},{"prompt":"What is [name] and [name]''s couple song?","hint":""},{"prompt":"Which of us cooks the best jollof?","hint":""}],"themed":{"audience":"couples among friends","tone":"playful and light","exclusions":["politics","exes"]}},{"id":"game-night","name":"Game night","pitch":"Board games, bragging rights and a few questions only your crew can answer.","occasion":"game-night","hidden":false,"title":"Game night showdown","brief":"A game night quiz: board games, card games, video games and general knowledge, competitive and quick.","cover":{"color":"#7B5CFF","emoji":"🎲"},"dials":{"difficulty":"mixed","secondsPerQuestion":15,"questionCount":12,"formats":["pick_one","pick_all","order","match"]},"hostPrompts":[{"prompt":"Who won the last game night?","hint":""},{"prompt":"Which game does [name] always insist on playing?","hint":""},{"prompt":"Who is the sorest loser in this group?","hint":"No hard feelings"},{"prompt":"What snack never runs out at our game nights?","hint":""}],"themed":{"audience":"a group of friends who play games together","tone":"competitive and quick","exclusions":["politics"]}},{"id":"office-party","name":"Office party","pitch":"Team trivia with a few questions about the people you sit with.","occasion":"office","hidden":false,"title":"Office party quiz","brief":"An office party quiz: work culture, famous companies and brands, Nigerian business and general knowledge, friendly.","cover":{"color":"#3B82F6","emoji":"💼"},"dials":{"difficulty":"mixed","secondsPerQuestion":15,"questionCount":12,"formats":["pick_one","pick_all","order"]},"hostPrompts":[{"prompt":"What year did our company start?","hint":""},{"prompt":"Who has been on the team the longest?","hint":""},{"prompt":"Which department wins the office party every year?","hint":""},{"prompt":"What is the most-ordered lunch in the office?","hint":""},{"prompt":"Who is always first in the office in the morning?","hint":""}],"themed":{"audience":"colleagues at a work party","tone":"friendly and inclusive","exclusions":["politics","religion","salaries"]}},{"id":"reunion","name":"Reunion","pitch":"Old classmates, old jokes: who remembers the most?","occasion":"reunion","hidden":false,"title":"Reunion quiz","brief":"A school reunion quiz: throwback music, films and trends from our school days, nostalgic and fun.","cover":{"color":"#F59E0B","emoji":"🎓"},"dials":{"difficulty":"mixed","secondsPerQuestion":20,"questionCount":10,"formats":["pick_one","pick_all","order"]},"hostPrompts":[{"prompt":"What year did we graduate?","hint":""},{"prompt":"What was the name of our school''s principal?","hint":""},{"prompt":"Which teacher did everyone fear the most?","hint":""},{"prompt":"What did we call the school canteen?","hint":"Our nickname for it"},{"prompt":"Who was the class clown?","hint":""}],"themed":{"audience":"old classmates at a reunion","tone":"nostalgic and warm","exclusions":["politics"]}}],"rules":{"maxEntryKobo":100000,"maxHostPrizeKobo":5000000,"maxHostShareBps":5000,"outlierMarginPct":30}}'::jsonb)
+ON CONFLICT ("version") DO NOTHING;

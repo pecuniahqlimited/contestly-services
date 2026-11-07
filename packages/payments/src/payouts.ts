@@ -66,7 +66,8 @@ async function clearedAgainst(conn: Tx | typeof db, userId: string) {
 /**
  * What withdrawBlockReason needs beyond the user row: what they owe, and whether a deleted account sharing
  * their email or phone carries a payment issue that no clearance for this account covers. Deleting frees the
- * email and phone for a new sign-up (ADR 0010); this keeps a debt from leaving with the old account.
+ * email and phone for a new sign-up (ADR 0010); this keeps a debt from leaving with the old account. A held party
+ * prize (ADR 0015) isn't here: it sits in their prize_hold account, never their cash, so their own cash stays theirs.
  */
 export async function withdrawContext(conn: Tx | typeof db, user: Linkable) {
   const owedKobo = await ledger.owedKobo(conn, user.id);

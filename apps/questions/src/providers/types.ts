@@ -55,6 +55,11 @@ export interface Generator {
    * `maxPerFormat` caps a format's share (picture rounds, ADR 0016); the rest goes to the other formats.
    */
   draft(input: { spec: GenerationSpec; count: number; avoid: string[]; sources?: SourceChunk[]; maxPerFormat?: Partial<Record<QuestionFormat, number>> }): Promise<DraftQuestion[]>;
+  /**
+   * Wrong options for a host-written question (ADR 0015): `count` candidates of the same type and length as
+   * `answer`, believable for the question, none of them the answer. The pipeline filters them for safety.
+   */
+  distract(input: { question: string; answer: string; brief: string; count: number }): Promise<string[]>;
 }
 
 export interface VerifyVerdict {

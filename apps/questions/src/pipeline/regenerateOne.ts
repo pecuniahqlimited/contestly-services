@@ -5,7 +5,7 @@
  * as it was and the job fails (the records still show why).
  */
 import { and, eq } from "drizzle-orm";
-import { db, parties, partyQuestions, partyQuestionEvents, bankQuestions, questionGenerations, getQuestionsConfig } from "@contestly/db";
+import { db, parties, partyQuestions, partyQuestionEvents, bankQuestions, questionGenerations, getQuestionsConfig, syncHostQuestionCount } from "@contestly/db";
 import type { Providers } from "../providers/types.js";
 import { draftAndJudge } from "./judge.js";
 import { bankRow, generationRecord } from "./records.js";
@@ -50,8 +50,11 @@ export async function regenerateOne(job: { partyId: string; partyQuestionId: str
       sourceRef: chosen.bankId,
       hostAuthored: false,
       editCheck: null,
+      hostWritten: false,
       status: "draft",
     }).where(eq(partyQuestions.id, slot.id));
+    // A host-written slot regenerated is a themed question now.
+    if (slot.hostWritten) await syncHostQuestionCount(tx, party.id);
     await tx.insert(partyQuestionEvents).values({ partyId: party.id, questionId: slot.id, kind: "regenerate", userId: job.requestedBy, detail: { replacedBankId: slot.sourceRef, newBankId: chosen.bankId } });
   });
   console.log(`[questions] ${party.title}: regenerated draft #${slot.idx}`);

@@ -1,7 +1,7 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import type { WindowCounter } from "@contestly/shared";
-import { ADMIN_EVENTS_CHANNEL as ADMIN_EVENTS, PARTY_EVENTS_CHANNEL as PARTY_EVENTS, SAFETY_EVENTS_CHANNEL as SAFETY_EVENTS, QUEUES, nudgeUserChannel, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL as ADMIN_EVENTS, PARTY_EVENTS_CHANNEL as PARTY_EVENTS, SAFETY_EVENTS_CHANNEL as SAFETY_EVENTS, QUEUES, nudgeUserChannel, type ChatJob, type ClimbJob, type DistractorsJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
 
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 /** BullMQ's key prefix. Every Queue and Worker passes it, so two stacks on one Valkey never share jobs. */
@@ -35,6 +35,8 @@ export const PARTY_JOB_OPTIONS = { attempts: 5, backoff: { type: "exponential", 
 export const partyQueue = () => new Queue<PartyJob>(QUEUES.party, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: PARTY_JOB_OPTIONS });
 export const questionsQueue = () => new Queue<QuestionsJob>(QUEUES.questions, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 500, removeOnFail: 1000 } });
 
+/** suggest_distractors only (ADR 0015): answered while the host waits, so nothing else queues ahead of it. */
+export const distractorsQueue = () => new Queue<DistractorsJob>(QUEUES.distractors, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 1, removeOnComplete: 500, removeOnFail: 1000 } });
 export const climbQueue = () => new Queue<ClimbJob>(QUEUES.climb, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 10_000 }, removeOnComplete: 100, removeOnFail: 500 } });
 
 export const housekeepingQueue = () => new Queue<HousekeepingJob>(QUEUES.housekeeping, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 60_000 }, removeOnComplete: 50, removeOnFail: 200 } });

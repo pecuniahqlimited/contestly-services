@@ -235,3 +235,34 @@ Every nudge is a worker-emitted event delivered as push when the app is closed a
 - [x] Leaderboard scope beyond friends and everyone: crews done (row 6b, ADR 0008: Climb points plus party points from bragging-rights parties, weekly champion); interest communities later on the same scope key.
 - [ ] Presence: what counts as "in the room" for live nudges and early-start decisions.
 - [ ] Corners (ADR 0012): anti-farming for new players brought (verified email, unseen device, plays a party someone else hosted?); default unlock thresholds; the played-with window; whether a corner's follower list is public; level perks.
+
+## Party templates (row 13, ADR 0015)
+
+**Host**
+
+| # | The host wants to… | What the app does |
+|---|---|---|
+| T1 | throw a quiz for an occasion (Ada's 25th, a bridal shower) without writing a brief | "Pick an occasion" in the builder's first scene: the templates admins have published (at launch: Birthday, Bridal shower, Couples' hangout, Game night, Office party, Reunion). One tap fills in a name, cover, settings and a starter set. |
+| T2 | ask questions only they know the answer to ("What's Ada's go-to order?") | The starter set includes questions written for the occasion with blanks to fill. The host types the right answer; the app suggests three believable wrong ones, which the host can change. |
+| T3 | mix in general questions so it's still a real game | Themed questions ("Birthday theme") come from the bank or are generated, fact-checked, and can be swapped. |
+| T4 | make it their own | Edit, reorder or delete anything, down to an empty set; add their own questions. |
+| T5 | know what they're signing up for | Plain lines: "You know the answers, so you're hosting this one", and that occasion parties have an entry fee or a prize they put up. |
+| T6 | not get stuck | "1 question still needs an answer" blocks Continue until every host question has its answer. |
+| T7 | put up a prize or charge entry | The Stakes scene works as usual, within the caps for occasion parties. |
+
+**Player**
+
+| # | The player wants to… | What the app does |
+|---|---|---|
+| T8 | know it's a fair game | The lobby says the set includes questions written by the host, and that the host isn't playing. |
+| T9 | play it like any party | Same three beats (question, reveal, standings), chat on standings, the same scoring. |
+| T10 | get paid if they win | Prizes pay out as normal. Only a winner who is close to the host and scores suspiciously high on the host's own questions has the prize held for a quick admin check. |
+
+**Admin**
+
+| # | The admin wants to… | What the app does |
+|---|---|---|
+| T11 | add, edit, reorder, hide or remove templates without a release | Templates are data in the console, with a preview: name, pitch, cover, default settings, host prompts and the theme. Nothing is hard-coded; removing one never changes parties already made from it. |
+| T12 | catch a host feeding answers to a friend | The held-prize queue with the evidence: who's linked, how, and their score on the host's questions against the room's. Clear or reject with a reason. |
+
+**How it plays:** pick an occasion → fill in your answers (the app suggests wrong options) → keep or swap the themed questions, up to half the set your own → set an entry fee or a prize → curate mode (you host, you don't play) → friends join and play like any party → prizes pay out, unless a linked winner's score on your questions looks wrong, in which case it's held for an admin → your questions stay with that party and never enter the shared bank.

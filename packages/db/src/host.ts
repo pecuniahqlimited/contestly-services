@@ -5,6 +5,7 @@
  */
 import { eq, inArray } from "drizzle-orm";
 import { db } from "./client.js";
+import type { CurateHostType } from "@contestly/shared";
 import { parties, users } from "./schema.js";
 
 export interface PublicHost {
@@ -58,6 +59,14 @@ export async function prospectiveHost(creatorId: string): Promise<PublicHost> {
  * else's host-funded prize is cash.
  */
 export const canOfferNonCashPrize = (host: Pick<PublicHost, "isBrand" | "isVerified">) => host.isBrand && host.isVerified;
+
+/**
+ * Whose curate caps a host gets (ADR 0015's capsByHost): the ONLY place this is decided. Every host is a person
+ * today, brands included, so behaviour matches a single set of caps. Row 8 changes this body (a verified brand
+ * gets "brand", likely `canOfferNonCashPrize(host) ? "brand" : "person"`), never its callers, and raises the
+ * brand caps in the party templates config.
+ */
+export const curateHostType = (_host: Pick<PublicHost, "isBrand" | "isVerified">): CurateHostType => "person";
 
 /**
  * Who may act for the host: review curate drafts, attach source files. Today only the creator;

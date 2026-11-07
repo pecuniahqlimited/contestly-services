@@ -351,6 +351,55 @@
       "when": 1794056971027,
       "tag": "0049_people_search",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794057031027,
+      "tag": "0050_party_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1794057091027,
+      "tag": "0051_held_prize_clear_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1794057151027,
+      "tag": "0052_prize_hold_account",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794057211027,
+      "tag": "0053_signals_last_seen",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794057271027,
+      "tag": "0054_lifted_blocks",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1794057331027,
+      "tag": "0055_held_prize_two_admins",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794057391027,
+      "tag": "0056_curate_caps_by_host",
+      "breakpoints": true
     }
   ]
 }

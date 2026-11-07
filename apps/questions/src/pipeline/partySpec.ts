@@ -4,5 +4,5 @@ import { partyFileIds } from "./sources.js";
 import { buildSpec } from "./spec.js";
 
 export async function specFor(party: Party) {
-  return buildSpec({ brief: party.brief, difficulty: party.difficulty, formats: party.formats, questionCount: party.questionCount, questionSeconds: party.questionSeconds, fileIds: await partyFileIds(party.id) });
+  return buildSpec({ brief: party.brief, difficulty: party.difficulty, formats: party.formats, questionCount: party.questionCount, questionSeconds: party.questionSeconds, fileIds: await partyFileIds(party.id), themed: party.template?.themed });
 }

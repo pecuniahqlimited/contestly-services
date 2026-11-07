@@ -41,11 +41,18 @@ export const SAFETY_SCHEMA = {
 
 type Items = Parameters<SafetyReviewer["review"]>[1];
 
+/**
+ * Host-written questions (ADR 0015) are about the party's own people by design: private_individual is narrowed
+ * for them, never dropped.
+ */
+export const HOST_WRITTEN_NOTE = `Written by: the party's host, about the people at this party (friends, family or colleagues), who play it together. Naming them and asking about shared memories is expected and is not private_individual. Mark private_individual only if a question exposes sensitive private details (health, sexuality, money, an address, phone number or ID, a criminal accusation) or would humiliate or demean someone. Every other reason applies as usual.`;
+
 export function safetyPrompt(brief: SafetyBrief, items: Items): string {
   return [
     `Brief: ${brief.topic}`,
     `Politics asked for: ${wantsPolitics(brief) ? "yes" : "no"}`,
     `Excluded topics: ${brief.exclusions.length ? brief.exclusions.join("; ") : "none"}`,
+    ...(brief.hostWritten ? [HOST_WRITTEN_NOTE] : []),
     "",
     ...items.map((it, i) => `<question index="${i}">\n${answerKeyText(it.format, it.payload)}${it.explanation ? `\nExplanation: ${it.explanation}` : ""}\n</question>`),
   ].join("\n");

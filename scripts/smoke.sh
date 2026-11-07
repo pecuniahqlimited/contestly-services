@@ -31,6 +31,11 @@ echo "not host: $(curl -s -H 'x-dev-user: zee' -H 'content-type: application/jso
 echo "cancel:   $(curl "${H[@]}" -X POST $API/parties/$CID/cancel -d '{"reason":"smoke"}')"
 echo "again:    $(curl "${H[@]}" -X POST $API/parties/$CID/cancel -d '{}')"
 echo "detail:   $(curl "${H[@]}" $API/parties/$PID | j "d['status'], d['playerCount'], d['potKobo']")"
+# Party templates (ADR 0015): the builder's occasions; a template party with a host-written question is curate and says so.
+TV=$(curl "${H[@]}" $API/party-templates | j "d['version']")
+echo "templates: $(curl "${H[@]}" $API/party-templates | j "len(d['templates']), [t['id'] for t in d['templates']]")"
+echo "tpl free: $(curl "${H[@]}" -X POST $API/parties -d '{"template":{"id":"birthday","version":'"$TV"'},"entryKobo":0,"maxPlayers":6,"funding":"pooled","split":"winner"}' | j "d['error']")"
+echo "tpl host: $(curl "${H[@]}" -X POST $API/parties -d '{"template":{"id":"birthday","version":'"$TV"'},"entryKobo":20000,"maxPlayers":6,"funding":"pooled","split":"winner","hostQuestions":[{"question":"Which city was Ada born in?","answer":"Ibadan","distractors":["Lagos","Enugu","Kano"]}]}' | j "d['mode'], d['title'], d['questions']['hostWritten']")"
 echo "climb:    $(curl "${H[@]}" $API/climb | j "d['ladder']['version'], len(d['ladder']['stages']), d['week']['week']")"
 RUN=$(curl "${H[@]}" -X POST $API/climb/runs | j "d['run']['id'], d['round']['type']")
 echo "run:      $RUN"

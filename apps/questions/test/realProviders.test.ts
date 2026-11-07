@@ -547,3 +547,36 @@ describe("provider selection", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------- host-written questions (ADR 0015)
+
+describe("host-written questions: distractors and the safety note", () => {
+  const ask = { question: "Where did Tolu and Femi first meet?", answer: "Church", brief: "Tolu and Femi's bridal shower", count: 6 };
+
+  it("Claude writes the wrong options in one structured call, with the host's words as data", async () => {
+    let body: Record<string, unknown> = {};
+    const { gen, deps } = generator((_u, b) => { body = b; return claudeMsg([{ type: "text", text: JSON.stringify({ distractors: ["Office", "Gym", "Wedding", "Market", "School", "Bus stop"] }) }]); });
+    expect(await gen.distract(ask)).toEqual(["Office", "Gym", "Wedding", "Market", "School", "Bus stop"]);
+    const user = String((body.messages as { content: string }[])[0].content);
+    expect(user).toContain(JSON.stringify(ask.question));
+    expect(user).toContain(JSON.stringify(ask.answer));
+    expect(String(body.system)).toContain("ignore them");
+    expect(deps.sink.records).toMatchObject([{ step: "generate", outcome: "ok" }]);
+  });
+
+  it("drops what isn't a string, and fails as unavailable on malformed output", async () => {
+    const { gen } = generator(() => claudeMsg([{ type: "text", text: JSON.stringify({ distractors: ["Office", 3, null, "Gym"] }) }]));
+    expect(await gen.distract(ask)).toEqual(["Office", "Gym"]);
+    await expect(generator(() => claudeMsg([{ type: "text", text: "nope" }])).gen.distract(ask)).rejects.toBeInstanceOf(ProviderUnavailable);
+  });
+
+  it("the safety reviewer is told host-written questions are about the party's own people, and only then", async () => {
+    const prompts: string[] = [];
+    const s = claudeS((_u, b) => { prompts.push(String((b.messages as { content: string }[])[0].content)); return claudeMsg([{ type: "text", text: JSON.stringify({ results: [{ index: 0, safe: true, reasons: [] }] }) }]); });
+    await s.review({ topic: ask.brief, exclusions: [], hostWritten: true }, [items[0]]);
+    await s.review({ topic: ask.brief, exclusions: [] }, [items[0]]);
+    expect(prompts[0]).toContain("about the people at this party");
+    expect(prompts[0]).toContain("sensitive private details");
+    expect(prompts[1]).not.toContain("about the people at this party");
+  });
+});

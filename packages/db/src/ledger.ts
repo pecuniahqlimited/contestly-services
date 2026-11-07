@@ -9,6 +9,8 @@ export class InsufficientFunds extends Error { constructor() { super("insufficie
 export class LedgerImbalance extends Error { constructor(detail: string) { super(`ledger_imbalance: ${detail}`); } }
 /** The same idempotency key replayed with different legs: a bug or a tampered retry. Never treated as a replay. */
 export class IdempotencyConflict extends Error { constructor(key: string) { super(`idempotency_conflict: ${key}`); } }
+/** A prize hold would go below zero: taking out more than was ever held there. */
+export class HoldOverdrawn extends Error { constructor(key: string) { super(`hold_overdrawn: ${key}`); } }
 
 /** The platform's internal account the rake is posted to. Created on first use; never plays, never shown. */
 export const TREASURY_HANDLE = "contestly.treasury";
@@ -43,8 +45,10 @@ type Kind = (typeof USER_ACCOUNT_KINDS)[number];
  *   cash and what they owe (scope: their user id); the recovery when it's confirmed, released if it dissolves
  * - fee_variance: when the user bears a payout's fee, the difference between the fee they paid (our estimate)
  *   and what the provider charged; either sign
+ * - prize_hold: party prizes held for an admin (ADR 0015), won but not yet the person's cash, so they can't be
+ *   withdrawn, spent or used to repay a debt (scope: their user id); cleared into cash, or rejected out of it
  */
-export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "fee_variance"] as const;
+export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "fee_variance", "prize_hold"] as const;
 export type SystemKind = (typeof SYSTEM_ACCOUNT_KINDS)[number];
 
 export type AccountRef = { userId: string; kind: Kind } | { system: SystemKind; scope?: string };
@@ -53,7 +57,12 @@ export interface Journal { legs: Leg[]; type: string; refType?: string; refId?: 
 
 const isUserRef = (a: AccountRef): a is { userId: string; kind: Kind } => "userId" in a;
 /** Platform accounts kept per person (scope = their user id): locked with the person's own. */
-const PERSON_SCOPED_SYSTEM: readonly string[] = ["payout_owed", "contradiction_hold"];
+const PERSON_SCOPED_SYSTEM: readonly string[] = ["payout_owed", "contradiction_hold", "prize_hold"];
+/**
+ * Platform accounts journal() never lets go below zero: a prize hold only ever holds what was credited into it, so
+ * taking more out (clearing or rejecting a prize that was never held there) is a bug, refused before it's written.
+ */
+const NEVER_NEGATIVE_SYSTEM: readonly string[] = ["prize_hold"];
 const isPersonScoped = (a: AccountRef) => isUserRef(a) || PERSON_SCOPED_SYSTEM.includes(a.system);
 /** People whose cash this journal credits, net. */
 function creditedCash(j: Journal) {
@@ -94,7 +103,7 @@ function assertBalanced(j: Journal) {
  * account it touches is locked (in id order, so two journals can't deadlock each other), then each leg is
  * appended and its balance moved. Idempotent on idempotencyKey: a replay with the same legs is a no-op; a
  * replay with different legs throws IdempotencyConflict. A person's cash or bonus going below zero throws
- * InsufficientFunds (and rolls the transaction back).
+ * InsufficientFunds, and a prize hold going below zero HoldOverdrawn (either rolls the transaction back).
  */
 export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; balances: Map<string, number> }> {
   assertBalanced(j);
@@ -135,6 +144,7 @@ export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; 
     const acct = byId.get(id)!;
     if (balance === acct.balanceKobo) continue;
     if ((USER_ACCOUNT_KINDS as readonly string[]).includes(acct.kind) && balance < 0) throw new InsufficientFunds();
+    if (NEVER_NEGATIVE_SYSTEM.includes(acct.kind) && balance < 0) throw new HoldOverdrawn(j.idempotencyKey);
     await tx.update(ledgerAccounts).set({ balanceKobo: balance }).where(eq(ledgerAccounts.id, id));
   }
   // Cash that just reached a person who owes repays it first, each as its own journal (ADR 0013).
@@ -156,6 +166,9 @@ export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; 
 export const owedAccount = (userId: string): AccountRef => ({ system: "payout_owed", scope: userId });
 /** The disputed amount of this person's open duplicate payouts, held out of their cash (ADR 0013). */
 export const contradictionHoldAccount = (userId: string): AccountRef => ({ system: "contradiction_hold", scope: userId });
+
+/** Prizes of this person's held for an admin (ADR 0015): the platform's prize_hold account for them. */
+export const prizeHoldAccount = (userId: string): AccountRef => ({ system: "prize_hold", scope: userId });
 
 /** How much this person owes, in kobo (0 when nothing). */
 export async function owedKobo(conn: Tx | typeof db, userId: string): Promise<number> {

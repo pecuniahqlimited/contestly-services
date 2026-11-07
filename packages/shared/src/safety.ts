@@ -10,6 +10,11 @@
 export interface SafetyBrief {
   topic: string;
   exclusions: string[];
+  /**
+   * Written by the party's host about the people at the party (ADR 0015): naming them is the point, so a model
+   * reviewer flags a private person only for sensitive details or for demeaning them. The term filter ignores it.
+   */
+  hostWritten?: boolean;
 }
 
 export interface SafetyResult {

@@ -12,7 +12,7 @@ import { buildApp, type AppOptions } from "../src/app.js";
 export const tag = randomBytes(3).toString("hex");
 
 /** `opts`: a test's own rate limits or trusted proxies (the rest of the suite uses .env's, set high for dev). */
-export async function testApp(opts: Pick<AppOptions, "limits" | "trust" | "publicConfig"> = {}) {
+export async function testApp(opts: Pick<AppOptions, "limits" | "trust" | "publicConfig" | "distractors"> = {}) {
   const routes: { method: string; url: string }[] = [];
   const app = await buildApp({
     ...opts,

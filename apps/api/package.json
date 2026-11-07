@@ -29,7 +29,8 @@
     "@contestly/game": "*",
     "@contestly/email": "*",
     "@contestly/payments": "*",
-    "jose": "^5.9.6"
+    "jose": "^5.9.6",
+    "bullmq": "^5.34.0"
   },
   "devDependencies": {
     "vitest": "^2.1.8"

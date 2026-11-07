@@ -6,7 +6,7 @@
 import { and, desc, eq, inArray, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import { db, type Tx } from "../client.js";
-import { blocks, crewInvites, partyInvites, personMutes, users } from "../schema.js";
+import { blocks, crewInvites, liftedBlocks, partyInvites, personMutes, users } from "../schema.js";
 
 type Conn = Tx | typeof db;
 
@@ -90,7 +90,11 @@ export async function blockUser(me: { id: string }, userId: string) {
 }
 
 export async function unblockUser(me: { id: string }, userId: string) {
-  await db.delete(blocks).where(and(eq(blocks.blockerId, me.id), eq(blocks.blockedId, userId)));
+  await db.transaction(async (tx) => {
+    const [lifted] = await tx.delete(blocks).where(and(eq(blocks.blockerId, me.id), eq(blocks.blockedId, userId))).returning();
+    // ADR 0015: the held-prize check counts a block made shortly before a party even if it's lifted since.
+    if (lifted) await tx.insert(liftedBlocks).values({ blockerId: lifted.blockerId, blockedId: lifted.blockedId, blockedAt: lifted.createdAt });
+  });
   return { blocked: false };
 }
 

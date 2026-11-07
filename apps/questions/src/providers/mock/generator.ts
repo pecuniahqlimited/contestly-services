@@ -7,6 +7,7 @@ import type { Difficulty } from "@contestly/shared";
 import { BAD_IDS, DECK, DUP_IDS, type DeckEntry } from "./deck.js";
 import { draftsFromFile } from "./fromFile.js";
 import { syntheticDrafts } from "./synthetic.js";
+import { mockDistract } from "./distract.js";
 import type { DraftQuestion, Generator } from "../types.js";
 
 const DIFFICULTY_TARGET: Record<Difficulty, number> = { easy: 0.25, mixed: 0.5, hard: 0.7, brutal: 0.85 };
@@ -34,5 +35,8 @@ export const mockGenerator: Generator = {
     const shortfall = count - planted.length - chosen.length;
     const extra = shortfall > 0 && spec.formats.includes("pick_one") ? syntheticDrafts(shortfall, avoidSet) : [];
     return [...chosen, ...extra, ...planted.map(toDraft)].slice(0, count);
+  },
+  async distract(input) {
+    return mockDistract(input);
   },
 };

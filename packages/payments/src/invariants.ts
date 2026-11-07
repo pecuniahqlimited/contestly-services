@@ -132,6 +132,13 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
     where coalesce(a.balance_kobo, 0) <> coalesce(c.open, 0) order by 1 limit ${LIMIT}`);
   if (holds.length) out.push({ kind: "contradiction_hold", detail: { people: holds.map((r) => ({ userId: r.user_id, held: num(r.held), open: num(r.open) })) }, items: itemsOf(holds, "user_id", (r) => num(r.held) - num(r.open)), ...overflowed(holds) });
 
+  // 3c. Each person's prize hold is exactly their party prizes still held for an admin (ADR 0015).
+  const prizeHolds = await rows(conn, sql`select coalesce(a.scope, h.user_id::text) as user_id, coalesce(a.balance_kobo, 0)::bigint as held, coalesce(h.open, 0)::bigint as open
+    from (select scope, balance_kobo from ledger_accounts where kind = 'prize_hold') a
+    full join (select user_id, sum(amount_kobo) as open from held_prizes where status = 'held' group by user_id) h on h.user_id::text = a.scope
+    where coalesce(a.balance_kobo, 0) <> coalesce(h.open, 0) order by 1 limit ${LIMIT}`);
+  if (prizeHolds.length) out.push({ kind: "prize_hold", detail: { people: prizeHolds.map((r) => ({ userId: r.user_id, held: num(r.held), open: num(r.open) })) }, items: itemsOf(prizeHolds, "user_id", (r) => num(r.held) - num(r.open)), ...overflowed(prizeHolds) });
+
   // 5. Closed parties' pots are empty (parties with pre-double-entry entries left out; ADR 0013 lists them).
   const pots = await rows(conn, sql`select a.scope as party_id, pa.status, a.balance_kobo::bigint as balance
     from ledger_accounts a join parties pa on pa.id::text = a.scope
@@ -152,7 +159,7 @@ export async function findBreaches(conn: Tx | typeof db): Promise<Breach[]> {
 
 /** Platform accounts money comes in through (they only go negative) and ones that hold or pay it out (only positive). */
 export const PLATFORM_AT_MOST_ZERO = ["topup_in", "dev_mint", "bonus_issued", "prize_funding", "platform_funds", "payout_owed"] as const;
-export const PLATFORM_AT_LEAST_ZERO = ["party_pot", "payout_pending", "payout_settled", "payout_fees", "contradiction_hold"] as const;
+export const PLATFORM_AT_LEAST_ZERO = ["party_pot", "payout_pending", "payout_settled", "payout_fees", "contradiction_hold", "prize_hold"] as const;
 // fee_variance goes either way (a user-borne fee estimated high or low), so it's in neither list.
 const inList = (kinds: readonly string[]) => sql.raw(kinds.map((k) => `'${k}'`).join(", "));
 

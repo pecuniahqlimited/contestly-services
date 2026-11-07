@@ -15,7 +15,7 @@ import { Client, type Room } from "colyseus.js";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   db, parties, partyQuestions, partyAnswers, partyQuestionEvents, partyDraftViews, partyFiles, fileChunks, bankQuestions, ledgerEntries,
-  getQuestionsConfig, setQuestionsConfig,
+  getQuestionsConfig, setQuestionsConfig, heldPrizes, ledgerAccounts,
 } from "@contestly/db";
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MAX_UPLOAD_BYTES, MSG, PARTY_ROOM } from "@contestly/shared";
@@ -300,10 +300,17 @@ if (settled) {
   ok(rake?.amountKobo === 6_000, `rake on 3 entries only — the host never paid in (${rake?.amountKobo})`);
   const winner = final.find((r) => r.rank === 1)!;
   const winnerHandle = [...userIds.entries()].find(([, id]) => id === winner.userId)![0];
+  // A curate party with money goes through ADR 0015's settlement check (its host saw every answer): the winner is
+  // paid in cash, or, if linked to the host or new and far above the room, held in their prize hold for two admins.
+  const [held] = await db.select().from(heldPrizes).where(and(eq(heldPrizes.partyId, partyId), eq(heldPrizes.userId, winner.userId)));
+  if (held) {
+    const [acct] = await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "prize_hold"), eq(ledgerAccounts.scope, winner.userId)));
+    ok(held.amountKobo === 54_000 && held.status === "held" && (acct?.balanceKobo ?? 0) >= 54_000, `${winnerHandle}'s prize held by the curate check (${held.evidence.flaggedOn.join(", ")}; links: ${held.evidence.links.join(", ") || "none"})`);
+  }
   for (const h of PLAYERS) {
     const net = await partyNetKobo(userIds.get(h)!, partyId);
-    const expected = h === winnerHandle ? -20_000 + 54_000 : -20_000;
-    ok(net === expected, `${h} net from this party ${net} (expected ${expected})`);
+    const expected = h === winnerHandle && !held ? -20_000 + 54_000 : -20_000;
+    ok(net === expected, `${h} net from this party ${net} (expected ${expected}${h === winnerHandle && held ? ", the prize in the hold" : ""})`);
   }
   ok((await partyNetKobo(userIds.get(HOST)!, partyId)) === 0, "curate host neither paid in nor won anything");
 }
