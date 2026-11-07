@@ -85,6 +85,15 @@ prize and the most its pot can reach (`potCapKobo`: every seat's entry plus the 
 `curate_pot_above_cap`), and the host's share stays under its cap at creation and at every add
 (`host_written_share_above_cap`). The entry cap alone let 200 seats at ₦1,000 make a ₦200,000 pot.
 
+**Caps by host type.** The curate caps (entry, host prize, pot) are per host type in config
+(`rules.capsByHost`: `person`, `brand`), and `curateHostType()` in packages/db/src/host.ts, next to
+`canOfferNonCashPrize()`, is the one place that says which a host gets. Every host is a person today, brands
+included, and the brand caps start equal to a person's, so behaviour is unchanged. Row 8 changes that function's
+body (a verified brand gets `brand`) and raises the brand caps in config: brands will often run curate parties with
+bigger prizes. `GET /party-templates` shows the asker's own caps (`hostType` with them; a person's without a
+session). The share cap and the settlement check's thresholds are one set for everyone. Migration 0055 restates
+stored rules in this shape (below).
+
 **The settlement check** (`payCashPrizes`, in the settle transaction, deciding each prize before it's paid): for
 every curate party, with host-written questions or not, only cash prizes (goods move no money).
 

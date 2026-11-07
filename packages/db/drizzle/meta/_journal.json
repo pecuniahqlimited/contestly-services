@@ -393,6 +393,13 @@
       "when": 1794057331027,
       "tag": "0055_held_prize_two_admins",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794057391027,
+      "tag": "0056_curate_caps_by_host",
+      "breakpoints": true
     }
   ]
 }

@@ -73,7 +73,7 @@ describe("templates", () => {
     expect(res.statusCode).toBe(200);
     const body = partyTemplatesResponseSchema.parse(res.json());
     expect(body.templates.map((t) => t.id)).toEqual(["birthday", "bridal-shower", "couples", "game-night", "office-party", "reunion"]);
-    expect(body.rules).toEqual({ maxEntryKobo: DEFAULT_HOST_WRITTEN_RULES.maxEntryKobo, maxHostPrizeKobo: DEFAULT_HOST_WRITTEN_RULES.maxHostPrizeKobo, maxPotKobo: DEFAULT_HOST_WRITTEN_RULES.maxPotKobo, maxHostShareBps: 5000 });
+    expect(body.rules).toEqual({ ...DEFAULT_HOST_WRITTEN_RULES.capsByHost.person, maxHostShareBps: 5000, hostType: "person" });
   });
 
   it("a template prefills what the host left out, and the party keeps its own copy", async () => {
@@ -272,16 +272,16 @@ describe("stakes", () => {
 
   it("each cap: the entry, the host's cash prize, and the host's share", async () => {
     const rules = DEFAULT_HOST_WRITTEN_RULES;
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100), hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_entry_above_cap");
+    expect((await create(host, pooled({ entryKobo: rules.capsByHost.person.maxEntryKobo + kobo(100), hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_entry_above_cap");
     // A sealed party isn't capped (a plain curate one is: below).
-    await fund(host, rules.maxEntryKobo + kobo(100));
-    expect((await create(host, pooled({ mode: "sealed", entryKobo: rules.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
-    const prize = { funding: "host", entryKobo: 0, hostPoolKobo: rules.maxHostPrizeKobo + kobo(100) };
-    await fund(host, rules.maxHostPrizeKobo + kobo(100));
+    await fund(host, rules.capsByHost.person.maxEntryKobo + kobo(100));
+    expect((await create(host, pooled({ mode: "sealed", entryKobo: rules.capsByHost.person.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
+    const prize = { funding: "host", entryKobo: 0, hostPoolKobo: rules.capsByHost.person.maxHostPrizeKobo + kobo(100) };
+    await fund(host, rules.capsByHost.person.maxHostPrizeKobo + kobo(100));
     expect((await create(host, pooled({ ...prize, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_prize_above_cap");
     // The pot: ₦1,000 entry is under its cap, but 60 seats of it is over the pot's.
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_pot_above_cap");
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: Math.floor(rules.maxPotKobo / rules.maxEntryKobo), hostQuestions: [q("Who won last time?", "Ada")] }))).statusCode).toBe(201);
+    expect((await create(host, pooled({ entryKobo: rules.capsByHost.person.maxEntryKobo, maxPlayers: 60, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_pot_above_cap");
+    expect((await create(host, pooled({ entryKobo: rules.capsByHost.person.maxEntryKobo, maxPlayers: Math.floor(rules.capsByHost.person.maxPotKobo / rules.capsByHost.person.maxEntryKobo), hostQuestions: [q("Who won last time?", "Ada")] }))).statusCode).toBe(201);
     // (A curate party over the pot cap can't be made, with host-written questions or without, so none takes one later.)
     // Four questions: at most two host-written.
     const share = [q("Who won last time?", "Ada"), q("Who lost?", "Bayo"), q("Who cheated?", "Chi")];
@@ -459,13 +459,29 @@ describe("the link check and the outlier flag at settlement", () => {
 describe("curate parties without host-written questions (their host saw every generated answer)", () => {
   it("take the caps: entry, host prize and pot; a free one, or a sealed one, doesn't", async () => {
     const rules = DEFAULT_HOST_WRITTEN_RULES;
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100) }))).json().error).toBe("curate_entry_above_cap");
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60 }))).json().error).toBe("curate_pot_above_cap");
-    await fund(host, rules.maxHostPrizeKobo + kobo(100));
-    expect((await create(host, pooled({ funding: "host", entryKobo: 0, prizeKind: "cash", hostPoolKobo: rules.maxHostPrizeKobo + kobo(100), split: "winner" }))).json().error).toBe("curate_prize_above_cap");
+    expect((await create(host, pooled({ entryKobo: rules.capsByHost.person.maxEntryKobo + kobo(100) }))).json().error).toBe("curate_entry_above_cap");
+    expect((await create(host, pooled({ entryKobo: rules.capsByHost.person.maxEntryKobo, maxPlayers: 60 }))).json().error).toBe("curate_pot_above_cap");
+    await fund(host, rules.capsByHost.person.maxHostPrizeKobo + kobo(100));
+    expect((await create(host, pooled({ funding: "host", entryKobo: 0, prizeKind: "cash", hostPoolKobo: rules.capsByHost.person.maxHostPrizeKobo + kobo(100), split: "winner" }))).json().error).toBe("curate_prize_above_cap");
     expect((await create(host, pooled({ entryKobo: 0 }))).statusCode).toBe(201);
-    await fund(host, rules.maxEntryKobo + kobo(100));
-    expect((await create(host, pooled({ mode: "sealed", entryKobo: rules.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
+    await fund(host, rules.capsByHost.person.maxEntryKobo + kobo(100));
+    expect((await create(host, pooled({ mode: "sealed", entryKobo: rules.capsByHost.person.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
+  });
+
+  it("caps by host type: a brand's own caps are config, and every host (a verified brand too) is a person until row 8", async () => {
+    const before = await currentPartyTemplates();
+    const person = before.config.rules.capsByHost.person;
+    const brandCaps = { maxEntryKobo: person.maxEntryKobo * 10, maxHostPrizeKobo: person.maxHostPrizeKobo * 4, maxPotKobo: person.maxPotKobo * 4 };
+    const config = { ...before.config, rules: { ...before.config.rules, capsByHost: { ...before.config.rules.capsByHost, brand: brandCaps } } };
+    expect((await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(admin), payload: { config, reason: "Brand caps for row 8" } })).statusCode).toBe(200);
+    try {
+      const brand = await makeUser(name("brandv"), { isBrand: true, isVerified: true });
+      // The builder's caps are the asker's: a person's, for everyone today.
+      expect((await app.inject({ method: "GET", url: "/party-templates", headers: as(brand) })).json().rules).toMatchObject({ ...person, hostType: "person" });
+      expect((await create(brand, pooled({ entryKobo: person.maxEntryKobo + kobo(100) }))).json().error).toBe("curate_entry_above_cap");
+    } finally {
+      await db.transaction((tx) => savePartyTemplates(tx, before.config, admin.id));
+    }
   });
 
   it("get the settlement check: a linked winner far above the room on the set is held", async () => {

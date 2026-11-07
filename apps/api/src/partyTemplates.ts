@@ -4,17 +4,17 @@
  */
 import { currentPartyTemplates, partyTemplatesVersion, type PartyTemplatesRow } from "@contestly/db";
 import {
-  templateCopy, templatePrefill, type HostWrittenRules, type PartyTemplate, type PartyTemplateCopy, type PartyTemplatesResponse, type PartyTemplatesVersion,
+  templateCopy, templatePrefill, type CurateHostType, type HostWrittenRules, type PartyTemplate, type PartyTemplateCopy, type PartyTemplatesResponse, type PartyTemplatesVersion,
 } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 
 export const templatesVersionView = (row: PartyTemplatesRow): PartyTemplatesVersion => ({ version: row.version, config: row.config, createdAt: row.createdAt.toISOString() });
 
-/** GET /party-templates: the current version's templates, hidden ones left out, and the caps the Stakes scene shows. */
-export async function offeredTemplates(): Promise<PartyTemplatesResponse> {
+/** GET /party-templates: the current version's templates, hidden ones left out, and this host type's caps for the Stakes scene. */
+export async function offeredTemplates(hostType: CurateHostType): Promise<PartyTemplatesResponse> {
   const { version, config } = await currentPartyTemplates();
-  const { maxEntryKobo, maxHostPrizeKobo, maxPotKobo, maxHostShareBps } = config.rules;
-  const rules = { maxEntryKobo, maxHostPrizeKobo, maxPotKobo, maxHostShareBps }; // the caps only, never the check's thresholds
+  // The caps only, never the check's thresholds.
+  const rules = { ...config.rules.capsByHost[hostType], maxHostShareBps: config.rules.maxHostShareBps, hostType };
   return { version, templates: config.templates.filter((t) => !t.hidden).map(({ hidden: _h, ...t }) => t), rules };
 }
 

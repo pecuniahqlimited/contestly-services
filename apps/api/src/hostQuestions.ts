@@ -12,10 +12,10 @@
  */
 import { and, eq } from "drizzle-orm";
 import {
-  db, insertHostQuestion, isHostTeam, nextQuestionIdx, parties, partyQuestionEvents, partyQuestions, pendingHostCheck, syncHostQuestionCount, type Party, type Tx, type User,
+  curateHostType, db, insertHostQuestion, publicHost, isHostTeam, nextQuestionIdx, parties, partyQuestionEvents, partyQuestions, pendingHostCheck, syncHostQuestionCount, type Party, type Tx, type User,
 } from "@contestly/db";
 import { payloadSchemas } from "@contestly/game";
-import { DEFAULT_HOST_WRITTEN_RULES, checkHostWrittenStakes, hostQuestionPayload, type HostQuestion, type HostWrittenRules } from "@contestly/shared";
+import { DEFAULT_HOST_WRITTEN_RULES, checkHostWrittenStakes, hostQuestionPayload, type CurateHostType, type HostQuestion, type HostWrittenRules } from "@contestly/shared";
 import { assertHostTextSafe } from "./distractors.js";
 import { queueEditCheck } from "./drafts.js";
 import { httpError } from "./httpError.js";
@@ -32,7 +32,7 @@ export function assertHostQuestionsSafe(qs: HostQuestion[], brief: string) {
 }
 
 /** The stakes and the share for a party (curate, or with this many host-written questions); refused with the first rule broken. */
-export function assertHostWrittenStakes(p: Pick<Party, "funding" | "entryKobo" | "hostPoolKobo" | "prizeKind" | "maxPlayers" | "questionCount" | "mode"> & { fromTemplate: boolean }, hostQuestionCount: number, rules: HostWrittenRules) {
+export function assertHostWrittenStakes(p: Pick<Party, "funding" | "entryKobo" | "hostPoolKobo" | "prizeKind" | "maxPlayers" | "questionCount" | "mode"> & { fromTemplate: boolean; hostType: CurateHostType }, hostQuestionCount: number, rules: HostWrittenRules) {
   const [refused] = checkHostWrittenStakes({ ...p, hostQuestionCount }, rules);
   if (refused) throw httpError(422, refused);
 }
@@ -91,7 +91,7 @@ export async function addHostQuestion(partyId: string, user: User, q: HostQuesti
     const grows = await drafted(tx, partyId);
     const questionCount = grows ? p.questionCount + 1 : p.questionCount;
     if (questionCount > MAX_QUESTIONS) throw httpError(409, "too_many_questions");
-    assertHostWrittenStakes({ ...p, questionCount, fromTemplate: !!p.template }, p.hostQuestionCount + 1, rulesOf(p));
+    assertHostWrittenStakes({ ...p, questionCount, fromTemplate: !!p.template, hostType: curateHostType(await publicHost(p)) }, p.hostQuestionCount + 1, rulesOf(p));
     if (grows) await tx.update(parties).set({ questionCount }).where(eq(parties.id, partyId));
     const row = await insertHostQuestion(tx, p, q, await nextQuestionIdx(tx, partyId), user.id);
     await syncHostQuestionCount(tx, partyId);

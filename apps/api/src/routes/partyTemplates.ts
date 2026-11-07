@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { distractorRequestSchema, hostQuestionSchema } from "@contestly/shared";
-import { requireUser, uuidParam } from "../auth.js";
+import { curateHostType, prospectiveHost } from "@contestly/db";
+import { optionalSession, requireUser, uuidParam } from "../auth.js";
 import { addHostQuestion, editHostQuestion, removeHostQuestion } from "../hostQuestions.js";
 import { assertHostTextSafe } from "../distractors.js";
 import { offeredTemplates } from "../partyTemplates.js";
@@ -10,8 +11,11 @@ const DISTRACTORS_PER_MINUTE = 30;
 
 /** Templates for the builder and host-written questions (ADR 0015). The logic is in partyTemplates.ts and hostQuestions.ts. */
 export async function partyTemplatesRoutes(app: FastifyInstance) {
-  /** The occasions the builder offers now, in order, and the caps on parties with host-written questions. */
-  app.get("/party-templates", async () => offeredTemplates());
+  /** The occasions the builder offers now, in order, and the asking host's curate caps (a person's without a session). */
+  app.get("/party-templates", async (req) => {
+    const me = optionalSession(req);
+    return offeredTemplates(me ? curateHostType(await prospectiveHost(me.id)) : "person");
+  });
 
   /** Three believable wrong answers for the host's question, through the questions service (no party needed yet). */
   app.post("/parties/host-questions/distractors", { config: { rateLimit: { max: DISTRACTORS_PER_MINUTE, timeWindow: "1 minute" } } }, async (req) => {

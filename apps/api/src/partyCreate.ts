@@ -7,7 +7,7 @@
  */
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { takeSeat, cleanName,
-  canOfferNonCashPrize, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles, partyInvites,
+  canOfferNonCashPrize, curateHostType, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles, partyInvites,
   partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Party, type Tx, type User,
 } from "@contestly/db";
 import { notifyQueue, partyQueue } from "@contestly/queue";
@@ -68,7 +68,7 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   const template = opts.template ?? null;
   // A curate host sees every answer, generated or their own, so every curate party with money takes the caps too.
   const mode = body.hostQuestions.length ? "curate" : body.mode;
-  assertHostWrittenStakes({ ...body, mode, fromTemplate: !!template }, body.hostQuestions.length, hostRules);
+  assertHostWrittenStakes({ ...body, mode, fromTemplate: !!template, hostType: curateHostType(host) }, body.hostQuestions.length, hostRules);
   assertHostQuestionsSafe(body.hostQuestions, body.brief);
   const lines: ChatMessage[] = [];
   const { party, invited, hostChecks } = await db.transaction(async (tx) => {

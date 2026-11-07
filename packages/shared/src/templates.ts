@@ -134,15 +134,31 @@ export const partyTemplateSchema = z.object({
 export type PartyTemplate = z.infer<typeof partyTemplateSchema>;
 
 /**
- * The rules for any curate party with money at stake (its host has seen every answer; one with host-written
- * questions is always curate): caps on the entry, the host's cash prize and the pot, the most of the set the host
- * may write, and the settlement check's thresholds.
+ * Who a curate party's caps are for (curateHostType() in packages/db/src/host.ts, the one place that decides).
+ * Every host is a person today; row 8 gives verified brands their own, higher caps, which often run curate parties
+ * with bigger prizes. Adding a host type adds a key here and a branch there.
  */
-export const hostWrittenRulesSchema = z.object({
+export const CURATE_HOST_TYPES = ["person", "brand"] as const;
+export type CurateHostType = (typeof CURATE_HOST_TYPES)[number];
+
+/** One host type's curate caps. */
+export const curateCapsSchema = z.object({
+  /** A pooled party's entry. */
   maxEntryKobo: z.number().int().positive(),
+  /** A host-funded party's cash prize. */
   maxHostPrizeKobo: z.number().int().positive(),
   /** The most a party can put up: every seat's entry plus the host's cash prize (potCapKobo). */
-  maxPotKobo: z.number().int().positive().default(toKobo(50_000)),
+  maxPotKobo: z.number().int().positive(),
+});
+export type CurateCaps = z.infer<typeof curateCapsSchema>;
+
+/**
+ * The rules for any curate party with money at stake (its host has seen every answer; one with host-written
+ * questions is always curate): caps on the entry, the host's cash prize and the pot per host type, the most of
+ * the set the host may write, and the settlement check's thresholds.
+ */
+export const hostWrittenRulesSchema = z.object({
+  capsByHost: z.object({ person: curateCapsSchema, brand: curateCapsSchema }),
   /** Host-written questions as a share of the play order, in basis points (5000 = half). */
   maxHostShareBps: z.number().int().min(0).max(BPS),
   /**
@@ -178,10 +194,10 @@ export const hostWrittenRulesSchema = z.object({
   repeatWindowDays: z.number().int().min(1).max(365).default(30),
 });
 export type HostWrittenRules = z.infer<typeof hostWrittenRulesSchema>;
+const PERSON_CAPS: CurateCaps = { maxEntryKobo: toKobo(1_000), maxHostPrizeKobo: toKobo(50_000), maxPotKobo: toKobo(50_000) };
 export const DEFAULT_HOST_WRITTEN_RULES: HostWrittenRules = {
-  maxEntryKobo: toKobo(1_000),
-  maxHostPrizeKobo: toKobo(50_000),
-  maxPotKobo: toKobo(50_000),
+  // Brands start at a person's caps; row 8 raises them in config once brands are verified.
+  capsByHost: { person: PERSON_CAPS, brand: PERSON_CAPS },
   maxHostShareBps: 5_000,
   outlierMarginPct: 30,
   recentBlockDays: 7,
@@ -271,6 +287,8 @@ export type HostWrittenStakesInput = {
   fromTemplate: boolean;
   /** After forcing: host-written questions make a party curate. */
   mode: "sealed" | "curate";
+  /** Whose caps apply (curateHostType()). */
+  hostType: CurateHostType;
 };
 
 /** The most a party's pot can reach: every seat's entry (a full party) plus the host's cash prize. */
@@ -290,20 +308,24 @@ export function checkHostWrittenStakes(s: HostWrittenStakesInput, rules: HostWri
   const errors = new Set<HostWrittenStakesError>();
   const hostWritten = s.hostQuestionCount > 0;
   const capped = s.mode === "curate" || hostWritten;
+  const caps = rules.capsByHost[s.hostType];
   if (isFreeParty(s) && s.fromTemplate) errors.add(TEMPLATE_PARTY_FREE);
   if (isFreeParty(s) && hostWritten) errors.add(HOST_WRITTEN_FREE);
-  if (capped && s.funding === "pooled" && s.entryKobo > rules.maxEntryKobo) errors.add("curate_entry_above_cap");
-  if (capped && s.funding === "host" && s.prizeKind === "cash" && s.hostPoolKobo > rules.maxHostPrizeKobo) errors.add("curate_prize_above_cap");
-  if (capped && potCapKobo(s) > rules.maxPotKobo) errors.add("curate_pot_above_cap");
+  if (capped && s.funding === "pooled" && s.entryKobo > caps.maxEntryKobo) errors.add("curate_entry_above_cap");
+  if (capped && s.funding === "host" && s.prizeKind === "cash" && s.hostPoolKobo > caps.maxHostPrizeKobo) errors.add("curate_prize_above_cap");
+  if (capped && potCapKobo(s) > caps.maxPotKobo) errors.add("curate_pot_above_cap");
   if (s.hostQuestionCount > maxHostQuestions(s.questionCount, rules)) errors.add("host_written_share_above_cap");
   return HOST_WRITTEN_STAKES_ERRORS.filter((e) => errors.has(e));
 }
 
-/** GET /party-templates: the templates offered now (hidden ones left out), in order, and the caps the builder shows. */
+/**
+ * GET /party-templates: the templates offered now (hidden ones left out), in order, and the caps the builder shows:
+ * the asking host's own (by curateHostType(); a person's without a session), plus the share cap.
+ */
 export const partyTemplatesResponseSchema = z.object({
   version: z.number().int(),
   templates: z.array(partyTemplateSchema.omit({ hidden: true })),
-  rules: hostWrittenRulesSchema.pick({ maxEntryKobo: true, maxHostPrizeKobo: true, maxPotKobo: true, maxHostShareBps: true }),
+  rules: curateCapsSchema.extend({ maxHostShareBps: z.number().int(), hostType: z.enum(CURATE_HOST_TYPES) }),
 });
 export type PartyTemplatesResponse = z.infer<typeof partyTemplatesResponseSchema>;
 
