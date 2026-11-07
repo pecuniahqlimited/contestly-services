@@ -60,7 +60,7 @@ describe("report and action bodies", () => {
 
 describe("dmPermission with a block", () => {
   it("refuses when either has blocked the other, even crew mates", () => {
-    const base = { sender: { isGuest: false, isBrand: false, isSystem: false }, recipient: { isGuest: false, isSystem: false, isDeleted: false }, contacts: true, playedTogether: true, shareCrew: true, joinedSendersParty: false };
+    const base = { sender: { isGuest: false, isBrand: false, isSystem: false }, recipient: { isGuest: false, isSystem: false, isDeleted: false }, contacts: true, playedTogether: true, shareCrew: true, joinedSendersParty: false, talking: false };
     expect(dmPermission({ ...base, blocked: false })).toBe("direct");
     expect(dmPermission({ ...base, blocked: true })).toBe("refused");
   });

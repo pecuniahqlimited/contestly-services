@@ -65,7 +65,7 @@ const exists = (q: Conn, query: ReturnType<typeof sql>) => q.execute(sql`select 
 /** Loads the facts dmPermission() decides on. */
 export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient: Pick<User, "id" | "isGuest" | "isSystem" | "deletedAt">): Promise<DmPermission> {
   if (sender.id === recipient.id) return "refused";
-  const [contacts, playedTogether, shareCrew, joinedSendersParty, blocked] = await Promise.all([
+  const [contacts, playedTogether, shareCrew, joinedSendersParty, blocked, talking] = await Promise.all([
     areContacts(q, sender.id, recipient.id),
     finishedAPartyTogether(q, sender.id, recipient.id),
     exists(q, sql`select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id
@@ -75,16 +75,21 @@ export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient
         .where(and(eq(partyPlayers.userId, recipient.id), hostTeamOf(sender.id))).limit(1).then((r) => r.length > 0)
       : false,
     blockedEitherWay(q, sender.id, recipient.id),
+    exists(q, sql`select 1 from ${chatThreads} t join ${chatMembers} r on r.thread_id = t.id and r.user_id = ${recipient.id}
+                  where t.dm_key = ${dmKey(sender.id, recipient.id)} and t.last_message_at is not null and r.state = 'active'`),
   ]);
   return dmPermission({
-    sender, recipient: { isGuest: recipient.isGuest, isSystem: recipient.isSystem, isDeleted: recipient.deletedAt !== null }, contacts, playedTogether, shareCrew, joinedSendersParty, blocked,
+    sender, recipient: { isGuest: recipient.isGuest, isSystem: recipient.isSystem, isDeleted: recipient.deletedAt !== null }, contacts, playedTogether, shareCrew, joinedSendersParty, blocked, talking,
   });
 }
 
 export type DmRequestState = "none" | "sent" | "received";
-/** The viewer's side of a DM: their own row being `request` means someone asked them; the other's, that they asked. */
-export const requestStateFor = (mine: { state: string }, theirs: { state: string } | undefined): DmRequestState =>
-  mine.state !== "active" ? "received" : theirs && theirs.state !== "active" ? "sent" : "none";
+/**
+ * The viewer's side of a DM: their own row being `request` means someone asked them; the other's, that they
+ * asked. A thread with no line in it is no request either way: the first line decides who asked (checkDm).
+ */
+export const requestStateFor = (mine: { state: string }, theirs: { state: string } | null | undefined, hasLine: boolean): DmRequestState =>
+  !hasLine ? "none" : mine.state !== "active" ? "received" : theirs && theirs.state !== "active" ? "sent" : "none";
 
 /**
  * Open (or find) the DM between sender and recipient. A refused pair gets no thread. A request leaves the
@@ -104,7 +109,7 @@ export async function openDm(sender: ChatSender, recipient: User) {
     ]).onConflictDoNothing();
     if (permission === "direct") await tx.update(chatMembers).set({ state: "active" }).where(and(eq(chatMembers.threadId, thread.id), eq(chatMembers.userId, recipient.id)));
     const [mine, theirs] = await Promise.all([memberOf(tx, thread.id, sender.id), memberOf(tx, thread.id, recipient.id)]);
-    return { threadId: thread.id, permission, request: requestStateFor(mine, theirs) };
+    return { threadId: thread.id, permission, request: requestStateFor(mine, theirs, thread.lastMessageAt !== null) };
   });
 }
 
@@ -297,9 +302,10 @@ async function keptLine(userId: string, clientMsgId: string, q: Conn = db): Prom
 }
 
 /**
- * A DM's own rules. Writing answers a request sent to you (it opens). If the other side hasn't accepted
- * yours, the rule is checked again (becoming contacts or playing together opens it); otherwise a few text lines may wait for them,
- * and nothing once they've declined.
+ * A DM's own rules. Writing answers a request sent to you (it opens). Then the rule is checked again
+ * (becoming contacts, playing together, or the other having accepted opens it); otherwise this is a request:
+ * a few text lines may wait for them, and nothing once they've declined. The first line into an empty thread
+ * decides who asked, whoever opened it.
  */
 async function checkDm(thread: ChatThread, sender: ChatSender, mine: { state: string }, input: PostInput, deps: PostDeps) {
   if (mine.state !== "active") await db.update(chatMembers).set({ state: "active" }).where(and(eq(chatMembers.threadId, thread.id), eq(chatMembers.userId, sender.id)));
@@ -308,15 +314,15 @@ async function checkDm(thread: ChatThread, sender: ChatSender, mine: { state: st
   if (!other) throw chatError("cannot_message");
   const permission = await dmPermissionBetween(db, sender, other.user);
   if (permission === "refused") throw chatError("cannot_message");
-  if (other.member.state === "active") return;
   if (permission === "direct") {
-    await db.update(chatMembers).set({ state: "active" }).where(and(eq(chatMembers.threadId, thread.id), eq(chatMembers.userId, other.user.id)));
+    if (other.member.state !== "active") await db.update(chatMembers).set({ state: "active" }).where(and(eq(chatMembers.threadId, thread.id), eq(chatMembers.userId, other.user.id)));
     return;
   }
   if (other.member.state === "declined") throw chatError("cannot_message");
   if (input.voiceNoteId) throw chatError("voice_after_accept");
   const [{ n }] = await db.select({ n: count() }).from(chatMessages).where(and(eq(chatMessages.threadId, thread.id), eq(chatMessages.userId, sender.id)));
   if (Number(n) >= deps.cfg.requestMaxMessages) throw chatError("request_pending", 409);
+  if (other.member.state === "active") await db.update(chatMembers).set({ state: "request" }).where(and(eq(chatMembers.threadId, thread.id), eq(chatMembers.userId, other.user.id)));
 }
 
 /** Who may read a thread: DM and crew threads are their members'; a party's chat reads like the party (anyone who can open it). */

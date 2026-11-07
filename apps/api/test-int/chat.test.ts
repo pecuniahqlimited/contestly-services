@@ -90,6 +90,58 @@ describe("message requests", () => {
   });
 });
 
+describe("the request state follows the thread", () => {
+  let asker: User, asked: User, decliner: User, opener: User, quiet: User;
+  beforeAll(async () => {
+    [asker, asked, decliner, opener, quiet] = await Promise.all(["rqask", "rqasked", "rqdecl", "rqopen", "rqquiet"].map((n) => makeUser(n)));
+  });
+  /** What the viewer's profile of them and a search for their handle say about messaging them. */
+  const seen = async (viewer: User, them: User) => {
+    const profile = (await app.inject({ url: `/users/${them.handle}`, headers: as(viewer) })).json();
+    const found = (await app.inject({ url: `/users/search?q=${them.handle}`, headers: as(viewer) })).json().people.find((p: { id: string }) => p.id === them.id);
+    return { profile: profile.canMessage, canMessage: found.canMessage, messageIsRequest: found.messageIsRequest };
+  };
+  const direct = { profile: "direct", canMessage: true, messageIsRequest: false };
+  const request = { profile: "request", canMessage: true, messageIsRequest: true };
+
+  it("is a normal chat both ways once a request is accepted", async () => {
+    const { threadId } = await openDm(asker, asked);
+    await say(asker, threadId, "hi, from the quiz");
+    expect(await seen(asker, asked)).toEqual(request);
+    expect(await seen(asked, asker)).toEqual(direct); // replying accepts, so it's no request
+    expect((await app.inject({ method: "POST", url: `/chats/${threadId}/request/accept`, headers: as(asked) })).json().state).toBe("active");
+    expect(await seen(asker, asked)).toEqual(direct);
+    expect(await seen(asked, asker)).toEqual(direct);
+    expect((await app.inject({ method: "POST", url: `/dm/${asked.id}`, headers: as(asker) })).json()).toMatchObject({ permission: "direct", request: "none" });
+    for (let i = 0; i < DEFAULT_CHAT_CONFIG.requestMaxMessages + 1; i++) expect(await refusal(say(asker, threadId, `line ${i}`))).toBe("ok");
+    const res = await app.inject({ method: "POST", url: `/chats/${threadId}/voice`, headers: as(asker), payload: { durationMs: 3000, contentType: "audio/mp4", bytes: 20_000 } });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("stays a request for the sender after a decline (never shown), and direct for the one who declined", async () => {
+    const { threadId } = await openDm(asker, decliner);
+    await say(asker, threadId, "hello");
+    await app.inject({ method: "POST", url: `/chats/${threadId}/request/decline`, headers: as(decliner) });
+    expect(await seen(asker, decliner)).toEqual(request);
+    expect(await seen(decliner, asker)).toEqual(direct);
+    expect((await app.inject({ method: "POST", url: `/dm/${decliner.id}`, headers: as(asker) })).json()).toMatchObject({ permission: "request", request: "sent" });
+  });
+
+  it("reports no request on a new empty thread, until the first line says who asked", async () => {
+    const opened = (await app.inject({ method: "POST", url: `/dm/${quiet.id}`, headers: as(opener) })).json();
+    expect(opened).toMatchObject({ permission: "request", request: "none" });
+    expect((await app.inject({ method: "POST", url: `/dm/${opener.id}`, headers: as(quiet) })).json()).toMatchObject({ threadId: opened.threadId, permission: "request", request: "none" });
+    expect(await seen(opener, quiet)).toEqual(request);
+    expect(await seen(quiet, opener)).toEqual(request); // opening a thread isn't talking
+    expect((await app.inject({ url: "/chats/unread", headers: as(quiet) })).json().requests).toBe(0);
+    await say(quiet, opened.threadId, "saw you opened a chat?"); // quiet writes first, so quiet is the one asking
+    expect((await app.inject({ url: "/chats/requests", headers: as(opener) })).json().map((t: { id: string }) => t.id)).toContain(opened.threadId);
+    expect((await app.inject({ url: "/chats", headers: as(quiet) })).json().find((t: { id: string }) => t.id === opened.threadId).request).toBe("sent");
+    expect(await seen(quiet, opener)).toEqual(request);
+    expect(await seen(opener, quiet)).toEqual(direct);
+  });
+});
+
 describe("a line", () => {
   let threadId: string;
   beforeAll(async () => ({ threadId } = await openDm(ada, kemi)));
