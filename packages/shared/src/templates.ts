@@ -343,6 +343,9 @@ export const PRIZE_LINK_KINDS = ["crew", "contact", "played_with", "recent_block
 export type PrizeLinkKind = (typeof PRIZE_LINK_KINDS)[number];
 export const HELD_PRIZE_STATUSES = ["held", "cleared", "rejected"] as const;
 export type HeldPrizeStatus = (typeof HELD_PRIZE_STATUSES)[number];
+/** What an admin asks for on a held prize; either takes a second admin to confirm. */
+export const HELD_PRIZE_DECISIONS = ["clear", "reject"] as const;
+export type HeldPrizeDecision = (typeof HELD_PRIZE_DECISIONS)[number];
 
 /**
  * Why a prize is held: the winner beat the room on the host-written questions, or on the whole set (by
@@ -392,8 +395,8 @@ export const adminHeldPrizeSchema = z.object({
   amountKobo: z.number().int(),
   status: z.enum(HELD_PRIZE_STATUSES),
   evidence: heldPrizeEvidenceSchema,
-  /** At or above the second-admin threshold (ADR 0013), the first admin's request to clear, waiting for a second. */
-  clearRequest: z.object({ by: personSchema, reason: z.string(), at: z.string() }).nullable(),
+  /** The first admin's request to clear or reject, waiting for a different admin to confirm the same decision. */
+  request: z.object({ decision: z.enum(HELD_PRIZE_DECISIONS), by: personSchema, reason: z.string(), at: z.string() }).nullable(),
   decidedBy: personSchema.nullable(),
   reason: z.string().nullable(),
   decidedAt: z.string().nullable(),
@@ -406,8 +409,8 @@ export const adminHeldPrizesResponseSchema = z.object({ prizes: z.array(adminHel
 export const heldPrizeDecisionSchema = z.object({ reason: z.string().trim().min(3).max(500) });
 /**
  * POST …/clear or …/reject → the prize as it now stands; `replayed` when it had already been decided that way (or
- * the same admin asked again). `awaitingSecondAdmin`: a clear at or above the second-admin threshold that a
- * different admin must confirm with their own POST …/clear.
+ * the same admin asked the same again). `awaitingSecondAdmin`: every decision takes two admins, so the first one's
+ * POST is a request that a different admin confirms with the same POST; a POST of the other decision replaces it.
  */
 export const heldPrizeDecisionResponseSchema = z.object({ prize: adminHeldPrizeSchema, replayed: z.boolean(), awaitingSecondAdmin: z.boolean() });
 

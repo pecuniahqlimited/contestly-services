@@ -25,6 +25,8 @@ const ADMIN = "tunde"; // a dev admin (DEV_ADMIN_HANDLES)
 const RUN = Date.now().toString(36).slice(-5);
 const HOST = `tpl.host.${RUN}`;
 const FRIEND = `tpl.friend.${RUN}`;
+/** Every held-prize decision takes two admins (ADR 0015): ADMIN asks, ADMIN2 confirms. */
+const ADMIN2 = `tpl.admin2.${RUN}`;
 const PLAYERS = [FRIEND, `tpl.ada.${RUN}`, `tpl.kemi.${RUN}`];
 const ENTRY = 20_000;
 
@@ -136,8 +138,12 @@ try {
   ok(queue.prizes.some((x: any) => x.id === held!.id && x.party.id === partyId), "on the admin's held-prize queue");
   const secondId = final[1].userId;
   const before = await partyNetKobo(secondId, partyId);
-  const rejected = await call(ADMIN, "POST", `/admin/party-templates/held-prizes/${held!.id}/reject`, { reason: "Sim: the host fed the answers" });
-  ok(rejected.status === 200 && rejected.body.prize.outcome?.kind === "passed_on" && rejected.body.prize.outcome.to[0].userId === secondId, `rejected and passed to ${handleOf(secondId)}`);
+  await api(ADMIN2, "GET", "/me");
+  await db.update(users).set({ isAdmin: true }).where(eq(users.handle, ADMIN2));
+  const asked = await call(ADMIN, "POST", `/admin/party-templates/held-prizes/${held!.id}/reject`, { reason: "Sim: the host fed the answers" });
+  ok(asked.body.awaitingSecondAdmin === true && asked.body.prize.status === "held" && (await partyNetKobo(secondId, partyId)) === before, "one admin's reject only asks: nothing moves");
+  const rejected = await call(ADMIN2, "POST", `/admin/party-templates/held-prizes/${held!.id}/reject`, { reason: "Sim: agreed, the host fed the answers" });
+  ok(rejected.status === 200 && rejected.body.prize.outcome?.kind === "passed_on" && rejected.body.prize.outcome.to[0].userId === secondId, `a second admin confirms: rejected and passed to ${handleOf(secondId)}`);
   ok((await partyNetKobo(secondId, partyId)) === before + held!.amountKobo, "second place has the prize");
   ok((await partyNetKobo(userIds.get(FRIEND)!, partyId)) === -ENTRY, "the friend is back to their entry spent");
   const again = await call(ADMIN, "POST", `/admin/party-templates/held-prizes/${held!.id}/reject`, { reason: "again" });

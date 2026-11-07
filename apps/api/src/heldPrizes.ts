@@ -6,7 +6,7 @@ import { toPerson } from "./people.js";
 
 async function views(rows: HeldPrize[]): Promise<AdminHeldPrize[]> {
   if (!rows.length) return [];
-  const ids = [...new Set(rows.flatMap((r) => [r.userId, r.hostUserId, ...[r.decidedByUserId, r.clearRequestedByUserId].filter((x): x is string => !!x)]))];
+  const ids = [...new Set(rows.flatMap((r) => [r.userId, r.hostUserId, ...[r.decidedByUserId, r.requestedByUserId].filter((x): x is string => !!x)]))];
   const [people, partyRows] = await Promise.all([
     db.select().from(users).where(inArray(users.id, ids)),
     db.select({ id: parties.id, title: parties.title, funding: parties.funding, endedAt: parties.endedAt }).from(parties).where(inArray(parties.id, [...new Set(rows.map((r) => r.partyId))])),
@@ -19,7 +19,8 @@ async function views(rows: HeldPrize[]): Promise<AdminHeldPrize[]> {
       id: r.id, party: { id: p.id, title: p.title, funding: p.funding, endedAt: p.endedAt?.toISOString() ?? null },
       winner: toPerson(person.get(r.userId)!), host: toPerson(person.get(r.hostUserId)!), place: r.place, amountKobo: r.amountKobo,
       status: r.status, evidence: r.evidence,
-      clearRequest: r.clearRequestedByUserId && r.clearRequestedAt ? { by: toPerson(person.get(r.clearRequestedByUserId)!), reason: r.clearRequestReason ?? "", at: r.clearRequestedAt.toISOString() } : null,
+      request: r.requestedDecision && r.requestedByUserId && r.requestedAt
+        ? { decision: r.requestedDecision, by: toPerson(person.get(r.requestedByUserId)!), reason: r.requestReason ?? "", at: r.requestedAt.toISOString() } : null,
       decidedBy: r.decidedByUserId ? toPerson(person.get(r.decidedByUserId)!) : null,
       reason: r.reason, decidedAt: r.decidedAt?.toISOString() ?? null, outcome: r.outcome ?? null, createdAt: r.createdAt.toISOString(),
     };

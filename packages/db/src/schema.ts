@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -1732,12 +1732,13 @@ export const heldPrizes = pgTable("held_prizes", {
   status: text("status", { enum: HELD_PRIZE_STATUSES }).notNull().default("held"),
   evidence: jsonb("evidence").$type<HeldPrizeEvidence>().notNull(),
   /**
-   * At or above the second-admin threshold (ADR 0013): the first admin's request to clear. The prize stays held
-   * until a different admin (neither the host nor the winner) confirms.
+   * Every decision takes two admins (ADR 0015): the first admin's request to clear or reject. The prize stays held
+   * until a different admin confirms the same decision; a different decision replaces the request.
    */
-  clearRequestedByUserId: uuid("clear_requested_by_user_id").references(() => users.id),
-  clearRequestReason: text("clear_request_reason"),
-  clearRequestedAt: timestamp("clear_requested_at", { withTimezone: true }),
+  requestedDecision: text("requested_decision", { enum: HELD_PRIZE_DECISIONS }),
+  requestedByUserId: uuid("requested_by_user_id").references(() => users.id),
+  requestReason: text("request_reason"),
+  requestedAt: timestamp("requested_at", { withTimezone: true }),
   decidedByUserId: uuid("decided_by_user_id").references(() => users.id),
   reason: text("reason"),
   decidedAt: timestamp("decided_at", { withTimezone: true }),
@@ -1750,5 +1751,6 @@ export const heldPrizes = pgTable("held_prizes", {
   index("held_prizes_status_idx").on(t.status, t.createdAt),
   check("held_prizes_amount_positive", sql`${t.amountKobo} > 0`),
   check("held_prizes_status_known", sql`${t.status} in ('held', 'cleared', 'rejected')`),
+  check("held_prizes_decision_known", sql`${t.requestedDecision} in ('clear', 'reject')`),
 ]);
 export type HeldPrize = typeof heldPrizes.$inferSelect;

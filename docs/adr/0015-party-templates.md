@@ -123,12 +123,15 @@ equals their open held prizes, and the account is in `PLATFORM_AT_LEAST_ZERO`. M
 
 **Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). Neither may be done by the
 host or the winner (403 `own_transaction`; for a reject too, since rejecting a host-funded prize can return it to
-the host). Clear moves the hold into cash with one journal (`held_prize_clear:<id>`), through `ledger.journal()`, so what the
-person owes is repaid from it first, as from any credit. It loosens a payments control, so it follows ADR 0013's maker-checker: below
-the payments config's `finalize.secondAdminThresholdKobo` one admin clears; at or above it, the first admin's clear
-is a request (`clear_requested_by_user_id`, the prize stays held, `awaitingSecondAdmin`), the same admin asking
-again is a replay, and a different admin's clear confirms it; both steps are logged. A reject needs one admin
-(it tightens). **Reject, the rule:** the prize is taken back from the winner into the party's pot
+the host). **Every decision takes two admins, whatever the amount** (`twoAdmins`): the first admin's clear or reject
+is a request (`requested_decision`, `requested_by_user_id`; the prize stays held, `awaitingSecondAdmin`), the same
+admin asking again is a replay, a different admin asking the same confirms it, and asking the other decision
+replaces the request (a second admin who disagrees doesn't confirm). Both steps are logged
+(`…_requested`, then the decision). ADR 0013's amount threshold isn't used: a pooled prize is the pot less the rake,
+always under the pot cap, so a threshold at the cap would never fire. Clear moves the hold into cash with one
+journal (`held_prize_clear:<id>`), through `ledger.journal()`, so what the person owes is repaid from it first, as
+from any credit. Migration 0051 renames the clear-request columns and marks older requests as clears.
+**Reject, the rule:** the prize is taken back from the winner into the party's pot
 (`held_prize_reject:<id>`), then
 
 1. passed to the best-ranked seat that is signed up, not banned, has no prize from this party and wasn't rejected
@@ -149,5 +152,5 @@ the ledger.
 
 **Changed before review.** Three points first built differently: the outlier check compared host-written
 questions only (now the whole set as well); the link used `yourPeople()` (now the raw relationships and recent
-blocks); and a clear was one admin whatever the amount, as Decision 7 reads (now ADR 0013's maker-checker, which
-this note supersedes for clearing). Six templates at launch is confirmed (Nov 2026).
+blocks); and a clear was one admin whatever the amount, as Decision 7 reads (then ADR 0013's maker-checker above
+its threshold; now two admins for every clear and every reject, which this note supersedes Decision 7 with). Six templates at launch is confirmed (Nov 2026).

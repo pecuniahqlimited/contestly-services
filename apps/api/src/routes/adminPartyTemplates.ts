@@ -52,9 +52,9 @@ export async function adminPartyTemplatesRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Clear: the winner keeps the prize and can withdraw again. ADR 0013's maker-checker: one admin below the
-   * second-admin threshold; at or above it this asks (awaitingSecondAdmin) and a different admin's clear confirms.
-   * Never the host or the winner. With a reason, logged.
+   * Clear: the prize moves from the winner's hold into their cash. Two admins, whatever the amount: the first one's
+   * clear asks (awaitingSecondAdmin) and a different admin's clear confirms. Never the host or the winner. With a
+   * reason, logged.
    */
   app.post("/admin/party-templates/held-prizes/:id/clear", async (req) => {
     const admin = requireAdmin(req);
@@ -63,11 +63,14 @@ export async function adminPartyTemplatesRoutes(app: FastifyInstance) {
     return heldPrizeDecisionResponseSchema.parse({ prize: await heldPrizeView(row), replayed, awaitingSecondAdmin });
   });
 
-  /** Reject: the prize is taken back and passed on by the rule (ADR 0015's implementation notes). Never the host or the winner. With a reason, logged. */
+  /**
+   * Reject: the prize is taken back and passed on by the rule (ADR 0015's implementation notes). Two admins, as for
+   * a clear. Never the host or the winner. With a reason, logged.
+   */
   app.post("/admin/party-templates/held-prizes/:id/reject", async (req) => {
     const admin = requireAdmin(req);
     const { reason } = heldPrizeDecisionSchema.parse(req.body);
-    const { row, replayed } = await rejectHeldPrize(admin.id, uuidParam(req), reason);
-    return heldPrizeDecisionResponseSchema.parse({ prize: await heldPrizeView(row), replayed, awaitingSecondAdmin: false });
+    const { row, replayed, awaitingSecondAdmin } = await rejectHeldPrize(admin.id, uuidParam(req), reason);
+    return heldPrizeDecisionResponseSchema.parse({ prize: await heldPrizeView(row), replayed, awaitingSecondAdmin });
   });
 }

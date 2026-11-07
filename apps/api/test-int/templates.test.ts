@@ -3,8 +3,8 @@
  * suggestions (through the real questions queue too), the safety filter failing closed on the host's words,
  * host-written questions never in the bank, forced curate and its lockout, free refused, each cap, the link check
  * (crew, contacts, played with, a recent block, install id, IP; never yourPeople()), the outlier flag on the host's
- * questions and on the whole set, a held prize that can't be withdrawn or spent, clear (one admin below the
- * second-admin threshold, two at or above it, never the host or the winner) and reject (idempotent).
+ * questions and on the whole set, newcomers and the unlinked threshold, a held prize that can't be withdrawn or
+ * spent, clear and reject (two admins each, never the host or the winner; idempotent).
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -48,6 +48,12 @@ const hold = async (u: User) => (await db.select().from(ledgerAccounts).where(an
 const holdBreaches = async () => (await findBreaches(db)).filter((b) => b.kind === "prize_hold");
 const partyRow = async (id: string) => (await db.select().from(parties).where(eq(parties.id, id)))[0];
 const create = (u: User, body: Record<string, unknown>) => app.inject({ method: "POST", url: "/parties", headers: as(u), payload: body });
+const decide = (kind: "clear" | "reject", id: string, u: User, reason: string) => app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${id}/${kind}`, headers: as(u), payload: { reason } });
+/** Every held-prize decision takes two admins (ADR 0015): `admin` asks, `admin2` confirms. The confirmation's reply. */
+async function decided(kind: "clear" | "reject", id: string, reason: string) {
+  expect((await decide(kind, id, admin, reason)).json()).toMatchObject({ awaitingSecondAdmin: true, prize: { status: "held" } });
+  return decide(kind, id, admin2, reason);
+}
 
 beforeAll(async () => {
   ({ app } = await testApp({ distractors: async (req) => { asked.push(req); return { distractors: ["Office", "Gym", "Wedding"] }; } }));
@@ -549,7 +555,7 @@ describe("a held prize", () => {
     expect((await app.inject({ method: "GET", url: "/admin/party-templates/held-prizes", headers: as(w) })).statusCode).toBe(403);
     const list = (await app.inject({ method: "GET", url: "/admin/party-templates/held-prizes?status=held", headers: as(admin) })).json();
     const mine = list.prizes.find((x: { id: string }) => x.id === heldId);
-    expect(mine).toMatchObject({ status: "held", place: 1, winner: { id: w.id }, host: { id: h.id }, party: { id: p.id }, clearRequest: null, evidence: { links: ["contact"] } });
+    expect(mine).toMatchObject({ status: "held", place: 1, winner: { id: w.id }, host: { id: h.id }, party: { id: p.id }, request: null, evidence: { links: ["contact"] } });
   });
 
   it("reject: taken back and passed to the next placed player, once, however many times it's asked", async () => {
@@ -557,10 +563,15 @@ describe("a held prize", () => {
     const [wBefore, sBefore] = [await cash(w), await cash(second)];
     expect(await hold(w)).toBe(amount);
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: {} })).statusCode).toBe(400); // a reason
-    const first = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: { reason: "Fed the answers by the host" } });
+    // One admin only asks: nothing moves until a second confirms.
+    const asked = await decide("reject", heldId, admin, "Fed the answers by the host");
+    expect(asked.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: true, prize: { status: "held", request: { decision: "reject", by: { id: admin.id }, reason: "Fed the answers by the host" } } });
+    expect([await cash(w), await hold(w), await cash(second)]).toEqual([wBefore, amount, sBefore]);
+    expect((await decide("reject", heldId, admin, "again")).json()).toMatchObject({ replayed: true, awaitingSecondAdmin: true, prize: { status: "held" } });
+    const first = await decide("reject", heldId, admin2, "Agreed: fed the answers");
     expect(first.statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(w), payload: { reason: "mine" } })).statusCode).toBe(403); // not an admin anyway
-    expect(first.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "rejected", reason: "Fed the answers by the host", outcome: { kind: "passed_on", to: [{ userId: second.id, amountKobo: amount }] }, decidedBy: { id: admin.id } } });
+    expect(first.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "rejected", reason: "Agreed: fed the answers", outcome: { kind: "passed_on", to: [{ userId: second.id, amountKobo: amount }] }, decidedBy: { id: admin2.id } } });
     // Out of the hold, not their cash; second place is paid in cash (not linked, so not held).
     expect([await cash(w), await hold(w)]).toEqual([wBefore, 0]);
     expect(await cash(second)).toBe(sBefore + amount);
@@ -568,7 +579,7 @@ describe("a held prize", () => {
     const entries = () => db.select().from(ledgerEntries).where(like(ledgerEntries.idempotencyKey, `held_prize_reject:${heldId}%`));
     expect(await entries()).toHaveLength(2);
     const again = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: { reason: "again" } });
-    expect(again.json()).toMatchObject({ replayed: true, prize: { status: "rejected", reason: "Fed the answers by the host" } });
+    expect(again.json()).toMatchObject({ replayed: true, prize: { status: "rejected", reason: "Agreed: fed the answers" } });
     expect(await entries()).toHaveLength(2);
     expect([await cash(w), await hold(w), await cash(second)]).toEqual([wBefore, 0, sBefore + amount]);
     expect((await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, second.id))))[0].prizeKobo).toBe(amount);
@@ -577,7 +588,7 @@ describe("a held prize", () => {
     const [u] = await db.select().from(users).where(eq(users.id, w.id));
     expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
     const logs = await db.select().from(adminActions).where(and(eq(adminActions.targetType, "held_prize"), eq(adminActions.targetId, heldId)));
-    expect(logs.map((l) => l.action)).toEqual(["party_templates.held_prize_reject"]);
+    expect(logs.map((l) => [l.action, l.adminUserId]).sort()).toEqual([["party_templates.held_prize_reject", admin2.id], ["party_templates.held_prize_reject_requested", admin.id]].sort());
   });
 });
 
@@ -589,9 +600,10 @@ describe("clear, and the other reject outcomes", () => {
     const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("pq")), correct: MISS }] });
     const [held] = await heldIn(p.id);
     const before = await cash(w);
-    const res = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "Checked: they're just good" } });
+    // Well under the payments second-admin threshold: two admins all the same.
     expect(held.amountKobo).toBeLessThan((await getPaymentsConfig()).finalize.secondAdminThresholdKobo);
-    expect(res.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "cleared", reason: "Checked: they're just good", decidedBy: { id: admin.id } } });
+    const res = await decided("clear", held.id, "Checked: they're just good");
+    expect(res.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "cleared", reason: "Checked: they're just good", decidedBy: { id: admin2.id } } });
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "again" } })).json()).toMatchObject({ replayed: true, prize: { reason: "Checked: they're just good" } });
     expect([await cash(w), await hold(w)]).toEqual([before + held.amountKobo, 0]);
     expect(await holdBreaches()).toEqual([]);
@@ -600,28 +612,32 @@ describe("clear, and the other reject outcomes", () => {
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "changed my mind" } })).json().error).toBe("prize_already_decided");
   });
 
-  it("clear at or above the second-admin threshold (ADR 0013): one asks, a different one confirms; never the host or the winner", async () => {
-    const threshold = (await getPaymentsConfig()).finalize.secondAdminThresholdKobo;
+  it("two admins for every decision: one asks, a different one confirms, the other decision replaces the request; never the host or the winner", async () => {
     const h = await makeUser(name("hostm"), { isAdmin: true });
     const w = await makeUser(name("winm"), { isAdmin: true, phone: `+23480${randomUUID().replace(/\D/g, "").slice(0, 8)}`, phoneVerifiedAt: new Date() });
     await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
-    const p = await playedParty({ hostUser: h, funding: "host", hostPoolKobo: threshold, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("pm")), correct: MISS }] });
+    const p = await playedParty({ hostUser: h, funding: "host", hostPoolKobo: kobo(2_000), seats: [{ u: w, correct: ACE }, { u: await makeUser(name("pm")), correct: MISS }] });
     const [held] = await heldIn(p.id);
-    expect(held.amountKobo).toBe(threshold);
-    const clear = (as_: User, reason: string) => app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(as_), payload: { reason } });
-    // Neither the winner nor the host, though both are admins; for reject too.
-    expect((await clear(w, "mine")).json().error).toBe("own_transaction");
-    expect((await clear(h, "my friend")).json().error).toBe("own_transaction");
-    expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(h), payload: { reason: "give it back" } })).json().error).toBe("own_transaction");
-    const asked = await clear(admin, "Looks fine to me");
-    expect(asked.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: true, prize: { status: "held", clearRequest: { by: { id: admin.id }, reason: "Looks fine to me" } } });
+    // Neither the winner nor the host, though both are admins, for either decision.
+    expect((await decide("clear", held.id, w, "mine")).json().error).toBe("own_transaction");
+    expect((await decide("clear", held.id, h, "my friend")).json().error).toBe("own_transaction");
+    expect((await decide("reject", held.id, h, "give it back")).json().error).toBe("own_transaction");
+    const asked = await decide("clear", held.id, admin, "Looks fine to me");
+    expect(asked.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: true, prize: { status: "held", request: { decision: "clear", by: { id: admin.id }, reason: "Looks fine to me" } } });
     expect(await hold(w)).toBe(held.amountKobo); // still held
-    expect((await clear(admin, "again")).json()).toMatchObject({ replayed: true, awaitingSecondAdmin: true, prize: { status: "held" } });
-    const confirmed = await clear(admin2, "Confirmed: checked their history");
+    expect((await decide("clear", held.id, admin, "again")).json()).toMatchObject({ replayed: true, awaitingSecondAdmin: true, prize: { status: "held" } });
+    // A second admin who disagrees doesn't confirm: their reject replaces the request, and nothing moves.
+    expect((await decide("reject", held.id, admin2, "Not convinced")).json()).toMatchObject({ awaitingSecondAdmin: true, prize: { status: "held", request: { decision: "reject", by: { id: admin2.id } } } });
+    expect(await hold(w)).toBe(held.amountKobo);
+    // The first admin asks to clear again (replacing the reject), and the second comes round.
+    await decide("clear", held.id, admin, "Their history is clean");
+    const confirmed = await decide("clear", held.id, admin2, "Confirmed: checked their history");
     expect(confirmed.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "cleared", decidedBy: { id: admin2.id } } });
     expect([await hold(w), await cash(w)]).toEqual([0, held.amountKobo]);
     const logs = await db.select().from(adminActions).where(and(eq(adminActions.targetType, "held_prize"), eq(adminActions.targetId, held.id)));
-    expect(logs.map((l) => [l.action, l.adminUserId]).sort()).toEqual([["party_templates.held_prize_clear", admin2.id], ["party_templates.held_prize_clear_requested", admin.id]].sort());
+    expect(logs.map((l) => l.action).sort()).toEqual([
+      "party_templates.held_prize_clear", "party_templates.held_prize_clear_requested", "party_templates.held_prize_clear_requested", "party_templates.held_prize_reject_requested",
+    ]);
   });
 
   it("a host's cash prize to a linked winner: checked the same, and back to the host when nobody's left to pass it to", async () => {
@@ -635,7 +651,7 @@ describe("clear, and the other reject outcomes", () => {
     const [held] = await heldIn(p.id);
     expect(held.amountKobo).toBe(kobo(2_000));
     const hostBefore = await cash(h);
-    const res = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "Host funding a friend" } });
+    const res = await decided("reject", held.id, "Host funding a friend");
     expect(res.json().prize.outcome).toEqual({ kind: "returned_to_host", to: [{ userId: h.id, amountKobo: kobo(2_000) }] });
     expect(await cash(h)).toBe(hostBefore + kobo(2_000));
     expect([await cash(w), await hold(w)]).toEqual([0, 0]);
@@ -647,7 +663,7 @@ describe("clear, and the other reject outcomes", () => {
     await db.insert(contactMatches).values([{ userId: h.id, contactUserId: w1.id }, { userId: h.id, contactUserId: w2.id }]);
     const p = await playedParty({ hostUser: h, seats: [{ u: w1, correct: ACE }, { u: w2, correct: ACE }, { u: last, correct: MISS }] });
     const [held] = await heldIn(p.id);
-    await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "Linked" } });
+    await decided("reject", held.id, "Linked");
     const now = await heldIn(p.id);
     expect(now.map((x) => [x.userId, x.status]).sort()).toEqual([[w1.id, "rejected"], [w2.id, "held"]].sort());
     expect([await cash(w2), await hold(w2)]).toEqual([0, held.amountKobo]);
@@ -696,7 +712,7 @@ describe("the hold and the money around it", () => {
     // Their entry came from fresh cash; the prize is in the hold, and the debt is untouched by it.
     expect([await cash(w), await hold(w), await ledger.owedKobo(db, w.id)]).toEqual([0, held.amountKobo, owed]);
     // A reject can always take it back (here we clear, so it becomes cash and repays the debt first).
-    await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "fine" } });
+    expect((await decided("clear", held.id, "fine")).json().prize.status).toBe("cleared");
     const repaid = Math.min(held.amountKobo, owed);
     expect([await hold(w), await ledger.owedKobo(db, w.id), await cash(w)]).toEqual([0, owed - repaid, held.amountKobo - repaid]);
     expect(await holdBreaches()).toEqual([]);
