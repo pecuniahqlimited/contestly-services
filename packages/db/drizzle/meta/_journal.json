@@ -379,6 +379,13 @@
       "when": 1794057211027,
       "tag": "0053_signals_last_seen",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1794057271027,
+      "tag": "0054_lifted_blocks",
+      "breakpoints": true
     }
   ]
 }

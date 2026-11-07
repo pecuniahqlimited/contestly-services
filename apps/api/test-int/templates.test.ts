@@ -12,7 +12,7 @@ import { Worker } from "bullmq";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import {
   adminActions, adminAlerts, bankQuestions, ledgerAccounts, blocks, contactMatches, cornerNewPlayers, partyInvites, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
-  savePartyTemplates, currentPartyTemplates, takeSeat, userSignals, users, withdrawBlockReason, type Party, type User,
+  savePartyTemplates, currentPartyTemplates, takeSeat, userSignals, users, blockedEitherWay, liftedBlocks, withdrawBlockReason, type Party, type User,
 } from "@contestly/db";
 import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
 import {
@@ -438,6 +438,26 @@ describe("the link check reads the raw relationships, blocks included", () => {
     });
     expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp - 1)).toEqual([]);
     expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp - 2)).toEqual(["ip"]);
+  });
+
+  it("a block lifted before settlement still counts (lifted_blocks); unblocking works for trust and safety as before", async () => {
+    const blockThenLift = async (h: User, w: User) => {
+      expect((await app.inject({ method: "POST", url: `/users/${w.id}/block`, headers: as(h) })).statusCode).toBeLessThan(300);
+      expect(await blockedEitherWay(db, h.id, w.id)).toBe(true);
+      expect((await app.inject({ method: "DELETE", url: `/users/${w.id}/block`, headers: as(h) })).statusCode).toBeLessThan(300);
+      // Trust and safety sees no block at all once it's lifted, exactly as before.
+      expect(await blockedEitherWay(db, h.id, w.id)).toBe(false);
+      expect(await db.select().from(blocks).where(and(eq(blocks.blockerId, h.id), eq(blocks.blockedId, w.id)))).toEqual([]);
+      const [row] = await db.select().from(liftedBlocks).where(and(eq(liftedBlocks.blockerId, h.id), eq(liftedBlocks.blockedId, w.id)));
+      expect(row.liftedAt.getTime()).toBeGreaterThanOrEqual(row.blockedAt.getTime());
+    };
+    expect(await linkOf(blockThenLift)).toEqual(["recent_block"]);
+    // Lifted, but made long before the party: not recent.
+    expect(await linkOf((h, w) => db.insert(liftedBlocks).values({ blockerId: w.id, blockedId: h.id, blockedAt: daysAgo(60), liftedAt: daysAgo(1) }))).toEqual([]);
+    // Unblocking someone you never blocked records nothing.
+    const [a, b] = [await makeUser(name("ua")), await makeUser(name("ub"))];
+    await app.inject({ method: "DELETE", url: `/users/${b.id}/block`, headers: as(a) });
+    expect(await db.select().from(liftedBlocks).where(eq(liftedBlocks.blockerId, a.id))).toEqual([]);
   });
 
   it("recording a signal again moves its last-seen time on", async () => {

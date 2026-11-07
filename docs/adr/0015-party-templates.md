@@ -84,7 +84,8 @@ parties with host-written questions, only cash prizes (goods move no money).
   (migration 0049, backfilled from first seen) is re-stamped at most every 10 minutes per account and address. Each is a link like the others: it holds a prize only with an outlier score. A block either way made within `recentBlockDays` (host-written rules, default 7)
   before the party, or since, is a link itself (`recent_block`); an older block hides nothing, since the other
   relationships are still read through it. "The party" is when it went live (else its start time). A block lifted
-  before settlement leaves no row to see.
+  before settlement still counts: unblocking writes a `lifted_blocks` row (who, whom, when it was made, when it
+  was lifted; migration 0050) in the same transaction as it deletes the `blocks` row.
 - *Flagged*: linked, and the winner's mean correctness at least `outlierMarginPct` points above everyone else
   seated on either of two comparisons (`reviewPrize` in packages/game): the host-written questions (when at least
   one was played), or the whole set, because a curate host has seen every generated answer too (ADR 0003). The

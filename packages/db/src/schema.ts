@@ -699,6 +699,19 @@ export const blocks = pgTable("blocks", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [primaryKey({ columns: [t.blockerId, t.blockedId] }), index("blocks_blocked_idx").on(t.blockedId)]);
 
+/**
+ * Blocks that were lifted, kept for their history only (ADR 0015): unblocking deletes the blocks row as before
+ * (nothing that reads blocks changes) and writes one of these in the same transaction, so the held-prize check
+ * still sees a block made shortly before a party even if it was lifted before settlement. Read nowhere else.
+ */
+export const liftedBlocks = pgTable("lifted_blocks", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  blockerId: uuid("blocker_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  blockedId: uuid("blocked_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  blockedAt: timestamp("blocked_at", { withTimezone: true }).notNull(),
+  liftedAt: timestamp("lifted_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("lifted_blocks_pair_idx").on(t.blockerId, t.blockedId, t.blockedAt)]);
+
 /** A person muted by another (one way): their chat lines and nudges about them stop reaching the muter. Not corner_mutes. */
 export const personMutes = pgTable("person_mutes", {
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),

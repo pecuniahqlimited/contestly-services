@@ -18,7 +18,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { evenShares, nextPlaced, reviewPrize, type GradedAnswer } from "@contestly/game";
 import { DEFAULT_HOST_WRITTEN_RULES, OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeOutcome, type HostWrittenRules, type PrizeLinkKind } from "@contestly/shared";
 import type { Tx } from "../client.js";
-import { blocks, contactMatches, cornerNewPlayers, crewMembers, crews, partyInvites, heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, playedWith, userSignals, users, type HeldPrize, type Party } from "../schema.js";
+import { blocks, liftedBlocks, contactMatches, cornerNewPlayers, crewMembers, crews, partyInvites, heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, playedWith, userSignals, users, type HeldPrize, type Party } from "../schema.js";
 import { adminAlert } from "../alerts.js";
 import { recordAdminAction } from "../admin.js";
 import { moneyTransaction } from "../retry.js";
@@ -34,7 +34,7 @@ const httpError = (statusCode: number, code: string, details?: Record<string, un
  * How `userId` is linked to the host, from the raw relationships rather than yourPeople() (which drops blocked
  * pairs, so a host could block a friend to dodge it): crew mates in a live crew, contacts either way, played
  * together within yourPeopleDays before the party, a block either way made in the `recentBlockDays` before the
- * party (or since), an account younger than `newAccountDays` that came in through the host's invite to this party
+ * party (or since), standing or lifted since (lifted_blocks), an account younger than `newAccountDays` that came in through the host's invite to this party
  * or signed up from the host's invite (invited_new), an install id seen on both accounts, and an IP both used
  * around the party (`ipWindowHoursBefore` before it to its end) that no more than `maxAccountsPerIp` accounts used
  * then (more is a carrier's shared address). "Used" is first_seen_at..last_seen_at overlapping the window.
@@ -56,8 +56,10 @@ async function linksToHost(tx: Tx, p: Party, userId: string, rules: HostWrittenR
       exists(select 1 from ${contactMatches} where (user_id = ${hostId} and contact_user_id = ${userId}) or (user_id = ${userId} and contact_user_id = ${hostId})) as contact,
       exists(select 1 from ${playedWith} where user_a = least(${hostId}::uuid, ${userId}::uuid) and user_b = greatest(${hostId}::uuid, ${userId}::uuid)
         and last_played_at >= ${playedSince.toISOString()}::timestamptz) as played_with,
-      exists(select 1 from ${blocks} where ((blocker_id = ${hostId} and blocked_id = ${userId}) or (blocker_id = ${userId} and blocked_id = ${hostId}))
-        and created_at >= ${blockedSince.toISOString()}::timestamptz) as recent_block,
+      (exists(select 1 from ${blocks} where ((blocker_id = ${hostId} and blocked_id = ${userId}) or (blocker_id = ${userId} and blocked_id = ${hostId}))
+        and created_at >= ${blockedSince.toISOString()}::timestamptz)
+       or exists(select 1 from ${liftedBlocks} where ((blocker_id = ${hostId} and blocked_id = ${userId}) or (blocker_id = ${userId} and blocked_id = ${hostId}))
+        and blocked_at >= ${blockedSince.toISOString()}::timestamptz)) as recent_block,
       (exists(select 1 from ${users} where id = ${userId} and created_at >= ${newSince.toISOString()}::timestamptz)
         and (exists(select 1 from ${partyInvites} where party_id = ${p.id} and inviter_id = ${hostId} and invitee_id = ${userId})
           or exists(select 1 from ${cornerNewPlayers} where user_id = ${userId} and host_user_id = ${hostId} and via = 'invite'))) as invited_new,
