@@ -6,13 +6,16 @@ import { describe, expect, it } from "vitest";
 import { Breakers, claudeClient, geminiClient, MemorySink, noBudget, ProviderUnavailable, RateLimiter, type CallDeps } from "@contestly/ai";
 import { EMBEDDING_DIM, QUESTION_FORMATS, type QuestionFormat } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
-import { anthropicGenerator, planBatches } from "../src/providers/anthropic/generator.js";
+import { anthropicGenerator } from "../src/providers/anthropic/generator.js";
+import { planBatches } from "../src/providers/drafting/generator.js";
+import { geminiGenerator } from "../src/providers/gemini/generator.js";
 import { geminiVerifier } from "../src/providers/gemini/verifier.js";
 import { geminiSafety } from "../src/providers/gemini/safety.js";
 import { geminiEmbedder } from "../src/providers/gemini/embedder.js";
 import { citedResults, claudeVerifier } from "../src/providers/anthropic/verifier.js";
 import { claudeSafety } from "../src/providers/anthropic/safety.js";
-import { liveSafety, liveVerifier } from "../src/providers/index.js";
+import { freeProviders, liveSafety, liveVerifier } from "../src/providers/index.js";
+import { gateDraft } from "../src/pipeline/gate.js";
 import { cachedVerifier, verificationKey } from "../src/providers/cachedVerifier.js";
 import type { GenerationSpec, VerifyVerdict } from "../src/providers/types.js";
 
@@ -26,7 +29,9 @@ const hang: Handler = () => new Promise<Response>(() => {});
 
 const callDeps = (over: Partial<CallDeps> = {}): CallDeps & { sink: MemorySink } => ({
   sink: new MemorySink(), budget: noBudget, breakers: new Breakers({ failureThreshold: 3, cooldownMs: 60_000 }),
-  retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 1 }, timeoutMs: 200, sleep: async () => {}, log: () => {}, ...over,
+  retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 1 }, timeoutMs: 200, sleep: async () => {}, log: () => {},
+  // Mocked HTTP, so paid calls are allowed here on purpose; everywhere else the cap is AI_PAID_CAP_USD (0 unless set).
+  paidCapMicros: Number.POSITIVE_INFINITY, ...over,
 }) as CallDeps & { sink: MemorySink };
 
 const spec = (over: Partial<GenerationSpec> = {}): GenerationSpec => ({
@@ -155,7 +160,7 @@ const geminiReply = (out: unknown, extra: Record<string, unknown> = {}) => json(
 });
 const grounded = { groundingMetadata: { webSearchQueries: ["2013 afcon coach nigeria"], groundingChunks: [{ web: { uri: "https://cafonline.test/2013", title: "cafonline.test" } }, { web: { uri: "https://bbc.test/keshi", title: "bbc.test" } }] } };
 const question = { format: "pick_one" as const, payload: { question: "Who coached Nigeria to the 2013 AFCON title?", options: ["Stephen Keshi", "Gernot Rohr", "Sunday Oliseh", "Clemens Westerhof"], correctIndex: 0 }, claim: "Stephen Keshi coached Nigeria to the 2013 AFCON title." };
-const verifier = (h: Handler, deps = callDeps()) => ({ deps, v: geminiVerifier({ client: geminiClient({ apiKey: "g", fetch: fetchOf(h) }), call: deps, model: async () => "gemini-3.8-flash" }) });
+const verifier = (h: Handler, deps = callDeps()) => ({ deps, v: geminiVerifier({ client: geminiClient({ apiKey: "g", fetch: fetchOf(h) }), call: deps, model: async () => "gemini-3.8-flash", mode: "grounded", tier: "paid" }) });
 
 describe("Gemini verifier", () => {
   it("checks open-knowledge questions with Google Search and keeps the sources", async () => {
@@ -232,7 +237,7 @@ describe("verification cache", () => {
 
 // ---------------------------------------------------------------- Gemini safety
 
-const safety = (h: Handler, deps = callDeps()) => geminiSafety({ client: geminiClient({ apiKey: "g", fetch: fetchOf(h) }), call: deps, model: async () => "gemini-3.5-flash-lite" });
+const safety = (h: Handler, deps = callDeps()) => geminiSafety({ client: geminiClient({ apiKey: "g", fetch: fetchOf(h) }), call: deps, model: async () => "gemini-3.5-flash-lite", tier: "paid" });
 const items = [{ format: "pick_one" as const, payload: question.payload }, { format: "pick_one" as const, payload: { ...question.payload, question: "Which betting app pays fastest?" } }];
 
 describe("Gemini safety", () => {
@@ -264,7 +269,7 @@ describe("Gemini safety", () => {
 // ---------------------------------------------------------------- Gemini embedder
 
 const vector = (seed: number) => Array.from({ length: EMBEDDING_DIM }, (_, i) => ((i * seed) % 7) - 3);
-const embedder = (h: Handler, deps = callDeps()) => geminiEmbedder({ client: geminiClient({ apiKey: "g", fetch: fetchOf(h) }), call: deps, model: "gemini-embedding-2" });
+const embedder = (h: Handler, deps = callDeps()) => geminiEmbedder({ client: geminiClient({ apiKey: "g", fetch: fetchOf(h) }), call: deps, model: "gemini-embedding-2", tier: "paid" });
 
 describe("Gemini embedder", () => {
   it("returns unit vectors of the column's width, in batches, with the task prefix", async () => {
@@ -420,17 +425,19 @@ describe("live verify and safety follow the admin's model", () => {
   });
 });
 
-describe("Gemini embedder under the free tier's rate", () => {
-  it("waits for the limiter instead of sending over the rate", async () => {
+describe("Gemini embedder on the free tier", () => {
+  it("counts each text as a request and waits for the model's per-minute limiter", async () => {
     let now = 0;
     const waits: number[] = [];
     const limiter = new RateLimiter({ limit: 16, windowMs: 60_000, now: () => now, sleep: async (ms) => { waits.push(ms); now += ms; } });
-    const e = geminiEmbedder({ client: geminiClient({ apiKey: "g", fetch: fetchOf(() => json({ embedding: { values: vector(3) } })) }), call: callDeps(), model: "gemini-embedding-2", limiter });
+    const deps = callDeps({ limiters: { for: () => limiter } as unknown as CallDeps["limiters"] });
+    const e = geminiEmbedder({ client: geminiClient({ apiKey: "g", fetch: fetchOf(() => json({ embedding: { values: vector(3) } })) }), call: deps, model: "gemini-embedding-2", tier: "free" });
     await e.embed(Array.from({ length: 32 }, (_, i) => `t${i}`));
     expect(waits).toEqual([60_000]); // the second batch of 16 waited out the window
+    expect(deps.sink.records.map((r) => [r.tier, r.requests, r.costMicros])).toEqual([["free", 16, 0], ["free", 16, 0]]);
   });
 
-  it("a 429 waits as long as Gemini's RetryInfo asks, then succeeds", async () => {
+  it("a per-minute 429 waits as long as Gemini's RetryInfo asks, then succeeds", async () => {
     const sleeps: number[] = [];
     let first = true;
     const e = geminiEmbedder({
@@ -438,42 +445,103 @@ describe("Gemini embedder under the free tier's rate", () => {
         if (first) { first = false; return json({ error: { code: 429, message: "quota", details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "11s" }] } }, 429); }
         return json({ embedding: { values: vector(2) } });
       }) }),
-      call: callDeps({ retry: { attempts: 6, baseDelayMs: 1, maxDelayMs: 65_000 }, sleep: async (ms) => void sleeps.push(ms) }), model: "gemini-embedding-2",
+      call: callDeps({ retry: { attempts: 6, baseDelayMs: 1, maxDelayMs: 65_000 }, sleep: async (ms) => void sleeps.push(ms) }), model: "gemini-embedding-2", tier: "free",
     });
     expect(await e.embed(["a"])).toHaveLength(1);
     expect(sleeps).toEqual([11_000]);
   });
+
+  it("a spent daily quota is refused before any request", async () => {
+    let calls = 0;
+    const deps = callDeps({ freeQuota: { check: async () => "gemini-embedding-2's free daily quota is spent" } });
+    const e = geminiEmbedder({ client: geminiClient({ apiKey: "g", fetch: fetchOf(() => { calls++; return json({}); }) }), call: deps, model: "gemini-embedding-2", tier: "free" });
+    await expect(e.embed(["a"])).rejects.toMatchObject({ kind: "rate_limited" });
+    expect(calls).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------- the free profile
+
+describe("free profile", () => {
+  const noCache = { get: async () => null, put: async () => {} };
+  const free = (h: Handler, deps = callDeps({ paidCapMicros: 0 })) => ({ deps, p: freeProviders(() => deps, geminiClient({ apiKey: "g", fetch: fetchOf(h) }), noCache) });
+
+  it("verifies from model knowledge, with no search: correct is 'checked without sources', free, and passes only its own gate", async () => {
+    let body: Record<string, unknown> = {};
+    const { p, deps } = free((_u, b) => { body = b; return geminiReply({ verdict: "correct", foundAnswer: "Stephen Keshi", note: "well known" }); });
+    const v = await p.verifier.verify(question);
+    expect(body.tools).toBeUndefined();
+    expect(v).toMatchObject({ verdict: "correct", sources: [], unsourced: true, verifiedBy: { provider: "gemini", model: "gemini-3.6-flash" } });
+    expect(v.note).toMatch(/^checked without sources/);
+    expect(deps.sink.records[0]).toMatchObject({ tier: "free", costMicros: 0, model: "gemini-3.6-flash" });
+    expect(p.allowUnsourced).toBe(true);
+    const base = { payloadValid: true, nearest: null, dedupeThreshold: 0.9, safety: { passed: true, reasons: [] } };
+    expect(gateDraft({ ...base, verify: v, allowUnsourced: true })).toBe("accepted");
+    expect(gateDraft({ ...base, verify: v })).toBe("rejected_verify");
+  });
+
+  it("writes with a free model, on the free tier, while the paid cap is $0", async () => {
+    const { p, deps } = free((_u, b) => {
+      const user = JSON.stringify(b.contents);
+      const format = user.includes("Format: pick all") ? "pick_all" : user.includes("Format: put in order") ? "order" : user.includes("Format: match") ? "match" : "pick_one";
+      return geminiReply({ questions: [ITEMS[format]] });
+    });
+    const drafts = await p.generator.draft({ spec: spec({ formats: ["pick_one", "order"] }), count: 2, avoid: [] });
+    expect(drafts.map((d) => d.generatedBy)).toEqual([{ provider: "gemini", model: "gemini-3.5-flash-lite" }, { provider: "gemini", model: "gemini-3.5-flash-lite" }]);
+    expect(deps.sink.records.every((r) => r.tier === "free" && r.costMicros === 0)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------- the paid cap
+
+describe("paid providers are off at a $0 cap", () => {
+  it("a paid call is refused before any request is made, and recorded as refused", async () => {
+    let calls = 0;
+    const deps = callDeps({ paidCapMicros: 0 });
+    const { gen } = generator(() => { calls++; return claudeReply("pick_one"); }, deps);
+    await expect(gen.draft({ spec: spec(), count: 1, avoid: [] })).rejects.toMatchObject({ kind: "budget", message: expect.stringMatching(/paid providers are off/) });
+    const v = claudeV(() => { calls++; return claudeMsg([verdictText({ verdict: "correct" })]); }, deps).v;
+    await expect(v.verify(question)).rejects.toBeInstanceOf(ProviderUnavailable);
+    expect(calls).toBe(0);
+    expect(deps.sink.records.every((r) => r.outcome === "budget" && r.requests === 0 && r.costMicros === 0)).toBe(true);
+  });
+
+  it("with no cap given, the call path reads AI_PAID_CAP_USD, and unset means $0", async () => {
+    const saved = process.env.AI_PAID_CAP_USD;
+    delete process.env.AI_PAID_CAP_USD;
+    try {
+      let calls = 0;
+      const { paidCapMicros: _drop, ...uncapped } = callDeps();
+      const { gen } = generator(() => { calls++; return claudeReply("pick_one"); }, uncapped as CallDeps & { sink: MemorySink });
+      await expect(gen.draft({ spec: spec(), count: 1, avoid: [] })).rejects.toMatchObject({ kind: "budget" });
+      expect(calls).toBe(0);
+    } finally {
+      if (saved !== undefined) process.env.AI_PAID_CAP_USD = saved;
+    }
+  });
 });
 
 describe("provider selection", () => {
-  it("mocks by default; real providers need their keys; unknown names are refused", async () => {
+  it("mock by default; free needs the Gemini key; paid won't start at a $0 cap; unknown profiles are refused", async () => {
     const { selectProviders } = await import("../src/providers/index.js");
     const saved = { ...process.env };
     try {
-      for (const k of ["QUESTIONS_GENERATOR", "QUESTIONS_VERIFIER", "QUESTIONS_EMBEDDER", "QUESTIONS_SAFETY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]) delete process.env[k];
+      for (const k of ["AI_PROFILE", "AI_PAID_CAP_USD", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GEMINI_EMBED_MODEL"]) delete process.env[k];
       const p = selectProviders();
-      expect([p.verifier.name, p.embedder.model, p.safety.name]).toEqual(["mock", "mock", "mock"]);
-      process.env.QUESTIONS_VERIFIER = "live";
-      expect(() => selectProviders()).toThrow(/no provider key is set for verify/);
+      expect([p.verifier.name, p.embedder.model, p.safety.name, p.allowUnsourced]).toEqual(["mock", "mock", "mock", undefined]);
+      process.env.AI_PROFILE = "free";
+      expect(() => selectProviders()).toThrow(/GEMINI_API_KEY/);
+      process.env.GEMINI_API_KEY = "g";
+      expect(selectProviders()).toMatchObject({ verifier: { name: "gemini-unsourced" }, embedder: { model: "gemini-embedding-2" }, allowUnsourced: true });
+      process.env.AI_PROFILE = "paid";
       process.env.ANTHROPIC_API_KEY = "a";
+      expect(() => selectProviders()).toThrow(/AI_PAID_CAP_USD/);
+      process.env.AI_PAID_CAP_USD = "25";
       expect(selectProviders().verifier.name).toBe("live");
-      process.env.QUESTIONS_VERIFIER = "mock";
-      process.env.GEMINI_EMBED_RPM = "0";
-      process.env.QUESTIONS_EMBEDDER = "gemini";
-      process.env.GEMINI_API_KEY = "g";
-      expect(() => selectProviders()).toThrow(/GEMINI_EMBED_RPM/);
-      delete process.env.GEMINI_EMBED_RPM;
-      process.env.QUESTIONS_EMBEDDER = "mock";
-      delete process.env.ANTHROPIC_API_KEY;
-      process.env.QUESTIONS_GENERATOR = "anthropic";
-      expect(() => selectProviders()).toThrow(/ANTHROPIC_API_KEY/);
-      process.env.QUESTIONS_GENERATOR = "gpt";
-      expect(() => selectProviders()).toThrow(/not a registered provider/);
-      process.env.QUESTIONS_GENERATOR = "mock";
-      process.env.QUESTIONS_EMBEDDER = "gemini";
-      process.env.GEMINI_API_KEY = "g";
       process.env.GEMINI_EMBED_MODEL = "text-embedding-3-small";
       expect(() => selectProviders()).toThrow(/no price/);
+      process.env.AI_PROFILE = "gpt";
+      expect(() => selectProviders()).toThrow(/not a profile/);
     } finally {
       process.env = saved;
     }

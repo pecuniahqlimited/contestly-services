@@ -208,6 +208,7 @@ async function dedupeAndGate({ draft, payloadValid, verify, safety }: Checked, e
     nearest: near,
     dedupeThreshold: req.dedupeSimilarity,
     safety,
+    allowUnsourced: req.providers.allowUnsourced,
   });
   return { draft, embedding, embeddingModel: embedder.model, verify, nearest: near, difficulty, safety, outcome, bankId: randomUUID() };
 }

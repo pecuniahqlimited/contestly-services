@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pictureLimit, pictureRoom, withinPictureCap } from "../src/pipeline/pictures.js";
-import { planBatches } from "../src/providers/anthropic/generator.js";
+import { planBatches } from "../src/providers/drafting/generator.js";
 
 const pic = (image: string) => ({ format: "picture", payload: { imageUrl: `pool/${image}.jpg` } });
 const text = (n: number) => ({ format: "pick_one", payload: { question: `q${n}` } });

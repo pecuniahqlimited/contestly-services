@@ -1,7 +1,9 @@
 # ADR 0016: Real question providers — Claude generates; Claude verifies and checks for now; Gemini embeds and transcribes
 
-Status: accepted (7 Nov 2026), amended the same day: without Gemini billing, verification and the safety
-check moved to Claude by default (see "Same-vendor verification, for dev and testing"). Closes open question
+Status: accepted (7 Nov 2026), amended twice the same day: verification and the safety check moved to Claude
+("Same-vendor verification"), then nothing in dev or testing pays at all: three profiles, mock by default,
+a free Gemini-only profile, and the Claude setup as the paid profile, off unless a paid cap is set
+("Profiles"). Closes open question
 2's provider half. Model ids and prices checked against the providers' own docs and model lists on 7 Nov 2026.
 
 ## Context
@@ -14,7 +16,48 @@ its own homework.
 
 ## Decision
 
-**Models (defaults; each step's model is admin config, `questions.providers.models`, from a priced list):**
+### Profiles (amendment, 7 Nov 2026)
+
+Dev and testing cost nothing. One switch, `AI_PROFILE` (env, read by the questions service, the worker, the
+API's console and the eval), picks every provider together:
+
+| Profile | Generate | Verify | Safety | Embed | Transcribe | Costs |
+|---|---|---|---|---|---|---|
+| `mock` (default) | mock | mock | mock | mock | mock | nothing; no calls |
+| `free` | `gemini-3.5-flash-lite` | `gemini-3.6-flash`, no grounding | `gemini-3.1-flash-lite` | `gemini-embedding-2` | `gemini-3.5-transcribe` | $0 (Gemini free tier) |
+| `paid` | admin model (`claude-sonnet-5-5`) | admin model (`claude-opus-5-5` + web search; or Gemini + Google Search) | admin model (`claude-haiku-5-5`) | `GEMINI_EMBED_MODEL` | `GEMINI_TRANSCRIBE_MODEL` | real money, under the caps |
+
+**Free.** Free-tier models only (each answered on 7 Nov; `gemini-3.8-flash` and `3.7-flash` were refusing
+free-tier calls with 503 "high demand"), the verifier stronger than the writer, as in paid. Grounding has no
+free quota, so the free verifier checks from the model's own knowledge with no search, and is told to be
+stricter for it: its verdicts carry no sources and are recorded `unsourced: true` with the note "checked
+without sources" (the console's generation record shows `checkedWithoutSources`). Only this profile's gate
+accepts such a "correct" (`Providers.allowUnsourced`); the paid gate still needs a source. Its verdicts are
+cached under their own verifier name, so a paid verifier never reuses one. Every call is a **free-tier
+call**: recorded at $0, spaced by a per-model limiter (requests a minute) and counted per model against the
+day's quota (`FREE_TIER_LIMITS` in shared; the day is Pacific time, as Google's; `provider_calls.requests`,
+migration 0048, counts every request sent, an embedding batch as one per text, retries included). A call
+that would pass the quota is refused before it's made: generation falls back to the bank, checks fail closed,
+and a set that can't be filled fails as usual. Google's own 429 for a spent daily quota also fails at once.
+The embedding limits are Google's as its 429 stated them (100 a minute, 1,000 a day); the chat models'
+aren't published, so ours are cautious guesses. The free key must come from a project **without billing**:
+on a billed project the same calls are charged.
+
+**Paid.** The Claude setup below, ready for production and **off by default**. Every Anthropic call, Google
+Search grounding and every paid-profile Gemini call is a *paid* call (a call nobody marks is paid).
+`AI_PAID_CAP_USD` is a hard daily ceiling on paid calls under the admin's caps; **unset or 0 means paid
+providers are off**: `providerCall` refuses every paid call before any request, budget check or breaker,
+wherever it comes from (a profile, a script, a test that builds its own call path), and records the refusal.
+The paid profile won't even start at 0. Production sets the cap; dev and CI never do.
+
+**Nothing in tests, sims or the eval spends by accident.** Unit tests mock HTTP and allow paid calls only by
+passing `paidCapMicros` explicitly; the opt-in live test uses the free profile and runs Claude only when the
+cap is set too. The sims stop at start against a paid stack unless `SIM_ALLOW_PAID=1`. The eval follows the
+profile: `npm run questions:eval -- --free --small` (every lane at mixed difficulty plus the PDF, three
+questions each) fits the free day, and with `--free` the eval checks the day's remaining quota per model
+before it starts and stops if the run might not fit.
+
+**The paid profile's models (defaults; each step's model is admin config, `questions.providers.models`, from a priced list):**
 
 | Step | Provider · model | Why |
 |---|---|---|
@@ -26,12 +69,10 @@ its own homework.
 | embed | `gemini-embedding-2` at 1536 dimensions | Current text embedder, normalised at truncated sizes, 8k-token input. 1536 is today's column width, so no vector migration, and stays under pgvector's 2,000-dimension HNSW limit (3072 wouldn't index). Env only (`GEMINI_EMBED_MODEL`): changing it means re-embedding. |
 | transcribe | `gemini-3.5-transcribe` | The purpose-built speech-to-text model ($0.003/min). Env (`GEMINI_TRANSCRIBE_MODEL`). |
 
-**Selection.** `QUESTIONS_GENERATOR=anthropic`, `QUESTIONS_VERIFIER=live`, `QUESTIONS_EMBEDDER=gemini`,
-`QUESTIONS_SAFETY=live`, `TRANSCRIBER=gemini`. Mocks stay the default for every one of them, for tests and
-for dev without keys; a real provider without its key fails at start, never falls back to a mock. `live`
-verification and safety take their vendor from the admin's model for the step, on every call, so moving
-between Claude and Gemini is a console change with no restart; a model whose vendor's key isn't set fails
-that check closed. (`gemini` and `anthropic` are accepted as old names for `live`.)
+**Selection.** By profile (above); a profile without its key fails at start and never falls back to another.
+In the paid profile, verification and safety take their vendor from the admin's model for the step, on
+every call, so moving between Claude and Gemini is a console change with no restart; a model whose vendor's
+key isn't set fails that check closed.
 
 **One call path for every provider call** (`packages/ai`): budget check → circuit breaker → timeout →
 retries with jittered exponential backoff (429, 5xx, timeouts and network errors only; Retry-After honoured)
@@ -118,10 +159,10 @@ dev and testing on the free tier, what Gemini sees is the embedding text (questi
 chunks from sim and test files) and voice-note audio from test accounts; no real user's content goes to it
 until billing is on.
 
-## Same-vendor verification, for dev and testing (amendment, 7 Nov 2026)
+## Same-vendor verification (amendment, 7 Nov 2026)
 
-There's no Gemini billing for now, and grounding has no free quota. So the default verifier and safety check
-are Claude: `claude-opus-5-5` with Anthropic's web search verifies, `claude-haiku-5-5` checks safety. The
+There's no Gemini billing for now, and grounding has no free quota. So the paid profile's default verifier
+and safety check are Claude: `claude-opus-5-5` with Anthropic's web search verifies, `claude-haiku-5-5` checks safety. The
 generator stays `claude-sonnet-5-5`.
 
 This is weaker independence than two vendors. A different model, a separate call with no shared context, and
@@ -130,14 +171,18 @@ they're more likely to share a wrong belief, or to find the same wording convinc
 would be. The source rule carries more of the weight here: only `correct` with at least one source it was
 shown passes the gate.
 
-So this setup is for dev and testing. **Revisit before launch (row 12):** with Gemini billing on, switch
+Dev and testing now use the free or mock profile instead (above), so this is the production default until
+it's revisited. **Revisit before launch (row 12):** with Gemini billing on, switch
 verify and safety to the Gemini models in the console and compare `npm run questions:eval` reports from both
 setups; keep same-vendor verification only if the eval shows it catches as much.
 
 ## Alternatives considered
 
 - **Claude for everything.** One vendor, one bill, but the verifier would share the generator's blind spots.
-  Adopted for now, for dev and testing only, with a different and stronger model for verification (above).
+  Adopted for the paid profile for now, with a different and stronger model for verification (above).
+- **Paying a little for dev (Claude verification at ~$0.10 a question).** Declined: dev and testing cost
+  nothing. The free profile's unsourced checks are weaker than sourced ones, which is why only its own gate
+  accepts them.
 - **Haiku 5.5 or Sonnet 5 to verify.** Much cheaper, but a weaker or sibling model checking Sonnet 5.5's work
   is the wrong direction for the one independent check. Either is a console switch if cost matters more.
 - **Opus 5.5 to generate.** Better on paper; twice the price on the step that's re-checked anyway. Kept as a
@@ -159,6 +204,10 @@ setups; keep same-vendor verification only if the eval shows it catches as much.
   rows) takes two days alongside normal use. Once it's spent, generation fails closed until the reset (the
   bank can't be searched without the spec's embedding). Observed 7 Nov: about 90 rows a minute while the
   quota lasted. Billing lifts both limits.
+- The free profile's questions enter the dev bank checked without sources. The free tier is a dev tool and a
+  dev database only; production runs the paid profile and its gate never accepts an unsourced verdict.
+- Google may use free-tier prompts to improve its products: the free profile sees only dev content (sim and
+  test briefs, files and voice notes), never real users'.
 - Old generation records keep `pass | fail | needs_source` verdicts; readers accept both shapes.
 - The eval (`npm run questions:eval`) writes its report to `docs/engineering/eval/`; it's the baseline any
   model or prompt change has to beat.

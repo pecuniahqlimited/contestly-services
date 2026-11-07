@@ -1,11 +1,12 @@
 /**
- * Voice-note transcription, behind a vendor-neutral interface (ADR 0016: Gemini). Selected by TRANSCRIBER
- * (mock | gemini; mock by default); an unknown name, or a real provider without its key, throws rather than
- * falling back to the mock. Adding one = a file implementing Transcriber + a registry entry.
+ * Voice-note transcription, behind a vendor-neutral interface (ADR 0016: Gemini), chosen by AI_PROFILE like
+ * the question engine: mock (the default) never calls anything; free uses gemini-3.5-transcribe on the free
+ * tier (counted against its daily quota, refused once spent); paid uses GEMINI_TRANSCRIBE_MODEL as a paid
+ * call (refused while AI_PAID_CAP_USD is 0). A real profile without its key throws at start.
  */
-import { Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, geminiClient, withCallContext } from "@contestly/ai";
-import { dbBudgetGate, dbUsageSink } from "@contestly/db";
-import { PRICED_MODELS, type PricedModel } from "@contestly/shared";
+import { aiProfileFromEnv, Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, geminiClient, Limiters, withCallContext, type CallDeps } from "@contestly/ai";
+import { dbBudgetGate, dbFreeQuota, dbUsageSink } from "@contestly/db";
+import { FREE_PROFILE_MODELS, FREE_TIER_LIMITS, PRICED_MODELS, type AiProfile, type PricedModel } from "@contestly/shared";
 import { geminiTranscriber } from "./gemini.js";
 export interface Transcript {
   text: string;
@@ -36,18 +37,21 @@ function transcribeModel(): PricedModel {
   return name as PricedModel;
 }
 
-const transcribers: Record<string, () => Transcriber> = {
+const callDeps = (): CallDeps => ({
+  sink: dbUsageSink, budget: dbBudgetGate, freeQuota: dbFreeQuota, limiters: new Limiters((m) => FREE_TIER_LIMITS[m]?.rpm),
+  breakers: new Breakers(DEFAULT_BREAKER), retry: DEFAULT_RETRY, timeoutMs: TRANSCRIBE_TIMEOUT_MS,
+});
+const gemini = () => geminiClient({ apiKey: process.env.GEMINI_API_KEY ?? "" });
+
+const transcribers: Record<AiProfile, () => Transcriber> = {
   mock: () => mockTranscriber,
-  gemini: () => geminiTranscriber({
-    client: geminiClient({ apiKey: process.env.GEMINI_API_KEY ?? "" }),
-    call: { sink: dbUsageSink, budget: dbBudgetGate, breakers: new Breakers(DEFAULT_BREAKER), retry: DEFAULT_RETRY, timeoutMs: TRANSCRIBE_TIMEOUT_MS },
-    model: transcribeModel(),
-  }),
+  free: () => geminiTranscriber({ client: gemini(), call: callDeps(), model: FREE_PROFILE_MODELS.transcribe, tier: "free" }),
+  paid: () => geminiTranscriber({ client: gemini(), call: callDeps(), model: transcribeModel(), tier: "paid" }),
 };
 
-export function selectTranscriber(name = process.env.TRANSCRIBER ?? "mock"): Transcriber {
-  const factory = transcribers[name];
-  if (!factory) throw new Error(`TRANSCRIBER=${name} is not a registered provider (have: ${Object.keys(transcribers).join(", ")})`);
+export function selectTranscriber(profile: AiProfile = aiProfileFromEnv()): Transcriber {
+  const factory = transcribers[profile];
+  if (!factory) throw new Error(`${profile} is not a profile (have: ${Object.keys(transcribers).join(", ")})`);
   const t = factory();
   // Every call is recorded as part of the transcription job (no party: a voice note's cost is the day's).
   return { transcribe: (audio) => withCallContext({ partyId: null, job: "transcribe_voice" }, () => t.transcribe(audio)) };

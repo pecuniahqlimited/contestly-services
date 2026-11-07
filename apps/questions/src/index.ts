@@ -134,4 +134,4 @@ await questionJobs.upsertJobScheduler("source-sweep", { pattern: SOURCE_SWEEP_CR
 await startReembed();
 
 const names = providerNames();
-console.log(`questions running: queue ${QUEUES.questions}, providers generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);
+console.log(`questions running: queue ${QUEUES.questions}, AI profile ${names.profile}: generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);

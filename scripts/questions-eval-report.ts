@@ -83,7 +83,7 @@ th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);verti
 a{color:var(--accent)}
 </style></head><body><main>
 <h1>Question engine eval</h1>
-<p class="meta">${esc(r.startedAt.replace("T", " ").slice(0, 16))} UTC · ${(wallMs / 60000).toFixed(1)} min · generate ${esc(r.models.generate)} · verify ${esc(r.models.verify)} + web search · safety ${esc(r.models.safety)} · embed ${esc(r.providers.embedModel)} · providers ${esc(`${r.providers.generator}/${r.providers.verifier}/${r.providers.embedder}/${r.providers.safety}`)}</p>
+<p class="meta">${esc(r.startedAt.replace("T", " ").slice(0, 16))} UTC · ${(wallMs / 60000).toFixed(1)} min · profile ${esc(r.providers.profile ?? "paid")} · generate ${esc(r.providers.generator)} · verify ${esc(r.providers.verifier)} · safety ${esc(r.providers.safety)} · embed ${esc(r.providers.embedModel)}${r.providers.profile === "free" ? " · cost $0 (free tier; correct verdicts are checked without sources)" : ""}</p>
 <div class="kpis">
 <div class="kpi"><b>${f.accepted} / ${f.drafted}</b><span>accepted / drafted (${pct(f.accepted, f.drafted)})</span></div>
 <div class="kpi"><b>${pct(f.verified, f.valid)}</b><span>verification pass</span></div>

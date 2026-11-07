@@ -5,7 +5,7 @@
  * handle or thread.
  */
 import { geminiGenerate, providerCall, type CallDeps, type GeminiClient } from "@contestly/ai";
-import type { PricedModel } from "@contestly/shared";
+import type { CallTier, PricedModel } from "@contestly/shared";
 import type { Transcriber } from "./index.js";
 
 /** Gemini bills audio at 32 tokens per second. */
@@ -16,10 +16,10 @@ const MIME: Record<string, string> = { "audio/mp4": "audio/m4a", "audio/aac": "a
 
 const PROMPT = "Transcribe this voice note verbatim, in the language spoken (English, Nigerian Pidgin, Yoruba, Igbo, Hausa or a mix). Output only the words spoken, with no commentary. If there is no speech, output nothing.";
 
-export function geminiTranscriber(deps: { client: GeminiClient; call: CallDeps; model: PricedModel }): Transcriber {
+export function geminiTranscriber(deps: { client: GeminiClient; call: CallDeps; model: PricedModel; tier: CallTier }): Transcriber {
   return {
     async transcribe({ bytes, contentType }) {
-      const out = await providerCall({ provider: "gemini", model: deps.model, step: "transcribe" }, deps.call, async (signal) => {
+      const out = await providerCall({ provider: "gemini", model: deps.model, step: "transcribe", tier: deps.tier }, deps.call, async (signal) => {
         const r = await geminiGenerate(deps.client, {
           model: deps.model,
           parts: [{ text: PROMPT }, { inlineData: { mimeType: MIME[contentType] ?? contentType, data: Buffer.from(bytes).toString("base64") } }],

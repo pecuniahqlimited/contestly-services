@@ -1113,6 +1113,10 @@ export const providerCalls = pgTable("provider_calls", {
   provider: text("provider").notNull(),
   model: text("model").notNull(),
   step: text("step").notNull(),
+  /** free (a Gemini free-tier call, costs nothing) | paid. */
+  tier: text("tier").notNull().default("paid"),
+  /** Requests sent, retries included (an embedding batch: one per text); a free tier's daily quota counts these. */
+  requests: integer("requests").notNull().default(1),
   partyId: uuid("party_id").references(() => parties.id, { onDelete: "set null" }),
   job: text("job"),
   inputTokens: integer("input_tokens").notNull().default(0),
@@ -1125,7 +1129,7 @@ export const providerCalls = pgTable("provider_calls", {
   outcome: text("outcome").notNull(), // ok | rate_limited | timeout | server | network | bad_request | auth | malformed | refused | budget | circuit_open
   error: text("error"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("provider_calls_created_idx").on(t.createdAt), index("provider_calls_party_idx").on(t.partyId)]);
+}, (t) => [index("provider_calls_created_idx").on(t.createdAt), index("provider_calls_party_idx").on(t.partyId), index("provider_calls_model_created_idx").on(t.model, t.createdAt)]);
 
 /**
  * Verification results per question (ADR 0016), keyed by a hash of the verifier model, format, payload, claim and

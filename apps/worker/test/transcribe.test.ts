@@ -10,7 +10,7 @@ const deps = (over: Partial<CallDeps> = {}): CallDeps & { sink: MemorySink } => 
   retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 1 }, timeoutMs: 100, sleep: async () => {}, log: () => {}, ...over,
 }) as CallDeps & { sink: MemorySink };
 const transcriber = (h: (body: Record<string, unknown>) => Response | Promise<Response>, d = deps()) =>
-  geminiTranscriber({ client: geminiClient({ apiKey: "g", fetch: (async (_u: unknown, init?: RequestInit) => h(JSON.parse(String(init?.body)))) as typeof fetch }), call: d, model: "gemini-3.5-transcribe" });
+  geminiTranscriber({ client: geminiClient({ apiKey: "g", fetch: (async (_u: unknown, init?: RequestInit) => h(JSON.parse(String(init?.body)))) as typeof fetch }), call: d, model: "gemini-3.5-transcribe", tier: "free" });
 const audio = { bytes: new Uint8Array([1, 2, 3]), contentType: "audio/mp4" };
 
 describe("Gemini transcriber", () => {
@@ -42,12 +42,29 @@ describe("Gemini transcriber", () => {
     expect(calls).toBe(3);
   });
 
-  it("selection: mock by default, unknown names refused, gemini needs its key", () => {
-    expect(selectTranscriber("mock")).toBeTruthy();
-    expect(() => selectTranscriber("whisper")).toThrow(/not a registered provider/);
-    const key = process.env.GEMINI_API_KEY;
-    delete process.env.GEMINI_API_KEY;
-    expect(() => selectTranscriber("gemini")).toThrow(/GEMINI_API_KEY/);
-    if (key !== undefined) process.env.GEMINI_API_KEY = key;
+  it("records a free-tier call as costing nothing", async () => {
+    const d = deps();
+    await transcriber(() => json({ candidates: [{ content: { parts: [{ text: "hi" }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 2 } }), d).transcribe(audio);
+    expect(d.sink.records[0]).toMatchObject({ tier: "free", costMicros: 0 });
+  });
+
+  it("a paid transcription is refused before any request while the paid cap is $0", async () => {
+    let calls = 0;
+    const t = geminiTranscriber({ client: geminiClient({ apiKey: "g", fetch: (async () => { calls++; return json({}); }) as typeof fetch }), call: deps({ paidCapMicros: 0 }), model: "gemini-3.5-transcribe", tier: "paid" });
+    await expect(t.transcribe(audio)).rejects.toMatchObject({ kind: "budget" });
+    expect(calls).toBe(0);
+  });
+
+  it("selection follows AI_PROFILE: mock by default, unknown profiles refused, free needs the Gemini key", () => {
+    const saved = { ...process.env };
+    try {
+      delete process.env.AI_PROFILE;
+      expect(selectTranscriber()).toBeTruthy();
+      expect(() => selectTranscriber("whisper" as never)).toThrow(/not a profile/);
+      delete process.env.GEMINI_API_KEY;
+      expect(() => selectTranscriber("free")).toThrow(/GEMINI_API_KEY/);
+    } finally {
+      process.env = saved;
+    }
   });
 });

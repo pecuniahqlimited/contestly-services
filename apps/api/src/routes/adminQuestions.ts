@@ -71,7 +71,7 @@ async function lockQuestion(tx: Tx, id: string): Promise<BankQuestion> {
 const statusOf = (q: BankQuestion) => ({ status: q.status, flagCount: q.flagCount, retiredReason: q.retiredReason });
 
 type Who = { provider: string; model: string; cached?: boolean };
-interface Verified { verdict?: string; sources?: string[]; citations?: { url: string; title?: string }[]; verifiedBy?: Who }
+interface Verified { verdict?: string; sources?: string[]; citations?: { url: string; title?: string }[]; verifiedBy?: Who; unsourced?: boolean }
 
 /** Who wrote and who checked a draft, and what the check found, from its record (ADR 0016). Older records have none of it. */
 function provenance(draft: unknown, verify: unknown) {
@@ -81,6 +81,7 @@ function provenance(draft: unknown, verify: unknown) {
     verifiedBy: v.verifiedBy ?? null,
     verdict: v.verdict ?? null,
     sources: v.citations ?? (v.sources ?? []).map((url) => ({ url })),
+    checkedWithoutSources: v.unsourced === true,
   };
 }
 
