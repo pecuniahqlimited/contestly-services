@@ -58,7 +58,7 @@ try {
   ];
   const base = { template: { id: "bridal-shower", version: offered.version }, funding: "pooled", entryKobo: ENTRY, maxPlayers: 6, split: "winner", startsAt: inMinutes(30), questionCount: 4, secondsPerQuestion: 6, formats: ["pick_one"], hostQuestions };
   ok((await call(HOST, "POST", "/parties", { ...base, entryKobo: 0 })).body.error === "template_party_cannot_be_free", "a free template party is refused");
-  ok((await call(HOST, "POST", "/parties", { ...base, entryKobo: offered.rules.maxEntryKobo + 10_000 })).body.error === "host_written_entry_above_cap", "an entry above the cap is refused");
+  ok((await call(HOST, "POST", "/parties", { ...base, entryKobo: offered.rules.maxEntryKobo + 10_000 })).body.error === "curate_entry_above_cap", "an entry above the cap is refused");
   const tooMany = [...hostQuestions, { question: "Who said I love you first?", answer: "Femi", distractors: ["Tolu", "Neither", "Both"] }];
   ok((await call(HOST, "POST", "/parties", { ...base, hostQuestions: tooMany })).body.error === "host_written_share_above_cap", "more than half the set host-written is refused");
 

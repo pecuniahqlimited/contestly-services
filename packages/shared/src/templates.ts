@@ -134,9 +134,9 @@ export const partyTemplateSchema = z.object({
 export type PartyTemplate = z.infer<typeof partyTemplateSchema>;
 
 /**
- * The rules for any party with host-written questions (template or not), with money at stake: caps on the entry and
- * the host's cash prize, the most of the set the host may write, and how far above the room a linked winner's
- * score on the host's questions may be before their prize is held.
+ * The rules for any curate party with money at stake (its host has seen every answer; one with host-written
+ * questions is always curate): caps on the entry, the host's cash prize and the pot, the most of the set the host
+ * may write, and the settlement check's thresholds.
  */
 export const hostWrittenRulesSchema = z.object({
   maxEntryKobo: z.number().int().positive(),
@@ -153,7 +153,7 @@ export const hostWrittenRulesSchema = z.object({
   /** A block between host and winner made this many days or fewer before the party counts as a link (a block is no alibi). */
   recentBlockDays: z.number().int().min(0).max(90).default(7),
   /**
-   * Repeats: a winner who has already won this many of the same host's host-written parties within
+   * Repeats: a winner who has already won this many of the same host's curate parties within
    * `repeatWindowDays` has the next prize held whatever they scored, linked or not.
    */
   repeatWinsMax: z.number().int().min(1).max(50).default(2),
@@ -247,15 +247,15 @@ export function hostSlots(total: number, hostCount: number): number[] {
   return slots;
 }
 
-/** Why a party's stakes are refused when it's made from a template or carries host-written questions. */
+/** Why a party's stakes are refused when it's made from a template, carries host-written questions, or is curate. */
 export const TEMPLATE_PARTY_FREE = "template_party_cannot_be_free";
 export const HOST_WRITTEN_FREE = "host_written_party_cannot_be_free";
 export const HOST_WRITTEN_STAKES_ERRORS = [
   TEMPLATE_PARTY_FREE,
   HOST_WRITTEN_FREE,
-  "host_written_entry_above_cap",
-  "host_written_prize_above_cap",
-  "host_written_pot_above_cap",
+  "curate_entry_above_cap",
+  "curate_prize_above_cap",
+  "curate_pot_above_cap",
   "host_written_share_above_cap",
 ] as const;
 export type HostWrittenStakesError = (typeof HOST_WRITTEN_STAKES_ERRORS)[number];
@@ -269,6 +269,8 @@ export type HostWrittenStakesInput = {
   questionCount: number;
   hostQuestionCount: number;
   fromTemplate: boolean;
+  /** After forcing: host-written questions make a party curate. */
+  mode: "sealed" | "curate";
 };
 
 /** The most a party's pot can reach: every seat's entry (a full party) plus the host's cash prize. */
@@ -280,17 +282,19 @@ export const isFreeParty = (s: Pick<HostWrittenStakesInput, "funding" | "entryKo
 
 /**
  * The template and host-written rules on top of checkStakes (ADR 0015): a template party or one with host-written
- * questions is never free; with host-written questions the entry, the host's cash prize and the most the pot can
- * reach (every seat's entry plus that prize) stay under the caps, and the host writes at most the allowed share. Errors in HOST_WRITTEN_STAKES_ERRORS order; none means it holds.
+ * questions is never free; a curate party (whose host has seen every answer, generated or their own) keeps the
+ * entry, the host's cash prize and the most the pot can reach (every seat's entry plus that prize) under the caps;
+ * and the host writes at most the allowed share. Errors in HOST_WRITTEN_STAKES_ERRORS order; none means it holds.
  */
 export function checkHostWrittenStakes(s: HostWrittenStakesInput, rules: HostWrittenRules): HostWrittenStakesError[] {
   const errors = new Set<HostWrittenStakesError>();
   const hostWritten = s.hostQuestionCount > 0;
+  const capped = s.mode === "curate" || hostWritten;
   if (isFreeParty(s) && s.fromTemplate) errors.add(TEMPLATE_PARTY_FREE);
   if (isFreeParty(s) && hostWritten) errors.add(HOST_WRITTEN_FREE);
-  if (hostWritten && s.funding === "pooled" && s.entryKobo > rules.maxEntryKobo) errors.add("host_written_entry_above_cap");
-  if (hostWritten && s.funding === "host" && s.prizeKind === "cash" && s.hostPoolKobo > rules.maxHostPrizeKobo) errors.add("host_written_prize_above_cap");
-  if (hostWritten && potCapKobo(s) > rules.maxPotKobo) errors.add("host_written_pot_above_cap");
+  if (capped && s.funding === "pooled" && s.entryKobo > rules.maxEntryKobo) errors.add("curate_entry_above_cap");
+  if (capped && s.funding === "host" && s.prizeKind === "cash" && s.hostPoolKobo > rules.maxHostPrizeKobo) errors.add("curate_prize_above_cap");
+  if (capped && potCapKobo(s) > rules.maxPotKobo) errors.add("curate_pot_above_cap");
   if (s.hostQuestionCount > maxHostQuestions(s.questionCount, rules)) errors.add("host_written_share_above_cap");
   return HOST_WRITTEN_STAKES_ERRORS.filter((e) => errors.has(e));
 }
@@ -372,7 +376,7 @@ export const heldPrizeEvidenceSchema = z.object({
   finishedParties: z.number().int().nullable().default(null),
   /** The margin that holds anyone, linked or not (null on older rows). */
   unlinkedThresholdPct: z.number().int().nullable().default(null),
-  /** The same host's host-written parties they'd already won in the repeat window, and the most allowed. */
+  /** The same host's curate parties they'd already won in the repeat window, and the most allowed. */
   priorWins: z.number().int(),
   repeatWinsMax: z.number().int(),
   flaggedOn: z.array(z.enum(HOLD_REASONS)),

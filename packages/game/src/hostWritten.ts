@@ -1,5 +1,5 @@
 /**
- * The anti-collusion check for parties with host-written questions (ADR 0015), pure. The host knows every answer
+ * The anti-collusion check for curate parties with money (ADR 0015), pure. The host knows every answer
  * they wrote (and, in curate mode, every generated one), so a winner who is linked to the host (or is a newcomer)
  * and who did far better than the room, on the host's own questions or on the whole set, has their cash prize held
  * for an admin; so does anyone at all who did very far better. Everyone else is paid as normal.
@@ -46,7 +46,7 @@ export function reviewPrize(input: {
   /** A new account or one with few finished parties: `finishedParties` is how many it had. */
   newcomer: { is: boolean; finishedParties: number };
   unlinkedMarginPct: number;
-  /** The same host's host-written parties this winner had already won in the repeat window, and the most allowed. */
+  /** The same host's curate parties this winner had already won in the repeat window, and the most allowed. */
   repeat: { priorWins: number; max: number };
 }): PrizeReview {
   const host = compare(input.answers.filter((a) => a.hostWritten), input.winnerId);

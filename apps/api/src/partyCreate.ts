@@ -2,7 +2,8 @@
  * Making a party: the one path for the builder (POST /parties), a one-tap Challenge, a Rematch and a crew
  * party. Stakes are checked against the current limits, a host's cash prize is held, a sealed host is
  * seated, the party's chat opens, invites go out, and the set starts building (ADR 0002). A party made from a
- * template keeps a copy of it; one with host-written questions is curate, never free, inside the caps (ADR 0015).
+ * template keeps a copy of it; one with host-written questions is curate and never free; every curate party with
+ * money stays inside the caps (ADR 0015).
  */
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { takeSeat, cleanName,
@@ -65,9 +66,10 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   // ADR 0015: a template party is never free; host-written questions add the caps, the share, the safety filter
   // on the host's words, and curate mode (the host knows those answers, so they host and don't play).
   const template = opts.template ?? null;
-  assertHostWrittenStakes({ ...body, fromTemplate: !!template }, body.hostQuestions.length, hostRules);
-  assertHostQuestionsSafe(body.hostQuestions, body.brief);
+  // A curate host sees every answer, generated or their own, so every curate party with money takes the caps too.
   const mode = body.hostQuestions.length ? "curate" : body.mode;
+  assertHostWrittenStakes({ ...body, mode, fromTemplate: !!template }, body.hostQuestions.length, hostRules);
+  assertHostQuestionsSafe(body.hostQuestions, body.brief);
   const lines: ChatMessage[] = [];
   const { party, invited } = await db.transaction(async (tx) => {
     const crew = body.crewId ? await crewForParty(tx, body.crewId, me.id) : null;

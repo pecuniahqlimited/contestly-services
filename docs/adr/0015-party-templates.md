@@ -65,13 +65,29 @@ questions through the play order (`hostSlots`). A template's themed spec adds it
 `record_play` skips host-authored rows explicitly.
 
 **Stakes** (`checkHostWrittenStakes`, with `checkStakes`): a template party is never free even with no host-written
-questions; one with host-written questions is never free, and its entry, the host's cash prize, the most its pot can
-reach (`potCapKobo`: every seat's entry plus the host's cash prize, under `maxPotKobo`, default ₦50,000) and the
-host's share stay under the caps, at creation and at every add (`host_written_pot_above_cap`). The entry cap alone
-let 200 seats at ₦1,000 make a ₦200,000 pot.
+questions; one with host-written questions is never free. **Every curate party** keeps its entry, the host's cash
+prize and the most its pot can reach (`potCapKobo`: every seat's entry plus the host's cash prize, under
+`maxPotKobo`, default ₦50,000) under the caps (`curate_entry_above_cap`, `curate_prize_above_cap`,
+`curate_pot_above_cap`), and the host's share stays under its cap at creation and at every add
+(`host_written_share_above_cap`). The entry cap alone let 200 seats at ₦1,000 make a ₦200,000 pot.
 
-**The settlement check** (`payCashPrizes`, in the settle transaction, deciding each prize before it's paid): only
-for parties with host-written questions, only cash prizes (goods move no money).
+**The settlement check** (`payCashPrizes`, in the settle transaction, deciding each prize before it's paid): for
+every curate party, with host-written questions or not, only cash prizes (goods move no money).
+
+**Curate parties without host-written questions** (Nov 2026, from review): a curate host has approved every
+generated answer (ADR 0003), so a plain curate party was the easy way around everything here: skip the template,
+write nothing, tell a friend the answers. What changes for curate behaviour on main:
+
+1. A curate party with money is refused over the caps at creation (rematches too, which go through the same
+   path): pooled entry ≤ `maxEntryKobo` (₦1,000), the host's cash prize ≤ `maxHostPrizeKobo` (₦50,000), the pot
+   ≤ `maxPotKobo` (₦50,000). Before, only the party limits applied. A free curate party is unchanged (it isn't
+   made "never free"; there's nothing to collude over), and so is a sealed party of any size.
+2. Its cash prizes go through the settlement check (links, newcomers, the unlinked threshold, repeats) and a
+   flagged one is held in `prize_hold` for two admins, exactly as for a template party.
+3. Repeat wins count across the host's curate parties, host-written or not.
+4. A winner with a held prize can't delete their account until it's decided (`payment_issue`).
+
+Curate's own rules (drafts, approval, the lockout, the start gate) don't change.
 
 - *Linked* reads the raw relationships, never `yourPeople()` (which drops blocked pairs, so a host could block a
   friend before the party to dodge the link): crew mates in a live crew (`crew`), contacts either way (`contact`),

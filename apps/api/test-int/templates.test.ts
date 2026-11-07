@@ -218,17 +218,17 @@ describe("stakes", () => {
 
   it("each cap: the entry, the host's cash prize, and the host's share", async () => {
     const rules = DEFAULT_HOST_WRITTEN_RULES;
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100), hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_entry_above_cap");
-    // The same entry with no host-written questions is fine.
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100), hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_entry_above_cap");
+    // A sealed party isn't capped (a plain curate one is: below).
+    await fund(host, rules.maxEntryKobo + kobo(100));
+    expect((await create(host, pooled({ mode: "sealed", entryKobo: rules.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
     const prize = { funding: "host", entryKobo: 0, hostPoolKobo: rules.maxHostPrizeKobo + kobo(100) };
     await fund(host, rules.maxHostPrizeKobo + kobo(100));
-    expect((await create(host, pooled({ ...prize, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_prize_above_cap");
+    expect((await create(host, pooled({ ...prize, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_prize_above_cap");
     // The pot: ₦1,000 entry is under its cap, but 60 seats of it is over the pot's.
-    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_pot_above_cap");
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("curate_pot_above_cap");
     expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: Math.floor(rules.maxPotKobo / rules.maxEntryKobo), hostQuestions: [q("Who won last time?", "Ada")] }))).statusCode).toBe(201);
-    const bigPot = await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60 }));
-    expect((await app.inject({ method: "POST", url: `/parties/${bigPot.json().id}/host-questions`, headers: as(host), payload: q("Who won last time?", "Ada") })).json().error).toBe("host_written_pot_above_cap");
+    // (A curate party over the pot cap can't be made, with host-written questions or without, so none takes one later.)
     // Four questions: at most two host-written.
     const share = [q("Who won last time?", "Ada"), q("Who lost?", "Bayo"), q("Who cheated?", "Chi")];
     expect((await create(host, pooled({ questionCount: 4, hostQuestions: share }))).json().error).toBe("host_written_share_above_cap");
@@ -278,12 +278,13 @@ const settleDeps = { emit: async () => undefined, publishLine: async () => undef
  * A live party with host-written questions as the room leaves it: every seat paid and ranked in the order given,
  * two host-written and two themed questions played, with each seat's correctness on them ([host, host, themed, themed]).
  */
-async function playedParty(opts: { hostUser: User; seats: { u: User; correct: number[] }[]; funding?: "pooled" | "host"; hostPoolKobo?: number; split?: number[]; beforeSettle?: (p: Party) => Promise<unknown> }): Promise<Party> {
+async function playedParty(opts: { hostUser: User; seats: { u: User; correct: number[] }[]; funding?: "pooled" | "host"; hostPoolKobo?: number; split?: number[]; hostWritten?: boolean; beforeSettle?: (p: Party) => Promise<unknown> }): Promise<Party> {
+  const hostWritten = opts.hostWritten ?? true;
   const funding = opts.funding ?? "pooled";
   const [p] = await db.insert(parties).values({
     createdByUserId: opts.hostUser.id, title: `Held ${randomUUID().slice(0, 6)}`, category: "General knowledge", entryKobo: funding === "pooled" ? ENTRY : 0, maxPlayers: 10,
     funding, hostPoolKobo: opts.hostPoolKobo ?? 0, split: opts.split ?? [100], mode: "curate", status: "live", startsAt: new Date(), liveAt: new Date(), questionsStatus: "ready",
-    hostRules: DEFAULT_HOST_WRITTEN_RULES, hostQuestionCount: 2,
+    hostRules: DEFAULT_HOST_WRITTEN_RULES, hostQuestionCount: hostWritten ? 2 : 0,
   }).returning();
   if (funding === "host") {
     await fund(opts.hostUser, opts.hostPoolKobo!);
@@ -295,7 +296,7 @@ async function playedParty(opts: { hostUser: User; seats: { u: User; correct: nu
     await db.update(partyPlayers).set({ rank: i + 1, score: 1000 - i }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, s.u.id)));
   }
   for (let idx = 0; idx < 4; idx++) {
-    const [pq] = await db.insert(partyQuestions).values({ partyId: p.id, idx, format: "pick_one", payload: { question: `q${idx}`, options: ["a", "b"], correctIndex: 0 }, seconds: 10, status: "played", hostWritten: idx < 2, hostAuthored: idx < 2 }).returning();
+    const [pq] = await db.insert(partyQuestions).values({ partyId: p.id, idx, format: "pick_one", payload: { question: `q${idx}`, options: ["a", "b"], correctIndex: 0 }, seconds: 10, status: "played", hostWritten: hostWritten && idx < 2, hostAuthored: hostWritten && idx < 2 }).returning();
     await db.insert(partyAnswers).values(opts.seats.map((s) => ({ partyId: p.id, questionId: pq.id, userId: s.u.id, correctness: s.correct[idx], points: s.correct[idx] })));
   }
   await opts.beforeSettle?.(p);
@@ -398,6 +399,29 @@ describe("the link check and the outlier flag at settlement", () => {
     const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: [100, 0, 100, 100] }, { u: await makeUser(name("pall")), correct: [100, 0, 0, 0] }] });
     const [held] = await heldIn(p.id);
     expect(held?.evidence).toMatchObject({ marginPct: 0, allMarginPct: 50, flaggedOn: ["all"] });
+  });
+});
+
+describe("curate parties without host-written questions (their host saw every generated answer)", () => {
+  it("take the caps: entry, host prize and pot; a free one, or a sealed one, doesn't", async () => {
+    const rules = DEFAULT_HOST_WRITTEN_RULES;
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo + kobo(100) }))).json().error).toBe("curate_entry_above_cap");
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60 }))).json().error).toBe("curate_pot_above_cap");
+    await fund(host, rules.maxHostPrizeKobo + kobo(100));
+    expect((await create(host, pooled({ funding: "host", entryKobo: 0, prizeKind: "cash", hostPoolKobo: rules.maxHostPrizeKobo + kobo(100), split: "winner" }))).json().error).toBe("curate_prize_above_cap");
+    expect((await create(host, pooled({ entryKobo: 0 }))).statusCode).toBe(201);
+    await fund(host, rules.maxEntryKobo + kobo(100));
+    expect((await create(host, pooled({ mode: "sealed", entryKobo: rules.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
+  });
+
+  it("get the settlement check: a linked winner far above the room on the set is held", async () => {
+    const h = await makeUser(name("hostcur"));
+    const w = await makeUser(name("wincur"));
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    const p = await playedParty({ hostUser: h, hostWritten: false, seats: [{ u: w, correct: [100, 100, 100, 0] }, { u: await makeUser(name("pcur")), correct: [0, 0, 100, 0] }] });
+    expect(p.hostQuestionCount).toBe(0);
+    const [held] = await heldIn(p.id);
+    expect(held?.evidence).toMatchObject({ links: ["contact"], hostQuestionsPlayed: 0, allMarginPct: 50, flaggedOn: ["all"] });
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * Held prizes (ADR 0015): the settlement check for parties with host-written questions and the admin's decision.
+ * Held prizes (ADR 0015): the settlement check for curate parties (host-written questions or not) and the admin's decision.
  *
  * At settlement every cash prize is decided before it's paid (payCashPrizes): a winner who is linked to the host (or
  * a newcomer) and did far better than the room, or anyone very far better, or a repeat winner, has the prize
@@ -86,14 +86,14 @@ async function gradedAnswers(tx: Tx, partyId: string): Promise<GradedAnswer[]> {
 }
 
 /**
- * How many of this host's other host-written parties `userId` won (a prize, held or not, that wasn't rejected) in the
+ * How many of this host's other curate parties `userId` won (a prize, held or not, that wasn't rejected) in the
  * `windowDays` before this party.
  */
 async function priorWins(tx: Tx, p: Party, userId: string, windowDays: number): Promise<number> {
   const since = new Date((p.liveAt ?? p.startsAt).getTime() - windowDays * DAY_MS);
   const [row] = await tx.execute(sql`
     select count(distinct pa.id)::int as n from ${parties} pa join ${partyPlayers} pp on pp.party_id = pa.id
-    where pa.created_by_user_id = ${p.createdByUserId} and pa.id <> ${p.id} and pa.host_question_count > 0 and pa.status = 'finished'
+    where pa.created_by_user_id = ${p.createdByUserId} and pa.id <> ${p.id} and (pa.mode = 'curate' or pa.host_question_count > 0) and pa.status = 'finished'
       and pa.ended_at >= ${since.toISOString()}::timestamptz and pp.user_id = ${userId} and coalesce(pp.prize_kobo, 0) > 0`) as unknown as { n: number }[];
   return Number(row.n);
 }
@@ -117,14 +117,15 @@ async function newcomer(tx: Tx, p: Party, userId: string, rules: HostWrittenRule
 export interface CashPrize { userId: string; place: number; amountKobo: number }
 
 /**
- * Pay cash prizes, each decided first: for a party with host-written questions, a flagged winner's prize goes into
+ * Pay cash prizes, each decided first: for a curate party (with host-written questions or not), a flagged winner's prize goes into
  * their prize hold (with a held_prizes row and a warning alert that commit with it); everyone else's into cash, as
  * any party prize. Both are keyed party_prize:<party>:<user>, so a prize is paid once, one way. Goods aren't money
  * and never get here. The caller holds the winners' users rows (ADR 0013). Returns the rows it held.
  */
 export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Promise<HeldPrize[]> {
   const paid = prizes.filter((x) => x.amountKobo > 0);
-  const checked = p.hostQuestionCount > 0 && paid.length > 0;
+  // Every curate party (its host saw every answer) and any with host-written questions (always curate, but say so).
+  const checked = (p.mode === "curate" || p.hostQuestionCount > 0) && paid.length > 0;
   // Rules copied before a setting existed take its default.
   const rules = { ...DEFAULT_HOST_WRITTEN_RULES, ...p.hostRules };
   const answers = checked ? await gradedAnswers(tx, p.id) : [];
