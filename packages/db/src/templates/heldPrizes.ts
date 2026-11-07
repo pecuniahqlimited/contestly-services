@@ -65,6 +65,19 @@ async function gradedAnswers(tx: Tx, partyId: string): Promise<GradedAnswer[]> {
   return rows;
 }
 
+/**
+ * How many of this host's other host-written parties `userId` won (a prize, held or not, that wasn't rejected) in the
+ * `windowDays` before this party.
+ */
+async function priorWins(tx: Tx, p: Party, userId: string, windowDays: number): Promise<number> {
+  const since = new Date((p.liveAt ?? p.startsAt).getTime() - windowDays * DAY_MS);
+  const [row] = await tx.execute(sql`
+    select count(distinct pa.id)::int as n from ${parties} pa join ${partyPlayers} pp on pp.party_id = pa.id
+    where pa.created_by_user_id = ${p.createdByUserId} and pa.id <> ${p.id} and pa.host_question_count > 0 and pa.status = 'finished'
+      and pa.ended_at >= ${since.toISOString()}::timestamptz and pp.user_id = ${userId} and coalesce(pp.prize_kobo, 0) > 0`) as unknown as { n: number }[];
+  return Number(row.n);
+}
+
 export interface CashPrize { userId: string; place: number; amountKobo: number }
 
 /**
@@ -82,7 +95,10 @@ export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Prom
   const held: HeldPrize[] = [];
   for (const prize of paid) {
     const key = `party_prize:${p.id}:${prize.userId}`;
-    const review = checked ? reviewPrize({ winnerId: prize.userId, links: await linksToHost(tx, p, prize.userId, rules.recentBlockDays), answers, marginPct: rules.outlierMarginPct }) : null;
+    const review = checked ? reviewPrize({
+      winnerId: prize.userId, links: await linksToHost(tx, p, prize.userId, rules.recentBlockDays), answers, marginPct: rules.outlierMarginPct,
+      repeat: { priorWins: await priorWins(tx, p, prize.userId, rules.repeatWindowDays), max: rules.repeatWinsMax },
+    }) : null;
     if (review?.flagged) {
       await ledger.journal(tx, { type: "party_prize", refType: "party", refId: p.id, idempotencyKey: key, legs: [{ account: ledger.prizeHoldAccount(prize.userId), amountKobo: prize.amountKobo }, { account: pot(p.id), amountKobo: -prize.amountKobo }] });
       const [row] = await tx.insert(heldPrizes).values({ partyId: p.id, userId: prize.userId, hostUserId: p.createdByUserId, place: prize.place, amountKobo: prize.amountKobo, evidence: review.evidence })
@@ -90,7 +106,7 @@ export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Prom
       if (row) {
         held.push(row);
         await adminAlert({
-          kind: HELD_PRIZE_ALERT_KIND, severity: "warning", subject: "A prize is held: a winner linked to the host beat the room",
+          kind: HELD_PRIZE_ALERT_KIND, severity: "warning", subject: review.evidence.flaggedOn.includes("repeat") ? "A prize is held: the same winner keeps winning this host's parties" : "A prize is held: a winner linked to the host beat the room",
           dedupeKey: `prize_held:${row.id}`, refType: "party", refId: p.id,
           details: { heldPrizeId: row.id, partyId: p.id, winnerId: prize.userId, hostId: p.createdByUserId, place: prize.place, amountKobo: prize.amountKobo, ...review.evidence },
         }, tx);

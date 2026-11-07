@@ -29,7 +29,7 @@ export function assertHostQuestionsSafe(qs: HostQuestion[], brief: string) {
 }
 
 /** The stakes and the share for a party with this many host-written questions; refused with the first rule broken. */
-export function assertHostWrittenStakes(p: Pick<Party, "funding" | "entryKobo" | "hostPoolKobo" | "prizeKind" | "questionCount"> & { fromTemplate: boolean }, hostQuestionCount: number, rules: HostWrittenRules) {
+export function assertHostWrittenStakes(p: Pick<Party, "funding" | "entryKobo" | "hostPoolKobo" | "prizeKind" | "maxPlayers" | "questionCount"> & { fromTemplate: boolean }, hostQuestionCount: number, rules: HostWrittenRules) {
   const [refused] = checkHostWrittenStakes({ ...p, hostQuestionCount }, rules);
   if (refused) throw httpError(422, refused);
 }

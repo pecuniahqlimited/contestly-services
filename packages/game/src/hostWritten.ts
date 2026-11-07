@@ -37,21 +37,28 @@ function compare(answers: GradedAnswer[], winnerId: string) {
  * Review one cash prize. `answers` are every seated player's graded answers on the played questions (a no-answer is
  * a row at 0). Two comparisons, because the host knows the answers they wrote and, in curate mode, every generated
  * one too (ADR 0003): on the host-written questions, and on the whole set. Flagged when linked and either margin is
- * at least `marginPct` points (the host-written one only if at least one was played).
+ * at least `marginPct` points (the host-written one only if at least one was played), or, linked or not, when the
+ * winner has already won `repeat.max` of the same host's host-written parties lately.
  */
-export function reviewPrize(input: { winnerId: string; links: PrizeLinkKind[]; answers: GradedAnswer[]; marginPct: number }): PrizeReview {
+export function reviewPrize(input: {
+  winnerId: string; links: PrizeLinkKind[]; answers: GradedAnswer[]; marginPct: number;
+  /** The same host's host-written parties this winner had already won in the repeat window, and the most allowed. */
+  repeat: { priorWins: number; max: number };
+}): PrizeReview {
   const host = compare(input.answers.filter((a) => a.hostWritten), input.winnerId);
   const all = compare(input.answers, input.winnerId);
   const over: HeldPrizeEvidence["flaggedOn"] = [
     ...(host.played > 0 && host.margin >= input.marginPct ? ["host_written" as const] : []),
     ...(all.played > 0 && all.margin >= input.marginPct ? ["all" as const] : []),
   ];
-  const flaggedOn = input.links.length > 0 ? over : [];
+  // The outliers need a link; a repeat winner is held whoever they are and however they scored.
+  const flaggedOn: HeldPrizeEvidence["flaggedOn"] = [...(input.links.length > 0 ? over : []), ...(input.repeat.priorWins >= input.repeat.max ? ["repeat" as const] : [])];
   const evidence: HeldPrizeEvidence = {
     links: [...input.links],
     hostQuestionsPlayed: host.played, winnerAccuracyPct: round1(host.winner), roomAccuracyPct: round1(host.room), marginPct: round1(host.margin),
     questionsPlayed: all.played, winnerAllAccuracyPct: round1(all.winner), roomAllAccuracyPct: round1(all.room), allMarginPct: round1(all.margin),
     thresholdPct: input.marginPct,
+    priorWins: input.repeat.priorWins, repeatWinsMax: input.repeat.max,
     flaggedOn,
   };
   return { flagged: flaggedOn.length > 0, evidence };

@@ -141,6 +141,8 @@ export type PartyTemplate = z.infer<typeof partyTemplateSchema>;
 export const hostWrittenRulesSchema = z.object({
   maxEntryKobo: z.number().int().positive(),
   maxHostPrizeKobo: z.number().int().positive(),
+  /** The most a party can put up: every seat's entry plus the host's cash prize (potCapKobo). */
+  maxPotKobo: z.number().int().positive().default(toKobo(50_000)),
   /** Host-written questions as a share of the play order, in basis points (5000 = half). */
   maxHostShareBps: z.number().int().min(0).max(BPS),
   /**
@@ -150,14 +152,23 @@ export const hostWrittenRulesSchema = z.object({
   outlierMarginPct: z.number().int().min(1).max(PERCENT),
   /** A block between host and winner made this many days or fewer before the party counts as a link (a block is no alibi). */
   recentBlockDays: z.number().int().min(0).max(90).default(7),
+  /**
+   * Repeats: a winner who has already won this many of the same host's host-written parties within
+   * `repeatWindowDays` has the next prize held whatever they scored, linked or not.
+   */
+  repeatWinsMax: z.number().int().min(1).max(50).default(2),
+  repeatWindowDays: z.number().int().min(1).max(365).default(30),
 });
 export type HostWrittenRules = z.infer<typeof hostWrittenRulesSchema>;
 export const DEFAULT_HOST_WRITTEN_RULES: HostWrittenRules = {
   maxEntryKobo: toKobo(1_000),
   maxHostPrizeKobo: toKobo(50_000),
+  maxPotKobo: toKobo(50_000),
   maxHostShareBps: 5_000,
   outlierMarginPct: 30,
   recentBlockDays: 7,
+  repeatWinsMax: 2,
+  repeatWindowDays: 30,
 };
 
 export const partyTemplatesConfigSchema = z.object({
@@ -220,6 +231,7 @@ export const HOST_WRITTEN_STAKES_ERRORS = [
   HOST_WRITTEN_FREE,
   "host_written_entry_above_cap",
   "host_written_prize_above_cap",
+  "host_written_pot_above_cap",
   "host_written_share_above_cap",
 ] as const;
 export type HostWrittenStakesError = (typeof HOST_WRITTEN_STAKES_ERRORS)[number];
@@ -229,18 +241,23 @@ export type HostWrittenStakesInput = {
   entryKobo: number;
   hostPoolKobo: number;
   prizeKind: "cash" | "product" | "experience";
+  maxPlayers: number;
   questionCount: number;
   hostQuestionCount: number;
   fromTemplate: boolean;
 };
+
+/** The most a party's pot can reach: every seat's entry (a full party) plus the host's cash prize. */
+export const potCapKobo = (s: Pick<HostWrittenStakesInput, "funding" | "entryKobo" | "maxPlayers" | "hostPoolKobo" | "prizeKind">) =>
+  (s.funding === "pooled" ? s.entryKobo * s.maxPlayers : 0) + (s.funding === "host" && s.prizeKind === "cash" ? s.hostPoolKobo : 0);
 
 /** Free: a pooled party with no entry. A host-funded party always has a prize (cash, or a verified brand's goods). */
 export const isFreeParty = (s: Pick<HostWrittenStakesInput, "funding" | "entryKobo">) => s.funding === "pooled" && s.entryKobo === 0;
 
 /**
  * The template and host-written rules on top of checkStakes (ADR 0015): a template party or one with host-written
- * questions is never free; with host-written questions the entry and the host's cash prize stay under the caps and
- * the host writes at most the allowed share. Errors in HOST_WRITTEN_STAKES_ERRORS order; none means it holds.
+ * questions is never free; with host-written questions the entry, the host's cash prize and the most the pot can
+ * reach (every seat's entry plus that prize) stay under the caps, and the host writes at most the allowed share. Errors in HOST_WRITTEN_STAKES_ERRORS order; none means it holds.
  */
 export function checkHostWrittenStakes(s: HostWrittenStakesInput, rules: HostWrittenRules): HostWrittenStakesError[] {
   const errors = new Set<HostWrittenStakesError>();
@@ -249,6 +266,7 @@ export function checkHostWrittenStakes(s: HostWrittenStakesInput, rules: HostWri
   if (isFreeParty(s) && hostWritten) errors.add(HOST_WRITTEN_FREE);
   if (hostWritten && s.funding === "pooled" && s.entryKobo > rules.maxEntryKobo) errors.add("host_written_entry_above_cap");
   if (hostWritten && s.funding === "host" && s.prizeKind === "cash" && s.hostPoolKobo > rules.maxHostPrizeKobo) errors.add("host_written_prize_above_cap");
+  if (hostWritten && potCapKobo(s) > rules.maxPotKobo) errors.add("host_written_pot_above_cap");
   if (s.hostQuestionCount > maxHostQuestions(s.questionCount, rules)) errors.add("host_written_share_above_cap");
   return HOST_WRITTEN_STAKES_ERRORS.filter((e) => errors.has(e));
 }
@@ -257,7 +275,7 @@ export function checkHostWrittenStakes(s: HostWrittenStakesInput, rules: HostWri
 export const partyTemplatesResponseSchema = z.object({
   version: z.number().int(),
   templates: z.array(partyTemplateSchema.omit({ hidden: true })),
-  rules: hostWrittenRulesSchema.omit({ outlierMarginPct: true, recentBlockDays: true }),
+  rules: hostWrittenRulesSchema.pick({ maxEntryKobo: true, maxHostPrizeKobo: true, maxPotKobo: true, maxHostShareBps: true }),
 });
 export type PartyTemplatesResponse = z.infer<typeof partyTemplatesResponseSchema>;
 
@@ -304,8 +322,11 @@ export type HeldPrizeStatus = (typeof HELD_PRIZE_STATUSES)[number];
 /** Withdrawals wait while a prize is held (withdraw_not_allowed, reason prize_under_review). */
 export const PRIZE_UNDER_REVIEW = "prize_under_review";
 
-/** Which comparison put a winner over the threshold: the host-written questions, the whole set, or both. */
-export const OUTLIER_ON = ["host_written", "all"] as const;
+/**
+ * Why a prize is held: the winner beat the room on the host-written questions, or on the whole set (both need a
+ * link), or has won the same host's host-written parties too often lately (repeat; no link needed).
+ */
+export const HOLD_REASONS = ["host_written", "all", "repeat"] as const;
 
 /** The evidence an admin reviews: how they're linked, and their accuracy against the room's, on the host's questions and on the whole set. */
 export const heldPrizeEvidenceSchema = z.object({
@@ -319,7 +340,10 @@ export const heldPrizeEvidenceSchema = z.object({
   roomAllAccuracyPct: z.number(),
   allMarginPct: z.number(),
   thresholdPct: z.number().int(),
-  flaggedOn: z.array(z.enum(OUTLIER_ON)),
+  /** The same host's host-written parties they'd already won in the repeat window, and the most allowed. */
+  priorWins: z.number().int(),
+  repeatWinsMax: z.number().int(),
+  flaggedOn: z.array(z.enum(HOLD_REASONS)),
 });
 export type HeldPrizeEvidence = z.infer<typeof heldPrizeEvidenceSchema>;
 

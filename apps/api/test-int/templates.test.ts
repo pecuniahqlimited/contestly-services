@@ -64,7 +64,7 @@ describe("templates", () => {
     expect(res.statusCode).toBe(200);
     const body = partyTemplatesResponseSchema.parse(res.json());
     expect(body.templates.map((t) => t.id)).toEqual(["birthday", "bridal-shower", "couples", "game-night", "office-party", "reunion"]);
-    expect(body.rules).toEqual({ maxEntryKobo: DEFAULT_HOST_WRITTEN_RULES.maxEntryKobo, maxHostPrizeKobo: DEFAULT_HOST_WRITTEN_RULES.maxHostPrizeKobo, maxHostShareBps: 5000 });
+    expect(body.rules).toEqual({ maxEntryKobo: DEFAULT_HOST_WRITTEN_RULES.maxEntryKobo, maxHostPrizeKobo: DEFAULT_HOST_WRITTEN_RULES.maxHostPrizeKobo, maxPotKobo: DEFAULT_HOST_WRITTEN_RULES.maxPotKobo, maxHostShareBps: 5000 });
   });
 
   it("a template prefills what the host left out, and the party keeps its own copy", async () => {
@@ -218,6 +218,11 @@ describe("stakes", () => {
     const prize = { funding: "host", entryKobo: 0, hostPoolKobo: rules.maxHostPrizeKobo + kobo(100) };
     await fund(host, rules.maxHostPrizeKobo + kobo(100));
     expect((await create(host, pooled({ ...prize, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_prize_above_cap");
+    // The pot: ₦1,000 entry is under its cap, but 60 seats of it is over the pot's.
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60, hostQuestions: [q("Who won last time?", "Ada")] }))).json().error).toBe("host_written_pot_above_cap");
+    expect((await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: Math.floor(rules.maxPotKobo / rules.maxEntryKobo), hostQuestions: [q("Who won last time?", "Ada")] }))).statusCode).toBe(201);
+    const bigPot = await create(host, pooled({ entryKobo: rules.maxEntryKobo, maxPlayers: 60 }));
+    expect((await app.inject({ method: "POST", url: `/parties/${bigPot.json().id}/host-questions`, headers: as(host), payload: q("Who won last time?", "Ada") })).json().error).toBe("host_written_pot_above_cap");
     // Four questions: at most two host-written.
     const share = [q("Who won last time?", "Ada"), q("Who lost?", "Bayo"), q("Who cheated?", "Chi")];
     expect((await create(host, pooled({ questionCount: 4, hostQuestions: share }))).json().error).toBe("host_written_share_above_cap");
@@ -345,6 +350,24 @@ describe("the link check and the outlier flag at settlement", () => {
     const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: [100, 0, 100, 100] }, { u: await makeUser(name("pall")), correct: [100, 0, 0, 0] }] });
     const [held] = await heldIn(p.id);
     expect(held?.evidence).toMatchObject({ marginPct: 0, allMarginPct: 50, flaggedOn: ["all"] });
+  });
+});
+
+describe("repeat winners", () => {
+  it("a winner who keeps winning the same host's host-written parties is held on the next, unlinked and level with the room", async () => {
+    const h = await makeUser(name("hostrep"));
+    const w = await makeUser(name("winrep"));
+    // Even with the room on every question, and no link: only the repeat can hold it.
+    const play = async () => playedParty({ hostUser: h, seats: [{ u: w, correct: [100, 0, 100, 0] }, { u: await makeUser(name("prep")), correct: [0, 100, 0, 100] }] });
+    for (let i = 0; i < DEFAULT_HOST_WRITTEN_RULES.repeatWinsMax; i++) expect(await heldIn((await play()).id)).toEqual([]);
+    const third = await play();
+    const [held] = await heldIn(third.id);
+    expect(held?.evidence).toMatchObject({ links: [], flaggedOn: ["repeat"], priorWins: DEFAULT_HOST_WRITTEN_RULES.repeatWinsMax, repeatWinsMax: DEFAULT_HOST_WRITTEN_RULES.repeatWinsMax });
+    // A different host's party is a fresh count; wins older than the window don't count.
+    expect(await heldIn((await playedParty({ hostUser: await makeUser(name("hostrep2")), seats: [{ u: w, correct: [100, 0, 100, 0] }, { u: await makeUser(name("prep2")), correct: [0, 100, 0, 100] }] })).id)).toEqual([]);
+    await db.update(parties).set({ endedAt: new Date(Date.now() - (DEFAULT_HOST_WRITTEN_RULES.repeatWindowDays + 1) * 86_400_000) }).where(and(eq(parties.createdByUserId, h.id), sql`${parties.id} <> ${third.id}`));
+    // Only the third win (held, still a win) is inside the window now: 1, under the max.
+    expect(await heldIn((await play()).id)).toEqual([]);
   });
 });
 

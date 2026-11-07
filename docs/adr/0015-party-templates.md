@@ -65,8 +65,10 @@ questions through the play order (`hostSlots`). A template's themed spec adds it
 `record_play` skips host-authored rows explicitly.
 
 **Stakes** (`checkHostWrittenStakes`, with `checkStakes`): a template party is never free even with no host-written
-questions; one with host-written questions is never free, and its entry, the host's cash prize and the host's share
-stay under the caps, at creation and at every add.
+questions; one with host-written questions is never free, and its entry, the host's cash prize, the most its pot can
+reach (`potCapKobo`: every seat's entry plus the host's cash prize, under `maxPotKobo`, default ₦50,000) and the
+host's share stay under the caps, at creation and at every add (`host_written_pot_above_cap`). The entry cap alone
+let 200 seats at ₦1,000 make a ₦200,000 pot.
 
 **The settlement check** (`holdFlaggedPrizes`, in the settle transaction, after prizes are posted): only for
 parties with host-written questions, only cash prizes (goods move no money).
@@ -82,6 +84,11 @@ parties with host-written questions, only cash prizes (goods move no money).
   seated on either of two comparisons (`reviewPrize` in packages/game): the host-written questions (when at least
   one was played), or the whole set, because a curate host has seen every generated answer too (ADR 0003). The
   evidence carries both comparisons and which one tripped (`flaggedOn`).
+- *Repeats*, across parties: a winner who has already won `repeatWinsMax` (default 2) of the same host's finished
+  host-written parties within `repeatWindowDays` (default 30) before this one has the prize held whatever they
+  scored and whether or not they're linked (`flaggedOn: ["repeat"]`, `priorWins` in the evidence). A win is a prize,
+  held or cleared; a rejected one isn't. It catches what a single party can't: one host feeding the same friend
+  across many small parties under the caps.
 
 Each prize is decided before it's paid (`payCashPrizes`, shared by settlement and a reject's pass-on). A flagged
 prize is credited into the winner's **`prize_hold`** ledger account (a per-person platform account, like

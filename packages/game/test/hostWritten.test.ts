@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { evenShares, nextPlaced, reviewPrize, type GradedAnswer } from "../src/hostWritten.js";
 
+/** Not a repeat winner. */
+const NONE = { priorWins: 0, max: 2 };
 const answers = (rows: [string, boolean, number][]): GradedAnswer[] => rows.map(([userId, hostWritten, correctnessPct]) => ({ userId, hostWritten, correctnessPct }));
 
 describe("reviewPrize", () => {
@@ -11,7 +13,7 @@ describe("reviewPrize", () => {
   ]);
 
   it("flags a linked winner far above the room on the host's questions, and reports both comparisons", () => {
-    const r = reviewPrize({ winnerId: "w", links: ["contact"], answers: played, marginPct: 30 });
+    const r = reviewPrize({ winnerId: "w", links: ["contact"], answers: played, marginPct: 30, repeat: NONE });
     expect(r.flagged).toBe(true);
     expect(r.evidence).toMatchObject({
       links: ["contact"], hostQuestionsPlayed: 2, winnerAccuracyPct: 100, roomAccuracyPct: 25, marginPct: 75,
@@ -25,7 +27,7 @@ describe("reviewPrize", () => {
       ["w", true, 100], ["w", true, 0], ["w", false, 100], ["w", false, 100], ["w", false, 100],
       ["a", true, 100], ["a", true, 0], ["a", false, 0], ["a", false, 0], ["a", false, 0],
     ]);
-    const r = reviewPrize({ winnerId: "w", links: ["crew"], answers: set, marginPct: 30 });
+    const r = reviewPrize({ winnerId: "w", links: ["crew"], answers: set, marginPct: 30, repeat: NONE });
     expect(r.evidence).toMatchObject({ marginPct: 0, allMarginPct: 60, flaggedOn: ["all"] });
     expect(r.flagged).toBe(true);
   });
@@ -35,32 +37,38 @@ describe("reviewPrize", () => {
       ["w", true, 100], ["w", false, 0], ["w", false, 0], ["w", false, 0],
       ["a", true, 0], ["a", false, 0], ["a", false, 0], ["a", false, 0],
     ]);
-    const r = reviewPrize({ winnerId: "w", links: ["ip"], answers: set, marginPct: 30 });
+    const r = reviewPrize({ winnerId: "w", links: ["ip"], answers: set, marginPct: 30, repeat: NONE });
     expect(r.evidence).toMatchObject({ marginPct: 100, allMarginPct: 25, flaggedOn: ["host_written"] });
   });
 
   it("never flags a winner who isn't linked, however well they did", () => {
-    const r = reviewPrize({ winnerId: "w", links: [], answers: played, marginPct: 30 });
+    const r = reviewPrize({ winnerId: "w", links: [], answers: played, marginPct: 30, repeat: NONE });
     expect(r.flagged).toBe(false);
     expect(r.evidence.flaggedOn).toEqual([]);
   });
 
   it("doesn't flag a linked winner within the margin on both; exactly at it flags", () => {
-    expect(reviewPrize({ winnerId: "w", links: ["ip"], answers: played, marginPct: 80 }).flagged).toBe(false);
-    expect(reviewPrize({ winnerId: "w", links: ["ip"], answers: played, marginPct: 75 }).evidence.flaggedOn).toEqual(["host_written"]);
+    expect(reviewPrize({ winnerId: "w", links: ["ip"], answers: played, marginPct: 80, repeat: NONE }).flagged).toBe(false);
+    expect(reviewPrize({ winnerId: "w", links: ["ip"], answers: played, marginPct: 75, repeat: NONE }).evidence.flaggedOn).toEqual(["host_written"]);
   });
 
   it("with no host-written question played (all voided, say) only the whole set counts", () => {
     const themedOnly = answers([["w", false, 100], ["a", false, 0]]);
-    const r = reviewPrize({ winnerId: "w", links: ["install"], answers: themedOnly, marginPct: 30 });
+    const r = reviewPrize({ winnerId: "w", links: ["install"], answers: themedOnly, marginPct: 30, repeat: NONE });
     expect(r.evidence).toMatchObject({ hostQuestionsPlayed: 0, flaggedOn: ["all"] });
-    expect(reviewPrize({ winnerId: "w", links: ["install"], answers: answers([["w", false, 50], ["a", false, 50]]), marginPct: 30 }).flagged).toBe(false);
+    expect(reviewPrize({ winnerId: "w", links: ["install"], answers: answers([["w", false, 50], ["a", false, 50]]), marginPct: 30, repeat: NONE }).flagged).toBe(false);
   });
 
   it("counts a room with nobody else as 0", () => {
-    const r = reviewPrize({ winnerId: "w", links: ["played_with"], answers: answers([["w", true, 50]]), marginPct: 30 });
+    const r = reviewPrize({ winnerId: "w", links: ["played_with"], answers: answers([["w", true, 50]]), marginPct: 30, repeat: NONE });
     expect(r.evidence.roomAccuracyPct).toBe(0);
     expect(r.flagged).toBe(true);
+  });
+  it("holds a repeat winner of the same host's parties whatever they scored, linked or not", () => {
+    const even = answers([["w", true, 50], ["a", true, 50]]);
+    const r = reviewPrize({ winnerId: "w", links: [], answers: even, marginPct: 30, repeat: { priorWins: 2, max: 2 } });
+    expect(r.evidence).toMatchObject({ flaggedOn: ["repeat"], priorWins: 2, repeatWinsMax: 2 });
+    expect(reviewPrize({ winnerId: "w", links: [], answers: even, marginPct: 30, repeat: { priorWins: 1, max: 2 } }).flagged).toBe(false);
   });
 });
 

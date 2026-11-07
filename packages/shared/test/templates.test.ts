@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_PARTY_TEMPLATES, HOST_WRITTEN_FREE, TEMPLATE_PARTY_FREE, checkHostText, checkHostWrittenStakes, hostQuestionFromPayload, hostQuestionPayload,
-  hostQuestionSchema, hostSlots, maxHostQuestions, partyTemplatesConfigSchema, templatePrefill, templateProblems, type HostWrittenStakesInput,
+  hostQuestionSchema, hostSlots, maxHostQuestions, potCapKobo, partyTemplatesConfigSchema, templatePrefill, templateProblems, type HostWrittenStakesInput,
 } from "../src/index.js";
 
 const rules = DEFAULT_PARTY_TEMPLATES.rules;
-const stakes = (s: Partial<HostWrittenStakesInput>): HostWrittenStakesInput => ({ funding: "pooled", entryKobo: 50_000, hostPoolKobo: 0, prizeKind: "cash", questionCount: 10, hostQuestionCount: 0, fromTemplate: false, ...s });
+const stakes = (s: Partial<HostWrittenStakesInput>): HostWrittenStakesInput => ({ funding: "pooled", entryKobo: 50_000, hostPoolKobo: 0, prizeKind: "cash", maxPlayers: 8, questionCount: 10, hostQuestionCount: 0, fromTemplate: false, ...s });
 
 describe("the seeded templates", () => {
   it("parse, and every prompt fits its own question count", () => {
@@ -68,9 +68,21 @@ describe("checkHostWrittenStakes", () => {
   it("caps the entry, the host's cash prize and the host's share, only with host-written questions", () => {
     expect(checkHostWrittenStakes(stakes({ entryKobo: rules.maxEntryKobo + 100, hostQuestionCount: 1 }), rules)).toEqual(["host_written_entry_above_cap"]);
     expect(checkHostWrittenStakes(stakes({ entryKobo: rules.maxEntryKobo + 100 }), rules)).toEqual([]);
-    expect(checkHostWrittenStakes(stakes({ funding: "host", entryKobo: 0, hostPoolKobo: rules.maxHostPrizeKobo + 100, hostQuestionCount: 1 }), rules)).toEqual(["host_written_prize_above_cap"]);
+    // Over the prize cap is over the pot cap too (a host prize is part of the pot).
+    expect(checkHostWrittenStakes(stakes({ funding: "host", entryKobo: 0, hostPoolKobo: rules.maxHostPrizeKobo + 100, hostQuestionCount: 1 }), rules)).toEqual(["host_written_prize_above_cap", "host_written_pot_above_cap"]);
     expect(checkHostWrittenStakes(stakes({ hostQuestionCount: 6, questionCount: 10 }), rules)).toEqual(["host_written_share_above_cap"]);
     expect(checkHostWrittenStakes(stakes({ hostQuestionCount: 5, questionCount: 10 }), rules)).toEqual([]);
     expect(maxHostQuestions(5, rules)).toBe(2);
+  });
+
+  it("caps the most the pot can reach: every seat's entry plus the host's cash prize", () => {
+    // ₦1,000 is within the entry cap, but 200 seats of it is ₦200,000.
+    const full = stakes({ entryKobo: rules.maxEntryKobo, maxPlayers: 200, hostQuestionCount: 1 });
+    expect(potCapKobo(full)).toBe(rules.maxEntryKobo * 200);
+    expect(checkHostWrittenStakes(full, rules)).toEqual(["host_written_pot_above_cap"]);
+    const fits = Math.floor(rules.maxPotKobo / rules.maxEntryKobo);
+    expect(checkHostWrittenStakes(stakes({ entryKobo: rules.maxEntryKobo, maxPlayers: fits, hostQuestionCount: 1 }), rules)).toEqual([]);
+    expect(checkHostWrittenStakes(stakes({ entryKobo: rules.maxEntryKobo, maxPlayers: 200 }), rules)).toEqual([]); // no host-written questions: no cap
+    expect(potCapKobo(stakes({ funding: "host", entryKobo: 0, hostPoolKobo: 1_000, maxPlayers: 50 }))).toBe(1_000);
   });
 });
