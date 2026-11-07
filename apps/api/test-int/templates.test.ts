@@ -14,7 +14,8 @@ import {
   adminActions, adminAlerts, bankQuestions, ledgerAccounts, blocks, contactMatches, cornerNewPlayers, partyInvites, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
   savePartyTemplates, currentPartyTemplates, takeSeat, HoldOverdrawn, userSignals, users, blockedEitherWay, liftedBlocks, withdrawBlockReason, type Party, type User,
 } from "@contestly/db";
-import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
+import { makeRedis, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
+import { ProviderUnavailable } from "@contestly/ai";
 import {
   DEFAULT_HOST_WRITTEN_RULES, DEFAULT_PARTY_TEMPLATES, QUEUES, hostSlots, kobo, partyTemplatesResponseSchema, type DistractorRequest, type HostQuestion, type QuestionsJob,
 } from "@contestly/shared";
@@ -24,7 +25,9 @@ import { settle } from "../../worker/src/partySettle.js";
 import { generateSet } from "../../questions/src/pipeline/generateSet.js";
 import { recordPlay } from "../../questions/src/pipeline/recordPlay.js";
 import { suggestDistractors } from "../../questions/src/pipeline/distractors.js";
-import { selectProviders } from "../../questions/src/providers/index.js";
+import { mockProviders, selectProviders } from "../../questions/src/providers/index.js";
+import { checkHostEdit } from "../../questions/src/pipeline/checkHostEdit.js";
+import type { SafetyReviewer } from "../../questions/src/providers/types.js";
 import { queueDistractors } from "../src/distractors.js";
 import { as, makeUser, tag, testApp } from "./harness.js";
 
@@ -96,7 +99,8 @@ describe("templates", () => {
     expect(res.json().questions).toMatchObject({ hostWritten: true, review: "host_reviewed" });
     const rows = await db.select().from(partyQuestions).where(eq(partyQuestions.partyId, id));
     expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.hostWritten && r.hostAuthored && r.sourceRef === null && r.format === "pick_one" && r.status === "pending")).toBe(true);
+    // Drafts until the model safety check passes them (below), then approved: the host wrote them.
+    expect(rows.every((r) => r.hostWritten && r.hostAuthored && r.sourceRef === null && r.format === "pick_one" && r.status === "draft" && (r.editCheck as { status: string }).status === "checking")).toBe(true);
     const first = rows.find((r) => (r.payload as { question: string }).question.startsWith("Where"))!;
     const put = await app.inject({ method: "PUT", url: `/parties/${id}/host-questions/${first.id}`, headers: as(host), payload: { ...q("Where did Tolu and Femi meet?", "Choir practice"), distractors: ["Bible study", "A wedding", "Work"] } });
     expect(put.statusCode).toBe(204);
@@ -148,7 +152,7 @@ describe("distractors", () => {
 
   it("over the real questions queue: the generation call, then the safety filter", async () => {
     const providers = selectProviders();
-    const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => (job.data.kind === "suggest_distractors" ? suggestDistractors(job.data, { generator: providers.generator }) : undefined), { connection: makeRedis(), prefix: QUEUE_PREFIX });
+    const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => (job.data.kind === "suggest_distractors" ? suggestDistractors(job.data, { generator: providers.generator, safety: providers.safety }) : undefined), { connection: makeRedis(), prefix: QUEUE_PREFIX });
     try {
       const out = await queueDistractors({ question: "What year did we graduate?", answer: "2009", brief: "" });
       expect(out.distractors).toHaveLength(3);
@@ -181,6 +185,56 @@ describe("the safety filter fails closed on the host's own words", () => {
     expect(strict.json()).toMatchObject({ error: "host_text_unsafe", details: { reasons: ["excluded:exes"] } });
     const [row] = await db.select().from(partyQuestions).where(eq(partyQuestions.partyId, id));
     expect((await app.inject({ method: "PUT", url: `/parties/${id}/host-questions/${row.id}`, headers: as(host), payload: q("Where did they shit?") })).json().error).toBe("host_text_unsafe");
+  });
+});
+
+describe("the model safety check on the host's own words", () => {
+  type Check = { id: string; status: string; reasons: string[] };
+  const rowsOf = (partyId: string) => db.select().from(partyQuestions).where(and(eq(partyQuestions.partyId, partyId), eq(partyQuestions.hostWritten, true)));
+  const checkOf = (r: { editCheck: unknown }) => r.editCheck as Check;
+  /** The questions service's check_host_edit, run here with this reviewer. */
+  const runCheck = (r: { partyId: string; id: string; editCheck: unknown }, safety: SafetyReviewer) => checkHostEdit({ partyId: r.partyId, partyQuestionId: r.id, checkId: checkOf(r).id }, { providers: { ...mockProviders(), safety } });
+  const passing: SafetyReviewer = { name: "pass", review: async (_b, items) => items.map(() => ({ passed: true, reasons: [] })) };
+  const failing: SafetyReviewer = { name: "fail", review: async (_b, items) => items.map(() => ({ passed: false, reasons: ["model:private_individual"] })) };
+
+  it("queued at creation, on add and on edit; a pass approves, a fail leaves a draft, told it's host-written", async () => {
+    const made = await create(host, pooled({ hostQuestions: [q("Where did Tolu and Femi first meet?"), q("Who proposed?", "Femi")] }));
+    const [a, b] = await rowsOf(made.json().id);
+    for (const r of [a, b]) expect(await questionsQueue().getJob(`check-edit-${checkOf(r).id}`)).toBeTruthy();
+    let told: { hostWritten?: boolean } = {};
+    await runCheck(a, { name: "spy", review: async (brief, items) => { told = brief; return items.map(() => ({ passed: true, reasons: [] })); } });
+    await runCheck(b, failing);
+    expect(told.hostWritten).toBe(true);
+    const [a2, b2] = [(await rowsOf(a.partyId)).find((r) => r.id === a.id)!, (await rowsOf(a.partyId)).find((r) => r.id === b.id)!];
+    expect([a2.status, checkOf(a2).status]).toEqual(["pending", "passed"]);
+    expect([b2.status, checkOf(b2).status, checkOf(b2).reasons]).toEqual(["draft", "failed", ["model:private_individual"]]);
+    // The drafts view shows the host which one failed, and why.
+    const drafts = (await app.inject({ method: "GET", url: `/parties/${a.partyId}/drafts`, headers: as(host) })).json();
+    expect(drafts.questions.find((d: { id: string }) => d.id === b.id)?.editCheck).toEqual({ status: "failed", reasons: ["model:private_individual"] });
+
+    // Rewriting it: a draft again with a new check, and the old check's late answer changes nothing.
+    expect((await app.inject({ method: "PUT", url: `/parties/${a.partyId}/host-questions/${b.id}`, headers: as(host), payload: q("Who proposed to whom?", "Femi") })).statusCode).toBe(204);
+    const b3 = (await rowsOf(a.partyId)).find((r) => r.id === b.id)!;
+    expect([b3.status, checkOf(b3).status]).toEqual(["draft", "checking"]);
+    expect(checkOf(b3).id).not.toBe(checkOf(b).id);
+    await runCheck(b2, passing); // the superseded check
+    expect((await rowsOf(a.partyId)).find((r) => r.id === b.id)!.status).toBe("draft");
+    await runCheck(b3, passing);
+    expect((await rowsOf(a.partyId)).find((r) => r.id === b.id)!.status).toBe("pending");
+
+    // Added later: the same.
+    const added = await app.inject({ method: "POST", url: `/parties/${a.partyId}/host-questions`, headers: as(host), payload: q("Where was the engagement?", "Lekki") });
+    const c = (await rowsOf(a.partyId)).find((r) => r.id === added.json().id)!;
+    expect([c.status, checkOf(c).status]).toEqual(["draft", "checking"]);
+    expect(await questionsQueue().getJob(`check-edit-${checkOf(c).id}`)).toBeTruthy();
+  });
+
+  it("fails closed: a check that can't run leaves the question a draft (failed, safety_unavailable), so the party can't start on it", async () => {
+    const made = await create(host, pooled({ hostQuestions: [q("Where did they first meet?")] }));
+    const [r] = await rowsOf(made.json().id);
+    await runCheck(r, { name: "down", review: async () => { throw new ProviderUnavailable("timeout", "fake", "safety", "timed out"); } });
+    const [after] = await rowsOf(r.partyId);
+    expect([after.status, checkOf(after).status, checkOf(after).reasons]).toEqual(["draft", "failed", ["safety_unavailable"]]);
   });
 });
 

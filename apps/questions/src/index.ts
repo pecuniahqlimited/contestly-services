@@ -97,7 +97,7 @@ async function run(d: QuestionsJob) {
     case "question_voided": return questionVoided(d);
     case "review_edit": return reviewEdit(d, { providers });
     case "check_host_edit": return checkHostEdit(d, { providers });
-    case "suggest_distractors": return suggestDistractors(d, { generator: providers.generator });
+    case "suggest_distractors": return suggestDistractors(d, { generator: providers.generator, safety: providers.safety });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
     case "reembed": return reembed(d.waits ?? 0);

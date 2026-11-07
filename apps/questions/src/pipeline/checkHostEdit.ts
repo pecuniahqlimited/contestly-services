@@ -1,6 +1,8 @@
 /**
- * The model safety check on a curate host's edit (ADR 0016): the API ran the term filter and queued this;
- * here the edit gets the same model review as a generated draft. Only the latest edit's check counts (a newer
+ * The model safety check on a curate host's edit (ADR 0016), and on a host-written question (ADR 0015): the API
+ * ran the term filter and queued this; here the edit gets the same model review as a generated draft. A
+ * host-written question is about the party's own people, so the reviewer is told so (SafetyBrief.hostWritten),
+ * and one that passes is approved, since its author wrote it; one that fails stays a draft. Only the latest edit's check counts (a newer
  * edit carries a new id, and an older job finds its id gone). Fail closed: a check that can't run marks the
  * edit failed with "safety_unavailable", and the host edits again or swaps it.
  */
@@ -17,7 +19,7 @@ export async function checkHostEdit(job: { partyId: string; partyQuestionId: str
   const [party] = await db.select({ brief: parties.brief }).from(parties).where(eq(parties.id, job.partyId));
   if (!party) return;
 
-  const brief = { topic: party.brief, exclusions: parseExclusions(party.brief) };
+  const brief = { topic: party.brief, exclusions: parseExclusions(party.brief), hostWritten: q.hostWritten };
   let result: { passed: boolean; reasons: string[]; reviewedBy?: string };
   try {
     const [r] = await deps.providers.safety.review(brief, [{ format: q.format as QuestionFormat, payload: q.payload, explanation: q.explanation ?? undefined }]);
@@ -31,7 +33,8 @@ export async function checkHostEdit(job: { partyId: string; partyQuestionId: str
     reviewedBy: result.reviewedBy ?? deps.providers.safety.name, checkedAt: new Date().toISOString(),
   };
   // Only if this is still the latest edit: the host may have edited again while the check ran.
-  await db.update(partyQuestions).set({ editCheck: judged })
+  const approved = q.hostWritten && judged.status === "passed" && q.status === "draft";
+  await db.update(partyQuestions).set({ editCheck: judged, ...(approved ? { status: "pending" as const } : {}) })
     .where(and(eq(partyQuestions.id, q.id), sql`${partyQuestions.editCheck}->>'id' = ${check.id}`));
   console.log(`[questions] host edit ${check.id} on party ${job.partyId}: ${judged.status}${judged.reasons.length ? ` (${judged.reasons.join(", ")})` : ""}`);
 }

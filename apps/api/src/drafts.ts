@@ -115,8 +115,12 @@ export async function editDraft(partyId: string, questionId: string, user: User,
     await tx.update(partyQuestions).set({ payload, explanation: edit.explanation ?? q.explanation, hostAuthored: true, sourceRef: null, status: "draft", editCheck: check }).where(eq(partyQuestions.id, q.id));
     await log(tx, { partyId, questionId: q.id, kind: "edit", userId: user.id, detail: { before: { payload: q.payload, explanation: q.explanation, sourceRef: q.sourceRef }, checkId: check.id } });
   });
-  await questionJobs.add("check_host_edit", { kind: "check_host_edit", partyId, partyQuestionId: questionId, checkId: check.id }, { jobId: `check-edit-${check.id}`, attempts: 3, backoff: { type: "exponential", delay: 5_000 } });
+  await queueEditCheck(partyId, questionId, check.id);
 }
+
+/** Queue the model safety check on a host's words (an edit, or a host-written question), once its row has committed. */
+export const queueEditCheck = (partyId: string, questionId: string, checkId: string) =>
+  questionJobs.add("check_host_edit", { kind: "check_host_edit", partyId, partyQuestionId: questionId, checkId }, { jobId: `check-edit-${checkId}`, attempts: 3, backoff: { type: "exponential", delay: 5_000 } });
 
 /**
  * Swap a question for the first unused reserve. The reserve takes the slot (as a draft to review);

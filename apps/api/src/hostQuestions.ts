@@ -1,7 +1,9 @@
 /**
  * Host-written questions (ADR 0015): what only the host can answer, pick-one, the host's question and right answer
- * with three wrong ones (suggested by the questions service, editable). The host's words always pass the safety
- * filter, failing closed; nothing fact-checks them; they live in the party's set only (never the bank).
+ * with three wrong ones (suggested by the questions service, editable). The host's words always pass the term
+ * filter here and then the model safety check in the questions service (queued once the row commits; until it
+ * passes, the question is a draft and the party can't start), both failing closed; nothing fact-checks them; they
+ * live in the party's set only (never the bank).
  *
  * Any at all makes the party curate (the host and anyone who saw the set can't play, ADR 0003), never free, and
  * inside the caps (checkHostWrittenStakes). They can be written at creation or added, edited and removed while the
@@ -10,11 +12,12 @@
  */
 import { and, eq } from "drizzle-orm";
 import {
-  db, insertHostQuestion, isHostTeam, nextQuestionIdx, parties, partyQuestionEvents, partyQuestions, syncHostQuestionCount, type Party, type Tx, type User,
+  db, insertHostQuestion, isHostTeam, nextQuestionIdx, parties, partyQuestionEvents, partyQuestions, pendingHostCheck, syncHostQuestionCount, type Party, type Tx, type User,
 } from "@contestly/db";
 import { payloadSchemas } from "@contestly/game";
 import { DEFAULT_HOST_WRITTEN_RULES, checkHostWrittenStakes, hostQuestionPayload, type HostQuestion, type HostWrittenRules } from "@contestly/shared";
 import { assertHostTextSafe } from "./distractors.js";
+import { queueEditCheck } from "./drafts.js";
 import { httpError } from "./httpError.js";
 
 /** The fewest questions a party plays (createPartySchema's minimum). */
@@ -34,10 +37,22 @@ export function assertHostWrittenStakes(p: Pick<Party, "funding" | "entryKobo" |
   if (refused) throw httpError(422, refused);
 }
 
-/** At creation, in its transaction: the host's questions into the new party's set (the engine fills the rest later). */
-export async function writeHostQuestions(tx: Tx, p: Party, qs: HostQuestion[], authorId: string) {
-  for (const [i, q] of qs.entries()) await insertHostQuestion(tx, p, q, i, authorId);
+/** A model safety check to queue once its row has committed. */
+export interface HostCheck { partyId: string; questionId: string; checkId: string }
+export const queueHostChecks = (checks: HostCheck[]) => Promise.all(checks.map((c) => queueEditCheck(c.partyId, c.questionId, c.checkId)));
+
+/**
+ * At creation, in its transaction: the host's questions into the new party's set (the engine fills the rest later).
+ * Returns their model safety checks, for the caller to queue after the commit.
+ */
+export async function writeHostQuestions(tx: Tx, p: Party, qs: HostQuestion[], authorId: string): Promise<HostCheck[]> {
+  const checks: HostCheck[] = [];
+  for (const [i, q] of qs.entries()) {
+    const row = await insertHostQuestion(tx, p, q, i, authorId);
+    checks.push({ partyId: p.id, questionId: row.id, checkId: row.editCheck.id });
+  }
   if (qs.length) await syncHostQuestionCount(tx, p.id);
+  return checks;
 }
 
 /** Lock the party and check the host's team may change its host-written questions now. */
@@ -70,7 +85,7 @@ const rulesOf = (p: Party) => p.hostRules ?? DEFAULT_HOST_WRITTEN_RULES;
 
 /** Add one to an open curate party. */
 export async function addHostQuestion(partyId: string, user: User, q: HostQuestion) {
-  return db.transaction(async (tx) => {
+  const added = await db.transaction(async (tx) => {
     const p = await lockForHostQuestions(tx, partyId, user);
     assertHostTextSafe(q, p.brief);
     const grows = await drafted(tx, partyId);
@@ -80,12 +95,18 @@ export async function addHostQuestion(partyId: string, user: User, q: HostQuesti
     if (grows) await tx.update(parties).set({ questionCount }).where(eq(parties.id, partyId));
     const row = await insertHostQuestion(tx, p, q, await nextQuestionIdx(tx, partyId), user.id);
     await syncHostQuestionCount(tx, partyId);
-    return { id: row.id, idx: row.idx };
+    return { id: row.id, idx: row.idx, checkId: row.editCheck.id };
   });
+  await queueHostChecks([{ partyId, questionId: added.id, checkId: added.checkId }]);
+  return { id: added.id, idx: added.idx };
 }
 
-/** The host rewrites one of theirs: the same safety filter; it stays approved (they wrote it). Logged with what it was. */
+/**
+ * The host rewrites one of theirs: the same term filter, and a draft again until the model check passes the new
+ * words (then approved again: they wrote it). Logged with what it was.
+ */
 export async function editHostQuestion(partyId: string, questionId: string, user: User, q: HostQuestion) {
+  const check = pendingHostCheck();
   await db.transaction(async (tx) => {
     const p = await lockForHostQuestions(tx, partyId, user);
     const row = await hostRow(tx, partyId, questionId);
@@ -93,9 +114,10 @@ export async function editHostQuestion(partyId: string, questionId: string, user
     // Where the right answer sits stays where it was, so a reworded question doesn't move it.
     const was = payloadSchemas.pick_one.parse(row.payload);
     const payload = hostQuestionPayload(q, was.correctIndex);
-    await tx.update(partyQuestions).set({ payload, explanation: q.explanation ?? null }).where(eq(partyQuestions.id, row.id));
-    await tx.insert(partyQuestionEvents).values({ partyId, questionId: row.id, kind: "edit", userId: user.id, detail: { before: { payload: row.payload, explanation: row.explanation } } });
+    await tx.update(partyQuestions).set({ payload, explanation: q.explanation ?? null, status: "draft", editCheck: check }).where(eq(partyQuestions.id, row.id));
+    await tx.insert(partyQuestionEvents).values({ partyId, questionId: row.id, kind: "edit", userId: user.id, detail: { before: { payload: row.payload, explanation: row.explanation }, checkId: check.id } });
   });
+  await queueHostChecks([{ partyId, questionId, checkId: check.id }]);
 }
 
 /**

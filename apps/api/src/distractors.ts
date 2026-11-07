@@ -1,8 +1,9 @@
 /**
  * Distractor suggestions (ADR 0015) through the questions service, never HTTP: the API queues a
  * suggest_distractors job and waits for its result for a few seconds. The route checks the host's own words
- * first (assertHostTextSafe, failing closed), so an unsafe question never reaches the queue; the service checks
- * them again and filters what it generates. Tests pass their own suggester (AppOptions.distractors).
+ * first (assertHostTextSafe, the term filter, failing closed), so an unsafe question never reaches the queue; the
+ * service checks them again, with the model safety check too, and filters what it generates (a check that can't
+ * run is distractors_unavailable: no suggestions). Tests pass their own suggester (AppOptions.distractors).
  */
 import { QueueEvents, type Job } from "bullmq";
 import { makeRedis, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
@@ -11,8 +12,8 @@ import { httpError } from "./httpError.js";
 
 export type DistractorSuggester = (req: DistractorRequest) => Promise<DistractorResponse>;
 
-/** How long the builder waits for the questions service. */
-const WAIT_MS = 15_000;
+/** How long the builder waits for the questions service: a generation call and a model safety check. */
+const WAIT_MS = 30_000;
 const KEEP_RESULT_SECONDS = 60;
 
 export const HOST_TEXT_UNSAFE = "host_text_unsafe";

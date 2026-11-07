@@ -51,10 +51,24 @@ still means a host's edit of a generated question (ADR 0003), which counts for n
 
 **The builder.** `GET /party-templates`; `POST /parties` with `template: { id, version }` lays the host's fields
 over the template's (`withTemplate`), and `hostQuestions` (pick-one: question, answer, three distractors). Any
-host-written question forces curate. `POST /parties/host-questions/distractors` needs no party; the API checks
-the host's words, queues `suggest_distractors` and waits (15 s) for the questions service, which checks them
-again, makes one `Generator.distract()` call and filters every candidate through the safety filter (failing
-closed: fewer than three safe is an error, never a short list). `POST/PUT/DELETE /parties/:id/host-questions`
+host-written question forces curate. `POST /parties/host-questions/distractors` needs no party; the API runs
+the term filter on the host's words, queues `suggest_distractors` and waits (30 s) for the questions service,
+which runs the term filter again, makes one `Generator.distract()` call (the real generator under the free and
+paid profiles, `drafting/distract.ts`: one structured call through `providerCall`, recorded as a generate step;
+the mock's own under the mock profile), runs the term filter on every candidate, then the **model safety check**
+(ADR 0016's `SafetyReviewer`) on the host's words and every candidate left, in one call. Everything fails closed:
+the model refusing the host's words is `host_text_unsafe` with its reasons, a model check that can't run gives no
+suggestions (`distractors_unavailable`), and fewer than three passing is an error, never a short list.
+
+**The model check on saved host-written questions.** The term filter runs in the request (creation, add, edit)
+and refuses at once; the model check runs in the questions service, as for a curate host's edits (ADR 0016's
+`check_host_edit` and `party_questions.edit_check`), queued once the row commits. A host-written question is a
+**draft until its check passes**, then approved (the host wrote it; `checkHostEdit` sets it pending); one that
+fails, or whose check can't run (`safety_unavailable`), stays a draft with the reasons in the drafts view, and a
+curate party can't start with a draft in its play order (the start gate). An edit makes it a draft again with a
+new check; a superseded check's late answer changes nothing. The reviewer is told the question is host-written
+(`SafetyBrief.hostWritten`): such questions name the party's own people by design, so `private_individual` is
+narrowed to sensitive private details or demeaning someone, and every other reason applies as usual. `POST/PUT/DELETE /parties/:id/host-questions`
 while a curate party is open and not generating. Before the engine has drafted the rest, an added question takes a
 themed slot and a removed one is deleted; after, an added one lengthens the play order and a removed one shortens
 it (voided, kept for the record, never below 3). A sealed party can't take host-written questions later

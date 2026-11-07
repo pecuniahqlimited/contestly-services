@@ -15,7 +15,7 @@ import { SPLITS, checkStakes, inferCategory, isGoods, postsToCorner, startsAtFor
 import { httpError } from "./httpError.js";
 import { inviteToParty } from "./invites.js";
 import { enqueueSealedSet } from "./questionSet.js";
-import { assertHostQuestionsSafe, assertHostWrittenStakes, writeHostQuestions } from "./hostQuestions.js";
+import { assertHostQuestionsSafe, assertHostWrittenStakes, queueHostChecks, writeHostQuestions } from "./hostQuestions.js";
 import { currentHostRules } from "./partyTemplates.js";
 
 const notify = notifyQueue();
@@ -71,7 +71,7 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   assertHostWrittenStakes({ ...body, mode, fromTemplate: !!template }, body.hostQuestions.length, hostRules);
   assertHostQuestionsSafe(body.hostQuestions, body.brief);
   const lines: ChatMessage[] = [];
-  const { party, invited } = await db.transaction(async (tx) => {
+  const { party, invited, hostChecks } = await db.transaction(async (tx) => {
     const crew = body.crewId ? await crewForParty(tx, body.crewId, me.id) : null;
     const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode, questionsStatus: mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, split: [...SPLITS[body.split].shares], limits: cfg.limits, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt, crewId: crew?.id, rematchOf: opts.rematchOf, isSim: me.isSim, template, hostRules }).returning();
     // The host's cash prize is held now, so it can't be spent elsewhere: paid out by place at settlement, released if cancelled.
@@ -83,7 +83,7 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
     if (mode === "sealed") {
       await takeSeat(tx, p, me.id, body.funding === "pooled" ? body.entryKobo : 0);
     }
-    await writeHostQuestions(tx, p, body.hostQuestions, me.id);
+    const hostChecks = await writeHostQuestions(tx, p, body.hostQuestions, me.id);
     if (opts.rematchOf) await copySources(tx, opts.rematchOf, p.id, me.id);
     // The host's team is in the party's chat whether or not they play.
     await joinPartyThread(tx, p.id, me.id);
@@ -100,8 +100,10 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
       await tx.insert(partyInvites).values({ partyId: p.id, inviteeId: opts.challenged, inviterId: me.id }).onConflictDoNothing();
       invited.push(opts.challenged);
     }
-    return { party: { ...p, hostQuestionCount: body.hostQuestions.length }, invited };
+    return { party: { ...p, hostQuestionCount: body.hostQuestions.length }, invited, hostChecks };
   });
+  // The model safety check on the host's own words, once they've committed (ADR 0015).
+  await queueHostChecks(hostChecks);
   // A public party goes up on the host's corner and pings its followers; a private one does neither (postsToCorner).
   if (postsToCorner(party.visibility)) await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
   if (invited.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: invited });

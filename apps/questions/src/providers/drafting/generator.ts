@@ -4,6 +4,7 @@
  * Calls run in parallel; a format whose call fails is skipped and the others still count, and only when every
  * call fails is the generator unavailable (the pipeline then falls back to the bank). The vendor is a plain
  * "structured call" (anthropic/generator.ts, gemini/generator.ts); the model comes per call from the profile.
+ * The same call writes a host-written question's wrong options (distract).
  */
 import { ProviderUnavailable } from "@contestly/ai";
 import type { PricedModel, ProviderName, QuestionFormat } from "@contestly/shared";
@@ -11,6 +12,7 @@ import type { DraftQuestion, GenerationSpec, Generator, SourceChunk } from "../t
 import { IMAGE_POOL, type PoolImage } from "../imagePool.js";
 import { FORMAT_TEMPLATES } from "./formats.js";
 import { SYSTEM_PROMPT, userPrompt } from "./prompt.js";
+import { DISTRACT_SYSTEM, distractPrompt, distractSchema, distractorsFrom } from "./distract.js";
 
 /** Questions per call: enough to amortise the prompt, few enough that one bad call costs little. */
 export const MAX_PER_CALL = 8;
@@ -77,6 +79,11 @@ export function structuredGenerator(deps: StructuredGeneratorDeps): Generator {
       for (const f of failures) if (!(f.reason instanceof ProviderUnavailable)) throw f.reason;
       if (failures.length === results.length) throw failures[0].reason;
       return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+    },
+    /** A host-written question's wrong options (ADR 0015): one call; the pipeline filters them. */
+    async distract(input) {
+      const model = await deps.model();
+      return distractorsFrom(await deps.ask({ model, system: DISTRACT_SYSTEM, user: distractPrompt(input), schema: distractSchema(input.count) }), input.count);
     },
   };
 }
