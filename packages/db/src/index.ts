@@ -21,6 +21,7 @@ export * from "./seats.js";
 export * from "./deletion.js";
 export * from "./devAdmins.js";
 export * from "./alerts.js";
+export * from "./providerUsage.js";
 export * from "./retry.js";
 export * from "./sim.js";
 export * from "./nudges/index.js";

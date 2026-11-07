@@ -162,6 +162,12 @@ export const adminQuestionDetailSchema = z.object({
     partyId: uuid, brief: z.string(), spec: z.unknown(), draft: z.unknown(),
     sourceChunk: z.object({ id: uuid, text: z.string() }).nullable(),
     verify: z.unknown(), dedupe: z.unknown(), difficulty: z.unknown(), safety: z.unknown(), outcome: z.string(),
+    /** The provider and model that wrote the draft and the one that checked it (null for records from before ADR 0016, the mocks included). */
+    generatedBy: z.object({ provider: z.string(), model: z.string() }).nullable(),
+    verifiedBy: z.object({ provider: z.string(), model: z.string(), cached: z.boolean().optional() }).nullable(),
+    /** What verification found: the verdict and the sources behind it (URLs, with titles where the provider gave them). */
+    verdict: z.string().nullable(),
+    sources: z.array(z.object({ url: z.string(), title: z.string().optional() })),
     approvedBy: z.union([z.object({ kind: z.literal("gate") }), z.object({ kind: z.literal("host"), person: personSchema })]),
     createdAt: iso,
   })),
