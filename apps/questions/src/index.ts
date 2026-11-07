@@ -25,7 +25,7 @@ import { embedFile } from "./files/embedFile.js";
 import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
 import { needsReembed, reembedBackoffMs, reembedBatch, REEMBED_MAX_WAIT_MS, staleRows } from "./pipeline/reembed.js";
-import { suggestDistractors } from "./pipeline/distractors.js";
+import { startDistractorsWorker } from "./distractorsWorker.js";
 
 /** Daily, at 04:00 server time: retire flagged and underperforming bank questions. */
 const RETIRE_SWEEP_CRON = "0 4 * * *";
@@ -97,7 +97,6 @@ async function run(d: QuestionsJob) {
     case "question_voided": return questionVoided(d);
     case "review_edit": return reviewEdit(d, { providers });
     case "check_host_edit": return checkHostEdit(d, { providers });
-    case "suggest_distractors": return suggestDistractors(d, { generator: providers.generator, safety: providers.safety });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
     case "reembed": return reembed(d.waits ?? 0);
@@ -138,6 +137,10 @@ function hostReason(err: Error): string {
   return "Something went wrong making your questions. Try again.";
 }
 
+// Distractor suggestions on their own queue and workers: a host in the builder never waits behind a set.
+const distractorsWorker = startDistractorsWorker({ providers, connection: makeRedis() });
+distractorsWorker.on("failed", (job, err) => console.warn(`[questions] distractors ${job?.id}: ${err.message}`));
+
 await questionJobs.upsertJobScheduler("retire-sweep", { pattern: RETIRE_SWEEP_CRON }, { name: "retire_sweep", data: { kind: "retire_sweep" } });
 await questionJobs.upsertJobScheduler("source-sweep", { pattern: SOURCE_SWEEP_CRON }, { name: "source_sweep", data: { kind: "source_sweep" } });
 
@@ -145,4 +148,4 @@ await questionJobs.upsertJobScheduler("source-sweep", { pattern: SOURCE_SWEEP_CR
 await startReembed();
 
 const names = providerNames();
-console.log(`questions running: queue ${QUEUES.questions}, AI profile ${names.profile}: generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);
+console.log(`questions running: queues ${QUEUES.questions} and ${QUEUES.distractors}, AI profile ${names.profile}: generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);

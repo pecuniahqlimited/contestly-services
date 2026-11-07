@@ -24,7 +24,7 @@ import { getSocialConfig } from "@contestly/db";
 import { settle } from "../../worker/src/partySettle.js";
 import { generateSet } from "../../questions/src/pipeline/generateSet.js";
 import { recordPlay } from "../../questions/src/pipeline/recordPlay.js";
-import { suggestDistractors } from "../../questions/src/pipeline/distractors.js";
+import { startDistractorsWorker } from "../../questions/src/distractorsWorker.js";
 import { mockProviders, selectProviders } from "../../questions/src/providers/index.js";
 import { checkHostEdit } from "../../questions/src/pipeline/checkHostEdit.js";
 import type { SafetyReviewer } from "../../questions/src/providers/types.js";
@@ -150,9 +150,8 @@ describe("distractors", () => {
     expect(asked.at(-1)).toMatchObject({ question: "Where did Tolu and Femi first meet?", answer: "Church" });
   });
 
-  it("over the real questions queue: the generation call, then the safety filter", async () => {
-    const providers = selectProviders();
-    const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => (job.data.kind === "suggest_distractors" ? suggestDistractors(job.data, { generator: providers.generator, safety: providers.safety }) : undefined), { connection: makeRedis(), prefix: QUEUE_PREFIX });
+  it("over the real distractors queue: the generation call, then the safety checks", async () => {
+    const worker = startDistractorsWorker({ providers: selectProviders(), connection: makeRedis() });
     try {
       const out = await queueDistractors({ question: "What year did we graduate?", answer: "2009", brief: "" });
       expect(out.distractors).toHaveLength(3);
@@ -161,6 +160,35 @@ describe("distractors", () => {
       await expect(queueDistractors({ question: "Which casino did they meet in?", answer: "The casino", brief: "" })).rejects.toMatchObject({ statusCode: 422, message: "host_text_unsafe" });
     } finally {
       await worker.close();
+    }
+  });
+});
+
+describe("distractors never wait behind a set generation", () => {
+  it("a suggestion answers while a long generate_set holds the questions queue", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let generating = false;
+    // The questions queue's one worker, stuck in a long generation (as a real provider's can be, for minutes).
+    const questions = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
+      if (job.data.kind !== "generate_set") return;
+      generating = true;
+      await held;
+    }, { connection: makeRedis(), prefix: QUEUE_PREFIX });
+    const distractors = startDistractorsWorker({ providers: selectProviders(), connection: makeRedis() });
+    try {
+      await questionsQueue().add("generate_set", { kind: "generate_set", partyId: randomUUID() }, { jobId: `slow-${randomUUID()}`, attempts: 1 });
+      const deadline = Date.now() + 10_000;
+      while (!generating && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      expect(generating).toBe(true);
+      const t0 = Date.now();
+      const out = await queueDistractors({ question: "What year did we graduate?", answer: "2009", brief: "" });
+      expect(out.distractors).toHaveLength(3);
+      expect(Date.now() - t0).toBeLessThan(5_000);
+      expect(generating).toBe(true); // still generating: the suggestion didn't wait for it
+    } finally {
+      release();
+      await Promise.all([questions.close(), distractors.close()]);
     }
   });
 });

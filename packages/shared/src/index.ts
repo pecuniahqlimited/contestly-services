@@ -325,13 +325,20 @@ export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */
-export const QUEUES = { notify: "notify", party: "party", questions: "questions", climb: "climb", housekeeping: "housekeeping", chat: "chat", payments: "payments" } as const;
+export const QUEUES = { notify: "notify", party: "party", questions: "questions", distractors: "distractors", climb: "climb", housekeeping: "housekeeping", chat: "chat", payments: "payments" } as const;
 /**
  * Payments (ADR 0013). `webhook`: process a stored, authenticated provider event. `topup_check` /
  * `payout_submit` / `payout_check`: one top-up or withdrawal, through the same locked transitions as every
  * other path. `sweep` (every minute) finds whatever is due, so a lost job only delays. `invariants`
  * (hourly) and `reconcile` (nightly, per provider) never fix anything: they alert, and a breach pauses payouts.
  */
+/**
+ * Three wrong options for a host-written question (ADR 0015): a generation call, then the safety checks. The API
+ * waits for the result, so it has its own queue and workers in the questions service: a host in the builder never
+ * waits behind a set generation.
+ */
+export type DistractorsJob = { kind: "suggest_distractors"; question: string; answer: string; brief: string };
+
 export type PaymentsJob =
   | { kind: "webhook"; eventId: string }
   | { kind: "topup_check"; topupId: string }
@@ -412,8 +419,6 @@ export type QuestionsJob =
   | { kind: "regenerate_one"; partyId: string; partyQuestionId: string; requestedBy: string }
   /** The API has read a source file (or failed to): embed its chunks, then build a set that was waiting for it. */
   | { kind: "file_read"; fileId: string }
-  /** Three wrong options for a host-written question (ADR 0015): a generation call, then the safety filter. The API waits for the result. */
-  | { kind: "suggest_distractors"; question: string; answer: string; brief: string }
   /** A question was voided by flags in a room: take it out of retrieval pending review. */
   | { kind: "question_voided"; partyQuestionId: string; flags: number }
   /** An admin edited a bank question: re-check it (verify, safety, dedupe) and apply it only if it passes. */

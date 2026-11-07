@@ -52,7 +52,9 @@ still means a host's edit of a generated question (ADR 0003), which counts for n
 **The builder.** `GET /party-templates`; `POST /parties` with `template: { id, version }` lays the host's fields
 over the template's (`withTemplate`), and `hostQuestions` (pick-one: question, answer, three distractors). Any
 host-written question forces curate. `POST /parties/host-questions/distractors` needs no party; the API runs
-the term filter on the host's words, queues `suggest_distractors` and waits (30 s) for the questions service,
+the term filter on the host's words, queues `suggest_distractors` on its own `distractors` queue (the questions
+service runs it on separate workers, `DISTRACTORS_CONCURRENCY` at once, so a host never waits behind a set
+generation on the single-file questions queue) and waits (30 s) for it,
 which runs the term filter again, makes one `Generator.distract()` call (the real generator under the free and
 paid profiles, `drafting/distract.ts`: one structured call through `providerCall`, recorded as a generate step;
 the mock's own under the mock profile), runs the term filter on every candidate, then the **model safety check**
