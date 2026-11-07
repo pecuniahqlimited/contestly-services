@@ -9,11 +9,11 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   archiveAccount, chatThreads, climbRuns, contactMatches, cornerPosts, corners, crews, currentLadder, db, deliverDueNudges, deviceTokens, emitClimbRivals, emitCornerParty,
   emitCornerReply, emitFillingUp, emitGuestFollowUps, emitHeadToHeadRivals, emitHostCancelled, emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined,
-  emitStreakRisk, emitWinBack, follows, getNudgeConfig, nudge, nudges, parties, partyPlayers, setNudgeConfig, users,
+  emitStreakRisk, emitWinBack, follows, getNudgeConfig, nudge, nudges, parties, partyPlayers, setNudgeConfig, users, blocks,
   type DeliveryDeps, type NudgeRow, type Party, type PushMessage, type PushSender, type User,
 } from "@contestly/db";
 import {
-  DEFAULT_NUDGE_CONFIG, INSTALL_ID_HEADER, addDays, deviceSchema, followerInviteOptionsSchema, lagosDay, notificationSettingsSchema, nudgeMessageSchema, parseThreadLink, type NudgeMessage,
+  DEFAULT_NUDGE_CONFIG, INSTALL_ID_HEADER, activityPageSchema, addDays, deviceSchema, followerInviteOptionsSchema, lagosDay, notificationSettingsSchema, nudgeMessageSchema, parseThreadLink, type NudgeMessage,
 } from "@contestly/shared";
 import { as, makeUser, testApp } from "./harness.js";
 
@@ -594,18 +594,104 @@ describe("asking players to follow your corner", () => {
     await seat(await party(host, { status: "finished", endedAt: new Date(Date.now() - 60 * DAY) }), old);
     const options = followerInviteOptionsSchema.parse((await app.inject({ url: "/me/corner/invite-followers", headers: as(host) })).json());
     expect(options.players.map((p) => p.id).sort()).toEqual([p1.id, p2.id, p3.id].sort());
+    expect(options.players.every((p) => !p.alreadyAsked)).toBe(true);
     expect(options.remainingToday).toBe(2);
 
     const ask = (ids: string[]) => app.inject({ method: "POST", url: "/me/corner/invite-followers", headers: as(host), payload: { userIds: ids } });
     expect((await ask([p1.id])).json()).toEqual({ asked: 1, remainingToday: 1 });
+    // Still listed, now marked: each person once per corner, ever.
+    const after = followerInviteOptionsSchema.parse((await app.inject({ url: "/me/corner/invite-followers", headers: as(host) })).json());
+    expect(after.players.find((p) => p.id === p1.id)?.alreadyAsked).toBe(true);
     const again = await ask([p1.id]);
-    expect([again.statusCode, again.json().error, again.json().details.userIds]).toEqual([422, "not_eligible", [p1.id]]);
-    expect((await ask([follower.id])).statusCode).toBe(422);
+    expect([again.statusCode, again.json().error, again.json().details]).toEqual([422, "not_eligible", { userIds: [p1.id], reasons: { [p1.id]: "already_asked" } }]);
+    expect((await ask([follower.id])).json().details.reasons).toEqual({ [follower.id]: "already_following" });
     const over = await ask([p2.id, p3.id]);
     expect([over.statusCode, over.json().error, over.json().details.remainingToday]).toEqual([429, "follow_asks_limit", 1]);
     expect(await rowsOf(p2)).toHaveLength(0); // nothing half-sent
     expect((await ask([p2.id])).json().remainingToday).toBe(0);
     expect((await one(p1, "corner_follow_ask")).title).toBe(`${host.displayName} asked you to follow Corner`);
     expect((await app.inject({ url: "/me/corner/invite-followers", headers: as(await person("nocorner")) })).json().error).toBe("no_corner");
+  });
+});
+
+describe("asking anyone to follow your corner", () => {
+  async function hostWithCorner(name: string) {
+    const host = await person(name);
+    const [c] = await db.insert(corners).values({ ownerUserId: host.id, name: `Corner ${seq}`, status: "unlocked", unlockedAt: new Date() }).returning();
+    return { host, c };
+  }
+  const W = `Kúnlé${randomUUID().slice(0, 6)}`; // a word only this test's people have
+  const plain = W.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const named = (role: string, extra: Partial<typeof users.$inferInsert> = {}) =>
+    makeUser(`${W} ${role}`, { handle: `fa${++seq}${randomUUID().slice(0, 6)}`, email: `fa${seq}${randomUUID().slice(0, 6)}@test.contestly.invalid`, ...extra });
+  const options = (host: User, q?: string) =>
+    app.inject({ url: `/me/corner/invite-followers${q ? `?q=${encodeURIComponent(q)}` : ""}`, headers: as(host) });
+
+  it("search finds anyone signed up who can be asked, never followers, blocked (either way), banned, deleted or guests", async () => {
+    const { host, c } = await hostWithCorner("fsh");
+    const [stranger, follower, blockedByHost, blockerOfHost, banned, gone, guest] = await Promise.all([
+      named("Stranger"), named("Follower"), named("Blocked"), named("Blocker"), named("Banned", { bannedAt: new Date() }),
+      named("Gone", { deletedAt: new Date() }), named("Guest", { isGuest: true }),
+    ]);
+    await db.insert(follows).values({ cornerId: c.id, followerId: follower.id });
+    await db.insert(blocks).values([{ blockerId: host.id, blockedId: blockedByHost.id }, { blockerId: blockerOfHost.id, blockedId: host.id }]);
+    const res = followerInviteOptionsSchema.parse((await options(host, plain)).json());
+    expect(res.players.map((p) => p.id)).toEqual([stranger.id]);
+    expect(res.players[0].alreadyAsked).toBe(false);
+
+    const ask = (ids: string[]) => app.inject({ method: "POST", url: "/me/corner/invite-followers", headers: as(host), payload: { userIds: ids } });
+    // None of them can be asked, and a blocked or missing account looks the same as one that isn't there.
+    for (const u of [blockedByHost, blockerOfHost, banned, gone, guest]) {
+      const r = await ask([u.id]);
+      expect([r.statusCode, r.json().details.reasons[u.id]]).toEqual([422, "not_found"]);
+    }
+    expect((await ask([stranger.id])).json()).toMatchObject({ asked: 1 });
+    expect(followerInviteOptionsSchema.parse((await options(host, plain)).json()).players[0]).toMatchObject({ id: stranger.id, alreadyAsked: true });
+    expect((await options(host, "a")).statusCode).toBe(400);
+  });
+
+  it("once per corner, ever: another corner may still ask the same person", async () => {
+    const a = await hostWithCorner("fsa");
+    const b = await hostWithCorner("fsb");
+    const target = await named("Target");
+    const ask = (host: User) => app.inject({ method: "POST", url: "/me/corner/invite-followers", headers: as(host), payload: { userIds: [target.id] } });
+    expect((await ask(a.host)).statusCode).toBe(200);
+    await db.update(nudges).set({ status: "skipped", skipReason: "kind_cap", decidedAt: new Date() }).where(eq(nudges.userId, target.id));
+    expect((await ask(a.host)).json().details.reasons).toEqual({ [target.id]: "already_asked" });
+    expect((await ask(b.host)).statusCode).toBe(200);
+    expect(await rowsOf(target, "corner_follow_ask")).toHaveLength(2);
+  });
+
+  it("the daily limit is per corner", async () => {
+    await setNudgeConfig({ ...(await getNudgeConfig()), followAsksPerDay: 1 });
+    try {
+      const { host } = await hostWithCorner("fsd");
+      const [x, y] = [await named("X"), await named("Y")];
+      const ask = (ids: string[]) => app.inject({ method: "POST", url: "/me/corner/invite-followers", headers: as(host), payload: { userIds: ids } });
+      expect((await ask([x.id])).json()).toEqual({ asked: 1, remainingToday: 0 });
+      const over = await ask([y.id]);
+      expect([over.statusCode, over.json().error]).toEqual([429, "follow_asks_limit"]);
+      const other = await hostWithCorner("fse");
+      expect((await app.inject({ method: "POST", url: "/me/corner/invite-followers", headers: as(other.host), payload: { userIds: [y.id] } })).statusCode).toBe(200);
+    } finally {
+      await setNudgeConfig({ ...(await getNudgeConfig()), followAsksPerDay: DEFAULT_NUDGE_CONFIG.followAsksPerDay });
+    }
+  });
+
+  it("with Corners notifications off, the ask is in Activity and nothing is pushed", async () => {
+    const { host } = await hostWithCorner("fst");
+    const target = await named("Quiet", { nudgesOff: ["corners"] });
+    await device(target);
+    await app.inject({ method: "POST", url: "/me/corner/invite-followers", headers: as(host), payload: { userIds: [target.id] } });
+    const w = world();
+    await deliver(w);
+    expect(await one(target, "corner_follow_ask")).toMatchObject({ status: "skipped", skipReason: "toggle_off" });
+    expect(w.push.sent.filter((m) => m.data.kind === "corner_follow_ask")).toEqual([]);
+    const activity = activityPageSchema.parse((await app.inject({ url: "/me/activity", headers: as(target) })).json());
+    expect(activity.items).toHaveLength(1);
+    expect(activity.items[0]).toMatchObject({ kind: "corner_follow_ask", category: "corners", unread: true, people: [{ id: host.id }] });
+    // Blocked since: it leaves Activity too.
+    await db.insert(blocks).values({ blockerId: target.id, blockedId: host.id });
+    expect(activityPageSchema.parse((await app.inject({ url: "/me/activity", headers: as(target) })).json()).items).toEqual([]);
   });
 });

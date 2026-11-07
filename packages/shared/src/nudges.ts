@@ -8,7 +8,7 @@
  */
 import { z } from "zod";
 import { CLIMB_TIME_ZONE } from "./climb.js";
-import { personSchema } from "./person.js";
+import { PEOPLE_SEARCH_DEFAULT, PEOPLE_SEARCH_MAX, PEOPLE_SEARCH_MAX_CHARS, PEOPLE_SEARCH_MIN_CHARS, personSchema, searchText } from "./person.js";
 
 // ---- categories and toggles ------------------------------------------------------------
 
@@ -165,6 +165,12 @@ export interface NudgeKindDef<K extends NudgeKind> {
   livePartyEvent?: boolean;
   /** Only worth a push: when the app is open something else already shows it (the unlock celebration), so no banner. */
   pushOnly?: boolean;
+  /**
+   * Listed in Chats › Activity (GET /me/activity) whatever happened to its push: the category's toggle turns
+   * off the push and the banner, never the Activity entry. Only withdrawn, hidden (blocked, muted) and
+   * no-longer-true nudges stay out.
+   */
+  inActivity?: boolean;
   /** At most this many sent a local day; `per: "ref"` counts per thing (a corner), else per kind. A config key, or a number. */
   perDay?: { max: number | keyof NudgeConfig; per?: "ref" };
   /** Batched: nudges with the same batch key wait so that at most one goes out every this many seconds, merged. */
@@ -209,7 +215,8 @@ const kinds: { [K in NudgeKind]: NudgeKindDef<K> } = {
   },
   corner_follow_ask: {
     category: "corners",
-    render: (d) => ({ title: `${d.hostName} asked you to follow ${d.cornerName}`, body: "Follow to hear when they open a party.", deepLink: DEEP_LINKS.corner(d.cornerId), reason: "You've played in their parties" }),
+    render: (d) => ({ title: `${d.hostName} asked you to follow ${d.cornerName}`, body: "Follow to hear when they open a party.", deepLink: DEEP_LINKS.corner(d.cornerId), reason: "The host asked you" }),
+    inActivity: true,
   },
   corner_open: {
     category: "account", pushOnly: true,
@@ -372,12 +379,42 @@ export const nudgeUserChannel = (userId: string) => `nudge:user:${userId}`;
 export const partyHereKey = (partyId: string) => `party:here:${partyId}`;
 
 /**
- * Asking players to follow your corner (corner setup and the corner page). GET /me/corner/invite-followers:
- * recent players of your parties who don't follow and were never asked, and how many more you can ask today.
- * POST it with the chosen ids: 422 not_eligible (details.userIds) or 429 follow_asks_limit (details.remainingToday)
- * refuse the whole request.
+ * Asking people to follow your corner (corner setup and the corner page). GET /me/corner/invite-followers?q=:
+ * with q (at least 2 characters, as people search), anyone signed up you can ask who matches; without, recent
+ * players of your parties. Never anyone who already follows, nor anyone blocked either way, banned, deleted or
+ * a guest. Each says whether this corner already asked them (once per corner, ever), with how many more asks
+ * the corner can send today. POST it with the chosen ids: 422 not_eligible (details.userIds, details.reasons:
+ * already_asked | already_following | not_found) or 429 follow_asks_limit (details.remainingToday) refuse the
+ * whole request. The ask is a corners nudge and lists in Activity (GET /me/activity) whatever the toggle.
  */
 export const FOLLOW_ASK_MAX_PER_REQUEST = 50;
-export const followerInviteOptionsSchema = z.object({ players: z.array(personSchema), remainingToday: z.number().int(), dailyLimit: z.number().int() });
+export const followerInviteQuerySchema = z.object({
+  q: z.string().optional().transform((q) => (q === undefined || searchText(q) === "" ? undefined : q))
+    .pipe(z.string().transform(searchText).pipe(z.string().min(PEOPLE_SEARCH_MIN_CHARS).max(PEOPLE_SEARCH_MAX_CHARS)).optional()),
+  limit: z.coerce.number().int().min(1).max(PEOPLE_SEARCH_MAX).default(PEOPLE_SEARCH_DEFAULT),
+});
+export const followAskCandidateSchema = personSchema.extend({ alreadyAsked: z.boolean() });
+export const followerInviteOptionsSchema = z.object({ players: z.array(followAskCandidateSchema), remainingToday: z.number().int(), dailyLimit: z.number().int() });
+/**
+ * GET /me/activity?before=&limit=: Chats › Activity, the nudges that list there (inActivity kinds), newest
+ * first, with the people they're about. Unread until opened or dismissed (POST /me/nudges/:id/opened).
+ */
+export const ACTIVITY_PAGE_DEFAULT = 30;
+export const activityQuerySchema = z.object({ before: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(100).default(ACTIVITY_PAGE_DEFAULT) });
+export const activityItemSchema = z.object({
+  id: z.string().uuid(),
+  kind: nudgeKindSchema,
+  category: z.enum(NUDGE_CATEGORIES),
+  title: z.string(),
+  body: z.string(),
+  deepLink: z.string(),
+  reason: z.string(),
+  people: z.array(personSchema),
+  unread: z.boolean(),
+  createdAt: z.string().datetime(),
+});
+export const activityPageSchema = z.object({ items: z.array(activityItemSchema), before: z.string().uuid().nullable() });
+export type ActivityItem = z.infer<typeof activityItemSchema>;
+
 export const followerInviteSchema = z.object({ userIds: z.array(z.string().uuid()).min(1).max(FOLLOW_ASK_MAX_PER_REQUEST) });
 export const followerInviteResultSchema = z.object({ asked: z.number().int(), remainingToday: z.number().int() });
