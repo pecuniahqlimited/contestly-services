@@ -49,6 +49,15 @@ with `host_written` (and `host_authored`, so every existing "out of the bank" ru
 still means a host's edit of a generated question (ADR 0003), which counts for none of the rules here.
 `parties.host_question_count` is recomputed from the rows by `syncHostQuestionCount()` after every change.
 
+**Nothing in code at runtime.** Every number in the rules (the caps per host type, the share, both margins,
+minimum finished parties, account age, the repeat rule, the IP window and busy threshold, recent-block days) is in
+the party template config: versioned, saved with a reason and logged, editable from the console with no release.
+The schema has no defaults, so a save states every rule and a stored set is read as written. A party keeps the
+copy it was made under; one from before copies existed reads the current config, never code (migration 0055 also
+gave those parties a copy). `DEFAULT_PARTY_TEMPLATES` and `DEFAULT_HOST_WRITTEN_RULES` are only version 1
+(migration 0049, restated by 0055, and `db:seed`). Templates are read only from the database: the builder's list,
+what a template fills in (in the version the builder showed) and the preview.
+
 **The builder.** `GET /party-templates`; `POST /parties` with `template: { id, version }` lays the host's fields
 over the template's (`withTemplate`), and `hostQuestions` (pick-one: question, answer, three distractors). Any
 host-written question forces curate. `POST /parties/host-questions/distractors` needs no party; the API runs

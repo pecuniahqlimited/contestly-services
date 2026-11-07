@@ -142,6 +142,53 @@ describe("templates", () => {
   });
 });
 
+describe("templates and rules come from the database only", () => {
+  it("editing, adding and removing templates in config changes GET /party-templates and what a template fills in, with no code change", async () => {
+    const before = await currentPartyTemplates();
+    const [first, second, ...rest] = before.config.templates;
+    const added = { ...first, id: "naming-ceremony", name: "Naming ceremony", occasion: "naming-ceremony", title: "Baby's naming day quiz" };
+    // Edit one (its title), remove one (the second), add one, and reorder (the new one first).
+    const config = { ...before.config, templates: [added, { ...first, title: "Ada's big day quiz" }, ...rest] };
+    const saved = await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(admin), payload: { config, reason: "Edit, add, remove" } });
+    expect(saved.statusCode).toBe(200);
+    try {
+      const offered = partyTemplatesResponseSchema.parse((await app.inject({ method: "GET", url: "/party-templates" })).json());
+      expect(offered.version).toBe(saved.json().version);
+      expect(offered.templates.map((t) => t.id)).toEqual(["naming-ceremony", first.id, ...rest.map((t) => t.id)]);
+      expect(offered.templates.find((t) => t.id === first.id)!.title).toBe("Ada's big day quiz");
+      expect(offered.templates.some((t) => t.id === second.id)).toBe(false);
+      // A party from the added template, in the version the builder showed, takes its fields.
+      await fund(host, ENTRY * 2);
+      const made = await create(host, { template: { id: "naming-ceremony", version: offered.version }, funding: "pooled", entryKobo: ENTRY, maxPlayers: 6, split: "winner" });
+      expect(made.statusCode).toBe(201);
+      expect(await partyRow(made.json().id)).toMatchObject({ title: "Baby's naming day quiz", template: { id: "naming-ceremony", version: offered.version } });
+      // The removed one is gone from the current version.
+      expect((await create(host, { template: { id: second.id, version: offered.version }, funding: "pooled", entryKobo: ENTRY, maxPlayers: 6, split: "winner" })).json().error).toBe("template_not_found");
+    } finally {
+      await db.transaction((tx) => savePartyTemplates(tx, before.config, admin.id));
+    }
+  });
+
+  it("a rule edited in config is what the next party is checked against and keeps a copy of", async () => {
+    const before = await currentPartyTemplates();
+    const person = before.config.rules.capsByHost.person;
+    const lower = { ...person, maxEntryKobo: ENTRY - kobo(100) };
+    const config = { ...before.config, rules: { ...before.config.rules, capsByHost: { ...before.config.rules.capsByHost, person: lower }, minFinishedParties: 9 } };
+    expect((await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(admin), payload: { config, reason: "Lower the entry cap" } })).statusCode).toBe(200);
+    try {
+      expect((await app.inject({ method: "GET", url: "/party-templates" })).json().rules.maxEntryKobo).toBe(lower.maxEntryKobo);
+      expect((await create(host, pooled())).json().error).toBe("curate_entry_above_cap");
+      const ok = await create(host, pooled({ entryKobo: lower.maxEntryKobo }));
+      expect((await partyRow(ok.json().id)).hostRules).toMatchObject({ capsByHost: { person: lower }, minFinishedParties: 9 });
+      // A save must state every rule: nothing is filled in from code.
+      const { minFinishedParties: _dropped, ...partial } = config.rules;
+      expect((await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(admin), payload: { config: { ...config, rules: partial }, reason: "Partial" } })).statusCode).toBe(400);
+    } finally {
+      await db.transaction((tx) => savePartyTemplates(tx, before.config, admin.id));
+    }
+  });
+});
+
 describe("distractors", () => {
   it("suggests three through the questions service's suggester", async () => {
     const res = await app.inject({ method: "POST", url: "/parties/host-questions/distractors", headers: as(host), payload: { question: "Where did Tolu and Femi first meet?", answer: "Church", brief: "a bridal shower" } });

@@ -155,7 +155,10 @@ export type CurateCaps = z.infer<typeof curateCapsSchema>;
 /**
  * The rules for any curate party with money at stake (its host has seen every answer; one with host-written
  * questions is always curate): caps on the entry, the host's cash prize and the pot per host type, the most of
- * the set the host may write, and the settlement check's thresholds.
+ * the set the host may write, and the settlement check's thresholds. Every one is admin config (party template
+ * configs, versioned, logged): no defaults here, so a stored set always states every number, and nothing at runtime
+ * reads one from code. DEFAULT_HOST_WRITTEN_RULES is only the first version (migration 0049, restated by 0055;
+ * db:seed).
  */
 export const hostWrittenRulesSchema = z.object({
   capsByHost: z.object({ person: curateCapsSchema, brand: curateCapsSchema }),
@@ -167,31 +170,31 @@ export const hostWrittenRulesSchema = z.object({
    */
   outlierMarginPct: z.number().int().min(1).max(PERCENT),
   /** A block between host and winner made this many days or fewer before the party counts as a link (a block is no alibi). */
-  recentBlockDays: z.number().int().min(0).max(90).default(7),
+  recentBlockDays: z.number().int().min(0).max(90),
   /**
    * Repeats: a winner who has already won this many of the same host's curate parties within
    * `repeatWindowDays` has the next prize held whatever they scored, linked or not.
    */
-  repeatWinsMax: z.number().int().min(1).max(50).default(2),
+  repeatWinsMax: z.number().int().min(1).max(50),
   /**
    * A new account: younger than this. invited_new: one that came in through the host's invite or referral counts as
    * linked. And any new account is a newcomer (below), invited or not.
    */
-  newAccountDays: z.number().int().min(0).max(365).default(14),
+  newAccountDays: z.number().int().min(0).max(365),
   /**
    * Newcomers: a winner whose account is new (`newAccountDays`) or who had finished fewer than this many parties
    * before this one gets the score checks as if linked (a fresh account made for one party has no ties to find).
    */
-  minFinishedParties: z.number().int().min(0).max(100).default(5),
+  minFinishedParties: z.number().int().min(0).max(100),
   /** Any winner, linked or not, at least this many points above the room on either comparison is held. At least outlierMarginPct. */
-  unlinkedMarginPct: z.number().int().min(1).max(PERCENT).default(50),
+  unlinkedMarginPct: z.number().int().min(1).max(PERCENT),
   /**
    * The IP link: both accounts used the IP between this many hours before the party and its end, and no more than
    * `maxAccountsPerIp` accounts did in that window (more is a carrier's shared address, not a household).
    */
-  ipWindowHoursBefore: z.number().int().min(0).max(24 * 30).default(24),
-  maxAccountsPerIp: z.number().int().min(2).max(1000).default(5),
-  repeatWindowDays: z.number().int().min(1).max(365).default(30),
+  ipWindowHoursBefore: z.number().int().min(0).max(24 * 30),
+  maxAccountsPerIp: z.number().int().min(2).max(1000),
+  repeatWindowDays: z.number().int().min(1).max(365),
 });
 export type HostWrittenRules = z.infer<typeof hostWrittenRulesSchema>;
 const PERSON_CAPS: CurateCaps = { maxEntryKobo: toKobo(1_000), maxHostPrizeKobo: toKobo(50_000), maxPotKobo: toKobo(50_000) };

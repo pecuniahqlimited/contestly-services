@@ -16,13 +16,13 @@
  */
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { evenShares, nextPlaced, reviewPrize, type GradedAnswer } from "@contestly/game";
-import { DEFAULT_HOST_WRITTEN_RULES, OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeDecision, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PrizeLinkKind } from "@contestly/shared";
+import { OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeDecision, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PrizeLinkKind } from "@contestly/shared";
 import type { Tx } from "../client.js";
 import { blocks, liftedBlocks, contactMatches, cornerNewPlayers, crewMembers, crews, partyInvites, heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, playedWith, userSignals, users, type HeldPrize, type Party } from "../schema.js";
 import { adminAlert } from "../alerts.js";
 import { recordAdminAction } from "../admin.js";
 import { moneyTransaction } from "../retry.js";
-import { getSocialConfig } from "../config.js";
+import { currentPartyTemplates, getSocialConfig } from "../config.js";
 import * as ledger from "../ledger.js";
 
 export const HELD_PRIZE_ALERT_KIND = "templates.prize_held";
@@ -126,8 +126,8 @@ export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Prom
   const paid = prizes.filter((x) => x.amountKobo > 0);
   // Every curate party (its host saw every answer) and any with host-written questions (always curate, but say so).
   const checked = (p.mode === "curate" || p.hostQuestionCount > 0) && paid.length > 0;
-  // Rules copied before a setting existed take its default.
-  const rules = { ...DEFAULT_HOST_WRITTEN_RULES, ...p.hostRules };
+  // The party's own copy; one from before copies were kept takes the current config's (never code's).
+  const rules = p.hostRules ?? (await currentPartyTemplates(tx)).config.rules;
   const answers = checked ? await gradedAnswers(tx, p.id) : [];
   const held: HeldPrize[] = [];
   for (const prize of paid) {
