@@ -126,10 +126,10 @@ try {
   ok((await partyNetKobo(userIds.get(FRIEND)!, partyId)) === -ENTRY && (await holdOf(userIds.get(FRIEND)!)) >= held!.amountKobo, "won into their prize hold, not their cash");
   const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `prize_held:${held!.id}`));
   ok(alert?.kind === "templates.prize_held" && alert.severity === "warning", "a warning alert raised");
-  // TEST-ONLY: give the friend a verified phone so the only thing in their way is the held prize.
+  // TEST-ONLY: give the friend a verified phone, so a withdrawal is refused only for a reason that applies to anyone.
   await db.update(users).set({ phone: `+2348${String(Date.now()).slice(-9)}`, phoneVerifiedAt: new Date() }).where(eq(users.id, userIds.get(FRIEND)!));
   const withdraw = await call(FRIEND, "POST", "/wallet/withdrawals", { amountKobo: 10_000, bankAccountId: "00000000-0000-4000-8000-000000000000", clientRequestId: crypto.randomUUID() });
-  ok(withdraw.status === 403 && withdraw.body.details?.reason === "prize_under_review", `a withdrawal is refused: prize_under_review (${withdraw.status} ${JSON.stringify(withdraw.body)})`);
+  ok(withdraw.body.details?.reason === undefined && withdraw.status !== 403, `nothing blocks their withdrawals; the prize just isn't in their cash (${withdraw.status} ${withdraw.body.error})`);
 
   // ---- the admin's queue: reject, passed to second place ---------------------------------------------
   const queue = await api(ADMIN, "GET", "/admin/party-templates/held-prizes?status=held");

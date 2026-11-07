@@ -103,10 +103,9 @@ paid once, one way. A `held_prizes` row and a `templates.prize_held` warning ale
 ADR 0013's lock order: the seated players' and the host's `users` rows first, then the party row, then the ledger.
 
 **The hold.** Money in `prize_hold` isn't cash: it can't be withdrawn, spent on an entry or a host's prize, or used
-to repay a debt (repay-first only acts on cash credits). The person's withdrawals also wait while a prize of theirs
-is held (`withdrawContext()` reports `prizeUnderReview`, `withdrawBlockReason()` answers `prize_under_review`, so the
-request, its recheck, the send-time recheck and `GET /me` all say so), and an account with a held prize can't be
-deleted (`payment_issue`). The invariant `prize_hold` (payments' `findBreaches`) checks each person's hold balance
+to repay a debt (repay-first only acts on cash credits). The person's own cash is untouched: they can withdraw and
+spend it as usual (an earlier build also blocked all their withdrawals while a prize was held; the hold account made
+that unnecessary, so it's gone). An account with a held prize can't be deleted (`payment_issue`). The invariant `prize_hold` (payments' `findBreaches`) checks each person's hold balance
 equals their open held prizes, and the account is in `PLATFORM_AT_LEAST_ZERO`. Migration 0048 adds the account kind.
 
 **Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). Neither may be done by the

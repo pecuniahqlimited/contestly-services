@@ -1718,7 +1718,7 @@ export type ClimbWordRow = typeof climbWords.$inferSelect;
 /**
  * A cash prize held for an admin (ADR 0015): a party with host-written questions paid it to a winner linked to the
  * host who did far better than the room. The prize was credited into their prize_hold ledger account, not their
- * cash; while this row is held their withdrawals wait (withdrawBlockReason: prize_under_review). Cleared: the hold
+ * cash, so it can't be withdrawn or spent while this row is held (their own cash is untouched). Cleared: the hold
  * moves into their cash (one admin below ADR 0013's second-admin threshold, two at or above it). Rejected: taken back and passed on
  * by the rule in ADR 0015's implementation notes, every movement keyed by this row's id. One per winner per party.
  */

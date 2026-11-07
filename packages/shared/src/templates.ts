@@ -330,8 +330,6 @@ export const PRIZE_LINK_KINDS = ["crew", "contact", "played_with", "recent_block
 export type PrizeLinkKind = (typeof PRIZE_LINK_KINDS)[number];
 export const HELD_PRIZE_STATUSES = ["held", "cleared", "rejected"] as const;
 export type HeldPrizeStatus = (typeof HELD_PRIZE_STATUSES)[number];
-/** Withdrawals wait while a prize is held (withdraw_not_allowed, reason prize_under_review). */
-export const PRIZE_UNDER_REVIEW = "prize_under_review";
 
 /**
  * Why a prize is held: the winner beat the room on the host-written questions, or on the whole set (both need a

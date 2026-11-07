@@ -4,7 +4,6 @@
  * At settlement every cash prize is decided before it's paid (payCashPrizes): a winner who is linked to the host and
  * did far better than the room has the prize credited into their prize_hold ledger account, not their cash, so it
  * can't be withdrawn, spent or used to repay a debt; a held_prizes row records it and a warning alert is raised.
- * Their withdrawals also wait while it's held (withdrawBlockReason: prize_under_review).
  *
  * Clear: the hold moves into their cash through ledger.journal() (where what they owe is repaid first, as with any
  * credit). Reject (the rule in ADR 0015's implementation notes): the hold goes back into the party's pot, then to the

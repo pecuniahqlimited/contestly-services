@@ -490,12 +490,12 @@ describe("a held prize", () => {
     heldId = (await heldIn(p.id))[0].id;
   });
 
-  it("sits in the hold: can't be withdrawn, spent or repay anything; their own cash stays theirs (withdrawals wait, prize_under_review)", async () => {
+  it("sits in the hold: can't be withdrawn or spent; their own cash stays theirs, withdrawable as usual", async () => {
     const [u] = await db.select().from(users).where(eq(users.id, w.id));
-    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBe("prize_under_review");
-    await expect(requestPayout(u, { amountKobo: kobo(100), bankAccountId: randomUUID(), clientRequestId: randomUUID() }, { enqueue: async () => undefined }))
-      .rejects.toMatchObject({ statusCode: 403, message: "withdraw_not_allowed", details: { reason: "prize_under_review" } });
-    expect((await app.inject({ method: "GET", url: "/me", headers: as(w) })).json().canWithdraw).toBe(false);
+    // Nothing blocks their withdrawals; the prize just isn't in what they have to withdraw.
+    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
+    expect((await app.inject({ method: "GET", url: "/me", headers: as(w) })).json().canWithdraw).toBe(true);
+    expect((await app.inject({ method: "GET", url: "/wallet", headers: as(w) })).json().cashKobo).toBe(0);
     // The held prize isn't cash: an entry can't come out of it; their own cash pays it as usual.
     const open = (await create(host, pooled({ mode: "curate" }))).json().id;
     expect((await app.inject({ method: "POST", url: `/parties/${open}/join`, headers: as(w) })).json().error).toBe("insufficient_funds");
@@ -574,12 +574,11 @@ describe("clear, and the other reject outcomes", () => {
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(h), payload: { reason: "give it back" } })).json().error).toBe("own_transaction");
     const asked = await clear(admin, "Looks fine to me");
     expect(asked.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: true, prize: { status: "held", clearRequest: { by: { id: admin.id }, reason: "Looks fine to me" } } });
-    const [u] = await db.select().from(users).where(eq(users.id, w.id));
-    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBe("prize_under_review"); // still held
+    expect(await hold(w)).toBe(held.amountKobo); // still held
     expect((await clear(admin, "again")).json()).toMatchObject({ replayed: true, awaitingSecondAdmin: true, prize: { status: "held" } });
     const confirmed = await clear(admin2, "Confirmed: checked their history");
     expect(confirmed.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "cleared", decidedBy: { id: admin2.id } } });
-    expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
+    expect([await hold(w), await cash(w)]).toEqual([0, held.amountKobo]);
     const logs = await db.select().from(adminActions).where(and(eq(adminActions.targetType, "held_prize"), eq(adminActions.targetId, held.id)));
     expect(logs.map((l) => [l.action, l.adminUserId]).sort()).toEqual([["party_templates.held_prize_clear", admin2.id], ["party_templates.held_prize_clear_requested", admin.id]].sort());
   });
@@ -696,11 +695,14 @@ describe("the hold and the money around it", () => {
     await settling;
     expect((await partyRow(p.id)).status).toBe("finished");
 
-    // 2. Whichever way a withdrawal lands against a settle, the prize isn't in it: here it's after, and waits.
+    // 2. After the settle: their own cash withdraws as usual; the prize isn't in it, so asking for more is short.
     const [held] = await heldIn(p.id);
     const [u] = await db.select().from(users).where(eq(users.id, w.id));
-    await expect(requestPayout(u, { amountKobo: kobo(2_000) + held.amountKobo, bankAccountId: account.id, clientRequestId: randomUUID() }, deps)).rejects.toMatchObject({ details: { reason: "prize_under_review" } });
-    expect([await cash(w), await hold(w)]).toEqual([kobo(2_000), held.amountKobo]);
+    await expect(requestPayout(u, { amountKobo: kobo(2_000) + held.amountKobo, bankAccountId: account.id, clientRequestId: randomUUID() }, deps)).rejects.toThrow("insufficient_funds");
+    const { payout } = await requestPayout(u, { amountKobo: kobo(2_000), bankAccountId: account.id, clientRequestId: randomUUID() }, deps);
+    expect(payout.amountKobo).toBe(kobo(2_000));
+    expect([await cash(w), await hold(w)]).toEqual([0, held.amountKobo]);
+    expect(await holdBreaches()).toEqual([]);
   });
 
   it("a withdrawal and a settle at the same moment: the withdrawal gets only their own cash, never the prize", async () => {
@@ -727,9 +729,9 @@ describe("the hold and the money around it", () => {
       settle(settleDeps, p.id),
     ]);
     const [held] = await heldIn(p.id);
-    // Either the withdrawal ran first (their 2,000 out) or after (refused: prize_under_review); the prize is in the hold either way.
-    if (out.status === "fulfilled") expect(await cash(w)).toBe(0);
-    else { expect((out.reason as { details?: { reason?: string } }).details?.reason).toBe("prize_under_review"); expect(await cash(w)).toBe(kobo(2_000)); }
+    // Whichever ran first, the withdrawal takes their own 2,000 and nothing more; the prize is in the hold.
+    expect(out.status).toBe("fulfilled");
+    expect(await cash(w)).toBe(0);
     expect(await hold(w)).toBe(held.amountKobo);
     expect(await holdBreaches()).toEqual([]);
   });
