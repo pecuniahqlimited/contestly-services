@@ -640,6 +640,31 @@ describe("clear, and the other reject outcomes", () => {
     ]);
   });
 
+  it("no self-interest: an admin the reject would pay (placed next, or due a refund) can neither ask nor confirm it", async () => {
+    // Placed next: the reject would pass the prize to them.
+    const h = await makeUser(name("hosts"));
+    const w = await makeUser(name("wins"));
+    const next = await makeUser(name("admnext"), { isAdmin: true });
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: next, correct: MISS }, { u: await makeUser(name("ps")), correct: MISS }] });
+    const [held] = await heldIn(p.id);
+    expect((await decide("reject", held.id, next, "Fed the answers")).json().error).toBe("own_transaction");
+    await decide("reject", held.id, admin, "Fed the answers");
+    expect((await decide("reject", held.id, next, "Agreed")).json().error).toBe("own_transaction");
+    const done = await decide("reject", held.id, admin2, "Agreed");
+    expect(done.json().prize).toMatchObject({ status: "rejected", outcome: { kind: "passed_on", to: [{ userId: next.id }] }, decidedBy: { id: admin2.id } });
+
+    // Due a refund: second place already has their share, nobody's left to pass it to, so it's refunded to the seats.
+    const h2 = await makeUser(name("hostr"));
+    const w2 = await makeUser(name("winr"));
+    const paid = await makeUser(name("admpaid"), { isAdmin: true });
+    await db.insert(contactMatches).values({ userId: h2.id, contactUserId: w2.id });
+    const p2 = await playedParty({ hostUser: h2, split: [70, 30], seats: [{ u: w2, correct: ACE }, { u: paid, correct: MISS }] });
+    const [held2] = await heldIn(p2.id);
+    expect((await decide("reject", held2.id, paid, "Fed the answers")).json().error).toBe("own_transaction");
+    expect((await decided("reject", held2.id, "Fed the answers")).json().prize.outcome).toMatchObject({ kind: "refunded", to: [{ userId: paid.id }] });
+  });
+
   it("a host's cash prize to a linked winner: checked the same, and back to the host when nobody's left to pass it to", async () => {
     const h = await makeUser(name("hostf"));
     const w = await makeUser(name("winf"));

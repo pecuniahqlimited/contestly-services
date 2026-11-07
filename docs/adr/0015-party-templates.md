@@ -121,9 +121,11 @@ spend it as usual (an earlier build also blocked all their withdrawals while a p
 that unnecessary, so it's gone). An account with a held prize can't be deleted (`payment_issue`). The invariant `prize_hold` (payments' `findBreaches`) checks each person's hold balance
 equals their open held prizes, and the account is in `PLATFORM_AT_LEAST_ZERO`. Migration 0048 adds the account kind.
 
-**Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). Neither may be done by the
-host or the winner (403 `own_transaction`; for a reject too, since rejecting a host-funded prize can return it to
-the host). **Every decision takes two admins, whatever the amount** (`twoAdmins`): the first admin's clear or reject
+**Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). No admin with an interest
+decides (403 `own_transaction`), neither asking nor confirming: the host (rejecting a host-funded prize can return
+it to them), the winner, and anyone in the decision's recipient list, i.e. whoever a reject would pass the prize to
+or refund (an admin who played and placed next, or holds a seat). A request whose asker has since become a
+recipient (the plan changed) doesn't count: the next ask replaces it. **Every decision takes two admins, whatever the amount** (`twoAdmins`): the first admin's clear or reject
 is a request (`requested_decision`, `requested_by_user_id`; the prize stays held, `awaitingSecondAdmin`), the same
 admin asking again is a replay, a different admin asking the same confirms it, and asking the other decision
 replaces the request (a second admin who disagrees doesn't confirm). Both steps are logged

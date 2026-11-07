@@ -6,7 +6,7 @@
  * credited into their prize_hold ledger account, not their cash, so it can't be withdrawn, spent or used to repay a
  * debt; a held_prizes row records it and a warning alert is raised.
  *
- * Every decision takes two admins, neither of them the host or the winner. Clear: the hold moves into their cash through ledger.journal() (where what they owe is repaid first, as with any
+ * Every decision takes two admins, neither of them the host, the winner or anyone the decision pays. Clear: the hold moves into their cash through ledger.journal() (where what they owe is repaid first, as with any
  * credit). Reject (the rule in ADR 0015's implementation notes): the hold goes back into the party's pot, then to the
  * best-placed eligible player without a prize (decided the same way, so possibly held in turn); with nobody to pass
  * it to, a host's prize goes back to the host and a pooled one is refunded evenly to the other seats (with nobody
@@ -169,9 +169,14 @@ async function lockHeld(tx: Tx, id: string) {
   return row;
 }
 
-/** Neither the host nor the winner decides their own held prize (ADR 0013's own-transaction rule). */
-function refuseOwn(row: HeldPrize, adminUserId: string) {
-  if (adminUserId === row.userId || adminUserId === row.hostUserId) throw httpError(403, OWN_TRANSACTION);
+/**
+ * Who may not decide a held prize (ADR 0013's own-transaction rule, widened): the host, the winner, and anyone the
+ * decision would pay (a reject's pass-on or refunds).
+ */
+const interested = (row: HeldPrize, recipients: string[] = []) => new Set([row.userId, row.hostUserId, ...recipients]);
+
+function refuseOwn(interestedIds: ReadonlySet<string>, adminUserId: string) {
+  if (interestedIds.has(adminUserId)) throw httpError(403, OWN_TRANSACTION);
 }
 
 export interface DecisionOutcome { row: HeldPrize; replayed: boolean; awaitingSecondAdmin: boolean }
@@ -180,11 +185,12 @@ type Step = { confirmed: false; outcome: DecisionOutcome } | { confirmed: true; 
 /**
  * Every decision on a held prize takes two admins (ADR 0015), whatever the amount: the first admin's clear or reject
  * is a request (the prize stays held), the same admin asking again is a replay, and a different admin asking the same
- * confirms it. Asking the other decision replaces the request. The caller has locked the row and refused the admin
- * if it's their own. Logged.
+ * confirms it. Asking the other decision replaces the request, and so does any ask when the requester has since
+ * become interested (a reject's plan now pays them). The caller has locked the row and refused the admin if
+ * they're interested. Logged.
  */
-async function twoAdmins(tx: Tx, row: HeldPrize, adminUserId: string, decision: HeldPrizeDecision, reason: string): Promise<Step> {
-  if (row.requestedDecision === decision && row.requestedByUserId) {
+async function twoAdmins(tx: Tx, row: HeldPrize, adminUserId: string, decision: HeldPrizeDecision, reason: string, interestedIds: ReadonlySet<string>): Promise<Step> {
+  if (row.requestedDecision === decision && row.requestedByUserId && !interestedIds.has(row.requestedByUserId)) {
     if (row.requestedByUserId === adminUserId) return { confirmed: false, outcome: { row, replayed: true, awaitingSecondAdmin: true } };
     return { confirmed: true, requestedBy: row.requestedByUserId };
   }
@@ -198,7 +204,7 @@ async function twoAdmins(tx: Tx, row: HeldPrize, adminUserId: string, decision: 
 
 /**
  * An admin clears a held prize: once a second admin confirms (twoAdmins), it moves from their hold into their cash.
- * Neither admin may be the host or the winner.
+ * Neither admin may be the host or the winner (the one it pays).
  */
 export async function clearHeldPrize(adminUserId: string, id: string, reason: string): Promise<DecisionOutcome> {
   return moneyTransaction(async (tx) => {
@@ -208,8 +214,9 @@ export async function clearHeldPrize(adminUserId: string, id: string, reason: st
     const row = await lockHeld(tx, id);
     if (row.status === "cleared") return { row, replayed: true, awaitingSecondAdmin: false };
     if (row.status !== "held") throw httpError(409, "prize_already_decided", { status: row.status });
-    refuseOwn(row, adminUserId);
-    const step = await twoAdmins(tx, row, adminUserId, "clear", reason);
+    const who = interested(row);
+    refuseOwn(who, adminUserId);
+    const step = await twoAdmins(tx, row, adminUserId, "clear", reason, who);
     if (!step.confirmed) return step.outcome;
     // The prize becomes their cash: through journal(), so what they owe is repaid from it first, as from any credit.
     await ledger.journal(tx, { type: "held_prize_cleared", refType: "party", refId: row.partyId, idempotencyKey: `held_prize_clear:${row.id}`, legs: [{ account: ledger.prizeHoldAccount(row.userId), amountKobo: -row.amountKobo }, { account: cashOf(row.userId), amountKobo: row.amountKobo }] });
@@ -261,10 +268,12 @@ export async function rejectHeldPrize(adminUserId: string, id: string, reason: s
     const held = await lockHeld(tx, id);
     if (held.status === "rejected") return { row: held, replayed: true, awaitingSecondAdmin: false };
     if (held.status !== "held") throw httpError(409, "prize_already_decided", { status: held.status });
-    refuseOwn(held, adminUserId); // a host rejecting a host-funded prize would get it back
     const plan = await planReject(tx, held, p);
     if (JSON.stringify(plan.outcome) !== JSON.stringify(planned.outcome)) throw httpError(409, "party_changed_try_again");
-    const step = await twoAdmins(tx, held, adminUserId, "reject", reason);
+    // Nobody the reject would pay decides it (an admin who placed next, or is due a refund), nor the host or winner.
+    const who = interested(held, plan.outcome.to.map((t) => t.userId));
+    refuseOwn(who, adminUserId);
+    const step = await twoAdmins(tx, held, adminUserId, "reject", reason, who);
     if (!step.confirmed) return step.outcome;
 
     // Out of their hold, never their cash: it was never theirs to spend.
