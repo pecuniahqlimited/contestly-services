@@ -137,7 +137,9 @@ ADR 0013's lock order: the seated players' and the host's `users` rows first, th
 to repay a debt (repay-first only acts on cash credits). The person's own cash is untouched: they can withdraw and
 spend it as usual (an earlier build also blocked all their withdrawals while a prize was held; the hold account made
 that unnecessary, so it's gone). An account with a held prize can't be deleted (`payment_issue`). The invariant `prize_hold` (payments' `findBreaches`) checks each person's hold balance
-equals their open held prizes, and the account is in `PLATFORM_AT_LEAST_ZERO`. Migration 0048 adds the account kind.
+equals their open held prizes, and the account is in `PLATFORM_AT_LEAST_ZERO`; `ledger.journal()` itself refuses
+to take a prize hold below zero (`HoldOverdrawn`), so a clear or reject of a prize that was never in the hold (rows
+from a build before the hold account) fails instead of minting cash. Migration 0048 adds the account kind.
 
 **Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). No admin with an interest
 decides (403 `own_transaction`), neither asking nor confirming: the host (rejecting a host-funded prize can return

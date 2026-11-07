@@ -12,7 +12,7 @@ import { Worker } from "bullmq";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import {
   adminActions, adminAlerts, bankQuestions, ledgerAccounts, blocks, contactMatches, cornerNewPlayers, partyInvites, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
-  savePartyTemplates, currentPartyTemplates, takeSeat, userSignals, users, blockedEitherWay, liftedBlocks, withdrawBlockReason, type Party, type User,
+  savePartyTemplates, currentPartyTemplates, takeSeat, HoldOverdrawn, userSignals, users, blockedEitherWay, liftedBlocks, withdrawBlockReason, type Party, type User,
 } from "@contestly/db";
 import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
 import {
@@ -846,6 +846,18 @@ describe("the hold and the money around it", () => {
     expect(await cash(w)).toBe(0);
     expect(await hold(w)).toBe(held.amountKobo);
     expect(await holdBreaches()).toEqual([]);
+  });
+
+  it("journal() refuses to take a prize hold below zero (a clear of a prize that was never held there)", async () => {
+    const u = await makeUser(name("overdraw"));
+    const take = (amountKobo: number) => db.transaction((tx) => ledger.journal(tx, { type: "held_prize_cleared", idempotencyKey: `t:tpl:overdraw:${u.id}:${randomUUID()}`, legs: [{ account: ledger.prizeHoldAccount(u.id), amountKobo: -amountKobo }, { account: { userId: u.id, kind: "cash" }, amountKobo }] }));
+    await expect(take(kobo(100))).rejects.toThrow(HoldOverdrawn);
+    expect([await hold(u), await cash(u)]).toEqual([0, 0]); // rolled back
+    // What is held can come out, and no more.
+    await db.transaction((tx) => ledger.journal(tx, { type: "party_prize", idempotencyKey: `t:tpl:overdraw-in:${u.id}`, legs: [{ account: ledger.prizeHoldAccount(u.id), amountKobo: kobo(100) }, { account: { system: "dev_mint" }, amountKobo: -kobo(100) }] }));
+    await expect(take(kobo(101))).rejects.toThrow(HoldOverdrawn);
+    await take(kobo(100));
+    expect([await hold(u), await cash(u)]).toEqual([0, kobo(100)]);
   });
 
   it("the invariant sees a hold that doesn't match its held prizes", async () => {

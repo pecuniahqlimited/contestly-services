@@ -9,7 +9,7 @@ export * from "./social.js";
 export * from "./corners.js";
 export * from "./partyProgress.js";
 export * as ledger from "./ledger.js";
-export { InsufficientFunds, LedgerImbalance, IdempotencyConflict } from "./ledger.js";
+export { InsufficientFunds, LedgerImbalance, IdempotencyConflict, HoldOverdrawn } from "./ledger.js";
 export * from "./climb.js";
 export * from "./climbWords.js";
 export * from "./payable.js";
