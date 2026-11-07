@@ -43,7 +43,7 @@ Hosts throw parties for occasions: a birthday, a bridal shower, an office party.
 **Data.** `party_template_configs` holds one immutable row per admin save of the whole config: the templates (in
 picker order; reorder, hide with `hidden`, remove by leaving one out) and the host-written rules (`maxEntryKobo`,
 `maxHostPrizeKobo`, `maxHostShareBps` default 5000, `outlierMarginPct` default 30). Version 1 (six templates) is
-written by migration 0046 and `db:seed`. A party keeps `parties.template` (id, version, name, occasion, themed
+written by migration 0049 and `db:seed`. A party keeps `parties.template` (id, version, name, occasion, themed
 spec) and `parties.host_rules` (the rules when it was made). Host-written questions are `party_questions` rows
 with `host_written` (and `host_authored`, so every existing "out of the bank" rule applies); `host_authored` alone
 still means a host's edit of a generated question (ADR 0003), which counts for none of the rules here.
@@ -99,11 +99,11 @@ Curate's own rules (drafts, approval, the lockout, the start gate) don't change.
   address. Only signed-up accounts created before the window count towards that number: guest sessions (cheap to
   open, 300 an hour per IP) or accounts made for the party on the same Wi-Fi would otherwise make a household's
   address look like a carrier's and drop the link. "Used" is the signal's first-seen..last-seen span overlapping the window; `user_signals.last_seen_at`
-  (migration 0049, backfilled from first seen) is re-stamped at most every 10 minutes per account and address. Each is a link like the others: it holds a prize only with an outlier score. A block either way made within `recentBlockDays` (host-written rules, default 7)
+  (migration 0052, backfilled from first seen) is re-stamped at most every 10 minutes per account and address. Each is a link like the others: it holds a prize only with an outlier score. A block either way made within `recentBlockDays` (host-written rules, default 7)
   before the party, or since, is a link itself (`recent_block`); an older block hides nothing, since the other
   relationships are still read through it. "The party" is when it went live (else its start time). A block lifted
   before settlement still counts: unblocking writes a `lifted_blocks` row (who, whom, when it was made, when it
-  was lifted; migration 0050) in the same transaction as it deletes the `blocks` row.
+  was lifted; migration 0053) in the same transaction as it deletes the `blocks` row.
 - *Newcomers*: a winner whose account is younger than `newAccountDays` (default 14) at the party, or who had
   finished fewer than `minFinishedParties` (default 5) parties before it, invited or not, gets the score checks as
   if linked (`newcomer` and `finishedParties` in the evidence). A fresh account made on another phone for one party,
@@ -139,7 +139,7 @@ spend it as usual (an earlier build also blocked all their withdrawals while a p
 that unnecessary, so it's gone). An account with a held prize can't be deleted (`payment_issue`). The invariant `prize_hold` (payments' `findBreaches`) checks each person's hold balance
 equals their open held prizes, and the account is in `PLATFORM_AT_LEAST_ZERO`; `ledger.journal()` itself refuses
 to take a prize hold below zero (`HoldOverdrawn`), so a clear or reject of a prize that was never in the hold (rows
-from a build before the hold account) fails instead of minting cash. Migration 0048 adds the account kind.
+from a build before the hold account) fails instead of minting cash. Migration 0051 adds the account kind.
 
 **Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). No admin with an interest
 decides (403 `own_transaction`), neither asking nor confirming: the host (rejecting a host-funded prize can return
@@ -152,7 +152,7 @@ replaces the request (a second admin who disagrees doesn't confirm). Both steps 
 (`…_requested`, then the decision). ADR 0013's amount threshold isn't used: a pooled prize is the pot less the rake,
 always under the pot cap, so a threshold at the cap would never fire. Clear moves the hold into cash with one
 journal (`held_prize_clear:<id>`), through `ledger.journal()`, so what the person owes is repaid from it first, as
-from any credit. Migration 0051 renames the clear-request columns and marks older requests as clears.
+from any credit. Migration 0054 renames the clear-request columns and marks older requests as clears.
 **Reject, the rule:** the prize is taken back from the winner into the party's pot
 (`held_prize_reject:<id>`), then
 

@@ -118,7 +118,7 @@ const templatesRow = (r: typeof partyTemplateConfigs.$inferSelect): PartyTemplat
 
 /**
  * Party templates and the host-written rules (ADR 0015): the newest version is current. Version 1 comes from
- * migration 0046 (and db:seed), so a missing config is a broken database: an error, never a write here.
+ * migration 0049 (and db:seed), so a missing config is a broken database: an error, never a write here.
  */
 export async function currentPartyTemplates(conn: Conn = db): Promise<PartyTemplatesRow> {
   const [row] = await conn.select().from(partyTemplateConfigs).orderBy(desc(partyTemplateConfigs.version)).limit(1);
@@ -140,7 +140,7 @@ export async function savePartyTemplates(tx: Tx, config: unknown, byUserId: stri
   return templatesRow(row);
 }
 
-/** The seed: version 1 (DEFAULT_PARTY_TEMPLATES), if it isn't there yet; the same row migration 0046 writes. */
+/** The seed: version 1 (DEFAULT_PARTY_TEMPLATES), if it isn't there yet; the same row migration 0049 writes. */
 export async function seedPartyTemplates(conn: Conn = db) {
   await conn.insert(partyTemplateConfigs).values({ version: 1, config: partyTemplatesConfigSchema.parse(DEFAULT_PARTY_TEMPLATES) }).onConflictDoNothing();
 }

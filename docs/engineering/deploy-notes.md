@@ -64,3 +64,8 @@ then. `--force` grants anyway; the `admin_actions` row and the alert both record
   switch before there's traffic, or watch the job's log. The Gemini key must be on a billing-enabled
   project (Google Search grounding has no unpaid quota and is capped at 1,500 grounded requests a day). Set
   the caps in `/admin/questions/providers` before the first real party.
+- **Party templates (ADR 0015).** Migrations 0049–0054 roll. 0049 writes template config version 1; 0051
+  adds the `prize_hold` account kind (an enum value, outside a transaction); 0052 adds
+  `user_signals.last_seen_at` and backfills it from `first_seen_at` before it becomes NOT NULL (hand-edited:
+  a plain default would make every old IP look used today and link strangers at the next party), so it
+  touches every signal row once; 0050 and 0054 rename columns on `held_prizes`, a table nothing older reads.

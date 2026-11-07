@@ -418,7 +418,7 @@ export const heldPrizeDecisionSchema = z.object({ reason: z.string().trim().min(
  */
 export const heldPrizeDecisionResponseSchema = z.object({ prize: adminHeldPrizeSchema, replayed: z.boolean(), awaitingSecondAdmin: z.boolean() });
 
-// ---- the starting set (seed data, not code: version 1 is written by migration 0046 and db:seed) ------
+// ---- the starting set (seed data, not code: version 1 is written by migration 0049 and db:seed) ------
 
 export const DEFAULT_PARTY_TEMPLATES: PartyTemplatesConfig = {
   rules: DEFAULT_HOST_WRITTEN_RULES,
