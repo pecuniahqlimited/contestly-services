@@ -70,8 +70,8 @@ reach (`potCapKobo`: every seat's entry plus the host's cash prize, under `maxPo
 host's share stay under the caps, at creation and at every add (`host_written_pot_above_cap`). The entry cap alone
 let 200 seats at ₦1,000 make a ₦200,000 pot.
 
-**The settlement check** (`holdFlaggedPrizes`, in the settle transaction, after prizes are posted): only for
-parties with host-written questions, only cash prizes (goods move no money).
+**The settlement check** (`payCashPrizes`, in the settle transaction, deciding each prize before it's paid): only
+for parties with host-written questions, only cash prizes (goods move no money).
 
 - *Linked* reads the raw relationships, never `yourPeople()` (which drops blocked pairs, so a host could block a
   friend before the party to dodge the link): crew mates in a live crew (`crew`), contacts either way (`contact`),
@@ -86,15 +86,28 @@ parties with host-written questions, only cash prizes (goods move no money).
   relationships are still read through it. "The party" is when it went live (else its start time). A block lifted
   before settlement still counts: unblocking writes a `lifted_blocks` row (who, whom, when it was made, when it
   was lifted; migration 0050) in the same transaction as it deletes the `blocks` row.
-- *Flagged*: linked, and the winner's mean correctness at least `outlierMarginPct` points above everyone else
-  seated on either of two comparisons (`reviewPrize` in packages/game): the host-written questions (when at least
-  one was played), or the whole set, because a curate host has seen every generated answer too (ADR 0003). The
-  evidence carries both comparisons and which one tripped (`flaggedOn`).
+- *Newcomers*: a winner whose account is younger than `newAccountDays` (default 14) at the party, or who had
+  finished fewer than `minFinishedParties` (default 5) parties before it, invited or not, gets the score checks as
+  if linked (`newcomer` and `finishedParties` in the evidence). A fresh account made on another phone for one party,
+  joined from the Parties tab over mobile data, has none of the ties above to find.
+- *Flagged*: linked or a newcomer, and the winner's mean correctness at least `outlierMarginPct` (default 30) points
+  above everyone else seated on either of two comparisons (`reviewPrize` in packages/game): the host-written
+  questions (when at least one was played), or the whole set, because a curate host has seen every generated answer
+  too (ADR 0003). Anyone at all, linked or not, newcomer or not, at least `unlinkedMarginPct` (default 50; a config
+  save refuses it below `outlierMarginPct`) above the room on either comparison is held too. The evidence carries
+  both comparisons, both thresholds and which one tripped (`flaggedOn`).
 - *Repeats*, across parties: a winner who has already won `repeatWinsMax` (default 2) of the same host's finished
   host-written parties within `repeatWindowDays` (default 30) before this one has the prize held whatever they
   scored and whether or not they're linked (`flaggedOn: ["repeat"]`, `priorWins` in the evidence). A win is a prize,
   held or cleared; a rejected one isn't. It catches what a single party can't: one host feeding the same friend
   across many small parties under the caps.
+- *Accepted limit.* The margin is measured against the room's mean, not the runner-up: a friend who knows every
+  answer can score just under the margin above the room's mean, still beat the best honest player on speed, and be
+  paid; accomplices seated in the room also lift its mean. No rule over one party's scores closes that without
+  holding honest strong players. It's accepted, with three backstops: the newcomer rule (an accomplice's account
+  needs age and a play history first), the unlinked threshold (a large enough margin holds anyone), and the repeat
+  rule (the same winner can take only `repeatWinsMax` of a host's parties in the window). The caps bound what one
+  party can pay out.
 
 Each prize is decided before it's paid (`payCashPrizes`, shared by settlement and a reject's pass-on). A flagged
 prize is credited into the winner's **`prize_hold`** ledger account (a per-person platform account, like

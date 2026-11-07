@@ -1,9 +1,10 @@
 /**
  * Held prizes (ADR 0015): the settlement check for parties with host-written questions and the admin's decision.
  *
- * At settlement every cash prize is decided before it's paid (payCashPrizes): a winner who is linked to the host and
- * did far better than the room has the prize credited into their prize_hold ledger account, not their cash, so it
- * can't be withdrawn, spent or used to repay a debt; a held_prizes row records it and a warning alert is raised.
+ * At settlement every cash prize is decided before it's paid (payCashPrizes): a winner who is linked to the host (or
+ * a newcomer) and did far better than the room, or anyone very far better, or a repeat winner, has the prize
+ * credited into their prize_hold ledger account, not their cash, so it can't be withdrawn, spent or used to repay a
+ * debt; a held_prizes row records it and a warning alert is raised.
  *
  * Clear: the hold moves into their cash through ledger.journal() (where what they owe is repaid first, as with any
  * credit). Reject (the rule in ADR 0015's implementation notes): the hold goes back into the party's pot, then to the
@@ -15,7 +16,7 @@
  */
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { evenShares, nextPlaced, reviewPrize, type GradedAnswer } from "@contestly/game";
-import { DEFAULT_HOST_WRITTEN_RULES, OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeOutcome, type HostWrittenRules, type PrizeLinkKind } from "@contestly/shared";
+import { DEFAULT_HOST_WRITTEN_RULES, OWN_TRANSACTION, PRIZE_LINK_KINDS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PrizeLinkKind } from "@contestly/shared";
 import type { Tx } from "../client.js";
 import { blocks, liftedBlocks, contactMatches, cornerNewPlayers, crewMembers, crews, partyInvites, heldPrizes, parties, partyAnswers, partyPlayers, partyQuestions, playedWith, userSignals, users, type HeldPrize, type Party } from "../schema.js";
 import { adminAlert } from "../alerts.js";
@@ -94,6 +95,22 @@ async function priorWins(tx: Tx, p: Party, userId: string, windowDays: number): 
   return Number(row.n);
 }
 
+/**
+ * Whether the winner is a newcomer to check as if linked (ADR 0015): an account younger than `newAccountDays` at the
+ * party, or one that had finished fewer than `minFinishedParties` parties before it. A fresh account made for one
+ * party has none of the ties linksToHost() looks for.
+ */
+async function newcomer(tx: Tx, p: Party, userId: string, rules: HostWrittenRules): Promise<{ is: boolean; finishedParties: number }> {
+  const partyAt = p.liveAt ?? p.startsAt;
+  const newSince = new Date(partyAt.getTime() - rules.newAccountDays * DAY_MS);
+  const [row] = await tx.execute(sql`
+    select (select created_at >= ${newSince.toISOString()}::timestamptz from ${users} where id = ${userId}) as young,
+      (select count(*)::int from ${partyPlayers} pp join ${parties} pa on pa.id = pp.party_id
+        where pp.user_id = ${userId} and pa.id <> ${p.id} and pa.status = 'finished') as finished`) as unknown as { young: boolean; finished: number }[];
+  const finishedParties = Number(row.finished);
+  return { is: !!row.young || finishedParties < rules.minFinishedParties, finishedParties };
+}
+
 export interface CashPrize { userId: string; place: number; amountKobo: number }
 
 /**
@@ -113,6 +130,7 @@ export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Prom
     const key = `party_prize:${p.id}:${prize.userId}`;
     const review = checked ? reviewPrize({
       winnerId: prize.userId, links: await linksToHost(tx, p, prize.userId, rules), answers, marginPct: rules.outlierMarginPct,
+      newcomer: await newcomer(tx, p, prize.userId, rules), unlinkedMarginPct: rules.unlinkedMarginPct,
       repeat: { priorWins: await priorWins(tx, p, prize.userId, rules.repeatWindowDays), max: rules.repeatWinsMax },
     }) : null;
     if (review?.flagged) {
@@ -122,7 +140,7 @@ export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Prom
       if (row) {
         held.push(row);
         await adminAlert({
-          kind: HELD_PRIZE_ALERT_KIND, severity: "warning", subject: review.evidence.flaggedOn.includes("repeat") ? "A prize is held: the same winner keeps winning this host's parties" : "A prize is held: a winner linked to the host beat the room",
+          kind: HELD_PRIZE_ALERT_KIND, severity: "warning", subject: heldSubject(review.evidence),
           dedupeKey: `prize_held:${row.id}`, refType: "party", refId: p.id,
           details: { heldPrizeId: row.id, partyId: p.id, winnerId: prize.userId, hostId: p.createdByUserId, place: prize.place, amountKobo: prize.amountKobo, ...review.evidence },
         }, tx);
@@ -133,6 +151,13 @@ export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Prom
     await tx.update(partyPlayers).set({ prizeKobo: prize.amountKobo }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, prize.userId)));
   }
   return held;
+}
+
+function heldSubject(e: HeldPrizeEvidence): string {
+  if (e.flaggedOn.includes("repeat")) return "A prize is held: the same winner keeps winning this host's parties";
+  if (e.links.length) return "A prize is held: a winner linked to the host beat the room";
+  if (e.newcomer) return "A prize is held: a new or barely-played account beat the room";
+  return "A prize is held: a winner far above the room";
 }
 
 /** Lock these people's users rows, in id order (the first step of ADR 0013's lock order). */

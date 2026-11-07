@@ -13,7 +13,8 @@ export const templatesVersionView = (row: PartyTemplatesRow): PartyTemplatesVers
 /** GET /party-templates: the current version's templates, hidden ones left out, and the caps the Stakes scene shows. */
 export async function offeredTemplates(): Promise<PartyTemplatesResponse> {
   const { version, config } = await currentPartyTemplates();
-  const { outlierMarginPct: _margin, recentBlockDays: _blocks, ...rules } = config.rules;
+  const { maxEntryKobo, maxHostPrizeKobo, maxPotKobo, maxHostShareBps } = config.rules;
+  const rules = { maxEntryKobo, maxHostPrizeKobo, maxPotKobo, maxHostShareBps }; // the caps only, never the check's thresholds
   return { version, templates: config.templates.filter((t) => !t.hidden).map(({ hidden: _h, ...t }) => t), rules };
 }
 

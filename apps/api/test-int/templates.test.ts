@@ -297,6 +297,21 @@ async function playedParty(opts: { hostUser: User; seats: { u: User; correct: nu
   settled.push(p.id);
   return (await partyRow(p.id))!;
 }
+/**
+ * An established account, so the newcomer rule doesn't apply: older than newAccountDays, with minFinishedParties
+ * finished parties behind it (hosted by someone unrelated, nothing won).
+ */
+async function settledUser(label: string): Promise<User> {
+  const u = await makeUser(name(label), { createdAt: new Date(Date.now() - (DEFAULT_HOST_WRITTEN_RULES.newAccountDays + 30) * 86_400_000) });
+  for (let i = 0; i < DEFAULT_HOST_WRITTEN_RULES.minFinishedParties; i++) {
+    const [old] = await db.insert(parties).values({
+      createdByUserId: admin.id, title: `Past ${randomUUID().slice(0, 6)}`, category: "General knowledge", entryKobo: 0, maxPlayers: 10, funding: "pooled", split: [100],
+      status: "finished", startsAt: new Date(Date.now() - 40 * 86_400_000), endedAt: new Date(Date.now() - 40 * 86_400_000),
+    }).returning();
+    await db.insert(partyPlayers).values({ partyId: old.id, userId: u.id });
+  }
+  return u;
+}
 const heldIn = (partyId: string) => db.select().from(heldPrizes).where(eq(heldPrizes.partyId, partyId));
 const ACE = [100, 100, 0, 0];
 const MISS = [0, 0, 100, 100];
@@ -332,16 +347,42 @@ describe("the link check and the outlier flag at settlement", () => {
     }
   });
 
-  it("pays as normal: an unlinked winner however well they did, and a linked one within the margin on both comparisons", async () => {
+  it("pays as normal: an established, unlinked winner below the unlinked threshold, and a linked one within the margin on both", async () => {
     const h = await makeUser(name("hostc"));
-    const stranger = await makeUser(name("stranger"));
-    const p1 = await playedParty({ hostUser: h, seats: [{ u: stranger, correct: ACE }, { u: await makeUser(name("py")), correct: MISS }] });
+    // 40 points above the room on the host's questions: over the linked margin (30), under the unlinked one (50).
+    const ahead = [100, 100, 50, 50], behind = [50, 70, 50, 50];
+    const stranger = await settledUser("stranger");
+    const p1 = await playedParty({ hostUser: h, seats: [{ u: stranger, correct: ahead }, { u: await makeUser(name("py")), correct: behind }] });
     expect(await heldIn(p1.id)).toEqual([]);
     const friend = await makeUser(name("friend"));
     await db.insert(contactMatches).values({ userId: friend.id, contactUserId: h.id }); // either way makes them contacts
     // 50% against 50%, on the host's questions and on the set.
     const p2 = await playedParty({ hostUser: h, seats: [{ u: friend, correct: [100, 0, 100, 0] }, { u: await makeUser(name("pz")), correct: [0, 100, 0, 100] }] });
     expect(await heldIn(p2.id)).toEqual([]);
+  });
+
+  it("newcomers: a new account, or an old one with few finished parties, is checked as if linked, invited or not", async () => {
+    const ahead = [100, 100, 50, 50], behind = [50, 70, 50, 50];
+    const fresh = await makeUser(name("fresh")); // a new account from the Parties tab: no invite, no ties
+    const p1 = await playedParty({ hostUser: await makeUser(name("hostn")), seats: [{ u: fresh, correct: ahead }, { u: await makeUser(name("pn")), correct: behind }] });
+    const [held] = await heldIn(p1.id);
+    expect(held?.evidence).toMatchObject({ links: [], newcomer: true, finishedParties: 0, marginPct: 40, flaggedOn: ["host_written"] });
+    // Old, but hardly played: still a newcomer.
+    const quiet = await makeUser(name("quiet"), { createdAt: new Date(Date.now() - 365 * 86_400_000) });
+    const p2 = await playedParty({ hostUser: await makeUser(name("hostq")), seats: [{ u: quiet, correct: ahead }, { u: await makeUser(name("pq")), correct: behind }] });
+    expect((await heldIn(p2.id))[0]?.evidence).toMatchObject({ newcomer: true, flaggedOn: ["host_written"] });
+    // Level with the room: paid like anyone.
+    const p3 = await playedParty({ hostUser: await makeUser(name("hoste")), seats: [{ u: await makeUser(name("fresh")), correct: [100, 0, 100, 0] }, { u: await makeUser(name("pe")), correct: [0, 100, 0, 100] }] });
+    expect(await heldIn(p3.id)).toEqual([]);
+  });
+
+  it("anyone at or above the unlinked threshold is held, linked or not, established or not", async () => {
+    const pro = await settledUser("pro");
+    const p = await playedParty({ hostUser: await makeUser(name("hostf")), seats: [{ u: pro, correct: ACE }, { u: await makeUser(name("pf")), correct: MISS }] });
+    const [held] = await heldIn(p.id);
+    expect(held?.evidence).toMatchObject({ links: [], newcomer: false, marginPct: 100, unlinkedThresholdPct: DEFAULT_HOST_WRITTEN_RULES.unlinkedMarginPct, flaggedOn: ["host_written"] });
+    const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `prize_held:${held.id}`));
+    expect(alert.subject).toBe("A prize is held: a winner far above the room");
   });
 
   it("holds on the whole set: level on the host's questions, far ahead on the generated ones (a curate host knows them too)", async () => {

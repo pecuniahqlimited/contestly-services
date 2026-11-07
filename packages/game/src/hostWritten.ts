@@ -1,8 +1,8 @@
 /**
  * The anti-collusion check for parties with host-written questions (ADR 0015), pure. The host knows every answer
- * they wrote (and, in curate mode, every generated one), so a winner who is linked to the host and who did far
- * better than the room, on the host's own questions or on the whole set, has their cash prize held for an admin. A
- * winner who isn't linked, or who did about as well as everyone else, is paid as normal.
+ * they wrote (and, in curate mode, every generated one), so a winner who is linked to the host (or is a newcomer)
+ * and who did far better than the room, on the host's own questions or on the whole set, has their cash prize held
+ * for an admin; so does anyone at all who did very far better. Everyone else is paid as normal.
  *
  * Also the reject rule's arithmetic: who a rejected prize passes to, and an even refund.
  */
@@ -36,28 +36,34 @@ function compare(answers: GradedAnswer[], winnerId: string) {
 /**
  * Review one cash prize. `answers` are every seated player's graded answers on the played questions (a no-answer is
  * a row at 0). Two comparisons, because the host knows the answers they wrote and, in curate mode, every generated
- * one too (ADR 0003): on the host-written questions, and on the whole set. Flagged when linked and either margin is
- * at least `marginPct` points (the host-written one only if at least one was played), or, linked or not, when the
- * winner has already won `repeat.max` of the same host's host-written parties lately.
+ * one too (ADR 0003): on the host-written questions, and on the whole set. A comparison trips at `marginPct` points
+ * when the winner is linked or a newcomer (a fresh account has no ties to find), and at `unlinkedMarginPct` for
+ * anyone (the host-written one only if at least one was played). Also flagged, linked or not, when the winner has
+ * already won `repeat.max` of the same host's parties lately.
  */
 export function reviewPrize(input: {
   winnerId: string; links: PrizeLinkKind[]; answers: GradedAnswer[]; marginPct: number;
+  /** A new account or one with few finished parties: `finishedParties` is how many it had. */
+  newcomer: { is: boolean; finishedParties: number };
+  unlinkedMarginPct: number;
   /** The same host's host-written parties this winner had already won in the repeat window, and the most allowed. */
   repeat: { priorWins: number; max: number };
 }): PrizeReview {
   const host = compare(input.answers.filter((a) => a.hostWritten), input.winnerId);
   const all = compare(input.answers, input.winnerId);
-  const over: HeldPrizeEvidence["flaggedOn"] = [
-    ...(host.played > 0 && host.margin >= input.marginPct ? ["host_written" as const] : []),
-    ...(all.played > 0 && all.margin >= input.marginPct ? ["all" as const] : []),
+  const suspect = input.links.length > 0 || input.newcomer.is;
+  const threshold = suspect ? Math.min(input.marginPct, input.unlinkedMarginPct) : input.unlinkedMarginPct;
+  // A repeat winner is held whoever they are and however they scored.
+  const flaggedOn: HeldPrizeEvidence["flaggedOn"] = [
+    ...(host.played > 0 && host.margin >= threshold ? ["host_written" as const] : []),
+    ...(all.played > 0 && all.margin >= threshold ? ["all" as const] : []),
+    ...(input.repeat.priorWins >= input.repeat.max ? ["repeat" as const] : []),
   ];
-  // The outliers need a link; a repeat winner is held whoever they are and however they scored.
-  const flaggedOn: HeldPrizeEvidence["flaggedOn"] = [...(input.links.length > 0 ? over : []), ...(input.repeat.priorWins >= input.repeat.max ? ["repeat" as const] : [])];
   const evidence: HeldPrizeEvidence = {
     links: [...input.links],
     hostQuestionsPlayed: host.played, winnerAccuracyPct: round1(host.winner), roomAccuracyPct: round1(host.room), marginPct: round1(host.margin),
     questionsPlayed: all.played, winnerAllAccuracyPct: round1(all.winner), roomAllAccuracyPct: round1(all.room), allMarginPct: round1(all.margin),
-    thresholdPct: input.marginPct,
+    thresholdPct: input.marginPct, newcomer: input.newcomer.is, finishedParties: input.newcomer.finishedParties, unlinkedThresholdPct: input.unlinkedMarginPct,
     priorWins: input.repeat.priorWins, repeatWinsMax: input.repeat.max,
     flaggedOn,
   };

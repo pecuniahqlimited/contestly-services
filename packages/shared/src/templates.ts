@@ -157,8 +157,18 @@ export const hostWrittenRulesSchema = z.object({
    * `repeatWindowDays` has the next prize held whatever they scored, linked or not.
    */
   repeatWinsMax: z.number().int().min(1).max(50).default(2),
-  /** invited_new: a winner who came in through the host's invite or referral counts as linked while their account is this young. */
+  /**
+   * A new account: younger than this. invited_new: one that came in through the host's invite or referral counts as
+   * linked. And any new account is a newcomer (below), invited or not.
+   */
   newAccountDays: z.number().int().min(0).max(365).default(14),
+  /**
+   * Newcomers: a winner whose account is new (`newAccountDays`) or who had finished fewer than this many parties
+   * before this one gets the score checks as if linked (a fresh account made for one party has no ties to find).
+   */
+  minFinishedParties: z.number().int().min(0).max(100).default(5),
+  /** Any winner, linked or not, at least this many points above the room on either comparison is held. At least outlierMarginPct. */
+  unlinkedMarginPct: z.number().int().min(1).max(PERCENT).default(50),
   /**
    * The IP link: both accounts used the IP between this many hours before the party and its end, and no more than
    * `maxAccountsPerIp` accounts did in that window (more is a carrier's shared address, not a household).
@@ -178,6 +188,8 @@ export const DEFAULT_HOST_WRITTEN_RULES: HostWrittenRules = {
   repeatWinsMax: 2,
   repeatWindowDays: 30,
   newAccountDays: 14,
+  minFinishedParties: 5,
+  unlinkedMarginPct: 50,
   ipWindowHoursBefore: 24,
   maxAccountsPerIp: 5,
 };
@@ -187,6 +199,7 @@ export const partyTemplatesConfigSchema = z.object({
   templates: z.array(partyTemplateSchema).max(30),
   rules: hostWrittenRulesSchema,
 }).superRefine((c, ctx) => {
+  if (c.rules.unlinkedMarginPct < c.rules.outlierMarginPct) ctx.addIssue({ code: "custom", path: ["rules", "unlinkedMarginPct"], message: "unlinkedMarginPct must be at least outlierMarginPct" });
   const ids = new Set<string>();
   c.templates.forEach((t, i) => {
     if (ids.has(t.id)) ctx.addIssue({ code: "custom", path: ["templates", i, "id"], message: `template id "${t.id}" is used twice` });
@@ -332,8 +345,9 @@ export const HELD_PRIZE_STATUSES = ["held", "cleared", "rejected"] as const;
 export type HeldPrizeStatus = (typeof HELD_PRIZE_STATUSES)[number];
 
 /**
- * Why a prize is held: the winner beat the room on the host-written questions, or on the whole set (both need a
- * link), or has won the same host's host-written parties too often lately (repeat; no link needed).
+ * Why a prize is held: the winner beat the room on the host-written questions, or on the whole set (by
+ * `outlierMarginPct` when linked or a newcomer, by `unlinkedMarginPct` otherwise), or has won the same host's
+ * parties too often lately (repeat; no link needed).
  */
 export const HOLD_REASONS = ["host_written", "all", "repeat"] as const;
 
@@ -349,6 +363,12 @@ export const heldPrizeEvidenceSchema = z.object({
   roomAllAccuracyPct: z.number(),
   allMarginPct: z.number(),
   thresholdPct: z.number().int(),
+  /** A new account or one with few finished parties: checked at thresholdPct though unlinked. Older rows: false. */
+  newcomer: z.boolean().default(false),
+  /** Finished parties before this one (null on older rows). */
+  finishedParties: z.number().int().nullable().default(null),
+  /** The margin that holds anyone, linked or not (null on older rows). */
+  unlinkedThresholdPct: z.number().int().nullable().default(null),
   /** The same host's host-written parties they'd already won in the repeat window, and the most allowed. */
   priorWins: z.number().int(),
   repeatWinsMax: z.number().int(),
