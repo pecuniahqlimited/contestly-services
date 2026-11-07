@@ -15,7 +15,7 @@ import { cornerShown } from "../corners.js";
 import { corners, follows, nudges, parties, partyPlayers, users, type User } from "../schema.js";
 import { nudge } from "./record.js";
 import { notBlockedWith } from "../safety/people.js";
-import { searchPeople } from "../peopleSearch.js";
+import { relationshipColumns, relationshipOf, searchPeople } from "../peopleSearch.js";
 import { simVisibleTo } from "../sim.js";
 
 const DAY = 24 * 60 * 60_000;
@@ -48,10 +48,21 @@ async function alreadyAsked(cornerId: string, userIds: string[]): Promise<Set<st
 /** Players of the host's finished parties in the last followAskRecentDays who can be asked and don't follow yet. */
 async function recentPlayers(host: User, cornerId: string, cfg: NudgeConfig, now: Date) {
   const since = new Date(now.getTime() - cfg.followAskRecentDays * DAY);
-  return db.selectDistinct({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, isVerified: users.isVerified })
+  const rows = await db.selectDistinct({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, isVerified: users.isVerified, ...relationshipColumns(host.id) })
     .from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).innerJoin(users, eq(users.id, partyPlayers.userId))
     .where(and(eq(parties.createdByUserId, host.id), eq(parties.status, "finished"), gt(parties.endedAt, since), askable(host), notFollowing(cornerId)))
     .orderBy(users.displayName).limit(FOLLOW_ASK_RECENT_SHOWN);
+  return rows.map(({ crew, contact, played, ...r }) => ({ ...r, relationship: relationshipOf({ crew, contact, played }) }));
+}
+
+/** Of these people, how many of the host's finished parties each played (all time). */
+async function partiesFinishedWith(hostId: string, userIds: string[]): Promise<Map<string, number>> {
+  if (!userIds.length) return new Map();
+  const rows = await db.select({ id: partyPlayers.userId, n: sql<number>`count(distinct ${partyPlayers.partyId})::int` })
+    .from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId))
+    .where(and(eq(parties.createdByUserId, hostId), eq(parties.status, "finished"), inArray(partyPlayers.userId, userIds)))
+    .groupBy(partyPlayers.userId);
+  return new Map(rows.map((r) => [r.id, Number(r.n)]));
 }
 
 /** Asks this corner has sent since `dayStart`. */
@@ -70,10 +81,13 @@ export async function followAskOptions(host: User, opts: { q?: string; limit?: n
   const found = opts.q
     ? await searchPeople(host, { q: opts.q, limit: opts.limit ?? FOLLOW_ASK_RECENT_SHOWN, where: notFollowing(c.id) })
     : await recentPlayers(host, c.id, cfg, now);
-  const [asked, sent] = await Promise.all([alreadyAsked(c.id, found.map((p) => p.id)), askedSince(c.id, startOfLocalDay(now, host.timeZone))]);
+  const ids = found.map((p) => p.id);
+  const [asked, finished, sent] = await Promise.all([alreadyAsked(c.id, ids), partiesFinishedWith(host.id, ids), askedSince(c.id, startOfLocalDay(now, host.timeZone))]);
   return {
     corner: { id: c.id, name: c.name, color: c.color },
-    players: found.map((p) => ({ id: p.id, handle: p.handle, displayName: p.displayName, avatarEmoji: p.avatarEmoji, isVerified: p.isVerified, alreadyAsked: asked.has(p.id) })),
+    players: found.map((p) => ({ id: p.id, handle: p.handle, displayName: p.displayName, avatarEmoji: p.avatarEmoji, isVerified: p.isVerified,
+      relationship: p.relationship, partiesFinished: finished.get(p.id) ?? 0, alreadyAsked: asked.has(p.id),
+    })),
     remainingToday: Math.max(0, cfg.followAsksPerDay - sent),
     dailyLimit: cfg.followAsksPerDay,
   };

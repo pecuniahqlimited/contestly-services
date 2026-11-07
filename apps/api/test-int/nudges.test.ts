@@ -9,7 +9,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   archiveAccount, chatThreads, climbRuns, contactMatches, cornerPosts, corners, crews, currentLadder, db, deliverDueNudges, deviceTokens, emitClimbRivals, emitCornerParty,
   emitCornerReply, emitFillingUp, emitGuestFollowUps, emitHeadToHeadRivals, emitHostCancelled, emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined,
-  emitStreakRisk, emitWinBack, follows, getNudgeConfig, nudge, nudges, parties, partyPlayers, setNudgeConfig, users, blocks,
+  emitStreakRisk, emitWinBack, follows, getNudgeConfig, nudge, nudges, parties, partyPlayers, setNudgeConfig, users, blocks, crewMembers, playedWith,
   type DeliveryDeps, type NudgeRow, type Party, type PushMessage, type PushSender, type User,
 } from "@contestly/db";
 import {
@@ -612,6 +612,32 @@ describe("asking players to follow your corner", () => {
     expect((await ask([p2.id])).json().remainingToday).toBe(0);
     expect((await one(p1, "corner_follow_ask")).title).toBe(`${host.displayName} asked you to follow Corner`);
     expect((await app.inject({ url: "/me/corner/invite-followers", headers: as(await person("nocorner")) })).json().error).toBe("no_corner");
+  });
+});
+
+describe("who each follow-ask candidate is to the host", () => {
+  it("carries the closest tie (crew, contacts, played together) and how many of the host's parties they finished", async () => {
+    const host = await person("rh");
+    const [crewmate, contact, played, stranger] = [await person("rc"), await person("rk"), await person("rp"), await person("rs")];
+    const [c] = await db.insert(corners).values({ ownerUserId: host.id, name: "Ties", status: "unlocked", unlockedAt: new Date() }).returning();
+    const [crew] = await db.insert(crews).values({ name: "Ties crew", emoji: "🧪", color: "#123456", createdByUserId: host.id }).returning();
+    await db.insert(crewMembers).values([{ crewId: crew.id, userId: host.id, role: "creator" }, { crewId: crew.id, userId: crewmate.id }]);
+    await db.insert(contactMatches).values({ userId: contact.id, contactUserId: host.id }); // either way counts
+    const [a, b] = [host.id, played.id].sort();
+    await db.insert(playedWith).values({ userA: a, userB: b, lastPlayedAt: new Date() });
+    await seat(await party(host, { status: "finished", endedAt: new Date() }), crewmate, contact, played, stranger);
+    await seat(await party(host, { status: "finished", endedAt: new Date(Date.now() - 60 * DAY) }), crewmate);
+    await seat(await party(host, { status: "open" }), crewmate, contact); // not finished: not counted
+    await seat(await party(stranger, { status: "finished", endedAt: new Date() }), contact); // someone else's: not counted
+
+    const recent = followerInviteOptionsSchema.parse((await app.inject({ url: "/me/corner/invite-followers", headers: as(host) })).json());
+    const tie = (players: typeof recent.players) => Object.fromEntries(players.map((p) => [p.id, [p.relationship, p.partiesFinished]]));
+    expect(tie(recent.players)).toEqual({
+      [crewmate.id]: ["in_your_crew", 2], [contact.id]: ["in_your_contacts", 1], [played.id]: ["played_with_you", 1], [stranger.id]: [null, 1],
+    });
+    const searched = followerInviteOptionsSchema.parse((await app.inject({ url: `/me/corner/invite-followers?q=${crewmate.handle}`, headers: as(host) })).json());
+    expect(tie(searched.players)).toEqual({ [crewmate.id]: ["in_your_crew", 2] });
+    expect(c.id).toBe(recent.corner.id);
   });
 });
 

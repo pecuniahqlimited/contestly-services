@@ -45,6 +45,17 @@ const likeEscape = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 /** users.id, qualified: inside a select's subqueries Drizzle prints a bare "id", which a joined table's own id would take. */
 const userId = sql.raw(`"users"."id"`);
 
+/** How the viewer knows each users row, as select columns; relationshipOf() turns them into the row's tie. */
+export const relationshipColumns = (viewerId: string) => ({
+  crew: sql<boolean>`exists (select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id
+    where a.user_id = ${viewerId} and b.user_id = ${userId} and c.archived_at is null)`,
+  contact: sql<boolean>`exists (select 1 from ${contactMatches} m where (m.user_id = ${viewerId} and m.contact_user_id = ${userId}) or (m.user_id = ${userId} and m.contact_user_id = ${viewerId}))`,
+  played: sql<boolean>`exists (select 1 from ${playedWith} p where (p.user_a = ${viewerId} and p.user_b = ${userId}) or (p.user_a = ${userId} and p.user_b = ${viewerId}))`,
+});
+/** The closest tie: a crew, then contacts, then having played together (ever). */
+export const relationshipOf = (r: { crew: boolean; contact: boolean; played: boolean }): PersonRelationship | null =>
+  r.crew ? "in_your_crew" : r.contact ? "in_your_contacts" : r.played ? "played_with_you" : null;
+
 const fold = (col: SQL | typeof users.handle | typeof users.displayName) => sql`contestly_fold(${col})`;
 
 export async function searchPeople(viewer: User, opts: PeopleSearchOptions, conn: Conn = db): Promise<FoundPerson[]> {
@@ -58,10 +69,7 @@ export async function searchPeople(viewer: User, opts: PeopleSearchOptions, conn
     id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, isVerified: users.isVerified,
     isGuest: users.isGuest, isSystem: users.isSystem, deletedAt: users.deletedAt,
     yourPeople: sql<boolean>`${inPeople}`,
-    crew: sql<boolean>`exists (select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id
-      where a.user_id = ${viewer.id} and b.user_id = ${userId} and c.archived_at is null)`,
-    contact: sql<boolean>`exists (select 1 from ${contactMatches} m where (m.user_id = ${viewer.id} and m.contact_user_id = ${userId}) or (m.user_id = ${userId} and m.contact_user_id = ${viewer.id}))`,
-    played: sql<boolean>`exists (select 1 from ${playedWith} p where (p.user_a = ${viewer.id} and p.user_b = ${userId}) or (p.user_a = ${userId} and p.user_b = ${viewer.id}))`,
+    ...relationshipColumns(viewer.id),
   }).from(users).where(and(
     ne(users.id, viewer.id), eq(users.isGuest, false), eq(users.isSystem, false), liveUser, isNull(users.bannedAt),
     notBlockedWith(viewer.id, users.id), simVisibleTo(viewer, users.isSim), opts.where,
@@ -70,7 +78,5 @@ export async function searchPeople(viewer: User, opts: PeopleSearchOptions, conn
     // A bare constant isn't allowed in ORDER BY: with no people, that term is left out.
     ...(people.length ? [sql`${inPeople} desc`] : []), sql`(${fold(users.handle)} = ${v}) desc`, sql`(${fold(users.handle)} like ${prefix}) desc`, users.displayName, users.handle,
   ).limit(opts.limit);
-  return rows.map(({ crew, contact, played, ...r }) => ({
-    ...r, yourPeople: !!r.yourPeople, relationship: crew ? "in_your_crew" : contact ? "in_your_contacts" : played ? "played_with_you" : null,
-  }));
+  return rows.map(({ crew, contact, played, ...r }) => ({ ...r, yourPeople: !!r.yourPeople, relationship: relationshipOf({ crew, contact, played }) }));
 }

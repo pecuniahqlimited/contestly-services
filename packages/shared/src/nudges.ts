@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { CLIMB_TIME_ZONE } from "./climb.js";
 import { cornerRefSchema } from "./corners.js";
-import { PEOPLE_SEARCH_DEFAULT, PEOPLE_SEARCH_MAX, PEOPLE_SEARCH_MAX_CHARS, PEOPLE_SEARCH_MIN_CHARS, personSchema, searchText } from "./person.js";
+import { PEOPLE_SEARCH_DEFAULT, PEOPLE_SEARCH_MAX, PEOPLE_SEARCH_MAX_CHARS, PEOPLE_SEARCH_MIN_CHARS, PERSON_RELATIONSHIPS, personSchema, searchText } from "./person.js";
 
 // ---- categories and toggles ------------------------------------------------------------
 
@@ -394,7 +394,12 @@ export const followerInviteQuerySchema = z.object({
     .pipe(z.string().transform(searchText).pipe(z.string().min(PEOPLE_SEARCH_MIN_CHARS).max(PEOPLE_SEARCH_MAX_CHARS)).optional()),
   limit: z.coerce.number().int().min(1).max(PEOPLE_SEARCH_MAX).default(PEOPLE_SEARCH_DEFAULT),
 });
-export const followAskCandidateSchema = personSchema.extend({ alreadyAsked: z.boolean() });
+/** One person the host can ask: how the host knows them (crew, contacts, played together, or null) and how many of the host's finished parties they played. */
+export const followAskCandidateSchema = personSchema.extend({
+  relationship: z.enum(PERSON_RELATIONSHIPS).nullable(),
+  partiesFinished: z.number().int(),
+  alreadyAsked: z.boolean(),
+});
 export const followerInviteOptionsSchema = z.object({
   corner: cornerRefSchema.pick({ id: true, name: true, color: true }),
   players: z.array(followAskCandidateSchema), remainingToday: z.number().int(), dailyLimit: z.number().int(),
