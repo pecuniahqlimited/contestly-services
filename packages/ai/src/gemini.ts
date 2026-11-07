@@ -144,7 +144,9 @@ async function post<T>(client: GeminiClient, path: string, body: unknown, signal
     // Not JSON (a proxy's page): the first bytes are the message.
     const error = (parseJson(raw) as { error?: GeminiErrorBody } | undefined)?.error;
     const message = error?.message?.slice(0, 200) ?? raw.slice(0, 200);
-    throw new ProviderError(kindForStatus(res.status), `HTTP ${res.status}: ${message}`, retryAfterMs(res.headers.get("retry-after")) ?? retryDelayMs(error));
+    // Which quota ran out (per minute or per day) comes first: the message's own text names it only after its links.
+    const quota = error?.details?.find((d) => d["@type"]?.endsWith("google.rpc.QuotaFailure"))?.violations?.[0]?.quotaId;
+    throw new ProviderError(kindForStatus(res.status), `HTTP ${res.status}${quota ? ` ${quota}` : ""}: ${message}`, retryAfterMs(res.headers.get("retry-after")) ?? retryDelayMs(error));
   }
   const parsed = parseJson(raw);
   if (parsed === undefined) throw new ProviderError("malformed", `response is not JSON (${raw.length} bytes)`);
@@ -153,7 +155,7 @@ async function post<T>(client: GeminiClient, path: string, body: unknown, signal
 
 interface GeminiErrorBody {
   message?: string;
-  details?: { "@type"?: string; retryDelay?: string }[];
+  details?: { "@type"?: string; retryDelay?: string; violations?: { quotaId?: string }[] }[];
 }
 
 /** A quota 429 says when to come back in its RetryInfo detail ("11s"), not in a Retry-After header. */

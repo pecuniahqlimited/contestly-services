@@ -20,7 +20,8 @@ export const isTransient = (e: unknown): e is ProviderError => e instanceof Prov
 
 /** A call that won't produce an answer now: budget reached, circuit open, retries exhausted, malformed or refused output. */
 export class ProviderUnavailable extends Error {
-  constructor(readonly kind: FailureKind, readonly provider: string, readonly step: string, message: string) {
+  /** retryAfterMs: when the provider said to come back, if it did (a quota's reset). */
+  constructor(readonly kind: FailureKind, readonly provider: string, readonly step: string, message: string, readonly retryAfterMs?: number) {
     super(`${provider} ${step} unavailable (${kind}): ${message}`);
     this.name = "ProviderUnavailable";
   }

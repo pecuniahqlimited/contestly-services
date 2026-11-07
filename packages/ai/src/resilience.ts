@@ -21,13 +21,17 @@ export function backoffMs(attempt: number, policy: RetryPolicy, retryAfter?: num
   return retryAfter !== undefined ? Math.min(policy.maxDelayMs, Math.max(jittered, retryAfter)) : jittered;
 }
 
-/** Run fn, retrying transient ProviderErrors. Anything else, or the last transient one, is thrown. `attempt` is 0-based. */
+/**
+ * Run fn, retrying transient ProviderErrors. Anything else, the last transient one, or one whose Retry-After is
+ * longer than the policy would ever wait (a daily quota says "come back tomorrow"), is thrown. `attempt` is 0-based.
+ */
 export async function withRetry<T>(fn: (attempt: number) => Promise<T>, policy: RetryPolicy, sleep: Sleep = realSleep): Promise<{ value: T; attempts: number }> {
   for (let attempt = 0; ; attempt++) {
     try {
       return { value: await fn(attempt), attempts: attempt + 1 };
     } catch (err) {
-      if (!isTransient(err) || attempt + 1 >= policy.attempts) throw Object.assign(err as Error, { attempts: attempt + 1 });
+      const tooLong = isTransient(err) && (err.retryAfterMs ?? 0) > policy.maxDelayMs;
+      if (!isTransient(err) || tooLong || attempt + 1 >= policy.attempts) throw Object.assign(err as Error, { attempts: attempt + 1 });
       await sleep(backoffMs(attempt, policy, err.retryAfterMs));
     }
   }

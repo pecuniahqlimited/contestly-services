@@ -23,7 +23,7 @@ import { reviewEdit } from "./pipeline/reviewEdit.js";
 import { embedFile } from "./files/embedFile.js";
 import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
-import { needsReembed, reembedBackoffMs, reembedBatch, staleRows } from "./pipeline/reembed.js";
+import { needsReembed, reembedBackoffMs, reembedBatch, REEMBED_MAX_WAIT_MS, staleRows } from "./pipeline/reembed.js";
 
 /** Daily, at 04:00 server time: retire flagged and underperforming bank questions. */
 const RETIRE_SWEEP_CRON = "0 4 * * *";
@@ -39,7 +39,7 @@ const providers = selectProviders();
 const publish = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 
 /** Re-embedding is one chain: each batch queues the next, after a backoff when the provider was rate-limited. */
-const queueReembed = (waits = 0) => questionJobs.add("reembed", { kind: "reembed", waits }, { jobId: `reembed-${Date.now()}`, delay: waits ? reembedBackoffMs(waits) : 0 });
+const queueReembed = (waits = 0, delay = 0) => questionJobs.add("reembed", { kind: "reembed", waits }, { jobId: `reembed-${Date.now()}`, delay });
 
 /** At start: a chain already waiting (from before a restart) carries on, so starting one more would double the rate. */
 async function startReembed() {
@@ -55,8 +55,10 @@ async function reembed(waits: number) {
     moved = await reembedBatch({ embedder: providers.embedder });
   } catch (err) {
     if (!(err instanceof ProviderUnavailable)) throw err;
-    console.warn(`[reembed] ${err.message}; next batch in ${Math.round(reembedBackoffMs(waits + 1) / 1000)} s`);
-    await queueReembed(waits + 1);
+    // A daily quota says when it resets: wait for that rather than knocking every half hour.
+    const delay = Math.max(reembedBackoffMs(waits + 1), Math.min(err.retryAfterMs ?? 0, REEMBED_MAX_WAIT_MS));
+    console.warn(`[reembed] ${err.message}; next batch in ${Math.round(delay / 1000)} s`);
+    await queueReembed(waits + 1, delay);
     return;
   }
   if (!moved) return console.log(`[reembed] done: every row is on ${providers.embedder.model}`);

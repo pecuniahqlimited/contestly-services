@@ -78,6 +78,15 @@ describe("CircuitBreaker", () => {
   });
 });
 
+describe("withRetry and a quota reset", () => {
+  it("doesn't wait for a Retry-After longer than the policy allows: it fails now, with the delay", async () => {
+    let calls = 0;
+    const err = await withRetry(async () => { calls++; throw new ProviderError("rate_limited", "per day", 72_000_000); }, fast, noSleep).catch((e) => e);
+    expect(calls).toBe(1);
+    expect(err).toMatchObject({ kind: "rate_limited", retryAfterMs: 72_000_000, attempts: 1 });
+  });
+});
+
 describe("RateLimiter", () => {
   it("lets `limit` through per window, then waits for the oldest to age out, in order", async () => {
     let now = 0;

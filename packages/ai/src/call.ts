@@ -82,9 +82,9 @@ export async function providerCall<T>(spec: CallSpec, deps: CallDeps, fn: (signa
       console.error(`[ai] usage record failed: ${(err as Error).message}`);
     }
   };
-  const unavailable = async (kind: FailureKind, message: string, attempts: number) => {
+  const unavailable = async (kind: FailureKind, message: string, attempts: number, retryAfterMs?: number) => {
     await finish(kind, zeroUsage, attempts, message);
-    return new ProviderUnavailable(kind, spec.provider, spec.step, message);
+    return new ProviderUnavailable(kind, spec.provider, spec.step, message, retryAfterMs);
   };
 
   const refused = await deps.budget.check({ partyId: ctx.partyId ?? null, step: spec.step });
@@ -99,7 +99,7 @@ export async function providerCall<T>(spec: CallSpec, deps: CallDeps, fn: (signa
   } catch (err) {
     breaker.failure();
     const attempts = (err as { attempts?: number }).attempts ?? 1;
-    if (err instanceof ProviderError) throw await unavailable(err.kind, err.message, attempts);
+    if (err instanceof ProviderError) throw await unavailable(err.kind, err.message, attempts, err.retryAfterMs);
     // An adapter bug or an unexpected throw: still counted, still unavailable to the pipeline.
     throw await unavailable("malformed", (err as Error).message ?? String(err), attempts);
   }

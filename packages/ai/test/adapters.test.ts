@@ -112,3 +112,16 @@ describe("geminiEmbed", () => {
     await expect(geminiEmbed(ok, { model: "gemini-embedding-2", texts: ["a"], dimensions: 3 }, signal)).rejects.toMatchObject({ kind: "malformed" });
   });
 });
+
+describe("Gemini quota errors", () => {
+  it("name the quota and carry its reset as the retry delay", async () => {
+    const body = { error: { code: 429, message: "You exceeded your current quota", details: [
+      { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ quotaId: "EmbedContentRequestsPerDayPerUserPerProjectPerModel-FreeTier" }] },
+      { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "72006s" },
+    ] } };
+    const client = geminiClient({ apiKey: "g", fetch: fetchOf(() => json(body, 429)) });
+    const err = await geminiEmbed(client, { model: "gemini-embedding-2", texts: ["a"], dimensions: 8 }, signal).catch((e) => e);
+    expect(err).toMatchObject({ kind: "rate_limited", retryAfterMs: 72_006_000 });
+    expect(err.message).toContain("EmbedContentRequestsPerDay");
+  });
+});

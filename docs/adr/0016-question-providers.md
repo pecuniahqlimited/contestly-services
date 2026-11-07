@@ -69,13 +69,15 @@ the model check for everything in step 7 (profanity, hate, sexual content, real 
 gambling or alcohol promotion, politics unless asked, the brief's exclusions). Fail closed: an unavailable,
 malformed or partial answer rejects the draft with the reason recorded.
 
-**Embeddings on Gemini's free tier.** Without billing the project gets 100 embed requests a minute per model
-(Gemini's 429 names the quota, `EmbedContentRequestsPerMinutePerUserPerProjectPerModel-FreeTier`, and says
-when to retry). Each text is one request. The embedder spaces them with a per-process limiter
+**Embeddings on Gemini's free tier.** Without billing the project gets 100 embed requests a minute and
+**1,000 a day** per model (the 429 names the quota, `EmbedContentRequestsPerMinute…-FreeTier` or
+`EmbedContentRequestsPerDay…-FreeTier`, and says when to retry; the day resets at midnight Pacific). Each
+text is one request. The embedder spaces them with a per-process limiter
 (`GEMINI_EMBED_RPM`, default 90, a margin under 100); a 429 anyway (another process on the same key) waits
-the RetryInfo delay, up to six attempts. The `reembed` chain treats an unavailable embedder as "later", not
-failed: it re-queues itself after a backoff (1 min, doubling, at most 30 min), so a re-embed runs slowly and
-never stops. Restarting the service doesn't start a second chain alongside a waiting one.
+the RetryInfo delay, up to six attempts, unless the delay is longer than a retry would wait (the daily quota:
+"retry in 20 hours"), which fails the call at once instead. The `reembed` chain treats an unavailable
+embedder as "later", not failed: it re-queues itself after a backoff (1 min, doubling, at most 30 min), or
+after the quota's own reset when it said one, so a re-embed runs slowly and never stops. Restarting the service doesn't start a second chain alongside a waiting one.
 
 **Embeddings.** Same width, different space: mock vectors and Gemini vectors can't be compared. Each bank row
 and file chunk records the model that embedded it (`embedding_model`, migration 0046; existing rows are
@@ -142,8 +144,12 @@ setups; keep same-vendor verification only if the eval shows it catches as much.
 - Claude verification costs about $0.07 a question, most of it search results as input tokens; the cache, bank
   reuse and the daily cap bound it. Google Search grounding (the Gemini option) is capped at 1,500 grounded
   requests a day on Gemini 3 models.
-- Re-embedding on the free tier is bounded by 90 requests a minute: about 11 minutes per 1,000 rows, plus any
-  waits for other processes on the key.
+- The free tier's daily 1,000 embed requests is the binding limit, not the per-minute one. A generated set
+  embeds its spec and every draft (about 30–45 requests for a 10-question set with reserves), so the day's
+  quota covers about 20–30 generated sets, or one eval run (about 300), and re-embedding the dev bank (1,086
+  rows) takes two days alongside normal use. Once it's spent, generation fails closed until the reset (the
+  bank can't be searched without the spec's embedding). Observed 7 Nov: about 90 rows a minute while the
+  quota lasted. Billing lifts both limits.
 - Old generation records keep `pass | fail | needs_source` verdicts; readers accept both shapes.
 - The eval (`npm run questions:eval`) writes its report to `docs/engineering/eval/`; it's the baseline any
   model or prompt change has to beat.

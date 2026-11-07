@@ -15,6 +15,9 @@ export const REEMBED_BATCH = 64;
 const BACKOFF_BASE_MS = 60_000;
 const BACKOFF_MAX_MS = 30 * 60_000;
 
+/** The longest a quota's reset is waited for in one go (Gemini's daily free quota resets within a day). */
+export const REEMBED_MAX_WAIT_MS = 24 * 60 * 60_000;
+
 export const reembedBackoffMs = (waits: number) => Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, waits - 1));
 
 const staleBank = (model: string) => ne(bankQuestions.embeddingModel, model);
