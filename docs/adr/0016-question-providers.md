@@ -85,12 +85,14 @@ by `npm run questions:reembed`. Before launch (row 12): the HNSW index is per co
 post-filter; once every row is on one model the filter matches everything and the index serves as is. A
 future model change should re-embed into a new column or a partial index rather than mixing spaces.
 
-**Never block a party, never overspend.** `questions.providers` config: `perPartyCents` (default 150) and
+**Never block a party, never overspend.** `questions.providers` config: `perPartyCents` (default 500: with Claude verifying at about $0.07 a question,
+a 20-question set and its quality buffer costs about $3; the first default of 150 cut sets off) and
 `dailyCents` (default 2,500) across all providers, `alertAtPct` (default 80). A call is refused once the
 party's or the day's (Africa/Lagos) recorded spend has reached its cap, so overspend is at most one call. The
 day crossing `alertAtPct` raises `ai.budget_near` (warning), the cap `ai.budget_reached` (critical); a party
 hitting its cap raises `ai.party_budget` (info). Refused, open-circuit, exhausted-retry and malformed calls
-are all "unavailable" to the pipeline: generation stops and the fill falls back to bank-only; if that can't
+are all "unavailable" to the pipeline (the party's cap never refuses embeddings, which cost next to nothing
+and which the bank-only fallback needs to search the bank; the day's cap does): generation stops and the fill falls back to bank-only; if that can't
 fill count + reserves, the existing failed-set path runs (ADR 0002: the host is told before start; a live
 party is cancelled and refunded by the worker).
 

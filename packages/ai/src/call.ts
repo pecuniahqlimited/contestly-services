@@ -32,7 +32,7 @@ export interface UsageSink {
 
 /** Whether a call may be made: null, or why not (the party's or the day's spend has reached its cap). */
 export interface BudgetGate {
-  check(input: { partyId: string | null }): Promise<string | null>;
+  check(input: { partyId: string | null; step: ProviderStep }): Promise<string | null>;
 }
 
 export interface CallDeps {
@@ -87,7 +87,7 @@ export async function providerCall<T>(spec: CallSpec, deps: CallDeps, fn: (signa
     return new ProviderUnavailable(kind, spec.provider, spec.step, message);
   };
 
-  const refused = await deps.budget.check({ partyId: ctx.partyId ?? null });
+  const refused = await deps.budget.check({ partyId: ctx.partyId ?? null, step: spec.step });
   if (refused) throw await unavailable("budget", refused, 0);
   if (!breaker.tryPass()) throw await unavailable("circuit_open", "too many recent failures; waiting before trying again", 0);
 

@@ -4,7 +4,7 @@
  * doesn't depend on the provider code. Days are Africa/Lagos.
  */
 import { desc, eq, gte, sql } from "drizzle-orm";
-import { addDays, dayStartsAt, lagosDay, MICRO_USD_PER_CENT } from "@contestly/shared";
+import { addDays, dayStartsAt, lagosDay, MICRO_USD_PER_CENT, type ProviderStep } from "@contestly/shared";
 import { db } from "./client.js";
 import { parties, providerCalls, verificationCache } from "./schema.js";
 import { getQuestionsConfig } from "./config.js";
@@ -35,9 +35,15 @@ export async function partySpendMicros(partyId: string): Promise<number> {
  * The spend caps: refuse a call once the day's (or the party's) recorded spend has reached its cap, so
  * overspend is at most the one call in flight. Crossing alertAtPct of the day raises a warning, reaching the
  * cap a critical alert; a party reaching its own cap an info alert. Each is deduped per day or per party.
+ *
+ * The party's cap doesn't apply to embeddings: they cost a few millionths of a dollar, and the bank-only
+ * fallback a party falls back to once its cap is spent needs them (retrieval and dedupe embed the spec and
+ * the set). The day's cap still does.
  */
+const PARTY_CAP_EXEMPT: ReadonlySet<ProviderStep> = new Set(["embed"]);
+
 export const dbBudgetGate = {
-  async check({ partyId }: { partyId: string | null }): Promise<string | null> {
+  async check({ partyId, step }: { partyId: string | null; step: ProviderStep }): Promise<string | null> {
     const { providers } = await getQuestionsConfig();
     const day = lagosDay();
     const dayCap = providers.dailyCents * MICRO_USD_PER_CENT;
@@ -56,7 +62,7 @@ export const dbBudgetGate = {
         details: { day, spentMicros: today, capMicros: dayCap, alertAtPct: providers.alertAtPct }, dedupeKey: `ai.budget_near:${day}`,
       });
     }
-    if (!partyId) return null;
+    if (!partyId || PARTY_CAP_EXEMPT.has(step)) return null;
     const partyCap = providers.perPartyCents * MICRO_USD_PER_CENT;
     const party = await partySpendMicros(partyId);
     if (party < partyCap) return null;

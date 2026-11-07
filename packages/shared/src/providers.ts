@@ -102,7 +102,7 @@ export type ProvidersConfig = z.infer<typeof providersConfigSchema>;
 
 export const DEFAULT_PROVIDERS_CONFIG: ProvidersConfig = {
   models: { generate: "claude-sonnet-5-5", verify: "claude-opus-5-5", safety: "claude-haiku-5-5" },
-  perPartyCents: 150,
+  perPartyCents: 500,
   dailyCents: 2_500,
   alertAtPct: 80,
 };
