@@ -124,7 +124,9 @@ again is a replay, and a different admin's clear confirms it; both steps are log
    and may be held in turn;
 2. with nobody to pass it to, a host's cash prize goes back to the host (`held_prize_returned_to_host:<id>:<user>`);
    a pooled prize is refunded evenly to the other seats, the remainder to the best-ranked
-   (`held_prize_refunded:<id>:<user>`);
+   (`held_prize_refunded:<id>:<user>`). Banned seats are included, as an unplaceable party refunds them
+   (`cancelIfUnplaceable`): it's their entry money coming back, and it lands in a frozen wallet (ADR 0014), so a
+   banned accomplice can't move it;
 3. with no other seat at all, forfeited to the treasury.
 
 The take-back comes out of the winner's hold, never their cash, so it always covers the prize. The held row is
@@ -136,5 +138,4 @@ the ledger.
 **Changed before review.** Three points first built differently: the outlier check compared host-written
 questions only (now the whole set as well); the link used `yourPeople()` (now the raw relationships and recent
 blocks); and a clear was one admin whatever the amount, as Decision 7 reads (now ADR 0013's maker-checker, which
-this note supersedes for clearing). Still open: the seeded set is six templates as decided here; the roadmap row
-listed five (no Reunion).
+this note supersedes for clearing). Six templates at launch is confirmed (Nov 2026).
