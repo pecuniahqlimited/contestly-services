@@ -21,7 +21,7 @@ const pinged = async (partyId: string) => db.select({ userId: nudges.userId }).f
 beforeAll(async () => {
   ({ app } = await testApp());
   [owner, alerted, quiet, noCorner] = await Promise.all(["cpowner", "cpalert", "cpquiet", "cpnone"].map((n) => makeUser(`${n}${tag}`)));
-  const [c] = await db.insert(corners).values({ ownerUserId: owner.id, name: `${owner.displayName}'s corner`, status: "unlocked", unlockedAt: new Date() }).returning();
+  const [c] = await db.insert(corners).values({ ownerUserId: owner.id, name: `${owner.displayName}'s corner`, color: "#DB2777", status: "unlocked", unlockedAt: new Date() }).returning();
   cornerId = c.id;
   await db.insert(follows).values([{ cornerId, followerId: alerted.id, notify: true }, { cornerId, followerId: quiet.id, notify: false }]);
 });
@@ -33,7 +33,7 @@ afterAll(async () => {
 describe("parties on a corner", () => {
   it("the builder sees the corner's reach before creating", async () => {
     const limits = (await app.inject({ url: "/parties/limits", headers: as(owner) })).json();
-    expect(limits.corner).toEqual({ cornerId, followerCount: 2, pingCount: 1 });
+    expect(limits.corner).toEqual({ cornerId, name: `${owner.displayName}'s corner`, color: "#DB2777", followerCount: 2, pingCount: 1 });
     expect((await app.inject({ url: "/parties/limits", headers: as(noCorner) })).json().corner).toBeNull();
   });
 
@@ -41,7 +41,7 @@ describe("parties on a corner", () => {
     const res = await create(owner, "public");
     expect(res.statusCode).toBe(201);
     const p = res.json();
-    expect(p).toMatchObject({ postsToCorner: true, corner: { cornerId, followerCount: 2, pingCount: 1 } });
+    expect(p).toMatchObject({ postsToCorner: true, corner: { cornerId, name: `${owner.displayName}'s corner`, color: "#DB2777", followerCount: 2, pingCount: 1 } });
     const page = (await app.inject({ url: `/corners/${cornerId}` })).json();
     expect(page.upNext.map((x: { id: string }) => x.id)).toContain(p.id);
     expect(await emitCornerParty(p.id, owner.id)).toBe(1);

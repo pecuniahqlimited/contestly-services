@@ -596,6 +596,7 @@ describe("asking players to follow your corner", () => {
     expect(options.players.map((p) => p.id).sort()).toEqual([p1.id, p2.id, p3.id].sort());
     expect(options.players.every((p) => !p.alreadyAsked)).toBe(true);
     expect(options.remainingToday).toBe(2);
+    expect(options.corner).toEqual({ id: c.id, name: "Corner", color: c.color });
 
     const ask = (ids: string[]) => app.inject({ method: "POST", url: "/me/corner/invite-followers", headers: as(host), payload: { userIds: ids } });
     expect((await ask([p1.id])).json()).toEqual({ asked: 1, remainingToday: 1 });

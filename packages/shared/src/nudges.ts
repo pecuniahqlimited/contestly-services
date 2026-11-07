@@ -8,6 +8,7 @@
  */
 import { z } from "zod";
 import { CLIMB_TIME_ZONE } from "./climb.js";
+import { cornerRefSchema } from "./corners.js";
 import { PEOPLE_SEARCH_DEFAULT, PEOPLE_SEARCH_MAX, PEOPLE_SEARCH_MAX_CHARS, PEOPLE_SEARCH_MIN_CHARS, personSchema, searchText } from "./person.js";
 
 // ---- categories and toggles ------------------------------------------------------------
@@ -383,7 +384,7 @@ export const partyHereKey = (partyId: string) => `party:here:${partyId}`;
  * with q (at least 2 characters, as people search), anyone signed up you can ask who matches; without, recent
  * players of your parties. Never anyone who already follows, nor anyone blocked either way, banned, deleted or
  * a guest. Each says whether this corner already asked them (once per corner, ever), with how many more asks
- * the corner can send today. POST it with the chosen ids: 422 not_eligible (details.userIds, details.reasons:
+ * the corner can send today, and the corner itself (its name and colour, for the screen's header). POST it with the chosen ids: 422 not_eligible (details.userIds, details.reasons:
  * already_asked | already_following | not_found) or 429 follow_asks_limit (details.remainingToday) refuse the
  * whole request. The ask is a corners nudge and lists in Activity (GET /me/activity) whatever the toggle.
  */
@@ -394,7 +395,10 @@ export const followerInviteQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(PEOPLE_SEARCH_MAX).default(PEOPLE_SEARCH_DEFAULT),
 });
 export const followAskCandidateSchema = personSchema.extend({ alreadyAsked: z.boolean() });
-export const followerInviteOptionsSchema = z.object({ players: z.array(followAskCandidateSchema), remainingToday: z.number().int(), dailyLimit: z.number().int() });
+export const followerInviteOptionsSchema = z.object({
+  corner: cornerRefSchema.pick({ id: true, name: true, color: true }),
+  players: z.array(followAskCandidateSchema), remainingToday: z.number().int(), dailyLimit: z.number().int(),
+});
 /**
  * GET /me/activity?before=&limit=: Chats › Activity, the nudges that list there (inActivity kinds), newest
  * first, with the people they're about. Unread until opened or dismissed (POST /me/nudges/:id/opened).

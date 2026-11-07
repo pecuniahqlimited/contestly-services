@@ -24,7 +24,7 @@ export * from "./templates.js";
 export * from "./questionKinds.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
-import { CORNER_STATUSES, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
+import { CORNER_STATUSES, cornerColorSchema, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { owedSchema } from "./payments.js";
@@ -760,6 +760,8 @@ export const postsToCorner = (visibility: "public" | "private") => visibility ==
 /** The host's shown corner, for the builder's "Goes up on your corner. Your N followers get a ping". */
 export const cornerReachSchema = z.object({
   cornerId: z.string().uuid(),
+  name: z.string(),
+  color: cornerColorSchema,
   /** Everyone following the corner. */
   followerCount: z.number().int(),
   /** The followers a public party pings: their alerts for this corner are on. */

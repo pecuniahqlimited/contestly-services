@@ -72,6 +72,7 @@ export async function followAskOptions(host: User, opts: { q?: string; limit?: n
     : await recentPlayers(host, c.id, cfg, now);
   const [asked, sent] = await Promise.all([alreadyAsked(c.id, found.map((p) => p.id)), askedSince(c.id, startOfLocalDay(now, host.timeZone))]);
   return {
+    corner: { id: c.id, name: c.name, color: c.color },
     players: found.map((p) => ({ id: p.id, handle: p.handle, displayName: p.displayName, avatarEmoji: p.avatarEmoji, isVerified: p.isVerified, alreadyAsked: asked.has(p.id) })),
     remainingToday: Math.max(0, cfg.followAsksPerDay - sent),
     dailyLimit: cfg.followAsksPerDay,
