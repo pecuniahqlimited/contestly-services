@@ -13,7 +13,6 @@ import { isWalletFrozen } from "./payable.js";
 import { isHostTeam } from "./host.js";
 import { partyThreadId, systemLine } from "./chat.js";
 import * as ledger from "./ledger.js";
-import { assertHeldPrizesKept } from "./templates/hostQuestions.js";
 
 type Seat = Pick<typeof partyPlayers.$inferSelect, "partyId" | "userId" | "entryKey">;
 
@@ -22,8 +21,7 @@ export const entryChargeKey = (s: Seat) => s.entryKey ?? `party_entry:${s.partyI
 
 /**
  * Take a seat: charge the entry (bonus first, then cash; InsufficientFunds if short) and seat the player. A frozen
- * wallet (a banned or suspended account, ADR 0014) takes no entry, whichever door it came through; nor can the
- * entry's cash come out of a prize held for review (ADR 0015).
+ * wallet (a banned or suspended account, ADR 0014) takes no entry, whichever door it came through.
  */
 export async function takeSeat(tx: Tx, p: Pick<Party, "id">, userId: string, amountKobo: number) {
   const [u] = await tx.select({ bannedAt: users.bannedAt, bannedUntil: users.bannedUntil }).from(users).where(eq(users.id, userId));
@@ -31,8 +29,6 @@ export async function takeSeat(tx: Tx, p: Pick<Party, "id">, userId: string, amo
   const id = randomUUID();
   const entryKey = `party_entry:${id}`;
   const paid = await ledger.charge(tx, { userId, amountKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: entryKey });
-  // A held prize (ADR 0015) stays in their cash until an admin decides.
-  if (paid.fromCash > 0) await assertHeldPrizesKept(tx, userId);
   await tx.insert(partyPlayers).values({ partyId: p.id, userId, id, entryKey });
   return paid;
 }

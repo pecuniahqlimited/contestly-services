@@ -14,7 +14,7 @@
  */
 import { Client, type Room } from "colyseus.js";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
-import { adminAlerts, bankQuestions, db, heldPrizes, ledgerEntries, partyQuestions, users } from "@contestly/db";
+import { adminAlerts, bankQuestions, db, heldPrizes, ledgerAccounts, ledgerEntries, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, hostSlots } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
@@ -120,7 +120,8 @@ try {
   const held = await waitFor(async () => (await db.select().from(heldPrizes).where(eq(heldPrizes.partyId, partyId)))[0]);
   ok(!!held && held.userId === userIds.get(FRIEND) && held.status === "held", "the friend's prize is held");
   ok(held?.evidence.links.join() === "contact" && held.evidence.winnerAccuracyPct === 100 && held.evidence.roomAccuracyPct === 0 && held.evidence.flaggedOn.join() === "host_written,all", `with the evidence (${JSON.stringify(held?.evidence)})`);
-  ok((await partyNetKobo(userIds.get(FRIEND)!, partyId)) === held!.amountKobo - ENTRY, "credited all the same (party_prize)");
+  const holdOf = async (userId: string) => (await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "prize_hold"), eq(ledgerAccounts.scope, userId))))[0]?.balanceKobo ?? 0;
+  ok((await partyNetKobo(userIds.get(FRIEND)!, partyId)) === -ENTRY && (await holdOf(userIds.get(FRIEND)!)) >= held!.amountKobo, "won into their prize hold, not their cash");
   const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `prize_held:${held!.id}`));
   ok(alert?.kind === "templates.prize_held" && alert.severity === "warning", "a warning alert raised");
   // TEST-ONLY: give the friend a verified phone so the only thing in their way is the held prize.

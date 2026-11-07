@@ -7,7 +7,7 @@ export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
 export const visibilityKind = pgEnum("visibility_kind", ["public", "private"]);
 /** cash and bonus are a person's; the rest are the platform's side of every journal (ledger.ts SYSTEM_ACCOUNT_KINDS, ADR 0013). */
 /** entry_forfeited is unused (banned players' entries are refunded; ADR 0013); Postgres can't drop an enum value. */
-export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "entry_forfeited", "fee_variance"]);
+export const accountKind = pgEnum("account_kind", ["cash", "bonus", "party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "entry_forfeited", "fee_variance", "prize_hold"]);
 export const questionFormat = pgEnum("question_format", ["pick_one", "pick_all", "order", "match", "picture"]);
 /** "draft" exists only in curate mode: generated, awaiting host approval (approve → "pending"). */
 export const partyQuestionStatus = pgEnum("party_question_status", ["pending", "played", "voided", "draft"]);
@@ -1702,9 +1702,9 @@ export type ClimbWordRow = typeof climbWords.$inferSelect;
 
 /**
  * A cash prize held for an admin (ADR 0015): a party with host-written questions paid it to a winner linked to the
- * host who did far better than the room on the host's questions. The prize was credited (party_prize); while this
- * row is held the winner can't withdraw (withdrawBlockReason: prize_under_review) or spend below it. Cleared: nothing
- * moves (one admin below ADR 0013's second-admin threshold, two at or above it). Rejected: taken back and passed on
+ * host who did far better than the room. The prize was credited into their prize_hold ledger account, not their
+ * cash; while this row is held their withdrawals wait (withdrawBlockReason: prize_under_review). Cleared: the hold
+ * moves into their cash (one admin below ADR 0013's second-admin threshold, two at or above it). Rejected: taken back and passed on
  * by the rule in ADR 0015's implementation notes, every movement keyed by this row's id. One per winner per party.
  */
 export const heldPrizes = pgTable("held_prizes", {

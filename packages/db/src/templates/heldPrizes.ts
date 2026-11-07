@@ -1,17 +1,18 @@
 /**
  * Held prizes (ADR 0015): the settlement check for parties with host-written questions and the admin's decision.
  *
- * At settlement every cash prize is paid as usual (party_prize). A winner who is linked to the host (one of their
- * people, or the same install or IP) and did far better than the room on the host's questions also gets a held_prizes
- * row, which blocks their withdrawals (withdrawBlockReason: prize_under_review, through payments' withdrawContext) and
- * keeps the prize in their cash (assertHeldPrizesKept), and a warning alert.
+ * At settlement every cash prize is decided before it's paid (payCashPrizes): a winner who is linked to the host and
+ * did far better than the room has the prize credited into their prize_hold ledger account, not their cash, so it
+ * can't be withdrawn, spent or used to repay a debt; a held_prizes row records it and a warning alert is raised.
+ * Their withdrawals also wait while it's held (withdrawBlockReason: prize_under_review).
  *
- * Clear: the row is cleared; nothing moves. Reject (the rule in ADR 0015's implementation notes): the prize is taken
- * back into the party's pot, then passed to the best-placed eligible player without a prize (who goes through the
- * same check); with nobody to pass it to, a host's prize goes back to the host and a pooled one is refunded evenly to
- * the other seats (with nobody at all, it's forfeited to the treasury). Every movement is a ledger journal keyed by
- * the row (or by the party and the recipient, like settlement's own prize keys), and the row is locked, so a
- * replay moves nothing. Lock order (ADR 0013): the people's users rows, then the party and the held row, then the ledger.
+ * Clear: the hold moves into their cash through ledger.journal() (where what they owe is repaid first, as with any
+ * credit). Reject (the rule in ADR 0015's implementation notes): the hold goes back into the party's pot, then to the
+ * best-placed eligible player without a prize (decided the same way, so possibly held in turn); with nobody to pass
+ * it to, a host's prize goes back to the host and a pooled one is refunded evenly to the other seats (with nobody
+ * at all, it's forfeited to the treasury). Every movement is a journal keyed by the row (or by the party and the
+ * recipient, like settlement's own prize keys), and the row is locked, so a replay moves nothing. Lock order
+ * (ADR 0013): the people's users rows, then the party and the held row, then the ledger.
  */
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { evenShares, nextPlaced, reviewPrize, type GradedAnswer } from "@contestly/game";
@@ -67,36 +68,43 @@ async function gradedAnswers(tx: Tx, partyId: string): Promise<GradedAnswer[]> {
 export interface CashPrize { userId: string; place: number; amountKobo: number }
 
 /**
- * The check, in the settling (or rejecting) transaction: for a party with host-written questions, every cash prize
- * to a flagged winner is held (a row, and a warning alert that commits with it). Free parties never get here (they
- * pay no cash); goods aren't money. Returns the rows it held.
+ * Pay cash prizes, each decided first: for a party with host-written questions, a flagged winner's prize goes into
+ * their prize hold (with a held_prizes row and a warning alert that commit with it); everyone else's into cash, as
+ * any party prize. Both are keyed party_prize:<party>:<user>, so a prize is paid once, one way. Goods aren't money
+ * and never get here. The caller holds the winners' users rows (ADR 0013). Returns the rows it held.
  */
-export async function holdFlaggedPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Promise<HeldPrize[]> {
+export async function payCashPrizes(tx: Tx, p: Party, prizes: CashPrize[]): Promise<HeldPrize[]> {
   const paid = prizes.filter((x) => x.amountKobo > 0);
-  if (p.hostQuestionCount <= 0 || !paid.length) return [];
-  // Rules copied before recentBlockDays existed take its default.
+  const checked = p.hostQuestionCount > 0 && paid.length > 0;
+  // Rules copied before a setting existed take its default.
   const rules = { ...DEFAULT_HOST_WRITTEN_RULES, ...p.hostRules };
-  const hostId = p.createdByUserId;
-  const answers = await gradedAnswers(tx, p.id);
+  const answers = checked ? await gradedAnswers(tx, p.id) : [];
   const held: HeldPrize[] = [];
   for (const prize of paid) {
-    const links = await linksToHost(tx, p, prize.userId, rules.recentBlockDays);
-    const review = reviewPrize({ winnerId: prize.userId, links, answers, marginPct: rules.outlierMarginPct });
-    if (!review.flagged) continue;
-    const [row] = await tx.insert(heldPrizes).values({ partyId: p.id, userId: prize.userId, hostUserId: hostId, place: prize.place, amountKobo: prize.amountKobo, evidence: review.evidence })
-      .onConflictDoNothing().returning();
-    if (!row) continue;
-    held.push(row);
-    await adminAlert({
-      kind: HELD_PRIZE_ALERT_KIND, severity: "warning", subject: "A prize is held: a winner linked to the host beat the room on the host's own questions",
-      dedupeKey: `prize_held:${row.id}`, refType: "party", refId: p.id,
-      details: { heldPrizeId: row.id, partyId: p.id, winnerId: prize.userId, hostId, place: prize.place, amountKobo: prize.amountKobo, ...review.evidence },
-    }, tx);
+    const key = `party_prize:${p.id}:${prize.userId}`;
+    const review = checked ? reviewPrize({ winnerId: prize.userId, links: await linksToHost(tx, p, prize.userId, rules.recentBlockDays), answers, marginPct: rules.outlierMarginPct }) : null;
+    if (review?.flagged) {
+      await ledger.journal(tx, { type: "party_prize", refType: "party", refId: p.id, idempotencyKey: key, legs: [{ account: ledger.prizeHoldAccount(prize.userId), amountKobo: prize.amountKobo }, { account: pot(p.id), amountKobo: -prize.amountKobo }] });
+      const [row] = await tx.insert(heldPrizes).values({ partyId: p.id, userId: prize.userId, hostUserId: p.createdByUserId, place: prize.place, amountKobo: prize.amountKobo, evidence: review.evidence })
+        .onConflictDoNothing().returning();
+      if (row) {
+        held.push(row);
+        await adminAlert({
+          kind: HELD_PRIZE_ALERT_KIND, severity: "warning", subject: "A prize is held: a winner linked to the host beat the room",
+          dedupeKey: `prize_held:${row.id}`, refType: "party", refId: p.id,
+          details: { heldPrizeId: row.id, partyId: p.id, winnerId: prize.userId, hostId: p.createdByUserId, place: prize.place, amountKobo: prize.amountKobo, ...review.evidence },
+        }, tx);
+      }
+    } else {
+      await ledger.post(tx, { userId: prize.userId, kind: "cash", amountKobo: prize.amountKobo, type: "party_prize", refType: "party", refId: p.id, idempotencyKey: key });
+    }
+    await tx.update(partyPlayers).set({ prizeKobo: prize.amountKobo }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, prize.userId)));
   }
   return held;
 }
 
-const lockUsers = (tx: Tx, ids: string[]) =>
+/** Lock these people's users rows, in id order (the first step of ADR 0013's lock order). */
+export const lockPeopleRows = (tx: Tx, ids: string[]) =>
   tx.select({ id: users.id }).from(users).where(inArray(users.id, [...new Set(ids)].sort())).orderBy(asc(users.id)).for("no key update");
 
 async function lockHeld(tx: Tx, id: string) {
@@ -112,7 +120,8 @@ function refuseOwn(row: HeldPrize, adminUserId: string) {
 export interface ClearOutcome { row: HeldPrize; replayed: boolean; awaitingSecondAdmin: boolean }
 
 /**
- * An admin clears a held prize: the winner keeps it and may withdraw again (if nothing else holds them). Clearing
+ * An admin clears a held prize: it moves from their hold into their cash and they may withdraw again (if nothing
+ * else holds them). Clearing
  * loosens a payments control, so ADR 0013's maker-checker applies: below `finalize.secondAdminThresholdKobo` one
  * admin clears; at or above it the first admin's clear is a request (the prize stays held) and a different admin's
  * clear confirms it. Neither may be the host or the winner. The same admin asking again is a replay. Logged.
@@ -121,7 +130,7 @@ export async function clearHeldPrize(adminUserId: string, id: string, reason: st
   return moneyTransaction(async (tx) => {
     const [pre] = await tx.select({ userId: heldPrizes.userId }).from(heldPrizes).where(eq(heldPrizes.id, id));
     if (!pre) throw httpError(404, "not_found");
-    await lockUsers(tx, [pre.userId]);
+    await lockPeopleRows(tx, [pre.userId]);
     const row = await lockHeld(tx, id);
     if (row.status === "cleared") return { row, replayed: true, awaitingSecondAdmin: false };
     if (row.status !== "held") throw httpError(409, "prize_already_decided", { status: row.status });
@@ -137,6 +146,8 @@ export async function clearHeldPrize(adminUserId: string, id: string, reason: st
       }
       if (row.clearRequestedByUserId === adminUserId) return { row, replayed: true, awaitingSecondAdmin: true };
     }
+    // The prize becomes their cash: through journal(), so what they owe is repaid from it first, as from any credit.
+    await ledger.journal(tx, { type: "held_prize_cleared", refType: "party", refId: row.partyId, idempotencyKey: `held_prize_clear:${row.id}`, legs: [{ account: ledger.prizeHoldAccount(row.userId), amountKobo: -row.amountKobo }, { account: cashOf(row.userId), amountKobo: row.amountKobo }] });
     const [done] = await tx.update(heldPrizes).set({ status: "cleared", decidedByUserId: adminUserId, reason, decidedAt: now }).where(eq(heldPrizes.id, id)).returning();
     await log("party_templates.held_prize_clear", { status: done.status, requestedBy: row.clearRequestedByUserId });
     return { row: done, replayed: false, awaitingSecondAdmin: false };
@@ -164,13 +175,9 @@ async function planReject(tx: Tx, held: HeldPrize, p: Party): Promise<RejectPlan
 
 const pot = (partyId: string): ledger.AccountRef => ({ system: "party_pot", scope: partyId });
 const cashOf = (userId: string): ledger.AccountRef => ({ userId, kind: "cash" });
-const JOURNAL_TYPE: Record<HeldPrizeOutcome["kind"], string> = {
-  passed_on: "party_prize", returned_to_host: "held_prize_returned", refunded: "held_prize_refund", forfeited: "held_prize_forfeit",
+const JOURNAL_TYPE: Record<Exclude<HeldPrizeOutcome["kind"], "passed_on">, string> = {
+  returned_to_host: "held_prize_returned", refunded: "held_prize_refund", forfeited: "held_prize_forfeit",
 };
-
-/** The key each payment out of a reject is written under: a passed-on prize is that player's party prize (settlement's key). */
-const payoutKey = (held: HeldPrize, kind: HeldPrizeOutcome["kind"], userId: string) =>
-  kind === "passed_on" ? `party_prize:${held.partyId}:${userId}` : `held_prize_${kind}:${held.id}:${userId}`;
 
 /**
  * An admin rejects a held prize, with a reason: taken back from the winner and moved by the rule. Idempotent: a
@@ -184,7 +191,7 @@ export async function rejectHeldPrize(adminUserId: string, id: string, reason: s
     const [party] = await tx.select().from(parties).where(eq(parties.id, pre.partyId));
     const planned = await planReject(tx, pre, party);
     // People first, then the party and the held row (ADR 0013's lock order), then re-plan under the locks.
-    await lockUsers(tx, [pre.userId, ...planned.outcome.to.map((t) => t.userId)]);
+    await lockPeopleRows(tx, [pre.userId, ...planned.outcome.to.map((t) => t.userId)]);
     const [p] = await tx.select().from(parties).where(eq(parties.id, pre.partyId)).for("update");
     const held = await lockHeld(tx, id);
     if (held.status === "rejected") return { row: held, replayed: true };
@@ -193,21 +200,17 @@ export async function rejectHeldPrize(adminUserId: string, id: string, reason: s
     const plan = await planReject(tx, held, p);
     if (JSON.stringify(plan.outcome) !== JSON.stringify(planned.outcome)) throw httpError(409, "party_changed_try_again");
 
-    try {
-      await ledger.journal(tx, { type: "held_prize_rejected", refType: "party", refId: p.id, idempotencyKey: `held_prize_reject:${held.id}`, legs: [{ account: cashOf(held.userId), amountKobo: -held.amountKobo }, { account: pot(p.id), amountKobo: held.amountKobo }] });
-    } catch (e) {
-      if (e instanceof ledger.InsufficientFunds) throw httpError(409, "prize_not_recoverable", { amountKobo: held.amountKobo });
-      throw e;
-    }
+    // Out of their hold, never their cash: it was never theirs to spend.
+    await ledger.journal(tx, { type: "held_prize_rejected", refType: "party", refId: p.id, idempotencyKey: `held_prize_reject:${held.id}`, legs: [{ account: ledger.prizeHoldAccount(held.userId), amountKobo: -held.amountKobo }, { account: pot(p.id), amountKobo: held.amountKobo }] });
     await tx.update(partyPlayers).set({ prizeKobo: 0 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, held.userId)));
-    for (const t of plan.outcome.to) {
-      await ledger.journal(tx, { type: JOURNAL_TYPE[plan.outcome.kind], refType: "party", refId: p.id, idempotencyKey: payoutKey(held, plan.outcome.kind, t.userId), legs: [{ account: pot(p.id), amountKobo: -t.amountKobo }, { account: cashOf(t.userId), amountKobo: t.amountKobo }] });
-    }
     if (plan.outcome.kind === "passed_on") {
+      // The new winner is decided the same way (and may be held in turn); their party_prize key, like settlement's.
       const to = plan.outcome.to[0];
-      await tx.update(partyPlayers).set({ prizeKobo: to.amountKobo }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, to.userId)));
-      // The new winner passes the same check.
-      await holdFlaggedPrizes(tx, p, [{ userId: to.userId, place: plan.place ?? held.place, amountKobo: to.amountKobo }]);
+      await payCashPrizes(tx, p, [{ userId: to.userId, place: plan.place ?? held.place, amountKobo: to.amountKobo }]);
+    } else {
+      for (const t of plan.outcome.to) {
+        await ledger.journal(tx, { type: JOURNAL_TYPE[plan.outcome.kind], refType: "party", refId: p.id, idempotencyKey: `held_prize_${plan.outcome.kind}:${held.id}:${t.userId}`, legs: [{ account: pot(p.id), amountKobo: -t.amountKobo }, { account: cashOf(t.userId), amountKobo: t.amountKobo }] });
+      }
     }
     const [done] = await tx.update(heldPrizes).set({ status: "rejected", decidedByUserId: adminUserId, reason, decidedAt: new Date(), outcome: plan.outcome }).where(eq(heldPrizes.id, id)).returning();
     await recordAdminAction(tx, { adminUserId, action: "party_templates.held_prize_reject", targetType: "held_prize", targetId: id, reason, before: { status: held.status, userId: held.userId, amountKobo: held.amountKobo }, after: { status: done.status, outcome: plan.outcome } });

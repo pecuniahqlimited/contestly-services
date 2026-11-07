@@ -5,7 +5,7 @@
  * template keeps a copy of it; one with host-written questions is curate, never free, inside the caps (ADR 0015).
  */
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
-import { assertHeldPrizesKept, takeSeat, cleanName,
+import { takeSeat, cleanName,
   canOfferNonCashPrize, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles, partyInvites,
   partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Party, type Tx, type User,
 } from "@contestly/db";
@@ -74,10 +74,7 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
     const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode, questionsStatus: mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, split: [...SPLITS[body.split].shares], limits: cfg.limits, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt, crewId: crew?.id, rematchOf: opts.rematchOf, isSim: me.isSim, template, hostRules }).returning();
     // The host's cash prize is held now, so it can't be spent elsewhere: paid out by place at settlement, released if cancelled.
     // Goods move no money: one fulfilment record per winning place at settlement.
-    if (body.funding === "host" && body.prizeKind === "cash") {
-      await ledger.hold(tx, { userId: me.id, amountKobo: body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
-      await assertHeldPrizesKept(tx, me.id); // a prize of theirs held for review (ADR 0015) can't fund one
-    }
+    if (body.funding === "host" && body.prizeKind === "cash") await ledger.hold(tx, { userId: me.id, amountKobo: body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
     if (isGoods(body.prizeKind)) await tx.insert(partyPrizes).values(body.places.map((g, i) => ({ partyId: p.id, place: i + 1, text: g.text, valueKobo: g.valueKobo ?? null })));
     // A sealed party's host plays: seated, and pooled hosts pay their own entry like everyone else.
     // A curate host reviews the questions and so never plays: not seated, never charged an entry.

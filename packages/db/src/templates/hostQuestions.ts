@@ -6,10 +6,10 @@
  */
 import { randomInt } from "node:crypto";
 import { and, count, eq, sql } from "drizzle-orm";
-import { DISTRACTOR_COUNT, PRIZE_UNDER_REVIEW, hostQuestionPayload, type HostQuestion } from "@contestly/shared";
+import { DISTRACTOR_COUNT, hostQuestionPayload, type HostQuestion } from "@contestly/shared";
 import type { Tx } from "../client.js";
 import { db } from "../client.js";
-import { heldPrizes, ledgerAccounts, parties, partyQuestionEvents, partyQuestions, type Party } from "../schema.js";
+import { heldPrizes, parties, partyQuestionEvents, partyQuestions, type Party } from "../schema.js";
 
 type Conn = Tx | typeof db;
 
@@ -48,18 +48,4 @@ export async function heldPrizeKobo(conn: Conn, userId: string): Promise<number>
   const [{ total }] = await conn.select({ total: sql<number>`coalesce(sum(${heldPrizes.amountKobo}), 0)` }).from(heldPrizes)
     .where(and(eq(heldPrizes.userId, userId), eq(heldPrizes.status, "held")));
   return Number(total);
-}
-
-/**
- * A held prize stays in the winner's cash until an admin decides, so a reject can always take it back: after
- * anything that took cash from them in this transaction (an entry, a host's prize hold), their cash must still
- * cover what's held, or the transaction is refused (409 prize_under_review) and rolls back. Their cash account
- * is already locked by the movement that just ran.
- */
-export async function assertHeldPrizesKept(tx: Tx, userId: string): Promise<void> {
-  const held = await heldPrizeKobo(tx, userId);
-  if (held <= 0) return;
-  const [cash] = await tx.select({ balance: ledgerAccounts.balanceKobo }).from(ledgerAccounts)
-    .where(and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, "cash"), eq(ledgerAccounts.scope, "")));
-  if ((cash?.balance ?? 0) < held) throw Object.assign(new Error(PRIZE_UNDER_REVIEW), { statusCode: 409, details: { heldKobo: held } });
 }

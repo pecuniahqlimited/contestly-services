@@ -43,8 +43,10 @@ type Kind = (typeof USER_ACCOUNT_KINDS)[number];
  *   cash and what they owe (scope: their user id); the recovery when it's confirmed, released if it dissolves
  * - fee_variance: when the user bears a payout's fee, the difference between the fee they paid (our estimate)
  *   and what the provider charged; either sign
+ * - prize_hold: party prizes held for an admin (ADR 0015), won but not yet the person's cash, so they can't be
+ *   withdrawn, spent or used to repay a debt (scope: their user id); cleared into cash, or rejected out of it
  */
-export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "fee_variance"] as const;
+export const SYSTEM_ACCOUNT_KINDS = ["party_pot", "bonus_issued", "prize_funding", "dev_mint", "topup_in", "payout_pending", "payout_settled", "payout_fees", "platform_funds", "payout_owed", "contradiction_hold", "fee_variance", "prize_hold"] as const;
 export type SystemKind = (typeof SYSTEM_ACCOUNT_KINDS)[number];
 
 export type AccountRef = { userId: string; kind: Kind } | { system: SystemKind; scope?: string };
@@ -53,7 +55,7 @@ export interface Journal { legs: Leg[]; type: string; refType?: string; refId?: 
 
 const isUserRef = (a: AccountRef): a is { userId: string; kind: Kind } => "userId" in a;
 /** Platform accounts kept per person (scope = their user id): locked with the person's own. */
-const PERSON_SCOPED_SYSTEM: readonly string[] = ["payout_owed", "contradiction_hold"];
+const PERSON_SCOPED_SYSTEM: readonly string[] = ["payout_owed", "contradiction_hold", "prize_hold"];
 const isPersonScoped = (a: AccountRef) => isUserRef(a) || PERSON_SCOPED_SYSTEM.includes(a.system);
 /** People whose cash this journal credits, net. */
 function creditedCash(j: Journal) {
@@ -156,6 +158,9 @@ export async function journal(tx: Tx, j: Journal): Promise<{ replayed: boolean; 
 export const owedAccount = (userId: string): AccountRef => ({ system: "payout_owed", scope: userId });
 /** The disputed amount of this person's open duplicate payouts, held out of their cash (ADR 0013). */
 export const contradictionHoldAccount = (userId: string): AccountRef => ({ system: "contradiction_hold", scope: userId });
+
+/** Prizes of this person's held for an admin (ADR 0015): the platform's prize_hold account for them. */
+export const prizeHoldAccount = (userId: string): AccountRef => ({ system: "prize_hold", scope: userId });
 
 /** How much this person owes, in kobo (0 when nothing). */
 export async function owedKobo(conn: Tx | typeof db, userId: string): Promise<number> {

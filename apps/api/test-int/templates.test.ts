@@ -11,14 +11,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Worker } from "bullmq";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, bankQuestions, blocks, contactMatches, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
+  adminActions, adminAlerts, bankQuestions, ledgerAccounts, blocks, contactMatches, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
   savePartyTemplates, currentPartyTemplates, takeSeat, users, withdrawBlockReason, type Party, type User,
 } from "@contestly/db";
 import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
 import {
   DEFAULT_HOST_WRITTEN_RULES, DEFAULT_PARTY_TEMPLATES, QUEUES, hostSlots, kobo, partyTemplatesResponseSchema, type DistractorRequest, type HostQuestion, type QuestionsJob,
 } from "@contestly/shared";
-import { requestPayout, withdrawContext } from "@contestly/payments";
+import { addBankAccount, checkPayout, findBreaches, mockControlsOrNull, requestPayout, resetProviders, resolveAccount, submitPayout, withdrawContext, type KeyValue } from "@contestly/payments";
 import { getSocialConfig } from "@contestly/db";
 import { settle } from "../../worker/src/partySettle.js";
 import { generateSet } from "../../questions/src/pipeline/generateSet.js";
@@ -42,6 +42,10 @@ const pooled = (over: Record<string, unknown> = {}) => ({
 });
 const fund = (u: User, amountKobo: number) => db.transaction((tx) => ledger.post(tx, { userId: u.id, kind: "cash", amountKobo, type: "topup", idempotencyKey: `t:tpl:${tag}:${u.id}:${randomUUID()}` }));
 const cash = async (u: User) => (await ledger.balances(u.id)).cashKobo;
+/** What's in their prize hold (ADR 0015): the platform's prize_hold account for them. */
+const hold = async (u: User) => (await db.select().from(ledgerAccounts).where(and(eq(ledgerAccounts.kind, "prize_hold"), eq(ledgerAccounts.scope, u.id))))[0]?.balanceKobo ?? 0;
+/** The hold-account invariant: every prize hold equals that person's open held prizes. */
+const holdBreaches = async () => (await findBreaches(db)).filter((b) => b.kind === "prize_hold");
 const partyRow = async (id: string) => (await db.select().from(parties).where(eq(parties.id, id)))[0];
 const create = (u: User, body: Record<string, unknown>) => app.inject({ method: "POST", url: "/parties", headers: as(u), payload: body });
 
@@ -301,8 +305,11 @@ describe("the link check and the outlier flag at settlement", () => {
     const [held] = await heldIn(p.id);
     expect(held).toMatchObject({ userId: w.id, hostUserId: h.id, place: 1, status: "held", amountKobo: (await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, w.id))))[0].prizeKobo });
     expect(held.evidence).toMatchObject({ links: ["contact"], hostQuestionsPlayed: 2, winnerAccuracyPct: 100, roomAccuracyPct: 0, questionsPlayed: 4, winnerAllAccuracyPct: 50, roomAllAccuracyPct: 50, flaggedOn: ["host_written"] });
-    // Credited all the same.
-    expect(await cash(w)).toBe(held.amountKobo);
+    // Won, but into their prize hold, not their cash (their entry came from cash).
+    expect([await cash(w), await hold(w)]).toEqual([0, held.amountKobo]);
+    const [entry] = await db.select().from(ledgerEntries).where(eq(ledgerEntries.idempotencyKey, `party_prize:${p.id}:${w.id}`));
+    expect(entry.amountKobo).toBe(held.amountKobo);
+    expect(await holdBreaches()).toEqual([]);
     const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `prize_held:${held.id}`));
     expect(alert).toMatchObject({ kind: "templates.prize_held", severity: "warning", refId: p.id });
   });
@@ -392,20 +399,18 @@ describe("a held prize", () => {
     heldId = (await heldIn(p.id))[0].id;
   });
 
-  it("can't be withdrawn (prize_under_review), nor spent below what's held", async () => {
+  it("sits in the hold: can't be withdrawn, spent or repay anything; their own cash stays theirs (withdrawals wait, prize_under_review)", async () => {
     const [u] = await db.select().from(users).where(eq(users.id, w.id));
     expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBe("prize_under_review");
     await expect(requestPayout(u, { amountKobo: kobo(100), bankAccountId: randomUUID(), clientRequestId: randomUUID() }, { enqueue: async () => undefined }))
       .rejects.toMatchObject({ statusCode: 403, message: "withdraw_not_allowed", details: { reason: "prize_under_review" } });
     expect((await app.inject({ method: "GET", url: "/me", headers: as(w) })).json().canWithdraw).toBe(false);
-    // Entering a party from the held cash is refused; from fresh cash on top of it, fine.
-    await fund(host, ENTRY);
+    // The held prize isn't cash: an entry can't come out of it; their own cash pays it as usual.
     const open = (await create(host, pooled({ mode: "curate" }))).json().id;
-    const join = await app.inject({ method: "POST", url: `/parties/${open}/join`, headers: as(w) });
-    expect(join.statusCode).toBe(409);
-    expect(join.json().error).toBe("prize_under_review");
+    expect((await app.inject({ method: "POST", url: `/parties/${open}/join`, headers: as(w) })).json().error).toBe("insufficient_funds");
     await fund(w, ENTRY);
     expect((await app.inject({ method: "POST", url: `/parties/${open}/join`, headers: as(w) })).statusCode).toBe(201);
+    expect([await cash(w), await hold(w)]).toEqual([0, (await heldIn(p.id))[0].amountKobo]);
   });
 
   it("is listed for admins with its evidence", async () => {
@@ -418,19 +423,22 @@ describe("a held prize", () => {
   it("reject: taken back and passed to the next placed player, once, however many times it's asked", async () => {
     const amount = (await heldIn(p.id))[0].amountKobo;
     const [wBefore, sBefore] = [await cash(w), await cash(second)];
+    expect(await hold(w)).toBe(amount);
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: {} })).statusCode).toBe(400); // a reason
     const first = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: { reason: "Fed the answers by the host" } });
     expect(first.statusCode).toBe(200);
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(w), payload: { reason: "mine" } })).statusCode).toBe(403); // not an admin anyway
     expect(first.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "rejected", reason: "Fed the answers by the host", outcome: { kind: "passed_on", to: [{ userId: second.id, amountKobo: amount }] }, decidedBy: { id: admin.id } } });
-    expect(await cash(w)).toBe(wBefore - amount);
+    // Out of the hold, not their cash; second place is paid in cash (not linked, so not held).
+    expect([await cash(w), await hold(w)]).toEqual([wBefore, 0]);
     expect(await cash(second)).toBe(sBefore + amount);
+    expect(await holdBreaches()).toEqual([]);
     const entries = () => db.select().from(ledgerEntries).where(like(ledgerEntries.idempotencyKey, `held_prize_reject:${heldId}%`));
     expect(await entries()).toHaveLength(2);
     const again = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/reject`, headers: as(admin), payload: { reason: "again" } });
     expect(again.json()).toMatchObject({ replayed: true, prize: { status: "rejected", reason: "Fed the answers by the host" } });
     expect(await entries()).toHaveLength(2);
-    expect([await cash(w), await cash(second)]).toEqual([wBefore - amount, sBefore + amount]);
+    expect([await cash(w), await hold(w), await cash(second)]).toEqual([wBefore, 0, sBefore + amount]);
     expect((await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, second.id))))[0].prizeKobo).toBe(amount);
     // A rejected prize can't then be cleared; the winner can withdraw again (nothing else holds them).
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${heldId}/clear`, headers: as(admin), payload: { reason: "oops" } })).json().error).toBe("prize_already_decided");
@@ -442,7 +450,7 @@ describe("a held prize", () => {
 });
 
 describe("clear, and the other reject outcomes", () => {
-  it("clear: nothing moves, the winner may withdraw; a replay says so", async () => {
+  it("clear: the hold moves into their cash, once; the winner may withdraw; a replay says so", async () => {
     const h = await makeUser(name("hoste"));
     const w = await makeUser(name("wine"), { phone: `+23480${randomUUID().replace(/\D/g, "").slice(0, 8)}`, phoneVerifiedAt: new Date() });
     await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
@@ -453,7 +461,8 @@ describe("clear, and the other reject outcomes", () => {
     expect(held.amountKobo).toBeLessThan((await getPaymentsConfig()).finalize.secondAdminThresholdKobo);
     expect(res.json()).toMatchObject({ replayed: false, awaitingSecondAdmin: false, prize: { status: "cleared", reason: "Checked: they're just good", decidedBy: { id: admin.id } } });
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "again" } })).json()).toMatchObject({ replayed: true, prize: { reason: "Checked: they're just good" } });
-    expect(await cash(w)).toBe(before);
+    expect([await cash(w), await hold(w)]).toEqual([before + held.amountKobo, 0]);
+    expect(await holdBreaches()).toEqual([]);
     const [u] = await db.select().from(users).where(eq(users.id, w.id));
     expect(withdrawBlockReason(u, await withdrawContext(db, u))).toBeNull();
     expect((await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "changed my mind" } })).json().error).toBe("prize_already_decided");
@@ -498,7 +507,7 @@ describe("clear, and the other reject outcomes", () => {
     const res = await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "Host funding a friend" } });
     expect(res.json().prize.outcome).toEqual({ kind: "returned_to_host", to: [{ userId: h.id, amountKobo: kobo(2_000) }] });
     expect(await cash(h)).toBe(hostBefore + kobo(2_000));
-    expect(await cash(w)).toBe(0);
+    expect([await cash(w), await hold(w)]).toEqual([0, 0]);
   });
 
   it("a passed-on prize goes through the same check: a second linked player is held in turn", async () => {
@@ -510,11 +519,138 @@ describe("clear, and the other reject outcomes", () => {
     await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/reject`, headers: as(admin), payload: { reason: "Linked" } });
     const now = await heldIn(p.id);
     expect(now.map((x) => [x.userId, x.status]).sort()).toEqual([[w1.id, "rejected"], [w2.id, "held"]].sort());
-    expect(await cash(w2)).toBe(held.amountKobo);
+    expect([await cash(w2), await hold(w2)]).toEqual([0, held.amountKobo]);
+    expect(await holdBreaches()).toEqual([]);
   });
 });
 
 afterAll(async () => {
   // Nothing else reads these parties; they're left finished like any other.
   expect(settled.length).toBeGreaterThan(0);
+});
+
+describe("the hold and the money around it", () => {
+  const store = new Map<string, string>();
+  const kv: KeyValue = { get: async (k) => store.get(k) ?? null, set: async (k, v) => { store.set(k, v); }, del: async (k) => { store.delete(k); } };
+  const deps = { enqueue: async () => undefined };
+  beforeAll(() => { delete process.env.PAYSTACK_SECRET_KEY; delete process.env.PAYMENTS_PROVIDER; resetProviders(); });
+
+  /** A person who can withdraw: verified phone, a confirmed mock bank account, `cashKobo` in cash. */
+  async function withdrawer(label: string, cashKobo: number) {
+    const u = await makeUser(name(label), { phone: `+23480${randomUUID().replace(/\D/g, "").slice(0, 8)}`, phoneVerifiedAt: new Date() });
+    if (cashKobo) await fund(u, cashKobo);
+    const r = await resolveAccount(u.id, { bankCode: "001", accountNumber: `01${String(Date.now()).slice(-8)}` }, kv);
+    return { u, account: await addBankAccount(u.id, { resolveToken: r.resolveToken, accountName: r.accountName }, kv) };
+  }
+
+  it("a held prize to someone who owes: nothing repays from the hold; clearing credits cash, which repays first", async () => {
+    // A duplicate payout they couldn't cover (ADR 0013): reversed, spent down to 0, then paid after all.
+    const mock = mockControlsOrNull()!;
+    const { u: w, account } = await withdrawer("owes", kobo(5_000));
+    const { payout } = await requestPayout(w, { amountKobo: kobo(1500) + 11, bankAccountId: account.id, clientRequestId: randomUUID() }, deps);
+    expect(await submitPayout(payout.id)).toBe("failed");
+    await db.transaction((tx) => ledger.post(tx, { userId: w.id, kind: "cash", amountKobo: -(kobo(5_000)), type: "topup", idempotencyKey: `t:tpl:spend:${payout.id}` }));
+    await mock.setTransfer(payout.reference, { ...(await mock.getTransfer(payout.reference))!, state: "success" });
+    await checkPayout(payout.id, "check");
+    expect(await ledger.owedKobo(db, w.id)).toBe(payout.amountKobo);
+
+    const h = await makeUser(name("hostowe"));
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    // Their entry: the cash playedParty adds repays the debt first (as any credit), so the seat is paid from bonus coins.
+    await db.transaction((tx) => ledger.post(tx, { userId: w.id, kind: "bonus", amountKobo: ENTRY, type: "topup", idempotencyKey: `t:tpl:bonus:${w.id}` }));
+    const p = await playedParty({ hostUser: h, seats: [{ u: w, correct: ACE }, { u: await makeUser(name("powe")), correct: MISS }] });
+    const owed = await ledger.owedKobo(db, w.id);
+    expect(owed).toBe(payout.amountKobo - ENTRY);
+    const [held] = await heldIn(p.id);
+    // Their entry came from fresh cash; the prize is in the hold, and the debt is untouched by it.
+    expect([await cash(w), await hold(w), await ledger.owedKobo(db, w.id)]).toEqual([0, held.amountKobo, owed]);
+    // A reject can always take it back (here we clear, so it becomes cash and repays the debt first).
+    await app.inject({ method: "POST", url: `/admin/party-templates/held-prizes/${held.id}/clear`, headers: as(admin), payload: { reason: "fine" } });
+    const repaid = Math.min(held.amountKobo, owed);
+    expect([await hold(w), await ledger.owedKobo(db, w.id), await cash(w)]).toEqual([0, owed - repaid, held.amountKobo - repaid]);
+    expect(await holdBreaches()).toEqual([]);
+  });
+
+  it("settlement takes the winners' rows first: a withdrawal holding one makes settlement wait, and the prize never reaches it", async () => {
+    const { u: w, account } = await withdrawer("race", 0);
+    const h = await makeUser(name("hostrace"));
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    // Seated and ranked, not settled yet: playedParty settles, so build it, then race a withdrawal against its settle.
+    const seats = [{ u: w, correct: ACE }, { u: await makeUser(name("prace")), correct: MISS }];
+    const [p] = await db.insert(parties).values({
+      createdByUserId: h.id, title: `Race ${randomUUID().slice(0, 6)}`, category: "General knowledge", entryKobo: ENTRY, maxPlayers: 10, funding: "pooled", split: [100],
+      mode: "curate", status: "live", startsAt: new Date(), liveAt: new Date(), questionsStatus: "ready", hostRules: DEFAULT_HOST_WRITTEN_RULES, hostQuestionCount: 2,
+    }).returning();
+    for (const [i, st] of seats.entries()) {
+      await fund(st.u, ENTRY);
+      await db.transaction((tx) => takeSeat(tx, p, st.u.id, ENTRY));
+      await db.update(partyPlayers).set({ rank: i + 1 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, st.u.id)));
+    }
+    for (let idx = 0; idx < 4; idx++) {
+      const [pq] = await db.insert(partyQuestions).values({ partyId: p.id, idx, format: "pick_one", payload: { question: `r${idx}`, options: ["a", "b"], correctIndex: 0 }, seconds: 10, status: "played", hostWritten: idx < 2, hostAuthored: idx < 2 }).returning();
+      await db.insert(partyAnswers).values(seats.map((st) => ({ partyId: p.id, questionId: pq.id, userId: st.u.id, correctness: st.correct[idx], points: st.correct[idx] })));
+    }
+    await fund(w, kobo(2_000)); // their own money, withdrawable
+
+    // 1. A transaction holding the winner's row (as a withdrawal does) makes settlement wait for it.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const holding = db.transaction(async (tx) => { await tx.select().from(users).where(eq(users.id, w.id)).for("no key update"); await gate; });
+    await new Promise((r) => setTimeout(r, 50));
+    const settling = settle(settleDeps, p.id);
+    await new Promise((r) => setTimeout(r, 300));
+    expect((await partyRow(p.id)).status).toBe("live"); // still waiting on the winner's row
+    release();
+    await holding;
+    await settling;
+    expect((await partyRow(p.id)).status).toBe("finished");
+
+    // 2. Whichever way a withdrawal lands against a settle, the prize isn't in it: here it's after, and waits.
+    const [held] = await heldIn(p.id);
+    const [u] = await db.select().from(users).where(eq(users.id, w.id));
+    await expect(requestPayout(u, { amountKobo: kobo(2_000) + held.amountKobo, bankAccountId: account.id, clientRequestId: randomUUID() }, deps)).rejects.toMatchObject({ details: { reason: "prize_under_review" } });
+    expect([await cash(w), await hold(w)]).toEqual([kobo(2_000), held.amountKobo]);
+  });
+
+  it("a withdrawal and a settle at the same moment: the withdrawal gets only their own cash, never the prize", async () => {
+    const { u: w, account } = await withdrawer("race2", kobo(2_000));
+    const h = await makeUser(name("hostrace2"));
+    await db.insert(contactMatches).values({ userId: h.id, contactUserId: w.id });
+    const seats = [{ u: w, correct: ACE }, { u: await makeUser(name("prace2")), correct: MISS }];
+    const [p] = await db.insert(parties).values({
+      createdByUserId: h.id, title: `Race ${randomUUID().slice(0, 6)}`, category: "General knowledge", entryKobo: ENTRY, maxPlayers: 10, funding: "pooled", split: [100],
+      mode: "curate", status: "live", startsAt: new Date(), liveAt: new Date(), questionsStatus: "ready", hostRules: DEFAULT_HOST_WRITTEN_RULES, hostQuestionCount: 2,
+    }).returning();
+    for (const [i, st] of seats.entries()) {
+      await fund(st.u, ENTRY);
+      await db.transaction((tx) => takeSeat(tx, p, st.u.id, ENTRY));
+      await db.update(partyPlayers).set({ rank: i + 1 }).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, st.u.id)));
+    }
+    for (let idx = 0; idx < 4; idx++) {
+      const [pq] = await db.insert(partyQuestions).values({ partyId: p.id, idx, format: "pick_one", payload: { question: `s${idx}`, options: ["a", "b"], correctIndex: 0 }, seconds: 10, status: "played", hostWritten: idx < 2, hostAuthored: idx < 2 }).returning();
+      await db.insert(partyAnswers).values(seats.map((st) => ({ partyId: p.id, questionId: pq.id, userId: st.u.id, correctness: st.correct[idx], points: st.correct[idx] })));
+    }
+    const [u] = await db.select().from(users).where(eq(users.id, w.id));
+    const [out] = await Promise.allSettled([
+      requestPayout(u, { amountKobo: kobo(2_000), bankAccountId: account.id, clientRequestId: randomUUID() }, deps),
+      settle(settleDeps, p.id),
+    ]);
+    const [held] = await heldIn(p.id);
+    // Either the withdrawal ran first (their 2,000 out) or after (refused: prize_under_review); the prize is in the hold either way.
+    if (out.status === "fulfilled") expect(await cash(w)).toBe(0);
+    else { expect((out.reason as { details?: { reason?: string } }).details?.reason).toBe("prize_under_review"); expect(await cash(w)).toBe(kobo(2_000)); }
+    expect(await hold(w)).toBe(held.amountKobo);
+    expect(await holdBreaches()).toEqual([]);
+  });
+
+  it("the invariant sees a hold that doesn't match its held prizes", async () => {
+    const stray = await makeUser(name("stray"));
+    await db.transaction((tx) => ledger.journal(tx, { type: "held_prize_test", idempotencyKey: `t:tpl:stray:${stray.id}`, legs: [{ account: ledger.prizeHoldAccount(stray.id), amountKobo: 100 }, { account: { system: "dev_mint" }, amountKobo: -100 }] }));
+    const breaches = await holdBreaches();
+    expect(breaches).toHaveLength(1);
+    expect(breaches[0].items[stray.id]).toBe(100);
+    // Put it back, so later runs see a clean ledger.
+    await db.transaction((tx) => ledger.journal(tx, { type: "held_prize_test", idempotencyKey: `t:tpl:unstray:${stray.id}`, legs: [{ account: ledger.prizeHoldAccount(stray.id), amountKobo: -100 }, { account: { system: "dev_mint" }, amountKobo: 100 }] }));
+    expect(await holdBreaches()).toEqual([]);
+  });
 });

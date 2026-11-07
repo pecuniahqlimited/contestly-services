@@ -83,19 +83,23 @@ parties with host-written questions, only cash prizes (goods move no money).
   one was played), or the whole set, because a curate host has seen every generated answer too (ADR 0003). The
   evidence carries both comparisons and which one tripped (`flaggedOn`).
 
-A flagged prize is still posted as `party_prize`; a `held_prizes` row and a `templates.prize_held` warning alert
-commit with it.
+Each prize is decided before it's paid (`payCashPrizes`, shared by settlement and a reject's pass-on). A flagged
+prize is credited into the winner's **`prize_hold`** ledger account (a per-person platform account, like
+`contradiction_hold`; `ledger.prizeHoldAccount()`), keyed `party_prize:<party>:<user>` like any prize, so a prize is
+paid once, one way. A `held_prizes` row and a `templates.prize_held` warning alert commit with it. Settlement takes
+ADR 0013's lock order: the seated players' and the host's `users` rows first, then the party row, then the ledger.
 
-**The hold** uses the payments block, not a new money path: `withdrawContext()` reports `prizeUnderReview` and
-`withdrawBlockReason()` answers `prize_under_review`, so the request, its in-transaction recheck, the send-time
-recheck (held for a payments admin as `blocked:prize_under_review`) and `GET /me` all refuse it. So that a reject
-can always take the prize back, cash can't be spent below what's held: `assertHeldPrizesKept()` runs after an
-entry's cash charge (`takeSeat`) and a host's prize hold, refusing with 409 `prize_under_review`. Bonus coins and
-cash above the held amount stay spendable. Ledger internals are unchanged (journals with explicit legs).
+**The hold.** Money in `prize_hold` isn't cash: it can't be withdrawn, spent on an entry or a host's prize, or used
+to repay a debt (repay-first only acts on cash credits). The person's withdrawals also wait while a prize of theirs
+is held (`withdrawContext()` reports `prizeUnderReview`, `withdrawBlockReason()` answers `prize_under_review`, so the
+request, its recheck, the send-time recheck and `GET /me` all say so), and an account with a held prize can't be
+deleted (`payment_issue`). The invariant `prize_hold` (payments' `findBreaches`) checks each person's hold balance
+equals their open held prizes, and the account is in `PLATFORM_AT_LEAST_ZERO`. Migration 0048 adds the account kind.
 
 **Clear and reject** (`/admin/party-templates/held-prizes`, a reason, `admin_actions`). Neither may be done by the
 host or the winner (403 `own_transaction`; for a reject too, since rejecting a host-funded prize can return it to
-the host). Clear moves nothing, but it loosens a payments control, so it follows ADR 0013's maker-checker: below
+the host). Clear moves the hold into cash with one journal (`held_prize_clear:<id>`), through `ledger.journal()`, so what the
+person owes is repaid from it first, as from any credit. It loosens a payments control, so it follows ADR 0013's maker-checker: below
 the payments config's `finalize.secondAdminThresholdKobo` one admin clears; at or above it, the first admin's clear
 is a request (`clear_requested_by_user_id`, the prize stays held, `awaitingSecondAdmin`), the same admin asking
 again is a replay, and a different admin's clear confirms it; both steps are logged. A reject needs one admin
@@ -110,11 +114,11 @@ again is a replay, and a different admin's clear confirms it; both steps are log
    (`held_prize_refunded:<id>:<user>`);
 3. with no other seat at all, forfeited to the treasury.
 
-The held row is locked; a second reject answers the first (`replayed`), a clear after a reject (or the other way)
-is 409 `prize_already_decided`. Lock order (ADR 0013): the people's `users` rows (planned before locking, then
+The take-back comes out of the winner's hold, never their cash, so it always covers the prize. The held row is
+locked; a second reject answers the first (`replayed`), a clear after a reject (or the other way) is 409
+`prize_already_decided`. Lock order (ADR 0013): the people's `users` rows (planned before locking, then
 re-planned under the locks; a different plan is 409 `party_changed_try_again`), the party and the held row, then
-the ledger. If the winner's cash somehow can't cover it (a payments contradiction hold took it), 409
-`prize_not_recoverable` and it stays held.
+the ledger.
 
 **Changed before review.** Three points first built differently: the outlier check compared host-written
 questions only (now the whole set as well); the link used `yourPeople()` (now the raw relationships and recent
