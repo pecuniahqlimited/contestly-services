@@ -157,7 +157,7 @@ export type CurateCaps = z.infer<typeof curateCapsSchema>;
  * questions is always curate): caps on the entry, the host's cash prize and the pot per host type, the most of
  * the set the host may write, and the settlement check's thresholds. Every one is admin config (party template
  * configs, versioned, logged): no defaults here, so a stored set always states every number, and nothing at runtime
- * reads one from code. DEFAULT_HOST_WRITTEN_RULES is only the first version (migration 0049, restated by 0055;
+ * reads one from code. DEFAULT_HOST_WRITTEN_RULES is only the first version (migration 0050, restated by 0056;
  * db:seed).
  */
 export const hostWrittenRulesSchema = z.object({
@@ -443,7 +443,7 @@ export const heldPrizeDecisionSchema = z.object({ reason: z.string().trim().min(
  */
 export const heldPrizeDecisionResponseSchema = z.object({ prize: adminHeldPrizeSchema, replayed: z.boolean(), awaitingSecondAdmin: z.boolean() });
 
-// ---- the starting set (seed data, not code: version 1 is written by migration 0049 and db:seed) ------
+// ---- the starting set (seed data, not code: version 1 is written by migration 0050 and db:seed) ------
 
 export const DEFAULT_PARTY_TEMPLATES: PartyTemplatesConfig = {
   rules: DEFAULT_HOST_WRITTEN_RULES,
