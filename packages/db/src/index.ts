@@ -26,3 +26,4 @@ export * from "./retry.js";
 export * from "./sim.js";
 export * from "./nudges/index.js";
 export * from "./safety/index.js";
+export * from "./peopleSearch.js";
