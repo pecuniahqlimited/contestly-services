@@ -1,12 +1,13 @@
 /**
- * The three provider seams of the question engine, each chosen by env (QUESTIONS_GENERATOR,
- * QUESTIONS_VERIFIER, QUESTIONS_EMBEDDER). Vendor-neutral by construction: plain structured
- * input and output, no provider SDK types. A real provider is a new file in providers/ plus a
- * registry entry and an env change — nothing else.
+ * The provider seams of the question engine, each chosen by env (QUESTIONS_GENERATOR, QUESTIONS_VERIFIER,
+ * QUESTIONS_EMBEDDER, QUESTIONS_SAFETY; ADR 0016). Vendor-neutral by construction: plain structured input and
+ * output, no provider SDK types. A real provider is a new folder in providers/ plus a registry entry and an
+ * env change. A provider that can't answer now throws ProviderUnavailable (@contestly/ai); the pipeline
+ * falls back to the bank (generation) or fails the draft closed (checks).
  *
  * Generation and verification are separate interfaces so they can never be the same call.
  */
-import type { Difficulty, QuestionFormat } from "@contestly/shared";
+import type { Difficulty, QuestionFormat, SafetyBrief, SafetyResult, VerifyVerdictKind } from "@contestly/shared";
 
 /** Open knowledge, or "only from these uploaded files" (questions must be answerable from them). */
 export type SourceScope = "open" | { kind: "file"; fileIds: string[] };
@@ -44,6 +45,8 @@ export interface DraftQuestion {
   claim: string;
   /** File-sourced drafts cite the chunk they were generated from. */
   sourceChunkId?: string;
+  /** Which provider and model wrote it, for the generation record. */
+  generatedBy?: { provider: string; model: string };
 }
 
 export interface Generator {
@@ -55,25 +58,56 @@ export interface Generator {
 }
 
 export interface VerifyVerdict {
-  /** "needs_source": the claim couldn't be verified — the question can't be approved without a host edit (2b). */
-  verdict: "pass" | "fail" | "needs_source";
-  /** Citations backing the verdict: at least two on an open-knowledge pass; the cited chunk on a file-sourced pass. */
+  /**
+   * correct: the stated answer is right and the only right one. incorrect: it's wrong, or another option is
+   * right. ambiguous: more than one defensible answer, an unclear question, or a fact that changes.
+   * unverifiable: no reliable source found. Only "correct" passes the gate, in both modes.
+   */
+  verdict: VerifyVerdictKind;
+  /** The answer the verifier found, in its own words. */
+  foundAnswer?: string;
+  /** URLs backing the verdict (grounding results); the cited chunk on a file-sourced check. */
   sources: string[];
+  /** The same sources with their titles, when the provider gives them. */
+  citations?: { url: string; title?: string }[];
   note?: string;
+  /** Which provider and model judged it, and whether the result came from the cache. */
+  verifiedBy?: { provider: string; model: string; cached?: boolean };
+}
+
+export interface VerifyInput {
+  format: QuestionFormat;
+  payload: unknown;
+  explanation?: string;
+  claim: string;
+  /** File-sourced drafts: the claim must be supported by this text, not by open knowledge. */
+  sourceText?: string;
+  sourceChunkId?: string;
 }
 
 export interface Verifier {
-  /** With `sourceText` (file-sourced drafts), the claim must be supported by that text, not by open knowledge. */
-  verify(q: { format: QuestionFormat; payload: unknown; explanation?: string; claim: string; sourceText?: string }): Promise<VerifyVerdict>;
+  /** A name for the cache key and logs ("mock", "gemini"). */
+  readonly name: string;
+  verify(q: VerifyInput): Promise<VerifyVerdict>;
 }
 
 export interface Embedder {
+  /** The model behind the vectors, stored with each one: vectors from different models are never compared. */
+  readonly model: string;
   /** One unit-normalised vector of EMBEDDING_DIM numbers per input text. */
   embed(texts: string[]): Promise<number[][]>;
+}
+
+/** The model-based safety and taste check, run after the term filter on drafts that passed it (step 7). */
+export interface SafetyReviewer {
+  readonly name: string;
+  /** One result per item, in order. Fails closed: anything it can't judge comes back not passed, with the reason. */
+  review(brief: SafetyBrief, items: { format: QuestionFormat; payload: unknown; explanation?: string }[]): Promise<SafetyResult[]>;
 }
 
 export interface Providers {
   generator: Generator;
   verifier: Verifier;
   embedder: Embedder;
+  safety: SafetyReviewer;
 }

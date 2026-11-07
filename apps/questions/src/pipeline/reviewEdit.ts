@@ -44,7 +44,7 @@ export async function reviewEdit(job: { reviewId: string }, ctx: { providers: Pr
       .where(and(eq(questionReviews.id, review.id), eq(questionReviews.status, "pending"))).returning({ id: questionReviews.id });
     if (!claimed || j.outcome !== "accepted") return;
     await tx.update(bankQuestions).set({
-      payload: draft.payload, explanation: draft.explanation ?? null, embedding: j.embedding,
+      payload: draft.payload, explanation: draft.explanation ?? null, embedding: j.embedding, embeddingModel: j.embeddingModel,
       status: "active", flagCount: 0, retiredReason: null, retiredAt: null,
     }).where(eq(bankQuestions.id, bank.id));
   });

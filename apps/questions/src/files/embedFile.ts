@@ -16,7 +16,7 @@ export async function embedFile(fileId: string, deps: { embedder: Embedder }): P
   await db.transaction(async (tx) => {
     // Locked like a set retry is, so "is the file still being read?" has one answer at a time (see retrySealedSet).
     await tx.select({ id: parties.id }).from(parties).where(eq(parties.id, file.partyId)).for("update");
-    for (const [i, c] of chunks.entries()) await tx.update(fileChunks).set({ embedding: embeddings[i] }).where(eq(fileChunks.id, c.id));
+    for (const [i, c] of chunks.entries()) await tx.update(fileChunks).set({ embedding: embeddings[i], embeddingModel: deps.embedder.model }).where(eq(fileChunks.id, c.id));
     // Replaced while we embedded: the row is gone and this updates nothing.
     await tx.update(partyFiles).set({ status: "parsed", error: null }).where(and(eq(partyFiles.id, fileId), eq(partyFiles.status, "parsing")));
   });

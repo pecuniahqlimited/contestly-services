@@ -42,8 +42,8 @@ describe("file-sourced mock generation", () => {
   it("verifies against the cited chunk, not open knowledge", async () => {
     const [d] = draftsFromFile(sources, 1, new Set());
     const chunk = sources.find((s) => s.id === d.sourceChunkId)!;
-    expect((await mockVerifier.verify({ ...d, sourceText: chunk.text })).verdict).toBe("pass");
-    expect((await mockVerifier.verify({ ...d, sourceText: "a different chunk entirely" })).verdict).toBe("needs_source");
+    expect((await mockVerifier.verify({ ...d, sourceText: chunk.text })).verdict).toBe("correct");
+    expect((await mockVerifier.verify({ ...d, sourceText: "a different chunk entirely" })).verdict).toBe("unverifiable");
   });
 
   it("marks the spec as file-scoped in the summary", () => {

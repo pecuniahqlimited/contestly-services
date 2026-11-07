@@ -97,7 +97,7 @@ describe("safety filter", () => {
 describe("gate", () => {
   const ok: GateInput = {
     payloadValid: true,
-    verify: { verdict: "pass", sources: ["a", "b"] },
+    verify: { verdict: "correct", sources: ["a", "b"] },
     nearest: { id: "x", similarity: 0.4 },
     dedupeThreshold: 0.92,
     safety: { passed: true, reasons: [] },
@@ -106,8 +106,8 @@ describe("gate", () => {
   it("accepts a clean draft and names the first failing step otherwise", () => {
     expect(gateDraft(ok)).toBe("accepted");
     expect(gateDraft({ ...ok, payloadValid: false })).toBe("rejected_invalid");
-    expect(gateDraft({ ...ok, verify: { verdict: "fail", sources: [] } })).toBe("rejected_verify");
-    expect(gateDraft({ ...ok, verify: { verdict: "needs_source", sources: [] } })).toBe("rejected_verify");
+    expect(gateDraft({ ...ok, verify: { verdict: "incorrect", sources: [] } })).toBe("rejected_verify");
+    expect(gateDraft({ ...ok, verify: { verdict: "unverifiable", sources: [] } })).toBe("rejected_verify");
     expect(gateDraft({ ...ok, nearest: { id: "x", similarity: 0.95 } })).toBe("rejected_dedupe");
     expect(gateDraft({ ...ok, safety: { passed: false, reasons: ["politics"] } })).toBe("rejected_safety");
   });

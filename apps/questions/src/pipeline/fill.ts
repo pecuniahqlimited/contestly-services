@@ -40,6 +40,8 @@ export interface Fill {
   picked: Picked[];
   judged: JudgedDraft[];
   accepted: JudgedDraft[];
+  /** Provider steps that couldn't answer during this fill (generation stopped there: bank-only from then on). */
+  unavailable: string[];
   retrievedCount: number;
 }
 
@@ -49,18 +51,19 @@ export async function fillQuestions(req: FillRequest): Promise<Fill> {
   const [specEmbedding] = await req.providers.embedder.embed([`${req.spec.topic} · ${req.spec.categoryTag}`]);
   let retrieved: BankQuestion[] = [];
   let sources: SourceChunk[] | undefined;
-  if (req.spec.sourceScope === "open") retrieved = await retrieveFromBank(req.spec, specEmbedding, req.want, req.excludeBankIds);
-  else sources = await retrieveChunks(req.spec.sourceScope.fileIds, specEmbedding);
+  const model = req.providers.embedder.model;
+  if (req.spec.sourceScope === "open") retrieved = await retrieveFromBank(req.spec, specEmbedding, req.want, req.excludeBankIds, model);
+  else sources = await retrieveChunks(req.spec.sourceScope.fileIds, specEmbedding, model);
 
   const gap = req.want - retrieved.length;
   const avoid = [...retrieved.map((q) => questionText(q.payload)), ...req.avoidPayloads.map(questionText)];
   const fromRetrieval = retrieved.map((q) => q.format);
-  const { judged, accepted } = gap > 0
+  const { judged, accepted, unavailable } = gap > 0
     ? await draftAndJudge(
       { spec: req.spec, providers: req.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: gap, avoid, sources },
       req.progress && ((stage, formats) => req.progress!(stage, [...fromRetrieval, ...formats])),
     )
-    : { judged: [], accepted: [] };
+    : { judged: [], accepted: [], unavailable: [] };
 
   const fromBank = (q: BankQuestion): Picked => ({ format: q.format, payload: q.payload, explanation: q.explanation, bankId: q.id, from: "bank" });
   const picked: Picked[] = [
@@ -77,7 +80,7 @@ export async function fillQuestions(req: FillRequest): Promise<Fill> {
     picked.push(...reused.slice(0, short).map(fromBank));
   }
   await req.progress?.("balance", picked.map((p) => p.format));
-  return { picked, judged, accepted, retrievedCount: picked.filter((p) => p.from === "bank").length };
+  return { picked, judged, accepted, unavailable, retrievedCount: picked.filter((p) => p.from === "bank").length };
 }
 
 /**

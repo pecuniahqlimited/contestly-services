@@ -1,13 +1,18 @@
 /**
- * Draft and judge: ask the generator for candidates, then check each (shape, verify, safety), then
- * dedupe each (embed, nearest, difficulty) and let the gate decide, in pipeline order. Shared by
- * generate_set (a whole set) and regenerate_one (one curate-mode replacement). Writes nothing;
- * callers persist.
+ * Draft and judge: ask the generator for candidates, then check each (shape, verify, term filter), then
+ * the model safety check on the ones still standing, then dedupe each (embed, nearest, difficulty) and let
+ * the gate decide, in pipeline order. Shared by generate_set (a whole set) and regenerate_one (one
+ * curate-mode replacement). Writes nothing; callers persist.
+ *
+ * A provider that can't answer (ProviderUnavailable: down, over budget, circuit open) never fails the job
+ * here: generation stops and the caller fills from the bank; a check that can't run fails its drafts closed.
  */
 import { randomUUID } from "node:crypto";
 import { checkSafety, type QuestionFormat, type SafetyResult } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
+import { ProviderUnavailable } from "@contestly/ai";
 import type { DraftQuestion, GenerationSpec, Providers, SourceChunk, VerifyVerdict } from "../providers/types.js";
+import { mapLimit } from "./concurrency.js";
 import { nearest, type Neighbour } from "./dedupe.js";
 import { estimateDifficulty, type DifficultyEstimate } from "./difficulty.js";
 import { gateDraft, type GateOutcome } from "./gate.js";
@@ -17,14 +22,23 @@ import { embeddingText, questionText } from "./text.js";
 /** Extra drafts requested beyond the gap, so rejections don't force a second round. */
 const QUALITY_BUFFER = 6;
 const MAX_DRAFT_ROUNDS = 2;
+/** Verification calls in flight at once (each is a grounded search; the provider rate-limits). */
+const VERIFY_CONCURRENCY = 4;
+
+/** The steps that can be unavailable, as recorded on a fill. */
+export type UnavailableStep = "generate" | "verify" | "safety";
+
+/** A safety result, saying which checks made it. */
+export type SafetyOutcome = SafetyResult & { reviewedBy?: string };
 
 export interface JudgedDraft {
   draft: DraftQuestion;
   embedding: number[];
+  embeddingModel: string;
   verify: VerifyVerdict | null;
   nearest: Neighbour | null;
   difficulty: DifficultyEstimate;
-  safety: SafetyResult;
+  safety: SafetyOutcome;
   outcome: GateOutcome;
   /** Pre-assigned so records and party rows can reference the bank row before it's inserted. */
   bankId: string;
@@ -47,7 +61,10 @@ export interface DraftRequest {
 /** One question, judged exactly like a fresh draft: shape, verify, safety, then dedupe and the gate. An admin's edit goes through this. */
 export async function judgeOne(draft: DraftQuestion, req: Omit<DraftRequest, "want" | "avoid">): Promise<JudgedDraft> {
   const full: DraftRequest = { ...req, want: 1, avoid: [] };
-  return dedupeAndGate(await check(draft, full), full, []);
+  const checks = new Checks(full);
+  const [checked] = await checks.review([await checks.check(draft)]);
+  const [embedding] = await embedAll([checked], full);
+  return dedupeAndGate(checked, embedding, full, []);
 }
 
 /**
@@ -57,77 +74,131 @@ export async function judgeOne(draft: DraftQuestion, req: Omit<DraftRequest, "wa
  */
 export type DraftProgress = (stage: "drafting" | "checking" | "dedupe", acceptedFormats: QuestionFormat[]) => Promise<unknown>;
 
-export async function draftAndJudge(req: DraftRequest, progress?: DraftProgress): Promise<{ judged: JudgedDraft[]; accepted: JudgedDraft[] }> {
+export async function draftAndJudge(req: DraftRequest, progress?: DraftProgress): Promise<{ judged: JudgedDraft[]; accepted: JudgedDraft[]; unavailable: UnavailableStep[] }> {
   const judged: JudgedDraft[] = [];
   const accepted: JudgedDraft[] = [];
   const avoid = [...req.avoid];
+  const checks = new Checks(req);
   const formats = () => accepted.map((a) => a.draft.format);
-  for (let round = 0; round < MAX_DRAFT_ROUNDS && accepted.length < req.want; round++) {
+  for (let round = 0; round < MAX_DRAFT_ROUNDS && accepted.length < req.want && !checks.down.size; round++) {
     await progress?.("drafting", formats());
-    const drafts = await req.providers.generator.draft({ spec: req.spec, count: req.want - accepted.length + QUALITY_BUFFER, avoid, sources: req.sources });
-    await progress?.("checking", formats());
-    const checked: Checked[] = [];
-    for (const draft of drafts) {
-      avoid.push(questionText(draft.payload));
-      checked.push(await check(draft, req));
+    let drafts: DraftQuestion[];
+    try {
+      drafts = await req.providers.generator.draft({ spec: req.spec, count: req.want - accepted.length + QUALITY_BUFFER, avoid, sources: req.sources });
+    } catch (err) {
+      if (!(err instanceof ProviderUnavailable)) throw err;
+      checks.down.add("generate");
+      break;
     }
+    await progress?.("checking", formats());
+    for (const d of drafts) avoid.push(questionText(d.payload));
+    const checked = await checks.review(await mapLimit(drafts, VERIFY_CONCURRENCY, (d) => checks.check(d)));
     await progress?.("dedupe", formats());
-    for (const c of checked) {
-      const j = await dedupeAndGate(c, req, accepted);
+    const embeddings = await embedAll(checked, req);
+    for (const [i, c] of checked.entries()) {
+      const j = await dedupeAndGate(c, embeddings[i], req, accepted);
       judged.push(j);
       if (j.outcome !== "accepted") continue;
       accepted.push(j);
       await progress?.("dedupe", formats());
     }
   }
-  return { judged, accepted };
+  return { judged, accepted, unavailable: [...checks.down] };
 }
 
-/** A draft after the checking pass: shape, the independent fact-check and the safety filter. */
+/** A draft after the checking pass: shape, the independent fact-check and the safety checks. */
 interface Checked {
   draft: DraftQuestion;
   payloadValid: boolean;
   verify: VerifyVerdict | null;
-  safety: SafetyResult;
+  safety: SafetyOutcome;
 }
 
-async function check(draft: DraftQuestion, req: DraftRequest): Promise<Checked> {
-  const payloadValid = payloadSchemas[draft.format].safeParse(draft.payload).success;
-  const verify = payloadValid ? await verifyDraft(draft, req) : null;
-  return { draft, payloadValid, verify, safety: checkSafety(req.spec, draft.payload, draft.explanation) };
+/** The checking pass for one request; remembers which providers went down so it stops calling them. */
+class Checks {
+  readonly down = new Set<UnavailableStep>();
+  constructor(private readonly req: DraftRequest) {}
+
+  async check(draft: DraftQuestion): Promise<Checked> {
+    const payloadValid = payloadSchemas[draft.format].safeParse(draft.payload).success;
+    const verify = payloadValid ? await this.verify(draft) : null;
+    return { draft, payloadValid, verify, safety: { ...checkSafety(this.req.spec, draft.payload, draft.explanation), reviewedBy: "terms" } };
+  }
+
+  /**
+   * The model safety check, one batch for every draft still standing (valid, verified correct, through the
+   * term filter): the others are already rejected, so they aren't paid for. Fails closed.
+   */
+  async review(checked: Checked[]): Promise<Checked[]> {
+    const standing = checked.filter((c) => c.payloadValid && c.verify?.verdict === "correct" && c.safety.passed);
+    if (!standing.length) return checked;
+    let results: SafetyResult[];
+    if (this.down.has("safety")) results = standing.map(() => unavailableSafety);
+    else {
+      try {
+        results = await this.req.providers.safety.review(this.req.spec, standing.map((c) => ({ format: c.draft.format, payload: c.draft.payload, explanation: c.draft.explanation })));
+      } catch (err) {
+        if (!(err instanceof ProviderUnavailable)) throw err;
+        this.down.add("safety");
+        results = standing.map(() => unavailableSafety);
+      }
+    }
+    const reviewer = this.req.providers.safety.name;
+    standing.forEach((c, i) => {
+      const r = results[i] ?? { passed: false, reasons: ["no_verdict"] };
+      c.safety = { passed: r.passed, reasons: r.reasons, reviewedBy: `terms+${reviewer}` };
+    });
+    return checked;
+  }
+
+  /**
+   * Verification is a separate provider call by design — never the same call as generation. A
+   * file-scoped draft is checked against the chunk it cites; one that cites nothing (or a chunk
+   * outside the party's files) can't be verified.
+   */
+  private async verify(draft: DraftQuestion): Promise<VerifyVerdict> {
+    if (this.down.has("verify")) return { verdict: "unverifiable", sources: [], note: "verifier unavailable" };
+    const base = { format: draft.format, payload: draft.payload, explanation: draft.explanation, claim: draft.claim };
+    let input = base as Parameters<Providers["verifier"]["verify"]>[0];
+    if (this.req.sources) {
+      const chunk = this.req.sources.find((c) => c.id === draft.sourceChunkId);
+      if (!chunk) return { verdict: "unverifiable", sources: [], note: "no cited chunk from this party's files" };
+      input = { ...base, sourceText: chunk.text, sourceChunkId: chunk.id };
+    }
+    try {
+      return await this.req.providers.verifier.verify(input);
+    } catch (err) {
+      if (!(err instanceof ProviderUnavailable)) throw err;
+      this.down.add("verify");
+      return { verdict: "unverifiable", sources: [], note: `verifier unavailable (${err.kind})` };
+    }
+  }
 }
 
-/** The dedupe pass: embed, find the nearest question, estimate difficulty, then the gate decides. */
-async function dedupeAndGate({ draft, payloadValid, verify, safety }: Checked, req: DraftRequest, accepted: JudgedDraft[]): Promise<JudgedDraft> {
-  const [embedding] = await req.providers.embedder.embed([embeddingText(draft.format, draft.payload)]);
+const unavailableSafety: SafetyResult = { passed: false, reasons: ["safety_unavailable"] };
+
+/** One embedding call for a round's drafts. */
+const embedAll = (checked: Checked[], req: DraftRequest) =>
+  checked.length ? req.providers.embedder.embed(checked.map((c) => embeddingText(c.draft.format, c.draft.payload))) : Promise.resolve([]);
+
+/** The dedupe pass: find the nearest question, estimate difficulty, then the gate decides. */
+async function dedupeAndGate({ draft, payloadValid, verify, safety }: Checked, embedding: number[], req: DraftRequest, accepted: JudgedDraft[]): Promise<JudgedDraft> {
+  const embedder = req.providers.embedder;
   const difficulty = estimateDifficulty(req.spec.difficulty, draft.format);
 
   // Nearest of: the whole bank (any status — retired stays dead) and the batch accepted so far.
   // File-sourced drafts skip the bank: the file is the source, so the same file uploaded again must
   // yield its questions again (and file-derived bank rows are never served to open-knowledge parties).
-  const inBank = req.sources ? null : await nearestInBank(embedding, req.excludeBankIds);
+  const inBank = req.sources ? null : await nearestInBank(embedding, req.excludeBankIds ?? [], embedder.model);
   const inBatch = nearest(embedding, accepted.map((a) => ({ id: a.bankId, embedding: a.embedding })));
   const near = [inBank, inBatch].reduce<Neighbour | null>((a, b) => (!a ? b : !b ? a : b.similarity > a.similarity ? b : a), null);
 
   const outcome = gateDraft({
     payloadValid,
-    verify: verify ?? { verdict: "fail", sources: [], note: "payload failed schema validation" },
+    verify: verify ?? { verdict: "incorrect", sources: [], note: "payload failed schema validation" },
     nearest: near,
     dedupeThreshold: req.dedupeSimilarity,
     safety,
   });
-  return { draft, embedding, verify, nearest: near, difficulty, safety, outcome, bankId: randomUUID() };
-}
-
-/**
- * Verification is a separate provider call by design — never the same call as generation. A
- * file-scoped draft is checked against the chunk it cites; one that cites nothing (or a chunk
- * outside the party's files) can't be verified and needs a source.
- */
-async function verifyDraft(draft: DraftQuestion, req: DraftRequest): Promise<VerifyVerdict> {
-  const base = { format: draft.format, payload: draft.payload, explanation: draft.explanation, claim: draft.claim };
-  if (!req.sources) return req.providers.verifier.verify(base);
-  const chunk = req.sources.find((c) => c.id === draft.sourceChunkId);
-  if (!chunk) return { verdict: "needs_source", sources: [], note: "no cited chunk from this party's files" };
-  return req.providers.verifier.verify({ ...base, sourceText: chunk.text });
+  return { draft, embedding, embeddingModel: embedder.model, verify, nearest: near, difficulty, safety, outcome, bankId: randomUUID() };
 }

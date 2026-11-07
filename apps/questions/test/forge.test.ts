@@ -5,6 +5,7 @@ import { buildSpec } from "../src/pipeline/spec.js";
 import { mockEmbedder } from "../src/providers/mock/embedder.js";
 import { mockGenerator } from "../src/providers/mock/generator.js";
 import { mockVerifier } from "../src/providers/mock/verifier.js";
+import { mockSafety } from "../src/providers/mock/safety.js";
 
 const SOURCES = [
   "The Third Mainland Bridge crosses the lagoon and was opened in 1990. Carter Bridge first linked Lagos Island to the mainland in 1901.",
@@ -24,7 +25,7 @@ describe("draftAndJudge progress", () => {
     const spec = buildSpec({ brief: "lagos bridges", difficulty: "mixed", formats: ["pick_one"], questionCount: 3, questionSeconds: 10, fileIds: ["f"] });
     const seen: { stage: string; cards: number }[] = [];
     const { accepted } = await draftAndJudge(
-      { spec, providers: { generator: mockGenerator, verifier: mockVerifier, embedder: mockEmbedder }, dedupeSimilarity: 0.92, want: 3, avoid: [], sources: SOURCES },
+      { spec, providers: { generator: mockGenerator, verifier: mockVerifier, embedder: mockEmbedder, safety: mockSafety }, dedupeSimilarity: 0.92, want: 3, avoid: [], sources: SOURCES },
       async (stage, formats) => void seen.push({ stage, cards: formats.length }),
     );
     expect(accepted.length).toBeGreaterThan(0);
