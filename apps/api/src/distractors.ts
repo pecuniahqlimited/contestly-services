@@ -27,7 +27,16 @@ export function assertHostTextSafe(text: Parameters<typeof checkHostText>[0], br
   if (!safety.passed) throw httpError(422, HOST_TEXT_UNSAFE, { ...details, reasons: safety.reasons });
 }
 
-let events: QueueEvents | undefined;
+/**
+ * One listener for the whole process, ready before the first job is queued: a fresh QueueEvents that isn't
+ * subscribed yet misses a job that finishes quickly (the first suggestion after a start would time out).
+ */
+let events: Promise<QueueEvents> | undefined;
+const queueEvents = () => (events ??= (async () => {
+  const e = new QueueEvents(QUEUES.distractors, { connection: makeRedis(), prefix: QUEUE_PREFIX });
+  await e.waitUntilReady();
+  return e;
+})());
 const distractorJobs = distractorsQueue();
 
 /** The questions service's failure, in words the builder can act on. */
@@ -39,14 +48,16 @@ function mapFailure(job: Job, err: unknown): never {
 }
 
 export const queueDistractors: DistractorSuggester = async (req) => {
-  events ??= new QueueEvents(QUEUES.distractors, { connection: makeRedis(), prefix: QUEUE_PREFIX });
+  const listening = await queueEvents();
   const job = await distractorJobs.add("suggest_distractors", { kind: "suggest_distractors", ...req }, {
     attempts: 1, removeOnComplete: { age: KEEP_RESULT_SECONDS }, removeOnFail: { age: KEEP_RESULT_SECONDS },
   });
   try {
-    return distractorResponseSchema.parse(await job.waitUntilFinished(events, WAIT_MS));
+    return distractorResponseSchema.parse(await job.waitUntilFinished(listening, WAIT_MS));
   } catch (err) {
     const fresh = await distractorJobs.getJob(job.id!);
+    // Finished, though the event didn't reach us in time: the result is on the job.
+    if (fresh?.returnvalue && (await fresh.isCompleted())) return distractorResponseSchema.parse(fresh.returnvalue);
     if (fresh?.failedReason) mapFailure(fresh, err);
     throw httpError(503, DISTRACTORS_UNAVAILABLE);
   }
