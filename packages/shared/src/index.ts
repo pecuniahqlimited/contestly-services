@@ -737,12 +737,31 @@ export const inviteToPartyResponseSchema = z.object({ invited: z.number().int() 
 /** POST /parties/:id/invite/dismiss → the viewer's invite to this party, dismissed. */
 export const dismissInviteResponseSchema = z.object({ status: z.literal("dismissed") });
 
+/**
+ * Parties on a corner (ADR 0012): a corner owner's public party goes up on their corner's Up next and pings
+ * the corner's followers who have its alerts on; a private (invite-only) party does neither. The one rule.
+ */
+export const postsToCorner = (visibility: "public" | "private") => visibility === "public";
+/** The host's shown corner, for the builder's "Goes up on your corner. Your N followers get a ping". */
+export const cornerReachSchema = z.object({
+  cornerId: z.string().uuid(),
+  /** Everyone following the corner. */
+  followerCount: z.number().int(),
+  /** The followers a public party pings: their alerts for this corner are on. */
+  pingCount: z.number().int(),
+});
+export type CornerReach = z.infer<typeof cornerReachSchema>;
+
 /** POST /parties → 201: the new party, its question set's state, and the host's own seat (sealed) counted. */
 export const createPartyResponseSchema = partyRowSchema.extend({
   questions: questionDisclosureSchema,
   playerCount: z.number().int(),
   potKobo: z.number().int(),
   places: z.array(placePrizeSchema),
+  /** Whether this party went up on the host's corner and pinged its followers (public, and the host has a shown corner). */
+  postsToCorner: z.boolean(),
+  /** The host's corner, if shown; null without one. */
+  corner: cornerReachSchema.nullable(),
 });
 
 /** GET /parties/limits: what the signed-in host may choose now, the rake the pot preview takes, and whether they may offer goods. */
@@ -751,6 +770,8 @@ export const partyLimitsResponseSchema = z.object({
   rakeBps: z.number().int(),
   hostCutBps: z.number().int(),
   canOfferGoods: z.boolean(),
+  /** The host's shown corner, for the Doors scene: a public party goes up on it (postsToCorner). Null without one. */
+  corner: cornerReachSchema.nullable(),
 });
 export type PartyLimitsResponse = z.infer<typeof partyLimitsResponseSchema>;
 /** GET and PUT /admin/party-limits: the limits as stored, quick picks outside their range included. */

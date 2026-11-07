@@ -6,7 +6,7 @@
  */
 import { and, count, desc, eq, gt, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import {
-  CLIMB_TIME_ZONE, addDays, lagosDay, localClock, mentionedHandles, type NudgeActor, type NudgeConfig, type NudgeThread,
+  CLIMB_TIME_ZONE, addDays, lagosDay, localClock, mentionedHandles, postsToCorner, type NudgeActor, type NudgeConfig, type NudgeThread,
 } from "@contestly/shared";
 import { db, type Tx } from "../client.js";
 import { getNudgeConfig } from "../config.js";
@@ -139,7 +139,7 @@ export async function emitFillingUp(now = new Date()): Promise<number> {
 export async function emitCornerParty(partyId: string, hostId: string): Promise<number> {
   const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
   const [c] = await db.select().from(corners).where(and(eq(corners.ownerUserId, hostId), cornerShown));
-  if (!p || !c || p.visibility !== "public") return 0;
+  if (!p || !c || !postsToCorner(p.visibility)) return 0;
   const followers = await db.select({ id: follows.followerId }).from(follows).innerJoin(users, eq(users.id, follows.followerId))
     .where(and(eq(follows.cornerId, c.id), eq(follows.notify, true), liveUser));
   let n = 0;
