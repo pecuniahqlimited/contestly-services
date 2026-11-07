@@ -21,9 +21,11 @@ import type { QuestionFormat } from "@contestly/game";
 import { RT, api, call, correctAnswer, failureCount, inMinutes, makeContacts, ok, partyNetKobo, putBack, putBackLater, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 
 const ADMIN = "tunde"; // a dev admin (DEV_ADMIN_HANDLES)
-const HOST = "tpl.host";
-const FRIEND = "tpl.friend";
-const PLAYERS = [FRIEND, "tpl.ada", "tpl.kemi"];
+// Fresh accounts each run: the repeat-winner check (ADR 0015) would otherwise hold whoever won this host's earlier runs.
+const RUN = Date.now().toString(36).slice(-5);
+const HOST = `tpl.host.${RUN}`;
+const FRIEND = `tpl.friend.${RUN}`;
+const PLAYERS = [FRIEND, `tpl.ada.${RUN}`, `tpl.kemi.${RUN}`];
 const ENTRY = 20_000;
 
 const topUp = (h: string) => api(h, "POST", "/wallet/dev-topup", { nairaAmount: 1000 }).catch(() => ({}));
