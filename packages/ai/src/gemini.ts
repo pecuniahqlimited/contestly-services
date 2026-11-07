@@ -142,10 +142,23 @@ async function post<T>(client: GeminiClient, path: string, body: unknown, signal
   const raw = await res.text();
   if (!res.ok) {
     // Not JSON (a proxy's page): the first bytes are the message.
-    const message = (parseJson(raw) as { error?: { message?: string } } | undefined)?.error?.message?.slice(0, 200) ?? raw.slice(0, 200);
-    throw new ProviderError(kindForStatus(res.status), `HTTP ${res.status}: ${message}`, retryAfterMs(res.headers.get("retry-after")));
+    const error = (parseJson(raw) as { error?: GeminiErrorBody } | undefined)?.error;
+    const message = error?.message?.slice(0, 200) ?? raw.slice(0, 200);
+    throw new ProviderError(kindForStatus(res.status), `HTTP ${res.status}: ${message}`, retryAfterMs(res.headers.get("retry-after")) ?? retryDelayMs(error));
   }
   const parsed = parseJson(raw);
   if (parsed === undefined) throw new ProviderError("malformed", `response is not JSON (${raw.length} bytes)`);
   return parsed as T;
+}
+
+interface GeminiErrorBody {
+  message?: string;
+  details?: { "@type"?: string; retryDelay?: string }[];
+}
+
+/** A quota 429 says when to come back in its RetryInfo detail ("11s"), not in a Retry-After header. */
+export function retryDelayMs(error: GeminiErrorBody | undefined): number | undefined {
+  const delay = error?.details?.find((d) => d["@type"]?.endsWith("google.rpc.RetryInfo"))?.retryDelay;
+  const seconds = delay ? Number.parseFloat(delay) : Number.NaN;
+  return Number.isFinite(seconds) ? Math.max(0, Math.round(seconds * 1000)) : undefined;
 }

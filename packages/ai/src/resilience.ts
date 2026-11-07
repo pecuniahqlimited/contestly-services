@@ -110,3 +110,42 @@ export class Breakers {
     return b;
   }
 }
+
+/**
+ * At most `limit` requests in any sliding `windowMs`, for a provider whose quota is a request rate (Gemini's
+ * free tier: 100 embed requests a minute). acquire() waits its turn, in order, instead of letting the request
+ * fail; one limiter per process and quota. Other processes on the same key still count against the quota, so
+ * a 429 can still happen: the retries handle it.
+ */
+export class RateLimiter {
+  private readonly sent: number[] = [];
+  private queue: Promise<void> = Promise.resolve();
+  private readonly now: () => number;
+
+  constructor(private readonly opts: { limit: number; windowMs: number; now?: () => number; sleep?: Sleep }) {
+    if (opts.limit < 1) throw new Error("RateLimiter limit must be at least 1");
+    this.now = opts.now ?? Date.now;
+  }
+
+  /** Resolves once `n` more requests fit in the window (n above the limit waits for whole windows). */
+  acquire(n = 1): Promise<void> {
+    const turn = this.queue.then(async () => {
+      for (let i = 0; i < n; i++) await this.one();
+    });
+    this.queue = turn.catch(() => {});
+    return turn;
+  }
+
+  private async one(): Promise<void> {
+    const sleep = this.opts.sleep ?? realSleep;
+    for (;;) {
+      const t = this.now();
+      while (this.sent.length && this.sent[0] <= t - this.opts.windowMs) this.sent.shift();
+      if (this.sent.length < this.opts.limit) {
+        this.sent.push(t);
+        return;
+      }
+      await sleep(this.sent[0] + this.opts.windowMs - t);
+    }
+  }
+}

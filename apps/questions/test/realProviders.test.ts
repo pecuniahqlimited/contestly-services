@@ -3,13 +3,16 @@
  * and open circuit. No network, no keys, no database (the call path's sink and budget are in memory).
  */
 import { describe, expect, it } from "vitest";
-import { Breakers, claudeClient, geminiClient, MemorySink, noBudget, ProviderUnavailable, type CallDeps } from "@contestly/ai";
+import { Breakers, claudeClient, geminiClient, MemorySink, noBudget, ProviderUnavailable, RateLimiter, type CallDeps } from "@contestly/ai";
 import { EMBEDDING_DIM, QUESTION_FORMATS, type QuestionFormat } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
 import { anthropicGenerator, planBatches } from "../src/providers/anthropic/generator.js";
 import { geminiVerifier } from "../src/providers/gemini/verifier.js";
 import { geminiSafety } from "../src/providers/gemini/safety.js";
 import { geminiEmbedder } from "../src/providers/gemini/embedder.js";
+import { citedResults, claudeVerifier } from "../src/providers/anthropic/verifier.js";
+import { claudeSafety } from "../src/providers/anthropic/safety.js";
+import { liveSafety, liveVerifier } from "../src/providers/index.js";
 import { cachedVerifier, verificationKey } from "../src/providers/cachedVerifier.js";
 import type { GenerationSpec, VerifyVerdict } from "../src/providers/types.js";
 
@@ -235,12 +238,12 @@ const items = [{ format: "pick_one" as const, payload: question.payload }, { for
 describe("Gemini safety", () => {
   it("passes the safe item, fails the unsafe one with its reason", async () => {
     const out = await safety(() => geminiReply({ results: [{ index: 0, safe: true, reasons: [] }, { index: 1, safe: false, reasons: ["gambling_promo"] }] })).review(spec(), items);
-    expect(out).toEqual([{ passed: true, reasons: [] }, { passed: false, reasons: ["model:gambling_promo"] }]);
+    expect(out).toEqual([{ passed: true, reasons: [], reviewedBy: "gemini-3.5-flash-lite" }, { passed: false, reasons: ["model:gambling_promo"], reviewedBy: "gemini-3.5-flash-lite" }]);
   });
 
   it("fails closed on an item the reply leaves out", async () => {
     const out = await safety(() => geminiReply({ results: [{ index: 0, safe: true, reasons: [] }] })).review(spec(), items);
-    expect(out[1]).toEqual({ passed: false, reasons: ["no_verdict"] });
+    expect(out[1]).toMatchObject({ passed: false, reasons: ["no_verdict"] });
   });
 
   it("malformed output, a timeout and a rate limit are unavailable", async () => {
@@ -292,6 +295,156 @@ describe("Gemini embedder", () => {
   });
 });
 
+// ---------------------------------------------------------------- Claude verifier and safety
+
+const claudeMsg = (content: unknown[], usage: Record<string, unknown> = { input_tokens: 9000, output_tokens: 200, server_tool_use: { web_search_requests: 1 } }, stop = "end_turn") =>
+  json({ id: "m", type: "message", role: "assistant", model: "claude-opus-5-5", content, stop_reason: stop, stop_sequence: null, usage });
+const searchBlocks = (urls: string[]) => [
+  { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "2013 afcon coach" } },
+  { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: urls.map((url) => ({ type: "web_search_result", url, title: url.split("/")[2], encrypted_content: "x" })) },
+];
+const verdictText = (v: Record<string, unknown>) => ({ type: "text", text: JSON.stringify({ foundAnswer: "", note: "", sourceUrls: [], ...v }) });
+const claudeV = (h: Handler, deps = callDeps()) => ({ deps, v: claudeVerifier({ client: claudeClient({ apiKey: "test", fetch: fetchOf(h) }), call: deps, model: async () => "claude-opus-5-5" }) });
+
+describe("Claude verifier", () => {
+  it("checks open-knowledge questions with web search, on its own model, and keeps only sources it was shown", async () => {
+    let body: Record<string, unknown> = {};
+    const { v, deps } = claudeV((_u, b) => {
+      body = b;
+      return claudeMsg([...searchBlocks(["https://cafonline.test/2013", "https://bbc.test/keshi"]), verdictText({ verdict: "correct", foundAnswer: "Stephen Keshi", note: "CAF records", sourceUrls: ["https://cafonline.test/2013", "https://made-up.test/x"] })]);
+    });
+    const out = await v.verify(question);
+    expect(body.model).toBe("claude-opus-5-5");
+    expect(body.tools).toEqual([{ type: "web_search_20260209", name: "web_search", max_uses: 3, allowed_callers: ["direct"] }]);
+    // No shared context: one user turn, the question alone.
+    expect((body.messages as unknown[]).length).toBe(1);
+    expect(JSON.stringify(body.messages)).toContain("Stated correct answer: Stephen Keshi");
+    expect(out).toMatchObject({ verdict: "correct", foundAnswer: "Stephen Keshi", sources: ["https://cafonline.test/2013"], verifiedBy: { provider: "anthropic", model: "claude-opus-5-5" } });
+    // 9000×$4 + 200×$20 per M = $0.04, plus one search at $10 per 1,000
+    expect(deps.sink.records[0]).toMatchObject({ provider: "anthropic", step: "verify", searchQueries: 1, costMicros: 50_000 });
+  });
+
+  it("a 'correct' citing nothing it was shown is unverifiable", async () => {
+    const { v } = claudeV(() => claudeMsg([...searchBlocks(["https://a.test/1"]), verdictText({ verdict: "correct", sourceUrls: ["https://remembered.test/"] })]));
+    expect((await v.verify(question)).verdict).toBe("unverifiable");
+    const none = claudeV(() => claudeMsg([verdictText({ verdict: "correct", sourceUrls: [] })]));
+    expect((await none.v.verify(question)).verdict).toBe("unverifiable");
+  });
+
+  it("keeps incorrect and ambiguous verdicts with what it found", async () => {
+    const { v } = claudeV(() => claudeMsg([...searchBlocks(["https://a.test/1"]), verdictText({ verdict: "incorrect", foundAnswer: "Gernot Rohr", sourceUrls: ["https://a.test/1"] })]));
+    expect(await v.verify(question)).toMatchObject({ verdict: "incorrect", foundAnswer: "Gernot Rohr", sources: ["https://a.test/1"] });
+  });
+
+  it("checks a file-scoped question against its chunk, with no search", async () => {
+    let body: Record<string, unknown> = {};
+    const { v } = claudeV((_u, b) => { body = b; return claudeMsg([verdictText({ verdict: "correct", foundAnswer: "1990" })], { input_tokens: 500, output_tokens: 50 }); });
+    const out = await v.verify({ ...question, sourceText: "The bridge opened in 1990.", sourceChunkId: "c9" });
+    expect(body.tools).toBeUndefined();
+    expect(JSON.stringify(body.messages)).toContain("The bridge opened in 1990.");
+    expect(out).toMatchObject({ verdict: "correct", sources: ["chunk:c9"] });
+  });
+
+  it("an unknown verdict is malformed; a timeout, a rate limit and an open circuit are unavailable", async () => {
+    await expect(claudeV(() => claudeMsg([verdictText({ verdict: "probably" })])).v.verify(question)).rejects.toMatchObject({ kind: "malformed" });
+    await expect(claudeV(() => claudeMsg([{ type: "text", text: "not json" }])).v.verify(question)).rejects.toMatchObject({ kind: "malformed" });
+    await expect(claudeV(hang).v.verify(question)).rejects.toMatchObject({ kind: "timeout" });
+    await expect(claudeV(() => json({ type: "error", error: { type: "rate_limit_error", message: "slow" } }, 429)).v.verify(question)).rejects.toMatchObject({ kind: "rate_limited" });
+    let calls = 0;
+    const { v } = claudeV(() => { calls++; return json({ type: "error", error: { type: "api_error", message: "down" } }, 500); }, callDeps({ retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 } }));
+    for (let i = 0; i < 3; i++) await v.verify(question).catch(() => {});
+    await expect(v.verify(question)).rejects.toMatchObject({ kind: "circuit_open" });
+    expect(calls).toBe(3);
+  });
+
+  it("citedResults keeps the named URLs that were among the results, once each", () => {
+    const seen = [{ url: "https://a.test/1", title: "A" }, { url: "https://b.test/2" }];
+    expect(citedResults(["https://b.test/2", "https://x.test/", "https://b.test/2"], seen)).toEqual([{ url: "https://b.test/2" }]);
+  });
+});
+
+const claudeS = (h: Handler, deps = callDeps()) => claudeSafety({ client: claudeClient({ apiKey: "test", fetch: fetchOf(h) }), call: deps, model: async () => "claude-haiku-5-5" });
+
+describe("Claude safety", () => {
+  it("passes the safe item, fails the unsafe one with its reason, in one structured call", async () => {
+    let body: Record<string, unknown> = {};
+    const out = await claudeS((_u, b) => { body = b; return claudeMsg([{ type: "text", text: JSON.stringify({ results: [{ index: 0, safe: true, reasons: [] }, { index: 1, safe: false, reasons: ["gambling_promo"] }] }) }], { input_tokens: 800, output_tokens: 60 }); }).review(spec(), items);
+    expect(out).toEqual([{ passed: true, reasons: [], reviewedBy: "claude-haiku-5-5" }, { passed: false, reasons: ["model:gambling_promo"], reviewedBy: "claude-haiku-5-5" }]);
+    expect(body.model).toBe("claude-haiku-5-5");
+    expect(body.tools).toBeUndefined();
+    expect((body.output_config as { format: { type: string } }).format.type).toBe("json_schema");
+  });
+
+  it("fails closed on an item the reply leaves out", async () => {
+    const out = await claudeS(() => claudeMsg([{ type: "text", text: JSON.stringify({ results: [{ index: 0, safe: true, reasons: [] }] }) }])).review(spec(), items);
+    expect(out[1]).toMatchObject({ passed: false, reasons: ["no_verdict"] });
+  });
+
+  it("malformed output, a refusal, a timeout, a rate limit and an open circuit are unavailable", async () => {
+    await expect(claudeS(() => claudeMsg([{ type: "text", text: "ok!" }])).review(spec(), items)).rejects.toMatchObject({ kind: "malformed" });
+    await expect(claudeS(() => claudeMsg([], { input_tokens: 1, output_tokens: 1 }, "refusal")).review(spec(), items)).rejects.toMatchObject({ kind: "refused" });
+    await expect(claudeS(hang).review(spec(), items)).rejects.toMatchObject({ kind: "timeout" });
+    await expect(claudeS(() => json({ type: "error", error: { type: "rate_limit_error", message: "slow" } }, 429)).review(spec(), items)).rejects.toMatchObject({ kind: "rate_limited" });
+    let calls = 0;
+    const s = claudeS(() => { calls++; return json({ type: "error", error: { type: "api_error", message: "down" } }, 500); }, callDeps({ retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 } }));
+    for (let i = 0; i < 3; i++) await s.review(spec(), items).catch(() => {});
+    await expect(s.review(spec(), items)).rejects.toMatchObject({ kind: "circuit_open" });
+    expect(calls).toBe(3);
+  });
+});
+
+describe("live verify and safety follow the admin's model", () => {
+  const clientsFor = (seen: string[]) => ({
+    anthropic: claudeClient({ apiKey: "test", fetch: fetchOf((u) => { seen.push(`anthropic ${u}`); return claudeMsg([...searchBlocks(["https://a.test/1"]), verdictText({ verdict: "correct", sourceUrls: ["https://a.test/1"] })]); }) }),
+    gemini: geminiClient({ apiKey: "g", fetch: fetchOf((u) => { seen.push(`gemini ${u}`); return geminiReply({ verdict: "correct", foundAnswer: "Keshi", note: "" }, grounded); }) }),
+  });
+  const noCache = { get: async () => null, put: async () => {} };
+
+  it("Claude by default, Gemini when the admin picks a Gemini model, no restart", async () => {
+    const seen: string[] = [];
+    let model: "claude-opus-5-5" | "gemini-3.8-flash" = "claude-opus-5-5";
+    const v = liveVerifier(() => callDeps(), async () => model, clientsFor(seen), noCache);
+    expect((await v.verify(question)).verifiedBy).toMatchObject({ provider: "anthropic", model: "claude-opus-5-5" });
+    model = "gemini-3.8-flash";
+    expect((await v.verify(question)).verifiedBy).toMatchObject({ provider: "gemini", model: "gemini-3.8-flash" });
+    expect(seen.map((s) => s.split(" ")[0])).toEqual(["anthropic", "gemini"]);
+  });
+
+  it("a model whose vendor has no key fails closed, as unavailable", async () => {
+    const seen: string[] = [];
+    const v = liveVerifier(() => callDeps(), async () => "gemini-3.8-flash", { ...clientsFor(seen), gemini: null }, noCache);
+    await expect(v.verify(question)).rejects.toBeInstanceOf(ProviderUnavailable);
+    const s = liveSafety(() => callDeps(), async () => "gemini-3.5-flash-lite", { ...clientsFor(seen), gemini: null });
+    await expect(s.review(spec(), items)).rejects.toBeInstanceOf(ProviderUnavailable);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe("Gemini embedder under the free tier's rate", () => {
+  it("waits for the limiter instead of sending over the rate", async () => {
+    let now = 0;
+    const waits: number[] = [];
+    const limiter = new RateLimiter({ limit: 16, windowMs: 60_000, now: () => now, sleep: async (ms) => { waits.push(ms); now += ms; } });
+    const e = geminiEmbedder({ client: geminiClient({ apiKey: "g", fetch: fetchOf(() => json({ embedding: { values: vector(3) } })) }), call: callDeps(), model: "gemini-embedding-2", limiter });
+    await e.embed(Array.from({ length: 32 }, (_, i) => `t${i}`));
+    expect(waits).toEqual([60_000]); // the second batch of 16 waited out the window
+  });
+
+  it("a 429 waits as long as Gemini's RetryInfo asks, then succeeds", async () => {
+    const sleeps: number[] = [];
+    let first = true;
+    const e = geminiEmbedder({
+      client: geminiClient({ apiKey: "g", fetch: fetchOf(() => {
+        if (first) { first = false; return json({ error: { code: 429, message: "quota", details: [{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "11s" }] } }, 429); }
+        return json({ embedding: { values: vector(2) } });
+      }) }),
+      call: callDeps({ retry: { attempts: 6, baseDelayMs: 1, maxDelayMs: 65_000 }, sleep: async (ms) => void sleeps.push(ms) }), model: "gemini-embedding-2",
+    });
+    expect(await e.embed(["a"])).toHaveLength(1);
+    expect(sleeps).toEqual([11_000]);
+  });
+});
+
 describe("provider selection", () => {
   it("mocks by default; real providers need their keys; unknown names are refused", async () => {
     const { selectProviders } = await import("../src/providers/index.js");
@@ -300,6 +453,18 @@ describe("provider selection", () => {
       for (const k of ["QUESTIONS_GENERATOR", "QUESTIONS_VERIFIER", "QUESTIONS_EMBEDDER", "QUESTIONS_SAFETY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]) delete process.env[k];
       const p = selectProviders();
       expect([p.verifier.name, p.embedder.model, p.safety.name]).toEqual(["mock", "mock", "mock"]);
+      process.env.QUESTIONS_VERIFIER = "live";
+      expect(() => selectProviders()).toThrow(/no provider key is set for verify/);
+      process.env.ANTHROPIC_API_KEY = "a";
+      expect(selectProviders().verifier.name).toBe("live");
+      process.env.QUESTIONS_VERIFIER = "mock";
+      process.env.GEMINI_EMBED_RPM = "0";
+      process.env.QUESTIONS_EMBEDDER = "gemini";
+      process.env.GEMINI_API_KEY = "g";
+      expect(() => selectProviders()).toThrow(/GEMINI_EMBED_RPM/);
+      delete process.env.GEMINI_EMBED_RPM;
+      process.env.QUESTIONS_EMBEDDER = "mock";
+      delete process.env.ANTHROPIC_API_KEY;
       process.env.QUESTIONS_GENERATOR = "anthropic";
       expect(() => selectProviders()).toThrow(/ANTHROPIC_API_KEY/);
       process.env.QUESTIONS_GENERATOR = "gpt";

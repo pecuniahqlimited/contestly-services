@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backoffMs, CircuitBreaker, ProviderError, retryAfterMs, withRetry, withTimeout } from "../src/index.js";
+import { backoffMs, CircuitBreaker, ProviderError, RateLimiter, retryAfterMs, retryDelayMs, withRetry, withTimeout } from "../src/index.js";
 
 const fast = { attempts: 3, baseDelayMs: 100, maxDelayMs: 1000 };
 const noSleep = async () => {};
@@ -75,5 +75,32 @@ describe("CircuitBreaker", () => {
     expect(b.state).toBe("open");
     t = 99;
     expect(b.tryPass()).toBe(false);
+  });
+});
+
+describe("RateLimiter", () => {
+  it("lets `limit` through per window, then waits for the oldest to age out, in order", async () => {
+    let now = 0;
+    const waits: number[] = [];
+    const l = new RateLimiter({ limit: 2, windowMs: 1000, now: () => now, sleep: async (ms) => { waits.push(ms); now += ms; } });
+    const order: number[] = [];
+    await Promise.all([1, 2, 3].map((i) => l.acquire().then(() => order.push(i))));
+    expect(order).toEqual([1, 2, 3]);
+    expect(waits).toEqual([1000]);
+    now += 300;
+    await l.acquire(2); // one slot frees at t=2000, the next at t=2000 too
+    expect(waits).toEqual([1000, 700]);
+  });
+
+  it("refuses a limit below one", () => {
+    expect(() => new RateLimiter({ limit: 0, windowMs: 1000 })).toThrow();
+  });
+});
+
+describe("Gemini RetryInfo", () => {
+  it("reads the delay a quota 429 asks for", () => {
+    expect(retryDelayMs({ details: [{ "@type": "type.googleapis.com/google.rpc.Help" }, { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "11.5s" }] })).toBe(11_500);
+    expect(retryDelayMs({ details: [] })).toBeUndefined();
+    expect(retryDelayMs(undefined)).toBeUndefined();
   });
 });

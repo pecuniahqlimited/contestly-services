@@ -66,7 +66,7 @@ async function draftBatch(deps: AnthropicGeneratorDeps, model: PricedModel, spec
   const images: PoolImage[] = batch.format === "picture" ? IMAGE_POOL : [];
   const schema = batchSchema(template.fields({ images }), !!sources);
   const user = userPrompt({ spec, count: batch.count, formatInstructions: template.instructions, avoid, sources, images: images.length ? images : undefined });
-  const raw = await providerCall({ provider: "anthropic", model, step: "generate" }, deps.call, (signal) =>
+  const { json: raw } = await providerCall({ provider: "anthropic", model, step: "generate" }, deps.call, (signal) =>
     claudeJson(deps.client, { model, system: SYSTEM_PROMPT, user, schema, maxTokens: MAX_TOKENS, effort: EFFORT }, signal));
 
   const items = Array.isArray((raw as { questions?: unknown })?.questions) ? ((raw as { questions: Record<string, unknown>[] }).questions) : [];

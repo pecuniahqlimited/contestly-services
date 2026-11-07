@@ -1,7 +1,8 @@
-# ADR 0016: Real question providers — Claude generates, Gemini verifies, embeds, checks and transcribes
+# ADR 0016: Real question providers — Claude generates; Claude verifies and checks for now; Gemini embeds and transcribes
 
-Status: accepted (7 Nov 2026). Closes open question 2's provider half. Model ids and prices checked against
-the providers' own docs and model lists on 7 Nov 2026.
+Status: accepted (7 Nov 2026), amended the same day: without Gemini billing, verification and the safety
+check moved to Claude by default (see "Same-vendor verification, for dev and testing"). Closes open question
+2's provider half. Model ids and prices checked against the providers' own docs and model lists on 7 Nov 2026.
 
 ## Context
 
@@ -18,15 +19,19 @@ its own homework.
 | Step | Provider · model | Why |
 |---|---|---|
 | generate | Anthropic `claude-sonnet-5-5`, adaptive thinking, effort `medium` | Half Opus 5.5's price ($2/$10 vs $4/$20 per MTok) for writing that every later step re-checks; Opus 5.5 is one config change away if the eval says Sonnet's distractors or local grounding fall short. Haiku 5.5 is too thin for "plausible distractors of the same type and length". |
-| verify (open knowledge) | Google `gemini-3.8-flash` + Google Search grounding, structured output | Current Flash, grounding and JSON output in one call. The cost is the search ($14 per 1,000 search queries after 5,000 free a month), not the tokens. |
-| verify (file-scoped) | `gemini-3.8-flash`, no search | Checked against the cited chunk only; the web is the wrong source for "only from this file". |
-| safety | `gemini-3.5-flash-lite`, one call per batch | Cheapest current model; a classification task. A different family from the generator, like verification. |
+| verify (open knowledge) | Anthropic `claude-opus-5-5` + Anthropic's web search tool (`web_search_20260209`, called directly, at most 3 searches), effort `low`, structured output | A different model from the generator, and the stronger one: the only independent check shouldn't be weaker than what it checks. Haiku 5.5 searches but answers from memory more readily (in a probe it skipped the search). About $0.07 a question (≈13k input tokens of search results, $10 per 1,000 searches); the cache pays it once per question. |
+| verify (file-scoped) | `claude-opus-5-5`, no search | Checked against the cited chunk only; the web is the wrong source for "only from this file". |
+| safety | Anthropic `claude-haiku-5-5`, one call per batch | The small model: a classification task over a few short questions, at $0.10/$0.50 per MTok. |
+| verify, safety (option) | Google `gemini-3.8-flash` + Google Search grounding; `gemini-3.5-flash-lite` | The two-vendor setup, for when the Gemini project has billing: pick the Gemini models in the admin console. Grounding costs $14 per 1,000 queries. |
 | embed | `gemini-embedding-2` at 1536 dimensions | Current text embedder, normalised at truncated sizes, 8k-token input. 1536 is today's column width, so no vector migration, and stays under pgvector's 2,000-dimension HNSW limit (3072 wouldn't index). Env only (`GEMINI_EMBED_MODEL`): changing it means re-embedding. |
 | transcribe | `gemini-3.5-transcribe` | The purpose-built speech-to-text model ($0.003/min). Env (`GEMINI_TRANSCRIBE_MODEL`). |
 
-**Selection.** `QUESTIONS_GENERATOR=anthropic`, `QUESTIONS_VERIFIER=gemini`, `QUESTIONS_EMBEDDER=gemini`,
-`QUESTIONS_SAFETY=gemini`, `TRANSCRIBER=gemini`. Mocks stay the default for every one of them, for tests and
-for dev without keys; a real provider without its key fails at start, never falls back to a mock.
+**Selection.** `QUESTIONS_GENERATOR=anthropic`, `QUESTIONS_VERIFIER=live`, `QUESTIONS_EMBEDDER=gemini`,
+`QUESTIONS_SAFETY=live`, `TRANSCRIBER=gemini`. Mocks stay the default for every one of them, for tests and
+for dev without keys; a real provider without its key fails at start, never falls back to a mock. `live`
+verification and safety take their vendor from the admin's model for the step, on every call, so moving
+between Claude and Gemini is a console change with no restart; a model whose vendor's key isn't set fails
+that check closed. (`gemini` and `anthropic` are accepted as old names for `live`.)
 
 **One call path for every provider call** (`packages/ai`): budget check → circuit breaker → timeout →
 retries with jittered exponential backoff (429, 5xx, timeouts and network errors only; Retry-After honoured)
@@ -48,18 +53,29 @@ citing a chunk it wasn't given is invalid. Picture questions are written only ab
 engine never hot-links. The `Generator` interface stays general: the client underneath is a plain
 "structured call" so the templates branch's `distract()` is a template and a method, not a new client.
 
-**Verification.** A separate Gemini call per question, never the generator. Verdict
-`correct | incorrect | ambiguous | unverifiable`, the answer as found, and the grounding sources (URL and
-title) stored in the generation record. Only `correct` with at least one source passes the gate, in both
+**Verification.** A separate call per question, never the generator's call and never the generator's model
+(the config refuses `verify` equal to `generate`), with nothing from generation but the question: one user
+turn holding the answer key, the claim and the explanation. Verdict
+`correct | incorrect | ambiguous | unverifiable`, the answer as found, and the sources (URL and title) stored
+in the generation record. With Claude, the sources are the search results Claude names as supporting its
+verdict, kept only if they were among the results it was actually shown, so a remembered or invented URL
+never counts; with Gemini, the grounding chunks. Only `correct` with at least one source passes the gate, in both
 modes. File-scoped drafts are checked against their cited chunk with no search. Results are cached per
 question (`verification_cache`, keyed by a hash of verifier model, format, payload, claim and source text),
 so a reseal, a regenerate, an eval re-run or an admin edit that changes nothing pays once.
 
-**Safety.** The term filter in `@contestly/shared` runs first and stays the only check on curate-mode host
-edits (they're judged in the API, which calls no provider). Drafts that pass it and verification then go to
+**Safety.** The term filter in `@contestly/shared` runs first. Drafts that pass it and verification then go to
 the model check for everything in step 7 (profanity, hate, sexual content, real private individuals,
 gambling or alcohol promotion, politics unless asked, the brief's exclusions). Fail closed: an unavailable,
 malformed or partial answer rejects the draft with the reason recorded.
+
+**Embeddings on Gemini's free tier.** Without billing the project gets 100 embed requests a minute per model
+(Gemini's 429 names the quota, `EmbedContentRequestsPerMinutePerUserPerProjectPerModel-FreeTier`, and says
+when to retry). Each text is one request. The embedder spaces them with a per-process limiter
+(`GEMINI_EMBED_RPM`, default 90, a margin under 100); a 429 anyway (another process on the same key) waits
+the RetryInfo delay, up to six attempts. The `reembed` chain treats an unavailable embedder as "later", not
+failed: it re-queues itself after a backoff (1 min, doubling, at most 30 min), so a re-embed runs slowly and
+never stops. Restarting the service doesn't start a second chain alongside a waiting one.
 
 **Embeddings.** Same width, different space: mock vectors and Gemini vectors can't be compared. Each bank row
 and file chunk records the model that embedded it (`embedding_model`, migration 0046; existing rows are
@@ -82,13 +98,35 @@ party is cancelled and refunded by the worker).
 chunks (only for the party that uploaded the file, only the retrieved ones), question text and answers, and,
 for transcription, the voice note's audio. Never a user id, name, handle, email, phone or any other personal
 data from our tables; the party id stays on our side in `provider_calls`. Anthropic and Google process these
-under their API terms. The Gemini key must belong to a billing-enabled project: Google's unpaid tier may use
-prompts to improve its products. Google Search grounding sends the verifier's search queries, written by the
-model from the question, to Google Search.
+under their API terms. The verifier's search queries, written by the model from the question, go to the
+search provider (Anthropic's web search; Google Search when Gemini verifies). **Before launch the Gemini key
+must belong to a billing-enabled project:** Google's unpaid tier may use prompts to improve its products. In
+dev and testing on the free tier, what Gemini sees is the embedding text (question text, briefs, retrieved
+chunks from sim and test files) and voice-note audio from test accounts; no real user's content goes to it
+until billing is on.
+
+## Same-vendor verification, for dev and testing (amendment, 7 Nov 2026)
+
+There's no Gemini billing for now, and grounding has no free quota. So the default verifier and safety check
+are Claude: `claude-opus-5-5` with Anthropic's web search verifies, `claude-haiku-5-5` checks safety. The
+generator stays `claude-sonnet-5-5`.
+
+This is weaker independence than two vendors. A different model, a separate call with no shared context, and
+web sources the verdict has to point at all help, but two Claude models share training data and habits, so
+they're more likely to share a wrong belief, or to find the same wording convincing, than Claude and Gemini
+would be. The source rule carries more of the weight here: only `correct` with at least one source it was
+shown passes the gate.
+
+So this setup is for dev and testing. **Revisit before launch (row 12):** with Gemini billing on, switch
+verify and safety to the Gemini models in the console and compare `npm run questions:eval` reports from both
+setups; keep same-vendor verification only if the eval shows it catches as much.
 
 ## Alternatives considered
 
 - **Claude for everything.** One vendor, one bill, but the verifier would share the generator's blind spots.
+  Adopted for now, for dev and testing only, with a different and stronger model for verification (above).
+- **Haiku 5.5 or Sonnet 5 to verify.** Much cheaper, but a weaker or sibling model checking Sonnet 5.5's work
+  is the wrong direction for the one independent check. Either is a console switch if cost matters more.
 - **Opus 5.5 to generate.** Better on paper; twice the price on the step that's re-checked anyway. Kept as a
   config switch.
 - **One verification call per batch.** Cheaper, but one bad question can colour the others' verdicts and the
@@ -99,8 +137,11 @@ model from the question, to Google Search.
 
 ## Consequences
 
-- Google Search grounding is capped at 1,500 grounded requests a day on Gemini 3 models. Bank reuse and the
-  verification cache keep us under it; the daily budget should be set to stop well before it.
+- Claude verification costs about $0.07 a question, most of it search results as input tokens; the cache, bank
+  reuse and the daily cap bound it. Google Search grounding (the Gemini option) is capped at 1,500 grounded
+  requests a day on Gemini 3 models.
+- Re-embedding on the free tier is bounded by 90 requests a minute: about 11 minutes per 1,000 rows, plus any
+  waits for other processes on the key.
 - Old generation records keep `pass | fail | needs_source` verdicts; readers accept both shapes.
 - The eval (`npm run questions:eval`) writes its report to `docs/engineering/eval/`; it's the baseline any
   model or prompt change has to beat.

@@ -132,7 +132,7 @@ class Checks {
   async review(checked: Checked[]): Promise<Checked[]> {
     const standing = checked.filter((c) => c.payloadValid && c.verify?.verdict === "correct" && c.safety.passed);
     if (!standing.length) return checked;
-    let results: SafetyResult[];
+    let results: SafetyOutcome[];
     if (this.down.has("safety")) results = standing.map(() => unavailableSafety);
     else {
       try {
@@ -145,8 +145,8 @@ class Checks {
     }
     const reviewer = this.req.providers.safety.name;
     standing.forEach((c, i) => {
-      const r = results[i] ?? { passed: false, reasons: ["no_verdict"] };
-      c.safety = { passed: r.passed, reasons: r.reasons, reviewedBy: `terms+${reviewer}` };
+      const r: SafetyOutcome = results[i] ?? { passed: false, reasons: ["no_verdict"] };
+      c.safety = { passed: r.passed, reasons: r.reasons, reviewedBy: `terms+${r.reviewedBy ?? reviewer}` };
     });
     return checked;
   }

@@ -86,7 +86,7 @@ export interface VerifyInput {
 }
 
 export interface Verifier {
-  /** A name for the cache key and logs ("mock", "gemini"). */
+  /** A name for the cache key and logs ("mock", "anthropic", "gemini"). */
   readonly name: string;
   verify(q: VerifyInput): Promise<VerifyVerdict>;
 }
@@ -101,8 +101,8 @@ export interface Embedder {
 /** The model-based safety and taste check, run after the term filter on drafts that passed it (step 7). */
 export interface SafetyReviewer {
   readonly name: string;
-  /** One result per item, in order. Fails closed: anything it can't judge comes back not passed, with the reason. */
-  review(brief: SafetyBrief, items: { format: QuestionFormat; payload: unknown; explanation?: string }[]): Promise<SafetyResult[]>;
+  /** One result per item, in order, with the model that judged it. Fails closed: anything it can't judge comes back not passed, with the reason. */
+  review(brief: SafetyBrief, items: { format: QuestionFormat; payload: unknown; explanation?: string }[]): Promise<(SafetyResult & { reviewedBy?: string })[]>;
 }
 
 export interface Providers {

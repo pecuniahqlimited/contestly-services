@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { db, parties } from "@contestly/db";
 import { makeRedis, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { QUEUES, type QuestionsJob } from "@contestly/shared";
-import { withCallContext } from "@contestly/ai";
+import { ProviderUnavailable, withCallContext } from "@contestly/ai";
 import { providerNames, selectProviders } from "./providers/index.js";
 import { generateSet } from "./pipeline/generateSet.js";
 import { resealForRoster } from "./pipeline/reseal.js";
@@ -23,7 +23,7 @@ import { reviewEdit } from "./pipeline/reviewEdit.js";
 import { embedFile } from "./files/embedFile.js";
 import { sourceSweep } from "./files/sourceSweep.js";
 import { sealWhenFilesRead } from "./files/sealWhenFilesRead.js";
-import { needsReembed, reembedBatch } from "./pipeline/reembed.js";
+import { needsReembed, reembedBackoffMs, reembedBatch, staleRows } from "./pipeline/reembed.js";
 
 /** Daily, at 04:00 server time: retire flagged and underperforming bank questions. */
 const RETIRE_SWEEP_CRON = "0 4 * * *";
@@ -38,8 +38,32 @@ const questionJobs = questionsQueue();
 const providers = selectProviders();
 const publish = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 
-/** Re-embedding is one job id at a time; each batch queues the next. */
-const queueReembed = () => questionJobs.add("reembed", { kind: "reembed" }, { jobId: `reembed-${Date.now()}` });
+/** Re-embedding is one chain: each batch queues the next, after a backoff when the provider was rate-limited. */
+const queueReembed = (waits = 0) => questionJobs.add("reembed", { kind: "reembed", waits }, { jobId: `reembed-${Date.now()}`, delay: waits ? reembedBackoffMs(waits) : 0 });
+
+/** At start: a chain already waiting (from before a restart) carries on, so starting one more would double the rate. */
+async function startReembed() {
+  const pending = await questionJobs.getJobs(["waiting", "delayed", "prioritized", "active"]);
+  if (pending.some((j) => j.data.kind === "reembed")) return;
+  await startReembed();
+}
+
+async function reembed(waits: number) {
+  const t0 = Date.now();
+  let moved: number;
+  try {
+    moved = await reembedBatch({ embedder: providers.embedder });
+  } catch (err) {
+    if (!(err instanceof ProviderUnavailable)) throw err;
+    console.warn(`[reembed] ${err.message}; next batch in ${Math.round(reembedBackoffMs(waits + 1) / 1000)} s`);
+    await queueReembed(waits + 1);
+    return;
+  }
+  if (!moved) return console.log(`[reembed] done: every row is on ${providers.embedder.model}`);
+  const left = await staleRows(providers.embedder.model);
+  console.log(`[reembed] ${moved} rows in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${left} left`);
+  await queueReembed();
+}
 
 const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
   const d = job.data;
@@ -61,9 +85,7 @@ async function run(d: QuestionsJob) {
     case "review_edit": return reviewEdit(d, { providers });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
-    case "reembed":
-      if (await reembedBatch({ embedder: providers.embedder })) await queueReembed();
-      return;
+    case "reembed": return reembed(d.waits ?? 0);
   }
 }
 
@@ -105,7 +127,7 @@ await questionJobs.upsertJobScheduler("retire-sweep", { pattern: RETIRE_SWEEP_CR
 await questionJobs.upsertJobScheduler("source-sweep", { pattern: SOURCE_SWEEP_CRON }, { name: "source_sweep", data: { kind: "source_sweep" } });
 
 // Rows embedded by another model aren't compared with this one's; move them over in the background.
-if (await needsReembed(providers.embedder.model)) await queueReembed();
+await startReembed();
 
 const names = providerNames();
 console.log(`questions running: queue ${QUEUES.questions}, providers generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);

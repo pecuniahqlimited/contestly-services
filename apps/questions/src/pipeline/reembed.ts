@@ -4,13 +4,18 @@
  * questions (then file chunks) whose embedding_model isn't current, re-embedded and marked, then the job
  * queues itself again until none are left. Resumable by construction: the column is the progress.
  */
-import { and, eq, isNotNull, ne } from "drizzle-orm";
+import { and, count, eq, isNotNull, ne } from "drizzle-orm";
 import { bankQuestions, db, fileChunks } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/shared";
 import type { Embedder } from "../providers/types.js";
 import { embeddingText } from "./text.js";
 
 export const REEMBED_BATCH = 64;
+/** After a rate-limited batch: a minute, doubling, at most half an hour (a daily quota resets overnight; the chain keeps trying). */
+const BACKOFF_BASE_MS = 60_000;
+const BACKOFF_MAX_MS = 30 * 60_000;
+
+export const reembedBackoffMs = (waits: number) => Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, waits - 1));
 
 const staleBank = (model: string) => ne(bankQuestions.embeddingModel, model);
 const staleChunks = (model: string) => and(isNotNull(fileChunks.embedding), ne(fileChunks.embeddingModel, model));
@@ -20,6 +25,13 @@ export async function needsReembed(model: string): Promise<boolean> {
   if (b) return true;
   const [c] = await db.select({ id: fileChunks.id }).from(fileChunks).where(staleChunks(model)).limit(1);
   return !!c;
+}
+
+/** Rows still on another model (bank questions and file chunks), for the progress line. */
+export async function staleRows(model: string): Promise<number> {
+  const [b] = await db.select({ n: count() }).from(bankQuestions).where(staleBank(model));
+  const [c] = await db.select({ n: count() }).from(fileChunks).where(staleChunks(model));
+  return (b?.n ?? 0) + (c?.n ?? 0);
 }
 
 /** One batch. Returns how many rows moved; the caller queues the next batch while that's above zero. */

@@ -9,7 +9,7 @@
  * writes an HTML page of every question with its answer, distractors, verdict and sources to
  * docs/engineering/eval/.
  *
- *   npm run questions:eval                    real providers from .env (QUESTIONS_GENERATOR=anthropic, …)
+ *   npm run questions:eval                    real providers from .env (QUESTIONS_GENERATOR=anthropic, QUESTIONS_VERIFIER=live, …)
  *   npm run questions:eval -- --max-usd 5     stop starting new sets past this spend (default 15)
  *   npm run questions:eval -- --mock          the mocks, to check the harness itself (free)
  */
@@ -21,7 +21,7 @@ import { draftAndJudge, type JudgedDraft } from "../apps/questions/src/pipeline/
 import { buildSpec } from "../apps/questions/src/pipeline/spec.js";
 import { answerKeyText } from "../apps/questions/src/pipeline/text.js";
 import { mapLimit } from "../apps/questions/src/pipeline/concurrency.js";
-import { providerNames, selectProviders, STEP_TIMEOUT_MS } from "../apps/questions/src/providers/index.js";
+import { providerNames, selectProviders, STEP_RETRY, STEP_TIMEOUT_MS } from "../apps/questions/src/providers/index.js";
 import type { GenerationSpec, SourceChunk } from "../apps/questions/src/providers/types.js";
 import { readChunks } from "../apps/api/src/sources/readChunks.js";
 import { minimalPdf } from "./sim-pdf.js";
@@ -116,7 +116,7 @@ async function main() {
   const startedAt = new Date().toISOString();
   const memory = new MemorySink();
   const breakers = new Breakers(DEFAULT_BREAKER);
-  const deps = (step: keyof typeof STEP_TIMEOUT_MS): CallDeps => ({ sink: teeSink(memory), budget: evalBudget(memory), breakers, retry: DEFAULT_RETRY, timeoutMs: STEP_TIMEOUT_MS[step] });
+  const deps = (step: keyof typeof STEP_TIMEOUT_MS): CallDeps => ({ sink: teeSink(memory), budget: evalBudget(memory), breakers, retry: STEP_RETRY[step] ?? DEFAULT_RETRY, timeoutMs: STEP_TIMEOUT_MS[step] });
   const providers = selectProviders(deps);
   const cfg = await getQuestionsConfig();
   const names = providerNames();

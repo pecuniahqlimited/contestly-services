@@ -416,7 +416,8 @@ export type QuestionsJob =
   /** Repeatable: delete the source chunks of parties that finished more than sourceRetentionDays ago. */
   | { kind: "source_sweep" }
   /** Re-embed bank questions and file chunks whose embedding came from another model; re-queues itself until none are left (ADR 0016). */
-  | { kind: "reembed" };
+  /** waits: rate-limited batches in a row, for the backoff (ADR 0016). */
+  | { kind: "reembed"; waits?: number };
 
 /** Response shapes. The UI's api-client parses every response with these. */
 export const healthResponseSchema = z.object({ ok: z.boolean(), service: z.string(), time: z.string() });

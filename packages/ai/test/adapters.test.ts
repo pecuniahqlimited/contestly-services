@@ -17,10 +17,35 @@ describe("claudeJson", () => {
     let body: Record<string, unknown> = {};
     const client = claudeClient({ apiKey: "test-key", fetch: fetchOf((_u, init) => { body = JSON.parse(String(init.body)); return json(claudeMessage('{"questions":[]}')); }) });
     const out = await claudeJson(client, req, signal);
-    expect(out.value).toEqual({ questions: [] });
-    expect(out.usage).toMatchObject({ inputTokens: 100, outputTokens: 50 });
+    expect(out.value).toEqual({ json: { questions: [] }, results: [] });
+    expect(out.usage).toMatchObject({ inputTokens: 100, outputTokens: 50, searchQueries: 0 });
     expect(body.output_config).toEqual({ effort: "medium", format: { type: "json_schema", schema: { type: "object" } } });
     expect(body.thinking).toEqual({ type: "adaptive" });
+    expect(body.tools).toBeUndefined();
+  });
+
+  it("with web search: sends the tool, keeps the results Claude saw, counts the searches, resumes a paused turn", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const searched = {
+      ...claudeMessage(""), stop_reason: "pause_turn",
+      content: [
+        { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "q" } },
+        { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [
+          { type: "web_search_result", url: "https://a.example/x", title: "A", encrypted_content: "e" },
+          { type: "web_search_result", url: "https://b.example/y", title: "B", encrypted_content: "e" },
+        ] },
+      ],
+      usage: { input_tokens: 5000, output_tokens: 20, server_tool_use: { web_search_requests: 1 } },
+    };
+    const done = { ...claudeMessage(""), content: [{ type: "text", text: "Let me check." }, { type: "text", text: '{"verdict":"correct"}' }], usage: { input_tokens: 6000, output_tokens: 80, server_tool_use: { web_search_requests: 0 } } };
+    const replies = [searched, done];
+    const client = claudeClient({ apiKey: "k", fetch: fetchOf((_u, init) => { bodies.push(JSON.parse(String(init.body))); return json(replies.shift()); }) });
+    const out = await claudeJson(client, { ...req, webSearch: { maxUses: 3 } }, signal);
+    expect(out.value).toEqual({ json: { verdict: "correct" }, results: [{ url: "https://a.example/x", title: "A" }, { url: "https://b.example/y", title: "B" }] });
+    expect(out.usage).toMatchObject({ inputTokens: 11000, outputTokens: 100, searchQueries: 1 });
+    expect(bodies[0].tools).toEqual([{ type: "web_search_20260209", name: "web_search", max_uses: 3, allowed_callers: ["direct"] }]);
+    // The resumed call sends the paused assistant turn back unchanged.
+    expect((bodies[1].messages as { role: string }[]).map((m) => m.role)).toEqual(["user", "assistant"]);
   });
 
   it("maps malformed output, refusals, rate limits and overload to their kinds", async () => {
