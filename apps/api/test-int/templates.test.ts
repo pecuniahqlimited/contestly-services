@@ -477,14 +477,20 @@ describe("the link check reads the raw relationships, blocks included", () => {
     // Only one of them around the party: not linked.
     expect(await linkOf(async (h, w) => { const v = ip(); await seen(h, v, hours(1)); await seen(w, v, daysAgo(30)); })).toEqual([]);
     // Carrier NAT: more than maxAccountsPerIp accounts on it in the window: ignored. At the limit: linked.
-    const crowd = async (others: number) => linkOf(async (h, w) => {
+    // Only signed-up accounts made before the window count: guests or accounts opened for it can't fake a crowd.
+    const established = { createdAt: daysAgo(30) };
+    const crowd = async (others: number, who: Partial<typeof users.$inferInsert> = established) => linkOf(async (h, w) => {
       const v = ip();
       await seen(h, v, hours(1));
       await seen(w, v, hours(1));
-      for (let i = 0; i < others; i++) await seen(await makeUser(name("nat")), v, hours(2));
+      for (let i = 0; i < others; i++) await seen(await makeUser(name("nat"), who), v, hours(2));
     });
-    expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp - 1)).toEqual([]);
-    expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp - 2)).toEqual(["ip"]);
+    const many = DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp + 5;
+    // (The host and winner here are new accounts themselves, so only the others count.)
+    expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp + 1)).toEqual([]);
+    expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp)).toEqual(["ip"]);
+    expect(await crowd(many, { ...established, isGuest: true })).toEqual(["ip"]); // guest sessions on the same Wi-Fi
+    expect(await crowd(many, { createdAt: hours(2) })).toEqual(["ip"]); // accounts made inside the window
   });
 
   it("a block lifted before settlement still counts (lifted_blocks); unblocking works for trust and safety as before", async () => {

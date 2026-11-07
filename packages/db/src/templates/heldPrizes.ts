@@ -37,7 +37,9 @@ const httpError = (statusCode: number, code: string, details?: Record<string, un
  * party (or since), standing or lifted since (lifted_blocks), an account younger than `newAccountDays` that came in through the host's invite to this party
  * or signed up from the host's invite (invited_new), an install id seen on both accounts, and an IP both used
  * around the party (`ipWindowHoursBefore` before it to its end) that no more than `maxAccountsPerIp` accounts used
- * then (more is a carrier's shared address). "Used" is first_seen_at..last_seen_at overlapping the window.
+ * then (more is a carrier's shared address). Only signed-up accounts made before the window count towards that, so
+ * guest sessions or fresh accounts opened on the same Wi-Fi can't make it look busy. "Used" is
+ * first_seen_at..last_seen_at overlapping the window.
  */
 async function linksToHost(tx: Tx, p: Party, userId: string, rules: HostWrittenRules): Promise<PrizeLinkKind[]> {
   const hostId = p.createdByUserId;
@@ -69,7 +71,8 @@ async function linksToHost(tx: Tx, p: Party, userId: string, rules: HostWrittenR
         where a.kind = 'ip' and a.user_id = ${hostId} and b.user_id = ${userId}
           and a.last_seen_at >= ${ipFrom.toISOString()}::timestamptz and a.first_seen_at <= ${ipTo.toISOString()}::timestamptz
           and b.last_seen_at >= ${ipFrom.toISOString()}::timestamptz and b.first_seen_at <= ${ipTo.toISOString()}::timestamptz
-          and (select count(distinct c.user_id) from ${userSignals} c where c.kind = 'ip' and c.value = a.value
+          and (select count(distinct c.user_id) from ${userSignals} c join ${users} cu on cu.id = c.user_id
+                where c.kind = 'ip' and c.value = a.value and not cu.is_guest and cu.created_at < ${ipFrom.toISOString()}::timestamptz
                 and c.last_seen_at >= ${ipFrom.toISOString()}::timestamptz and c.first_seen_at <= ${ipTo.toISOString()}::timestamptz) <= ${rules.maxAccountsPerIp}) as ip`) as unknown as Record<PrizeLinkKind, boolean>[];
   return PRIZE_LINK_KINDS.filter((k) => row[k]);
 }

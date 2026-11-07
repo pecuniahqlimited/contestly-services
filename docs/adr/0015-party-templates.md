@@ -80,7 +80,9 @@ for parties with host-written questions, only cash prizes (goods move no money).
   invite (`invited_new`: a second account the host brought in), an install id seen on both accounts (`install`),
   and an IP both used around the party (`ip`): between `ipWindowHoursBefore` (default 24) hours before it and its
   end, and used then by no more than `maxAccountsPerIp` (default 5) accounts, since more is a carrier's shared
-  address. "Used" is the signal's first-seen..last-seen span overlapping the window; `user_signals.last_seen_at`
+  address. Only signed-up accounts created before the window count towards that number: guest sessions (cheap to
+  open, 300 an hour per IP) or accounts made for the party on the same Wi-Fi would otherwise make a household's
+  address look like a carrier's and drop the link. "Used" is the signal's first-seen..last-seen span overlapping the window; `user_signals.last_seen_at`
   (migration 0049, backfilled from first seen) is re-stamped at most every 10 minutes per account and address. Each is a link like the others: it holds a prize only with an outlier score. A block either way made within `recentBlockDays` (host-written rules, default 7)
   before the party, or since, is a link itself (`recent_block`); an older block hides nothing, since the other
   relationships are still read through it. "The party" is when it went live (else its start time). A block lifted
