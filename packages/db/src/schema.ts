@@ -1530,15 +1530,17 @@ export const cornerNewPlayers = pgTable("corner_new_players", {
 
 /**
  * Soft signals per account, for the new-player rule and the unlock cluster warning: the install id the app
- * sends (INSTALL_ID_HEADER) and the client IP, each recorded the first time an account is seen with it.
- * Never shown to people; admins see them only through the unlock alerts.
+ * sends (INSTALL_ID_HEADER) and the client IP, each recorded the first time an account is seen with it and
+ * re-stamped (last_seen_at) at most every few minutes after, so the held-prize check can ask whether two
+ * accounts used an IP around a party (ADR 0015). Never shown to people; admins see them only through alerts.
  */
 export const userSignals = pgTable("user_signals", {
   kind: text("kind").$type<"install" | "ip">().notNull(),
   value: text("value").notNull(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [primaryKey({ columns: [t.kind, t.value, t.userId] }), index("user_signals_user_idx").on(t.userId)]);
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [primaryKey({ columns: [t.kind, t.value, t.userId] }), index("user_signals_user_idx").on(t.userId), index("user_signals_value_seen_idx").on(t.kind, t.value, t.lastSeenAt)]);
 
 /**
  * Played-with, a read model (ADR 0012): each pair of signed-up people who finished a party together, how many

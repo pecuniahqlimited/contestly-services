@@ -159,6 +159,12 @@ export const hostWrittenRulesSchema = z.object({
   repeatWinsMax: z.number().int().min(1).max(50).default(2),
   /** invited_new: a winner who came in through the host's invite or referral counts as linked while their account is this young. */
   newAccountDays: z.number().int().min(0).max(365).default(14),
+  /**
+   * The IP link: both accounts used the IP between this many hours before the party and its end, and no more than
+   * `maxAccountsPerIp` accounts did in that window (more is a carrier's shared address, not a household).
+   */
+  ipWindowHoursBefore: z.number().int().min(0).max(24 * 30).default(24),
+  maxAccountsPerIp: z.number().int().min(2).max(1000).default(5),
   repeatWindowDays: z.number().int().min(1).max(365).default(30),
 });
 export type HostWrittenRules = z.infer<typeof hostWrittenRulesSchema>;
@@ -172,6 +178,8 @@ export const DEFAULT_HOST_WRITTEN_RULES: HostWrittenRules = {
   repeatWinsMax: 2,
   repeatWindowDays: 30,
   newAccountDays: 14,
+  ipWindowHoursBefore: 24,
+  maxAccountsPerIp: 5,
 };
 
 export const partyTemplatesConfigSchema = z.object({

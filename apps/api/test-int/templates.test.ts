@@ -12,7 +12,7 @@ import { Worker } from "bullmq";
 import { and, eq, inArray, like, sql } from "drizzle-orm";
 import {
   adminActions, adminAlerts, bankQuestions, ledgerAccounts, blocks, contactMatches, cornerNewPlayers, partyInvites, crewMembers, crews, db, getPaymentsConfig, playedWith, heldPrizes, ledger, ledgerEntries, parties, partyAnswers, partyPlayers, partyQuestions, recordSignals,
-  savePartyTemplates, currentPartyTemplates, takeSeat, users, withdrawBlockReason, type Party, type User,
+  savePartyTemplates, currentPartyTemplates, takeSeat, userSignals, users, withdrawBlockReason, type Party, type User,
 } from "@contestly/db";
 import { makeRedis, QUEUE_PREFIX } from "@contestly/queue";
 import {
@@ -416,6 +416,38 @@ describe("the link check reads the raw relationships, blocks included", () => {
     expect(await linkOf(nothing)).toEqual([]); // young, but nobody brought them
     // A link like the others: without an outlier score, paid as normal.
     expect(await linkOf(referral, { correct: [[100, 0, 100, 0], [0, 100, 0, 100]] })).toEqual([]);
+  });
+
+  it("an IP counts only if both used it around the party, and not if a carrier's worth of accounts did", async () => {
+    const ip = () => `2001:db8:${randomUUID().slice(0, 4)}::${randomUUID().slice(0, 4)}`;
+    const seen = (u: User, value: string, at: Date) => db.insert(userSignals).values({ kind: "ip", value, userId: u.id, firstSeenAt: at, lastSeenAt: at });
+    const hours = (h: number) => new Date(Date.now() - h * 3_600_000);
+    const within = DEFAULT_HOST_WRITTEN_RULES.ipWindowHoursBefore - 1;
+    // Both in the window: linked.
+    expect(await linkOf(async (h, w) => { const v = ip(); await seen(h, v, hours(within)); await seen(w, v, hours(1)); })).toEqual(["ip"]);
+    // Shared once, long ago (the same café a month back): not linked.
+    expect(await linkOf(async (h, w) => { const v = ip(); await seen(h, v, daysAgo(30)); await seen(w, v, daysAgo(30)); })).toEqual([]);
+    // Only one of them around the party: not linked.
+    expect(await linkOf(async (h, w) => { const v = ip(); await seen(h, v, hours(1)); await seen(w, v, daysAgo(30)); })).toEqual([]);
+    // Carrier NAT: more than maxAccountsPerIp accounts on it in the window: ignored. At the limit: linked.
+    const crowd = async (others: number) => linkOf(async (h, w) => {
+      const v = ip();
+      await seen(h, v, hours(1));
+      await seen(w, v, hours(1));
+      for (let i = 0; i < others; i++) await seen(await makeUser(name("nat")), v, hours(2));
+    });
+    expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp - 1)).toEqual([]);
+    expect(await crowd(DEFAULT_HOST_WRITTEN_RULES.maxAccountsPerIp - 2)).toEqual(["ip"]);
+  });
+
+  it("recording a signal again moves its last-seen time on", async () => {
+    const u = await makeUser(name("seen"));
+    const v = `2001:db8:${randomUUID().slice(0, 4)}::1`;
+    await db.insert(userSignals).values({ kind: "ip", value: v, userId: u.id, firstSeenAt: daysAgo(30), lastSeenAt: daysAgo(30) });
+    await recordSignals(u.id, { ip: v });
+    const [row] = await db.select().from(userSignals).where(and(eq(userSignals.userId, u.id), eq(userSignals.value, v)));
+    expect(row.firstSeenAt.getTime()).toBeLessThan(daysAgo(29).getTime());
+    expect(row.lastSeenAt.getTime()).toBeGreaterThan(Date.now() - 60_000);
   });
 
   it("a block made within recentBlockDays before the party is a link itself, either way; an older one isn't", async () => {

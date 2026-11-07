@@ -372,6 +372,13 @@
       "when": 1794057151027,
       "tag": "0052_prize_hold_account",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1794057211027,
+      "tag": "0053_signals_last_seen",
+      "breakpoints": true
     }
   ]
 }

@@ -111,14 +111,14 @@ const isLoopback = (ip: string) => ip === "::1" || ip.startsWith("127.") || ip.s
 
 /**
  * Note the install id (a soft signal: the app makes it once per install, and a web build can lose it) and
- * the client IP an account was seen with, the first time only.
+ * the client IP an account was seen with: written the first time, and its last_seen_at moved on each time after.
  */
 export async function recordSignals(userId: string, s: { installId?: string | null; ip?: string | null }) {
   const rows = [
     ...(s.installId ? [{ kind: "install" as const, value: s.installId, userId }] : []),
     ...(s.ip && !isLoopback(s.ip) ? [{ kind: "ip" as const, value: s.ip, userId }] : []),
   ];
-  if (rows.length) await db.insert(userSignals).values(rows).onConflictDoNothing();
+  if (rows.length) await db.insert(userSignals).values(rows).onConflictDoUpdate({ target: [userSignals.kind, userSignals.value, userSignals.userId], set: { lastSeenAt: sql`now()` } });
 }
 
 // ---- new players -----------------------------------------------------------------------

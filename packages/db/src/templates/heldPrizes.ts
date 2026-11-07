@@ -26,7 +26,8 @@ import { getPaymentsConfig, getSocialConfig } from "../config.js";
 import * as ledger from "../ledger.js";
 
 export const HELD_PRIZE_ALERT_KIND = "templates.prize_held";
-const DAY_MS = 86_400_000;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
 const httpError = (statusCode: number, code: string, details?: Record<string, unknown>) => Object.assign(new Error(code), { statusCode, ...(details ? { details } : {}) });
 
 /**
@@ -34,7 +35,9 @@ const httpError = (statusCode: number, code: string, details?: Record<string, un
  * pairs, so a host could block a friend to dodge it): crew mates in a live crew, contacts either way, played
  * together within yourPeopleDays before the party, a block either way made in the `recentBlockDays` before the
  * party (or since), an account younger than `newAccountDays` that came in through the host's invite to this party
- * or signed up from the host's invite (invited_new), and an install id or IP seen on both accounts.
+ * or signed up from the host's invite (invited_new), an install id seen on both accounts, and an IP both used
+ * around the party (`ipWindowHoursBefore` before it to its end) that no more than `maxAccountsPerIp` accounts used
+ * then (more is a carrier's shared address). "Used" is first_seen_at..last_seen_at overlapping the window.
  */
 async function linksToHost(tx: Tx, p: Party, userId: string, rules: HostWrittenRules): Promise<PrizeLinkKind[]> {
   const hostId = p.createdByUserId;
@@ -43,6 +46,9 @@ async function linksToHost(tx: Tx, p: Party, userId: string, rules: HostWrittenR
   const playedSince = new Date(partyAt.getTime() - yourPeopleDays * DAY_MS);
   const blockedSince = new Date(partyAt.getTime() - rules.recentBlockDays * DAY_MS);
   const newSince = new Date(partyAt.getTime() - rules.newAccountDays * DAY_MS);
+  // The IP window: hours before the party to its end (now, at settlement; its end, on a later reject's pass-on).
+  const ipFrom = new Date(partyAt.getTime() - rules.ipWindowHoursBefore * HOUR_MS);
+  const ipTo = p.endedAt ?? new Date();
   const [row] = await tx.execute(sql`
     select
       exists(select 1 from ${crewMembers} a join ${crewMembers} b on b.crew_id = a.crew_id join ${crews} c on c.id = a.crew_id and c.archived_at is null
@@ -58,7 +64,11 @@ async function linksToHost(tx: Tx, p: Party, userId: string, rules: HostWrittenR
       exists(select 1 from ${userSignals} a join ${userSignals} b on b.kind = a.kind and b.value = a.value
         where a.kind = 'install' and a.user_id = ${hostId} and b.user_id = ${userId}) as install,
       exists(select 1 from ${userSignals} a join ${userSignals} b on b.kind = a.kind and b.value = a.value
-        where a.kind = 'ip' and a.user_id = ${hostId} and b.user_id = ${userId}) as ip`) as unknown as Record<PrizeLinkKind, boolean>[];
+        where a.kind = 'ip' and a.user_id = ${hostId} and b.user_id = ${userId}
+          and a.last_seen_at >= ${ipFrom.toISOString()}::timestamptz and a.first_seen_at <= ${ipTo.toISOString()}::timestamptz
+          and b.last_seen_at >= ${ipFrom.toISOString()}::timestamptz and b.first_seen_at <= ${ipTo.toISOString()}::timestamptz
+          and (select count(distinct c.user_id) from ${userSignals} c where c.kind = 'ip' and c.value = a.value
+                and c.last_seen_at >= ${ipFrom.toISOString()}::timestamptz and c.first_seen_at <= ${ipTo.toISOString()}::timestamptz) <= ${rules.maxAccountsPerIp}) as ip`) as unknown as Record<PrizeLinkKind, boolean>[];
   return PRIZE_LINK_KINDS.filter((k) => row[k]);
 }
 
