@@ -9,4 +9,12 @@ describe("package exports", () => {
       expect(Object.keys(root)).toContain(name);
     }
   });
+
+  it("@contestly/shared/templates resolves by its subpath to the same templates contract as the root", async () => {
+    const templates = await import("@contestly/shared/templates");
+    for (const name of ["hostQuestionSchema", "partyTemplateSchema", "partyTemplatesConfigSchema", "distractorRequestSchema", "templatePrefill", "maxHostQuestions", "checkHostText", "CURATE_HOST_TYPES"]) {
+      expect(templates[name as keyof typeof templates], name).toBeDefined();
+      expect(Object.keys(root)).toContain(name);
+    }
+  });
 });

@@ -19,6 +19,11 @@
       "types": "./dist/moderation.d.ts",
       "import": "./dist/moderation.js",
       "default": "./dist/moderation.js"
+    },
+    "./templates": {
+      "types": "./dist/templates.d.ts",
+      "import": "./dist/templates.js",
+      "default": "./dist/templates.js"
     }
   },
   "scripts": {
