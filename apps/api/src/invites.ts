@@ -37,7 +37,7 @@ export async function inviteToParty(tx: Tx, party: Party, inviter: User, ids: st
   if (party.status !== "open") throw httpError(409, "party_not_open");
   const wanted = [...new Set(ids)].filter((id) => id !== inviter.id);
   if (!wanted.length) return [];
-  if (!isHostTeam(party, inviter.id)) {
+  if (!(await isHostTeam(party, inviter.id, tx))) {
     const [seat] = await tx.select({ id: partyPlayers.userId }).from(partyPlayers).where(and(eq(partyPlayers.partyId, party.id), eq(partyPlayers.userId, inviter.id)));
     if (!seat) throw httpError(403, "not_in_party");
   }

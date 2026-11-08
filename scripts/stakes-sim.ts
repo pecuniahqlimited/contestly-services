@@ -7,7 +7,7 @@
  */
 import { Client } from "colyseus.js";
 import { and, eq } from "drizzle-orm";
-import { db, ledgerEntries, parties, partyPlayers, prizeFulfilments, sql } from "@contestly/db";
+import { db, ledgerEntries, parties, partyPlayers, prizeFulfilments, sql, users } from "@contestly/db";
 import { closeQueues, partyQueue } from "@contestly/queue";
 import { LEFT_PARTY, MSG, PARTY_ROOM, kobo, type PartyLimitsResponse } from "@contestly/shared";
 import { RT, api, call, failureCount, inMinutes, ok, partyNetKobo, waitFor } from "./sim-lib.js";
@@ -23,7 +23,8 @@ const goods = {
 };
 const partyJobs = partyQueue();
 
-const userId = async (h: string) => (await api(h, "GET", "/me")).id as string;
+/** An account's id by handle (a brand's too: nobody signs in as one, so not through GET /me). */
+const userId = async (h: string) => (await db.select({ id: users.id }).from(users).where(eq(users.handle, h)))[0].id;
 const cashOf = async (h: string) => (await api(h, "GET", "/me")).wallet.cashKobo as number;
 
 /** Ranks written straight to the seats (best first), then the worker's own settle job. */
@@ -36,11 +37,13 @@ async function settleWith(partyId: string, handles: string[]) {
   return waitFor(async () => (await db.select({ status: parties.status }).from(parties).where(eq(parties.id, partyId)))[0]?.status === "finished", { tries: 40 });
 }
 
-for (const h of ["tunde", "ada.o", "kemz", "jollofrepublic"]) await api(h, "POST", "/wallet/dev-topup", { nairaAmount: 20_000 });
+/** Jollof Republic's owner, acting as the brand (ADR 0017): nobody signs in as a brand. */
+const JOLLOF = { person: "chidi", brand: "jollofrepublic" };
+for (const h of ["tunde", "ada.o", "kemz", JOLLOF]) await api(h, "POST", "/wallet/dev-topup", { nairaAmount: 20_000 });
 
 console.log("==== limits ====");
 const tunde = await api<PartyLimitsResponse>("tunde", "GET", "/parties/limits");
-const brand = await api<PartyLimitsResponse>("jollofrepublic", "GET", "/parties/limits");
+const brand = await api<PartyLimitsResponse>(JOLLOF, "GET", "/parties/limits");
 ok(tunde.limits.entryMinKobo === kobo(50) && tunde.limits.hostPrizeMinKobo === kobo(500) && tunde.limits.hostPrizeMaxKobo === kobo(500_000), "limits carry the defaults (entry from ₦50, host prize ₦500 to ₦500,000)");
 ok(tunde.rakeBps === 1000, "limits carry the rake the pot preview takes");
 ok(!tunde.canOfferGoods && brand.canOfferGoods, "only the verified brand may offer goods");
@@ -59,7 +62,7 @@ for (const [label, error, body] of refusals) {
   const r = await call("tunde", "POST", "/parties", body);
   ok(r.status === 422 && r.body.error === error, `${label} → 422 ${error} (got ${r.status} ${JSON.stringify(r.body)})`);
 }
-const twoPrizes = await call("jollofrepublic", "POST", "/parties", { ...goods, places: goods.places.slice(0, 2) });
+const twoPrizes = await call(JOLLOF, "POST", "/parties", { ...goods, places: goods.places.slice(0, 2) });
 ok(twoPrizes.status === 422 && twoPrizes.body.error === "prizes_incomplete", `Top 3 goods with two prizes → prizes_incomplete (got ${JSON.stringify(twoPrizes.body)})`);
 const half = await call("tunde", "POST", "/parties", { ...pooled, entryKobo: 7_550 });
 ok(half.status === 400, `an entry that isn't whole naira is refused (${half.status})`);
@@ -141,7 +144,7 @@ ok((await cashOf("tunde")) === beforeCancel, "the held prize is released in full
 ok((await partyNetKobo(await userId("tunde"), c.id)) === 0, "the cancelled party nets the host zero");
 
 console.log("\n==== brand goods: three places, one fulfilment each ====");
-const g = await api("jollofrepublic", "POST", "/parties", goods);
+const g = await api(JOLLOF, "POST", "/parties", goods);
 ok(g.prizeKind === "product" && g.places.length === 3 && g.places[0].text === "A PlayStation 5" && g.places[0].valueKobo === kobo(900_000), "the three prizes come back by place");
 for (const who of ["tunde", "ada.o", "kemz"]) await api(who, "POST", `/parties/${g.id}/join`);
 ok(!!(await settleWith(g.id, ["ada.o", "kemz", "tunde"])), "the goods party settled");

@@ -23,7 +23,7 @@ const httpError = (statusCode: number, message: string) => Object.assign(new Err
 async function lockCurateParty(tx: Tx, partyId: string, user: User): Promise<Party> {
   const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
   if (!p) throw httpError(404, "not_found");
-  if (!isHostTeam(p, user.id)) throw httpError(403, "host_team_only");
+  if (!(await isHostTeam(p, user.id))) throw httpError(403, "host_team_only");
   if (p.mode !== "curate") throw httpError(409, "not_a_curate_party");
   if (p.status !== "open") throw httpError(409, "party_not_open");
   return p;
@@ -57,7 +57,7 @@ export async function requestDrafts(partyId: string, user: User): Promise<void> 
 export async function listDrafts(partyId: string, user: User) {
   const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
   if (!p) throw httpError(404, "not_found");
-  if (!isHostTeam(p, user.id)) throw httpError(403, "host_team_only");
+  if (!(await isHostTeam(p, user.id))) throw httpError(403, "host_team_only");
   if (p.mode !== "curate") throw httpError(409, "not_a_curate_party");
   const seated = await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, partyId), eq(partyPlayers.userId, user.id)));
   if (seated.length) throw httpError(409, "you_are_playing_this_party");
@@ -157,7 +157,7 @@ export async function requestRegenerate(partyId: string, questionId: string, use
 /** True when this user may not play the party: the host's team in curate mode, or anyone who saw its drafts. */
 export async function barredFromPlaying(p: Party, userId: string): Promise<boolean> {
   if (p.mode !== "curate") return false;
-  if (isHostTeam(p, userId)) return true;
+  if (await isHostTeam(p, userId)) return true;
   const [viewed] = await db.select().from(partyDraftViews).where(and(eq(partyDraftViews.partyId, p.id), eq(partyDraftViews.userId, userId)));
   return !!viewed;
 }

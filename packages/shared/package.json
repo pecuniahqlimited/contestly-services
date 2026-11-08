@@ -24,6 +24,11 @@
       "types": "./dist/templates.d.ts",
       "import": "./dist/templates.js",
       "default": "./dist/templates.js"
+    },
+    "./brands": {
+      "types": "./dist/brands.d.ts",
+      "import": "./dist/brands.js",
+      "default": "./dist/brands.js"
     }
   },
   "scripts": {

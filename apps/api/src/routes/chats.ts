@@ -4,7 +4,8 @@ import { and, eq, ne } from "drizzle-orm";
 import { answerRequest, canReadThread, chatMembers, db, getChatConfig, markRead, memberOf, messagesPage, liveUser, openDm, threadById, users, voiceNotes } from "@contestly/db";
 import { VOICE_PLAYBACK_URL_SECONDS, VOICE_UPLOAD_URL_SECONDS, chatPageQuerySchema, voiceUploadRequestSchema } from "@contestly/shared";
 import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
-import { requireSession, requireUser, uuidParam } from "../auth.js";
+import { uuidParam } from "../auth.js";
+import { actor, sessionOrBrand } from "../acting.js";
 import { httpError } from "../httpError.js";
 import { limit } from "../redis.js";
 import { dmThreads, unreadTotals } from "../chats.js";
@@ -21,54 +22,55 @@ async function readableThread(id: string, userId: string) {
   return thread;
 }
 
+/** Chats: a person's, or with ACT_AS_HEADER a brand's inbox (ADR 0017 §10): every team role reads it, hosts and up write. */
 export async function chatsRoutes(app: FastifyInstance) {
   /** Messages: one-to-one threads, newest first (crews join in row 6b). */
-  app.get("/chats", async (req) => {
-    const me = requireUser(req);
+  app.get("/chats", { config: { actAs: "inbox.read" } }, async (req) => {
+    const { as: me } = await actor(req);
     const { kind } = (req.query ?? {}) as { kind?: string };
     if (kind && kind !== "dm") throw httpError(400, "unknown_kind");
     return dmThreads(me.id, "messages");
   });
 
   /** Messages › Requests: people who wrote to the viewer and wait for an answer. */
-  app.get("/chats/requests", async (req) => dmThreads(requireUser(req).id, "requests"));
+  app.get("/chats/requests", { config: { actAs: "inbox.read" } }, async (req) => dmThreads((await actor(req)).as.id, "requests"));
 
   /** The Chats tab badge. */
-  app.get("/chats/unread", async (req) => unreadTotals(requireUser(req).id));
+  app.get("/chats/unread", { config: { actAs: "inbox.read" } }, async (req) => unreadTotals((await actor(req)).as.id));
 
   /** History, one page at a time, oldest first within the page. Guests read their party's chat. */
-  app.get("/chats/:id/messages", async (req) => {
-    const me = requireSession(req);
+  app.get("/chats/:id/messages", { config: { actAs: "inbox.read" } }, async (req) => {
+    const me = await sessionOrBrand(req);
     const thread = await readableThread(uuidParam(req), me.id);
     return messagesPage(thread.id, { ...chatPageQuerySchema.parse(req.query ?? {}), viewerId: me.id });
   });
 
   /** The viewer has read the thread up to now. */
-  app.post("/chats/:id/read", async (req) => {
-    const me = requireSession(req);
+  app.post("/chats/:id/read", { config: { actAs: "inbox.read" } }, async (req) => {
+    const me = await sessionOrBrand(req);
     const thread = await readableThread(uuidParam(req), me.id);
     await markRead(thread.id, me.id);
     return { ok: true };
   });
 
   /** Open (or find) the thread with someone: direct, or a message request (ADR 0007). */
-  app.post("/dm/:id", async (req) => {
-    const me = requireUser(req);
+  app.post("/dm/:id", { config: { actAs: "inbox.write" } }, async (req) => {
+    const { as: me } = await actor(req);
     const [them] = await db.select().from(users).where(and(eq(users.id, uuidParam(req)), liveUser));
     if (!them) throw httpError(404, "not_found");
     return openDm(me, them);
   });
 
   for (const [answer, accept] of [["accept", true], ["decline", false]] as const) {
-    app.post(`/chats/:id/request/${answer}`, async (req) => answerRequest(uuidParam(req), requireUser(req).id, accept));
+    app.post(`/chats/:id/request/${answer}`, { config: { actAs: "inbox.write" } }, async (req) => answerRequest(uuidParam(req), (await actor(req)).as.id, accept));
   }
 
   /**
    * A voice note's upload URL. The bytes go straight to object storage, never through here; the line is sent
    * on the room afterwards with the note's id. Not inside a message request (text only until accepted).
    */
-  app.post("/chats/:id/voice", async (req) => {
-    const me = requireSession(req);
+  app.post("/chats/:id/voice", { config: { actAs: "inbox.write" } }, async (req) => {
+    const me = await sessionOrBrand(req);
     const body = voiceUploadRequestSchema.parse(req.body);
     const thread = await threadById(uuidParam(req));
     if (!thread || !(await memberOf(db, thread.id, me.id))) throw httpError(404, "not_found");
@@ -88,8 +90,8 @@ export async function chatsRoutes(app: FastifyInstance) {
   });
 
   /** Play a voice note: a short-lived URL, for anyone who can read its thread. */
-  app.get("/voice-notes/:id", async (req) => {
-    const me = requireSession(req);
+  app.get("/voice-notes/:id", { config: { actAs: "inbox.read" } }, async (req) => {
+    const me = await sessionOrBrand(req);
     const [note] = await db.select().from(voiceNotes).where(eq(voiceNotes.id, uuidParam(req)));
     if (!note || note.status === "pending") throw httpError(404, "not_found");
     await readableThread(note.threadId, me.id);

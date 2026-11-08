@@ -17,4 +17,12 @@ describe("package exports", () => {
       expect(Object.keys(root)).toContain(name);
     }
   });
+
+  it("@contestly/shared/brands resolves by its subpath to the brands contract on the root", async () => {
+    const brands = await import("@contestly/shared/brands");
+    for (const name of ["ACT_AS_HEADER", "BRAND_ROLES", "BRAND_ROLE_CAPABILITIES", "brandRoleCan", "createBrandSchema", "brandSettingsSchema", "prizeFulfilmentSchema", "adminBrandDetailSchema"]) {
+      expect(brands[name as keyof typeof brands], name).toBeDefined();
+      expect(Object.keys(root)).toContain(name);
+    }
+  });
 });

@@ -29,7 +29,15 @@ export const topupView = (t: Topup): TopupView => ({
   creditedKobo: t.status === "succeeded" ? (t.creditedKobo ?? t.amountKobo) : null,
 });
 
-export interface CreateTopupOptions { returnUrl: string | null; now?: Date }
+export interface CreateTopupOptions {
+  returnUrl: string | null;
+  now?: Date;
+  /**
+   * A brand's top-up (ADR 0017 §8): its account has no email, so the provider is sent this verified address
+   * instead (the brand's business email, else the paying team member's). The money is the brand's either way.
+   */
+  payerEmail?: string;
+}
 
 /**
  * Who can top up: a signed-up, live account (else sign_up_required) with a verified email, which is what the
@@ -51,7 +59,7 @@ export const START_GRACE_MS = 5 * 60_000;
  */
 export async function createTopup(user: User, amountKobo: number, opts: CreateTopupOptions): Promise<Topup> {
   if (isWalletFrozen(user)) throw paymentsError(403, WALLET_FROZEN);
-  const email = topupEmail(user);
+  const email = user.isBrand && opts.payerEmail && !user.deletedAt ? opts.payerEmail : topupEmail(user);
   const now = opts.now ?? new Date();
   const [settings, cfg] = await Promise.all([currentSettings(), getPaymentsConfig()]);
   if (settings.topupsPaused) throw paymentsError(503, PAYMENTS_PAUSED, { what: "topups" });

@@ -22,6 +22,7 @@ import { blocks, liftedBlocks, contactMatches, cornerNewPlayers, crewMembers, cr
 import { adminAlert } from "../alerts.js";
 import { recordAdminAction } from "../admin.js";
 import { moneyTransaction } from "../retry.js";
+import { publicHostId } from "../host.js";
 import { currentPartyTemplates, getSocialConfig } from "../config.js";
 import * as ledger from "../ledger.js";
 
@@ -93,7 +94,7 @@ async function priorWins(tx: Tx, p: Party, userId: string, windowDays: number): 
   const since = new Date((p.liveAt ?? p.startsAt).getTime() - windowDays * DAY_MS);
   const [row] = await tx.execute(sql`
     select count(distinct pa.id)::int as n from ${parties} pa join ${partyPlayers} pp on pp.party_id = pa.id
-    where pa.created_by_user_id = ${p.createdByUserId} and pa.id <> ${p.id} and (pa.mode = 'curate' or pa.host_question_count > 0) and pa.status = 'finished'
+    where coalesce(pa.brand_id, pa.created_by_user_id) = ${publicHostId(p)} and pa.id <> ${p.id} and (pa.mode = 'curate' or pa.host_question_count > 0) and pa.status = 'finished'
       and pa.ended_at >= ${since.toISOString()}::timestamptz and pp.user_id = ${userId} and coalesce(pp.prize_kobo, 0) > 0`) as unknown as { n: number }[];
   return Number(row.n);
 }
@@ -242,7 +243,8 @@ async function planReject(tx: Tx, held: HeldPrize, p: Party): Promise<RejectPlan
   // The same eligibility as settlement: signed up and not banned.
   const next = nextPlaced(seats.map((s) => ({ userId: s.userId, rank: s.rank, eligible: !s.isGuest && !s.bannedAt })), paid, excluded);
   if (next) return { outcome: { kind: "passed_on", to: [{ userId: next, amountKobo: held.amountKobo }] }, place: seats.find((s) => s.userId === next)!.rank };
-  if (p.funding === "host") return { outcome: { kind: "returned_to_host", to: [{ userId: p.createdByUserId, amountKobo: held.amountKobo }] }, place: null };
+  // Back to whoever funded it: the party's public host (a brand's wallet for a brand's party, ADR 0017).
+  if (p.funding === "host") return { outcome: { kind: "returned_to_host", to: [{ userId: publicHostId(p), amountKobo: held.amountKobo }] }, place: null };
   const others = seats.filter((s) => !excluded.has(s.userId)).sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
   if (!others.length) return { outcome: { kind: "forfeited", to: [{ userId: await ledger.treasuryUserId(tx), amountKobo: held.amountKobo }] }, place: null };
   const shares = evenShares(held.amountKobo, others.length);

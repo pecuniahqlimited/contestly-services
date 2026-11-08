@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { distractorRequestSchema, hostQuestionSchema } from "@contestly/shared";
 import { curateHostType, prospectiveHost } from "@contestly/db";
+import { actAsHeader, actor } from "../acting.js";
 import { optionalSession, requireUser, uuidParam } from "../auth.js";
 import { addHostQuestion, editHostQuestion, removeHostQuestion } from "../hostQuestions.js";
 import { assertHostTextSafe } from "../distractors.js";
@@ -12,7 +13,9 @@ const DISTRACTORS_PER_MINUTE = 30;
 /** Templates for the builder and host-written questions (ADR 0015). The logic is in partyTemplates.ts and hostQuestions.ts. */
 export async function partyTemplatesRoutes(app: FastifyInstance) {
   /** The occasions the builder offers now, in order, and the asking host's curate caps (a person's without a session). */
-  app.get("/party-templates", async (req) => {
+  app.get("/party-templates", { config: { actAs: "parties.host" } }, async (req) => {
+    // As a brand (ADR 0017): a verified brand's caps.
+    if (actAsHeader(req)) return offeredTemplates(curateHostType((await actor(req)).as));
     const me = optionalSession(req);
     return offeredTemplates(me ? curateHostType(await prospectiveHost(me.id)) : "person");
   });

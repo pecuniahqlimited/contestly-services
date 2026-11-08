@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig, BRAND_ROLES, BRAND_VERIFICATION_STATUSES, BRAND_INVITE_STATUSES, BRAND_EVENT_KINDS, type BrandEventKind } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -351,8 +351,10 @@ export const parties = pgTable("parties", {
    * syncHostQuestionCount() whenever they change. Over 0: curate, never free, the caps and the settlement check.
    */
   hostQuestionCount: integer("host_question_count").notNull().default(0),
+  /** The brand that publicly hosts it (ADR 0001 option A, ADR 0017); null: the creator hosts. Read only through host.ts. */
+  brandId: uuid("brand_id").references((): AnyPgColumn => brands.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("parties_status_starts_idx").on(t.status, t.startsAt)]);
+}, (t) => [index("parties_status_starts_idx").on(t.status, t.startsAt), index("parties_brand_idx").on(t.brandId, t.startsAt)]);
 
 export const partyPlayers = pgTable("party_players", {
   partyId: uuid("party_id").notNull().references(() => parties.id, { onDelete: "cascade" }),
@@ -642,6 +644,8 @@ export const chatMessages = pgTable("chat_messages", {
   voiceNoteId: uuid("voice_note_id").references(() => voiceNotes.id),
   cardPartyId: uuid("card_party_id").references(() => parties.id, { onDelete: "set null" }),
   clientMsgId: uuid("client_msg_id"),
+  /** A brand's line (user_id is the brand's account): which team member wrote it, for moderation. Never shown (ADR 0017). */
+  sentByUserId: uuid("sent_by_user_id").references(() => users.id),
   /** Hidden for everyone: held after reports, or removed by an admin (ADR 0014). The row stays. */
   hiddenAt: timestamp("hidden_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1134,15 +1138,34 @@ export const prizeFulfilments = pgTable("prize_fulfilments", {
   id: uuid("id").primaryKey().defaultRandom(),
   partyId: uuid("party_id").notNull().references(() => parties.id),
   winnerUserId: uuid("winner_user_id").notNull().references(() => users.id),
-  /** Who owes delivery: the party's creator today, the brand's team from step 4. */
+  /** Who owes delivery: the party's public host (the brand's account; its team acts for it, ADR 0017). */
   hostUserId: uuid("host_user_id").notNull().references(() => users.id),
   place: integer("place").notNull().default(1),
   prizeText: text("prize_text").notNull(),
   prizeValueKobo: integer("prize_value_kobo"),
   status: fulfilmentStatus("status").notNull().default("awarded"),
+  /** The brand's latest note to the winner (how, when); the winner's dispute note. */
+  note: text("note"),
+  disputeNote: text("dispute_note"),
   awardedAt: timestamp("awarded_at", { withTimezone: true }).notNull().defaultNow(),
+  arrangedAt: timestamp("arranged_at", { withTimezone: true }),
+  deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  disputedAt: timestamp("disputed_at", { withTimezone: true }),
+  /** The days after award (FULFILMENT_NUDGE_DAYS) whose delivery nudge has been recorded, so each goes once. */
+  nudgedDays: integer("nudged_days").array().notNull().default(sql`'{}'::int[]`),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex("prize_fulfilments_party_place").on(t.partyId, t.place)]);
+}, (t) => [uniqueIndex("prize_fulfilments_party_place").on(t.partyId, t.place), index("prize_fulfilments_host_idx").on(t.hostUserId, t.status), index("prize_fulfilments_winner_idx").on(t.winnerUserId)]);
+
+/** Every step of a goods prize (arranged, delivered, disputed), who took it and their note. Append-only. */
+export const prizeFulfilmentEvents = pgTable("prize_fulfilment_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  fulfilmentId: uuid("fulfilment_id").notNull().references(() => prizeFulfilments.id),
+  fromStatus: fulfilmentStatus("from_status").notNull(),
+  toStatus: fulfilmentStatus("to_status").notNull(),
+  byUserId: uuid("by_user_id").notNull().references(() => users.id),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("prize_fulfilment_events_fulfilment_idx").on(t.fulfilmentId, t.createdAt)]);
 
 /**
  * One row per AI provider call (ADR 0016): which model, for which step, for which party (when there is one) and
@@ -1754,3 +1777,85 @@ export const heldPrizes = pgTable("held_prizes", {
   check("held_prizes_decision_known", sql`${t.requestedDecision} in ('clear', 'reject')`),
 ]);
 export type HeldPrize = typeof heldPrizes.$inferSelect;
+
+// ---- Brands and teams (row 8, ADR 0017) ----
+
+export const brandRole = pgEnum("brand_role", BRAND_ROLES);
+export const brandVerificationStatus = pgEnum("brand_verification_status", BRAND_VERIFICATION_STATUSES);
+
+/**
+ * A brand: its account is the users row with the same id (is_brand; handle, name, logo emoji, bio, wallet, corner,
+ * inbox), which nobody signs in as. This row is what only a brand has: links, the business email, the CAC number,
+ * verification. Verified: users.is_verified on the account (what canOfferNonCashPrize reads), set on approval.
+ */
+export const brands = pgTable("brands", {
+  id: uuid("id").primaryKey().references(() => users.id),
+  logoUrl: text("logo_url"),
+  lane: text("lane").$type<Category>(),
+  siteUrl: text("site_url"),
+  socials: jsonb("socials").$type<Record<string, string>>().notNull().default({}),
+  registrationNumber: text("registration_number"),
+  /** Lowercased; verified by a code sent to it (businessEmailVerifiedAt). Not a sign-in address. */
+  businessEmail: text("business_email"),
+  businessEmailVerifiedAt: timestamp("business_email_verified_at", { withTimezone: true }),
+  /** The brand says it will give cash prizes: verification then needs a payout account. */
+  cashPrizes: boolean("cash_prizes").notNull().default(false),
+  verificationStatus: brandVerificationStatus("verification_status").notNull().default("draft"),
+  /** The reviewer's note when changes are needed (shown to the brand's team). */
+  verificationNote: text("verification_note"),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  decidedByUserId: uuid("decided_by_user_id").references(() => users.id),
+  createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("brands_status_idx").on(t.verificationStatus, t.submittedAt)]);
+export type Brand = typeof brands.$inferSelect;
+
+/** Who's on a brand's team, and their role. Exactly one owner per live brand: at most one by the index, at least one by every write (ADR 0017 §4). */
+export const brandMembers = pgTable("brand_members", {
+  brandId: uuid("brand_id").notNull().references(() => brands.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  role: brandRole("role").notNull(),
+  invitedByUserId: uuid("invited_by_user_id").references(() => users.id),
+  joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  primaryKey({ columns: [t.brandId, t.userId] }),
+  uniqueIndex("brand_members_one_owner").on(t.brandId).where(sql`role = 'owner'`),
+  index("brand_members_user_idx").on(t.userId),
+]);
+export type BrandMember = typeof brandMembers.$inferSelect;
+
+/**
+ * An invite to a brand's team: to an account (invitee_user_id), or to an email nobody has claimed yet (email, the
+ * normalised address); claimed onto the account that signs up or verifies with it, then answered like any invite.
+ */
+export const brandInvites = pgTable("brand_invites", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  brandId: uuid("brand_id").notNull().references(() => brands.id),
+  inviteeUserId: uuid("invitee_user_id").references(() => users.id),
+  /** normaliseEmail() of the address invited, for an email invite (kept after it's claimed). */
+  email: text("email"),
+  role: brandRole("role").notNull(),
+  invitedByUserId: uuid("invited_by_user_id").notNull().references(() => users.id),
+  status: text("status", { enum: BRAND_INVITE_STATUSES }).notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  respondedAt: timestamp("responded_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("brand_invites_open_user").on(t.brandId, t.inviteeUserId).where(sql`status = 'pending' and invitee_user_id is not null`),
+  uniqueIndex("brand_invites_open_email").on(t.brandId, t.email).where(sql`status = 'pending' and invitee_user_id is null`),
+  index("brand_invites_invitee_idx").on(t.inviteeUserId, t.status),
+  index("brand_invites_email_idx").on(t.email, t.status),
+  check("brand_invites_to_someone", sql`${t.inviteeUserId} is not null or ${t.email} is not null`),
+  check("brand_invites_not_owner", sql`${t.role} <> 'owner'`),
+]);
+
+/** Append-only: every team change and verification step, with who did it and to whom (ADR 0017 §4). */
+export const brandEvents = pgTable("brand_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  brandId: uuid("brand_id").notNull().references(() => brands.id),
+  kind: text("kind", { enum: BRAND_EVENT_KINDS }).notNull().$type<BrandEventKind>(),
+  actorUserId: uuid("actor_user_id").references(() => users.id),
+  subjectUserId: uuid("subject_user_id").references(() => users.id),
+  detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("brand_events_brand_idx").on(t.brandId, t.createdAt)]);

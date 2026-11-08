@@ -21,6 +21,7 @@ export * from "./nudges.js";
 export * from "./moderation.js";
 export * from "./nameFilter.js";
 export * from "./templates.js";
+export * from "./brands.js";
 export * from "./questionKinds.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
@@ -28,7 +29,7 @@ import { CORNER_STATUSES, cornerColorSchema, cornerPostsPageSchema, cornerRefSch
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { owedSchema } from "./payments.js";
-import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX } from "./accounts.js";
+import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX, handleSchema } from "./accounts.js";
 import { DEFAULT_PROVIDERS_CONFIG, providersConfigSchema } from "./providers.js";
 import { MAX_HOST_QUESTIONS, hostQuestionSchema, templateRefSchema } from "./templates.js";
 
@@ -202,9 +203,6 @@ export function inferCategory(brief: string): Category {
   const leaders = scored.filter((s) => s.hits === top);
   return top > 0 && leaders.length === 1 ? leaders[0].cat : "General knowledge";
 }
-
-export const handleSchema = z.string().min(3).max(20).regex(/^[a-z0-9_.]+$/, "lowercase letters, numbers, _ and . only")
-  .refine((h) => !h.startsWith(GUEST_HANDLE_PREFIX) && !h.startsWith(DELETED_HANDLE_PREFIX), "that handle is reserved");
 
 export const upsertMeSchema = z.object({
   displayName: z.string().min(1).max(40),

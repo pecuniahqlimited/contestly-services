@@ -29,7 +29,7 @@ import { mockProviders, selectProviders } from "../../questions/src/providers/in
 import { checkHostEdit } from "../../questions/src/pipeline/checkHostEdit.js";
 import type { SafetyReviewer } from "../../questions/src/providers/types.js";
 import { queueDistractors } from "../src/distractors.js";
-import { as, makeUser, tag, testApp } from "./harness.js";
+import { as, asBrand, makeBrand, makeUser, tag, testApp } from "./harness.js";
 
 let app: Awaited<ReturnType<typeof testApp>>["app"];
 const asked: DistractorRequest[] = [];
@@ -84,7 +84,7 @@ describe("templates", () => {
     const t = DEFAULT_PARTY_TEMPLATES.templates[0];
     expect(p).toMatchObject({ title: t.title, brief: t.brief, coverEmoji: t.cover.emoji, coverColor: t.cover.color, questionCount: t.dials.questionCount, questionSeconds: t.dials.secondsPerQuestion, difficulty: t.dials.difficulty, formats: t.dials.formats, hostQuestionCount: 0 });
     expect(p.template).toMatchObject({ id: "birthday", version, occasion: "birthday", themed: t.themed });
-    expect(p.hostRules).toEqual(DEFAULT_HOST_WRITTEN_RULES);
+    expect(p.hostRules).toEqual((await currentPartyTemplates()).config.rules);
     // What the host sends wins.
     const mine = await create(host, { template: { id: "birthday", version }, title: "Ada turns 25", coverEmoji: "🥳", funding: "pooled", entryKobo: ENTRY, maxPlayers: 6, split: "winner" });
     expect(await partyRow(mine.json().id)).toMatchObject({ title: "Ada turns 25", coverEmoji: "🥳", brief: t.brief });
@@ -543,17 +543,25 @@ describe("curate parties without host-written questions (their host saw every ge
     expect((await create(host, pooled({ mode: "sealed", entryKobo: rules.capsByHost.person.maxEntryKobo + kobo(100) }))).statusCode).toBe(201);
   });
 
-  it("caps by host type: a brand's own caps are config, and every host (a verified brand too) is a person until row 8", async () => {
+  it("caps by host type (row 8): a verified brand gets the brand caps from config; an unverified brand, and every person, a person's", async () => {
     const before = await currentPartyTemplates();
     const person = before.config.rules.capsByHost.person;
     const brandCaps = { maxEntryKobo: person.maxEntryKobo * 10, maxHostPrizeKobo: person.maxHostPrizeKobo * 4, maxPotKobo: person.maxPotKobo * 4 };
     const config = { ...before.config, rules: { ...before.config.rules, capsByHost: { ...before.config.rules.capsByHost, brand: brandCaps } } };
     expect((await app.inject({ method: "PUT", url: "/admin/party-templates", headers: as(admin), payload: { config, reason: "Brand caps for row 8" } })).statusCode).toBe(200);
     try {
-      const brand = await makeUser(name("brandv"), { isBrand: true, isVerified: true });
-      // The builder's caps are the asker's: a person's, for everyone today.
-      expect((await app.inject({ method: "GET", url: "/party-templates", headers: as(brand) })).json().rules).toMatchObject({ ...person, hostType: "person" });
-      expect((await create(brand, pooled({ entryKobo: person.maxEntryKobo + kobo(100) }))).json().error).toBe("curate_entry_above_cap");
+      const owner = await makeUser(name("brandowner"));
+      const verified = await makeBrand(owner, { verified: true });
+      const unverified = await makeBrand(owner);
+      // The builder's caps are the asker's: a verified brand's own, acting as it.
+      expect((await app.inject({ method: "GET", url: "/party-templates", headers: asBrand(owner, verified) })).json().rules).toMatchObject({ ...brandCaps, hostType: "brand" });
+      expect((await app.inject({ method: "GET", url: "/party-templates", headers: asBrand(owner, unverified) })).json().rules).toMatchObject({ ...person, hostType: "person" });
+      expect((await app.inject({ method: "GET", url: "/party-templates", headers: as(owner) })).json().rules).toMatchObject({ ...person, hostType: "person" });
+      // Above a person's entry cap, inside the brand's: the verified brand may; the person may not; the unverified brand hosts free parties only.
+      const over = pooled({ entryKobo: person.maxEntryKobo + kobo(100) });
+      expect((await app.inject({ method: "POST", url: "/parties", headers: asBrand(owner, verified), payload: over })).statusCode).toBe(201);
+      expect((await create(owner, over)).json().error).toBe("curate_entry_above_cap");
+      expect((await app.inject({ method: "POST", url: "/parties", headers: asBrand(owner, unverified), payload: over })).json().error).toBe("brand_not_verified");
     } finally {
       await db.transaction((tx) => savePartyTemplates(tx, before.config, admin.id));
     }

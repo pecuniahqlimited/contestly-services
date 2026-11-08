@@ -28,3 +28,4 @@ export * from "./nudges/index.js";
 export * from "./safety/index.js";
 export * from "./peopleSearch.js";
 export * from "./templates/index.js";
+export * from "./brands/index.js";

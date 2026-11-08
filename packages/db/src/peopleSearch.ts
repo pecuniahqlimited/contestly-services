@@ -30,6 +30,8 @@ export interface FoundPerson {
   displayName: string;
   avatarEmoji: string;
   isVerified: boolean;
+  /** A brand's account (ADR 0017). */
+  isBrand: boolean;
   isGuest: boolean;
   isSystem: boolean;
   deletedAt: Date | null;
@@ -66,7 +68,7 @@ export async function searchPeople(viewer: User, opts: PeopleSearchOptions, conn
   const anyWord = sql`'% ' || ${v} || '%'`;
   const inPeople = people.length ? sql`(${inArray(users.id, people)})` : sql`false`;
   const rows = await conn.select({
-    id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, isVerified: users.isVerified,
+    id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, isVerified: users.isVerified, isBrand: users.isBrand,
     isGuest: users.isGuest, isSystem: users.isSystem, deletedAt: users.deletedAt,
     yourPeople: sql<boolean>`${inPeople}`,
     ...relationshipColumns(viewer.id),

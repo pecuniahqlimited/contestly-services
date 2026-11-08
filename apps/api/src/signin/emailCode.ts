@@ -22,9 +22,12 @@ const codeHmac = (email: string, code: string) => hmac("EMAIL_CODE_SECRET", `${e
 const boundTo = (session: User | null) => session?.id ?? "";
 
 /** What a code is for: signing in, or adding the email to the signed-in account (/me/email). One can't be used as the other. */
-export type CodePurpose = "sign_in" | "add_email";
+export type CodePurpose = "sign_in" | "add_email" | `brand_email:${string}`;
 
-export async function startEmailCode(session: User | null, email: string, ip: string, limits: Limits, purpose: CodePurpose = "sign_in") {
+/** The mail a code goes out in: sign-in and adding an email say "sign in"; a brand's business email says whose it is. */
+export type CodeMailer = (email: string, code: string) => ReturnType<typeof sendSignInCode>;
+
+export async function startEmailCode(session: User | null, email: string, ip: string, limits: Limits, purpose: CodePurpose = "sign_in", mailer: CodeMailer = sendSignInCode) {
   await limit("email-start:ip", ip, limits.codeSendsPerIpPerHour, HOUR, TOO_MANY_CODES);
   const sentAt = Number(await valkey().hget(codeKey(email), "sentAt"));
   const sinceSent = Date.now() - sentAt;
@@ -36,7 +39,7 @@ export async function startEmailCode(session: User | null, email: string, ip: st
     .del(codeKey(email))
     .hset(codeKey(email), { hmac: codeHmac(email, code), attempts: 0, sessionUserId: boundTo(session), purpose, sentAt: Date.now() })
     .expire(codeKey(email), EMAIL_CODE_TTL_SECONDS).exec();
-  const sent = await sendSignInCode(email, code);
+  const sent = await mailer(email, code);
   if (!sent.deliveredBy) {
     await valkey().del(codeKey(email));
     throw httpError(503, "email_unavailable");

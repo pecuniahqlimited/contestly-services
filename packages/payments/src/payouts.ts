@@ -20,7 +20,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, asc, count, eq, gte, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
-import { db, hasPaymentIssue, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, type Payout, type PayoutAccount, type Tx, type User, adminAlert } from "@contestly/db";
+import { db, hasPaymentIssue, linkedIssueClearances, moneyTransaction, type LinkedIssueClearance, getPaymentsConfig, ledger, payoutAccounts, payoutContradictions, payouts, recordAdminAction, users, withdrawBlockReason, isVerifiedBrand, ownerOf, type WithdrawContext, type Payout, type PayoutAccount, type Tx, type User, adminAlert } from "@contestly/db";
 import {
   ACCOUNT_UNRESOLVED, feeFromTiers, normaliseEmail, SECOND_ADMIN_REQUIRED, BELOW_MINIMUM, CURRENCY, LIMIT_REACHED, OWN_TRANSACTION, PAYMENTS_PAUSED, PAYOUT_FINAL_STATUSES, WITHDRAW_NOT_ALLOWED, type PayoutView,
 } from "@contestly/shared";
@@ -69,8 +69,14 @@ async function clearedAgainst(conn: Tx | typeof db, userId: string) {
  * email and phone for a new sign-up (ADR 0010); this keeps a debt from leaving with the old account. A held party
  * prize (ADR 0015) isn't here: it sits in their prize_hold account, never their cash, so their own cash stays theirs.
  */
-export async function withdrawContext(conn: Tx | typeof db, user: Linkable) {
+export async function withdrawContext(conn: Tx | typeof db, user: Linkable & Partial<Pick<User, "isBrand">>): Promise<WithdrawContext> {
   const owedKobo = await ledger.owedKobo(conn, user.id);
+  if (user.isBrand) {
+    // A brand's withdrawal reaches its owner's checks (ADR 0017 §8): verified brand, owner able to withdraw as a person.
+    const owner = await ownerOf(conn, user.id);
+    const ownerBlock = owner ? withdrawBlockReason(owner, await withdrawContext(conn, owner)) : "owner_cannot_withdraw";
+    return { owedKobo, linkedIssue: false, brand: { verified: await isVerifiedBrand(conn, user.id), ownerBlock } };
+  }
   const linked = await linkedIssueAccounts(conn, user);
   if (!linked.length) return { owedKobo, linkedIssue: false };
   const cleared = await clearedAgainst(conn, user.id);

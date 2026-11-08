@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach } from "@contestly/db";
+import { assertBrandCan, db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach } from "@contestly/db";
 import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits, postsToCorner } from "@contestly/shared";
 import { notifyQueue, PARTY_EVENTS_CHANNEL } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
+import { actor } from "../acting.js";
 import { barredFromPlaying } from "../drafts.js";
 import { partySummaries } from "../partySummaries.js";
 import { potKobo } from "../places.js";
@@ -40,19 +41,20 @@ export async function partiesRoutes(app: FastifyInstance) {
   });
 
   /** What the signed-in host may choose in the Stakes scene now, the rake a pot preview takes, and whether they may offer goods. */
-  app.get("/parties/limits", async (req) => {
-    const me = requireUser(req);
-    const [cfg, host, corner] = await Promise.all([getPartyConfig(), prospectiveHost(me.id), cornerReach(me.id)]);
-    return { limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host), corner };
+  app.get("/parties/limits", { config: { actAs: "parties.host" } }, async (req) => {
+    const { person, as } = await actor(req);
+    // As a brand (ADR 0017): its goods, its corner's reach, and whether it's verified (an unverified brand hosts free parties only).
+    const [cfg, host, corner] = await Promise.all([getPartyConfig(), prospectiveHost(person.id, as.isBrand ? as.id : null), cornerReach(as.id)]);
+    return { limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host), freeOnly: host.isBrand && !host.isVerified, corner };
   });
 
   /** The builder. With `template`, anything the host left out of title, brief, cover and dials is the template's (ADR 0015). */
-  app.post("/parties", async (req, reply) => {
-    const me = requireUser(req);
+  app.post("/parties", { config: { actAs: "parties.host" } }, async (req, reply) => {
+    const { person: me, brand } = await actor(req);
     const { body, copy } = await withTemplate(req.body);
-    const { party, lines } = await createParty(me, createPartySchema.parse(body), { template: copy });
+    const { party, lines } = await createParty(me, createPartySchema.parse(body), { template: copy, brand });
     for (const line of lines) await publishLine(line);
-    const [[summary], corner] = await Promise.all([partySummaries([party], me.id), cornerReach(me.id)]);
+    const [[summary], corner] = await Promise.all([partySummaries([party], me.id), cornerReach(publicHostId(party))]);
     return reply.code(201).send({ ...summary, questions: questionDisclosure(party), postsToCorner: !!corner && postsToCorner(party.visibility), corner });
   });
 
@@ -65,7 +67,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
     const threadId = await partyThreadId(db, p.id);
     const { messages } = await messagesPage(threadId, { limit: PARTY_DETAIL_CHAT_LINES, viewerId: me?.id });
-    return { ...summary, brief: me && isHostTeam(p, me.id) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, hostCorner, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages };
+    return { ...summary, brief: me && (await isHostTeam(p, me.id)) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, hostCorner, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages };
   });
 
   /**
@@ -83,11 +85,13 @@ export async function partiesRoutes(app: FastifyInstance) {
     if (p.status !== "finished") return reply.code(409).send({ error: "party_not_finished" });
     const seats = await db.select({ userId: partyPlayers.userId }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId))
       .where(and(eq(partyPlayers.partyId, id), eq(users.isGuest, false)));
-    if (!isHostTeam(p, me.id) && !seats.some((s) => s.userId === me.id)) return reply.code(403).send({ error: "not_in_party" });
+    if (!(await isHostTeam(p, me.id)) && !seats.some((s) => s.userId === me.id)) return reply.code(403).send({ error: "not_in_party" });
     const already = await existing();
     if (already) return { partyId: already.id, created: false };
 
-    const sameHost = isHostTeam(p, me.id);
+    const sameHost = await isHostTeam(p, me.id);
+    // A brand's party rematched by its team is the brand's again, under the team member's role (ADR 0017).
+    const brand = sameHost && p.brandId ? await assertBrandCan(db, p.brandId, me, "parties.host") : null;
     const goods = sameHost && isGoods(p.prizeKind) ? await db.select().from(partyPrizes).where(eq(partyPrizes.partyId, id)).orderBy(asc(partyPrizes.place)) : [];
     const split = SPLIT_IDS.find((sid) => SPLITS[sid].shares.join() === p.split.join()) ?? SPLIT_IDS[0];
     const inCrew = p.crewId ? (await db.select().from(crewMembers).where(and(eq(crewMembers.crewId, p.crewId), eq(crewMembers.userId, me.id)))).length > 0 : false;
@@ -100,7 +104,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     });
     let party;
     try {
-      ({ party } = await createParty(me, body, { rematchOf: id, alsoInvite: seats.map((s) => s.userId).slice(0, MAX_INVITES_PER_PARTY - 1) }));
+      ({ party } = await createParty(me, body, { rematchOf: id, brand, alsoInvite: seats.map((s) => s.userId).slice(0, MAX_INVITES_PER_PARTY - 1) }));
     } catch (e) {
       const lost = (e as { code?: string }).code === "23505" ? await existing() : undefined; // someone else's tap made it first
       if (lost) return { partyId: lost.id, created: false };

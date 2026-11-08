@@ -59,7 +59,7 @@ export async function writeHostQuestions(tx: Tx, p: Party, qs: HostQuestion[], a
 async function lockForHostQuestions(tx: Tx, partyId: string, user: User): Promise<Party> {
   const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
   if (!p) throw httpError(404, "not_found");
-  if (!isHostTeam(p, user.id)) throw httpError(403, "host_team_only");
+  if (!(await isHostTeam(p, user.id))) throw httpError(403, "host_team_only");
   if (p.status !== "open") throw httpError(409, "party_not_open");
   // A sealed host plays (and is seated, maybe charged): host-written questions would turn that around. Make it curate from the start.
   if (p.mode !== "curate") throw httpError(409, "sealed_party_no_host_questions");

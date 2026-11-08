@@ -7,7 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { climbRounds, contactMatches, db, ledgerAccounts, ledgerEntries, parties, users } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
 import { DEV_SIM_HEADER } from "@contestly/auth";
-import { SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
+import { ACT_AS_HEADER, SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
 
 export const API = process.env.API_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
 export const RT = process.env.RT_URL ?? `ws://localhost:${process.env.REALTIME_PORT ?? 4001}`;
@@ -111,11 +111,29 @@ let marksSim = true;
 export const leaveUnmarked = () => void (marksSim = false);
 export const simHeaders = (): Record<string, string> => (marksSim ? { [DEV_SIM_HEADER]: "1" } : {});
 
-/** Calls the API as a dev user. Returns { status, body } so callers can assert on refusals too. */
-export async function call<T = any>(handle: string, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
+/** A person acting as a brand (ADR 0017): nobody signs in as a brand, so `person` sends the x-act-as header for it. */
+export type ActingAs = { person: string; brand: string };
+/** Who a call is from: a dev user's handle, or a person acting as a brand (by the brand's handle). */
+export type Caller = string | ActingAs;
+const brandIds = new Map<string, string>();
+async function brandIdOf(handle: string): Promise<string> {
+  if (!brandIds.has(handle)) {
+    const [u] = await db.select({ id: users.id }).from(users).where(and(eq(users.handle, handle), eq(users.isBrand, true)));
+    if (!u) throw new Error(`no brand with handle ${handle}`);
+    brandIds.set(handle, u.id);
+  }
+  return brandIds.get(handle)!;
+}
+async function callerHeaders(who: Caller): Promise<Record<string, string>> {
+  if (typeof who === "string") return { "x-dev-user": who };
+  return { "x-dev-user": who.person, [ACT_AS_HEADER]: await brandIdOf(who.brand) };
+}
+
+/** Calls the API as a dev user (or a person acting as a brand). Returns { status, body } so callers can assert on refusals too. */
+export async function call<T = any>(handle: Caller, method: string, path: string, body?: unknown): Promise<{ status: number; body: T }> {
   const res = await fetch(`${API}${path}`, {
     method,
-    headers: { "x-dev-user": handle, ...simHeaders(), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+    headers: { ...(await callerHeaders(handle)), ...simHeaders(), ...(body === undefined ? {} : { "content-type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const json = res.status === 204 ? ({} as T) : ((await res.json().catch(() => ({}))) as T);
@@ -131,7 +149,7 @@ export async function sendFile<T = any>(handle: string, partyId: string, file: {
 }
 
 /** Like call(), but throws on any non-2xx (except 402, which the sims assert on). */
-export async function api<T = any>(handle: string, method: string, path: string, body?: unknown): Promise<T> {
+export async function api<T = any>(handle: Caller, method: string, path: string, body?: unknown): Promise<T> {
   const { status, body: json } = await call<T>(handle, method, path, body);
   if (status >= 300 && status !== 402) throw new Error(`${method} ${path} → ${status}: ${JSON.stringify(json)}`);
   return json;
@@ -229,4 +247,58 @@ export const wrongClimbAnswer = { index: -1, word: "zzzz", words: [], value: -99
 export async function makeContacts(aHandle: string, bHandle: string) {
   const id = async (h: string) => (await db.select({ id: users.id }).from(users).where(eq(users.handle, h)))[0].id;
   await db.insert(contactMatches).values({ userId: await id(aHandle), contactUserId: await id(bHandle) }).onConflictDoNothing();
+}
+
+// ---- mail and brands (Mailpit; ADR 0017) ------------------------------------------------
+
+export const MAILPIT = process.env.MAILPIT_URL ?? "http://localhost:8025";
+/** The newest mail to `to` in Mailpit: its text, or null. */
+export async function latestMail(to: string): Promise<{ id: string; text: string; subject: string } | null> {
+  const search = await (await fetch(`${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:"${to}"`)}&limit=1`)).json() as { messages?: { ID: string; Subject: string }[] };
+  const m = search.messages?.[0];
+  if (!m) return null;
+  const msg = await (await fetch(`${MAILPIT}/api/v1/message/${m.ID}`)).json() as { Text: string };
+  return { id: m.ID, text: msg.Text, subject: m.Subject };
+}
+/** The 6-digit code in the newest mail to `to` (waiting for it to land). */
+export async function mailedCode(to: string): Promise<string> {
+  const mail = await waitFor(async () => latestMail(to), { tries: 40, everyMs: 250 });
+  const code = mail?.text.match(/\b(\d{6})\b/)?.[1];
+  if (!code) throw new Error(`no code mailed to ${to}`);
+  return code;
+}
+
+/**
+ * A verified brand `owner` owns, through the real API (ADR 0017): made if missing, its checklist filled in, the
+ * business email confirmed by the code from Mailpit, sent for review and approved by `approver` (any dev header
+ * passes requireAdmin; never someone on its team). Reused as it is when it's already verified. Returns its id.
+ */
+export async function verifiedBrand(owner: string, handle: string, name: string, approver: string): Promise<string> {
+  const mine = await api<{ brands: { id: string; handle: string; verificationStatus: string }[] }>(owner, "GET", "/me/brands");
+  let id = mine.brands.find((b) => b.handle === handle)?.id;
+  if (id && mine.brands.find((b) => b.id === id)!.verificationStatus === "verified") return id;
+  if (!id) id = (await api(owner, "POST", "/brands", { name, handle, logoEmoji: "🏷️", lane: "General knowledge" })).id as string;
+  const domain = `${handle.replace(/[^a-z0-9]/g, "")}.example`;
+  await api(owner, "PATCH", `/brands/${id}`, { registrationNumber: "RC1234567", logoUrl: `https://${domain}/logo.png`, siteUrl: `https://${domain}`, cashPrizes: false });
+  const settings = await api(owner, "GET", `/brands/${id}/settings`);
+  if (!settings.checklist.businessEmail) {
+    const email = `team+${Date.now()}@${domain}`;
+    await api(owner, "POST", `/brands/${id}/business-email/start`, { email });
+    await api(owner, "POST", `/brands/${id}/business-email/verify`, { email, code: await mailedCode(email) });
+  }
+  if (settings.verification.status !== "in_review") await api(owner, "POST", `/brands/${id}/verification/submit`);
+  await api(approver, "POST", `/admin/brands/${id}/approve`, { reason: "Sim: checklist complete" });
+  return id;
+}
+
+/** Put `member` on the brand's team with `role` through invites (idempotent: already on it, nothing changes). */
+export async function onTeam(owner: string, brandId: string, member: string, role: "admin" | "host" | "viewer") {
+  const team = await api<{ members: { handle: string; role: string }[] }>(owner, "GET", `/brands/${brandId}/team`);
+  const there = team.members.find((m) => m.handle === member);
+  if (there) {
+    if (there.role !== role && there.role !== "owner") await api(owner, "PATCH", `/brands/${brandId}/members/${(await db.select({ id: users.id }).from(users).where(eq(users.handle, member)))[0].id}`, { role });
+    return;
+  }
+  const { inviteId } = await api(owner, "POST", `/brands/${brandId}/invites`, { handle: member, role });
+  await api(member, "POST", `/brand-invites/${inviteId}/accept`);
 }

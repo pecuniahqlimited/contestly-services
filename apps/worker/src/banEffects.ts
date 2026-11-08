@@ -6,7 +6,7 @@
  * their own rules: rooms dropped the person, and settlement skips them for prizes. Safe to run again.
  */
 import { and, eq, inArray } from "drizzle-orm";
-import { adminCancelParty, db, isBanned, parties, partyPlayers, removeSeat, users, withdrawNudges, type Party } from "@contestly/db";
+import { adminCancelParty, db, isBanned, parties, partyPlayers, removeSeat, users, withdrawNudges, type Party, publiclyHostedBy } from "@contestly/db";
 import { holdWithdrawalsOf } from "@contestly/payments";
 import type { ChatMessage, SeatsChangedEvent } from "@contestly/shared";
 
@@ -21,7 +21,8 @@ export async function applyBanEffects(deps: BanEffectDeps, userId: string) {
   const [u] = await db.select().from(users).where(eq(users.id, userId));
   if (!u || !isBanned(u)) return { cancelled: 0, seatsFreed: 0, withdrawalsHeld: 0 }; // unbanned since: nothing to do
 
-  const hosted = await db.select({ id: parties.id }).from(parties).where(and(eq(parties.createdByUserId, userId), eq(parties.status, "open")));
+  // The parties they publicly host: a person's own, or a banned brand's (ADR 0017). A team member's ban leaves the brand's parties be.
+  const hosted = await db.select({ id: parties.id }).from(parties).where(and(publiclyHostedBy(userId), eq(parties.status, "open")));
   let cancelled = 0;
   for (const { id } of hosted) {
     const out = await db.transaction((tx) => adminCancelParty(tx, id));

@@ -11,7 +11,7 @@ import { sql as dsql } from "drizzle-orm";
 import { kobo, SPLITS, WELCOME_BONUS_KOBO, DEFAULT_CLIMB_SETTINGS, DEFAULT_PARTY_CONFIG, lagosDay, addDays, DEFAULT_QUESTIONS_CONFIG, type SplitId } from "@contestly/shared";
 import { closeQueues, partyQueue, questionsQueue } from "@contestly/queue";
 import { db, sql, type Tx } from "./client.js";
-import { users, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges } from "./schema.js";
+import { users, parties, partyPlayers, partyPrizes, chatMessages, appConfig, climbChallenges, brands, brandMembers } from "./schema.js";
 import { seedCorners } from "./seedCorners.js";
 import * as ledger from "./ledger.js";
 import { currentPrizes, savePrizes } from "./climb.js";
@@ -46,17 +46,35 @@ const people = [
   { id: uid(5), handle: "zee", displayName: "Zainab Musa", avatarEmoji: "🌙", bio: "Streaks are a lifestyle.", interests: ["Geography", "Fashion"], isBrand: false, isVerified: false },
   { id: uid(6), handle: "afrobeatsweekly", displayName: "Afrobeats Weekly", avatarEmoji: "🎶", bio: "Official account. The home of Afrobeats.", interests: ["Afrobeats"], isBrand: true, isVerified: true },
   { id: uid(7), handle: "jollofrepublic", displayName: "Jollof Republic", avatarEmoji: "🍛", bio: "Free-entry lunch parties every weekday.", interests: ["Food"], isBrand: true, isVerified: true },
+  // The brands' owners (ADR 0017): nobody signs in as a brand; these people act as them (x-act-as).
+  { id: uid(8), handle: "funmi", displayName: "Funmi Bello", avatarEmoji: "🎤", bio: "Runs Afrobeats Weekly.", interests: ["Afrobeats"], isBrand: false, isVerified: false },
+  { id: uid(9), handle: "chidi", displayName: "Chidi Okeke", avatarEmoji: "🍲", bio: "Runs Jollof Republic.", interests: ["Food"], isBrand: false, isVerified: false },
 ];
+/** Each demo brand, its owner, and what it has on file (verified at seed, as an approval would leave it). */
+const BRAND_OWNERS = { afrobeatsweekly: "funmi", jollofrepublic: "chidi" } as const;
+const BRAND_FILES = {
+  afrobeatsweekly: { lane: "Afrobeats" as const, siteUrl: "https://afrobeatsweekly.example", registrationNumber: "BN1234567", businessEmail: "hello@afrobeatsweekly.example", cashPrizes: false },
+  jollofrepublic: { lane: "Food" as const, siteUrl: "https://jollofrepublic.example", registrationNumber: "RC7654321", businessEmail: "team@jollofrepublic.example", cashPrizes: true },
+};
 
 const scheduled: { id: string; startsAt: Date }[] = [];
 await db.transaction(async (tx) => {
   // Upsert on handle: a dev handle auto-created before seeding keeps its row (and id) but gets the demo profile back.
   // Demo accounts are signed up: a verified (dev) email, like an x-dev-user.
-  const rows = await tx.insert(users).values(people.map((p) => ({ ...p, email: `${p.handle}@dev.contestly.invalid`, emailVerifiedAt: new Date() }))).onConflictDoUpdate({
+  // A brand's account has no email: it's never signed into (ADR 0017).
+  const rows = await tx.insert(users).values(people.map((p) => (p.isBrand ? { ...p, email: null, emailVerifiedAt: null, who: "brand" } : { ...p, email: `${p.handle}@dev.contestly.invalid`, emailVerifiedAt: new Date() }))).onConflictDoUpdate({
     target: users.handle,
     set: { displayName: dsql`excluded.display_name`, avatarEmoji: dsql`excluded.avatar_emoji`, bio: dsql`excluded.bio`, interests: dsql`excluded.interests`, isBrand: dsql`excluded.is_brand`, isVerified: dsql`excluded.is_verified`, email: dsql`excluded.email`, emailVerifiedAt: dsql`excluded.email_verified_at`, isGuest: false, streakDays: 0, lastPlayedOn: null },
   }).returning();
   const by = Object.fromEntries(rows.map((u) => [u.handle, u.id]));
+
+  // The demo brands: their rows (verified, as an approval leaves them) and their owners.
+  for (const [brand, owner] of Object.entries(BRAND_OWNERS) as [keyof typeof BRAND_OWNERS, string][]) {
+    const files = BRAND_FILES[brand];
+    await tx.insert(brands).values({ id: by[brand], createdByUserId: by[owner], ...files, logoUrl: `https://${brand}.example/logo.png`, businessEmailVerifiedAt: new Date(), verificationStatus: "verified", decidedAt: new Date() })
+      .onConflictDoUpdate({ target: brands.id, set: { ...files, logoUrl: `https://${brand}.example/logo.png`, createdByUserId: by[owner], verificationStatus: "verified", businessEmailVerifiedAt: new Date() } });
+    await tx.insert(brandMembers).values({ brandId: by[brand], userId: by[owner], role: "owner" }).onConflictDoNothing();
+  }
 
   // Dev admins: DEV_ADMIN_HANDLES (default tunde) pass requireAdmin with a real sign-in too, holding every payment permission.
   await grantDevAdmins(tx, devAdminHandles());
@@ -65,7 +83,7 @@ await db.transaction(async (tx) => {
   await seedCorners(tx, by);
 
   for (const u of rows) {
-    await ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: WELCOME_BONUS_KOBO, type: "welcome_bonus", idempotencyKey: `seed:welcome:${u.id}` });
+    if (!u.isBrand) await ledger.post(tx, { userId: u.id, kind: "bonus", amountKobo: WELCOME_BONUS_KOBO, type: "welcome_bonus", idempotencyKey: `seed:welcome:${u.id}` });
     if (u.isBrand) await ledger.post(tx, { userId: u.id, kind: "cash", amountKobo: kobo(200_000), type: "topup", idempotencyKey: `seed:brandcash:${u.id}` });
   }
 
@@ -73,17 +91,18 @@ await db.transaction(async (tx) => {
   const split = (id: SplitId) => [...SPLITS[id].shares];
   const limits = DEFAULT_PARTY_CONFIG.limits;
   const demoParties = [
-    { id: randomUUID(), createdByUserId: by["afrobeatsweekly"], title: "Afrobeats 2010s throwback", brief: "2010s Afrobeats — the hits, the artists, the moments that made the decade", category: "Afrobeats", entryKobo: kobo(200), maxPlayers: 10, funding: "pooled" as const, hostPoolKobo: 0, split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#7B5CFF", coverEmoji: "🎶", questionsStatus: "generating" as const, startsAt: soon(15) },
-    { id: randomUUID(), createdByUserId: by["tunde"], title: "Friday night football", brief: "Football: Super Eagles history, Premier League and classic World Cup moments", category: "Football", entryKobo: kobo(500), maxPlayers: 6, funding: "pooled" as const, hostPoolKobo: 0, split: split("70_30"), limits, visibility: "public" as const, coverColor: "#0FA97A", coverEmoji: "⚽", questionsStatus: "generating" as const, startsAt: soon(30) },
-    { id: randomUUID(), createdByUserId: by["jollofrepublic"], title: "Jollof Republic lunch break", brief: "Nigerian food: dishes, ingredients and which city claims them", category: "Food", entryKobo: 0, maxPlayers: 50, funding: "host" as const, hostPoolKobo: kobo(20_000), split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#FF8A3D", coverEmoji: "🍛", questionsStatus: "generating" as const, startsAt: soon(60) },
-    { id: randomUUID(), createdByUserId: by["afrobeatsweekly"], title: "Afrobeats Weekly giveaway", brief: "Afrobeats in the 2020s: the albums, the collaborations and the global hits", category: "Afrobeats", entryKobo: 0, maxPlayers: 30, funding: "host" as const, hostPoolKobo: 0, prizeKind: "product" as const, split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#E8467C", coverEmoji: "🎧", questionsStatus: "generating" as const, startsAt: soon(90) },
+    { id: randomUUID(), createdByUserId: by["funmi"], brandId: by["afrobeatsweekly"], title: "Afrobeats 2010s throwback", brief: "2010s Afrobeats — the hits, the artists, the moments that made the decade", category: "Afrobeats", entryKobo: kobo(200), maxPlayers: 10, funding: "pooled" as const, hostPoolKobo: 0, split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#7B5CFF", coverEmoji: "🎶", questionsStatus: "generating" as const, startsAt: soon(15) },
+    { id: randomUUID(), createdByUserId: by["tunde"], brandId: null, title: "Friday night football", brief: "Football: Super Eagles history, Premier League and classic World Cup moments", category: "Football", entryKobo: kobo(500), maxPlayers: 6, funding: "pooled" as const, hostPoolKobo: 0, split: split("70_30"), limits, visibility: "public" as const, coverColor: "#0FA97A", coverEmoji: "⚽", questionsStatus: "generating" as const, startsAt: soon(30) },
+    { id: randomUUID(), createdByUserId: by["chidi"], brandId: by["jollofrepublic"], title: "Jollof Republic lunch break", brief: "Nigerian food: dishes, ingredients and which city claims them", category: "Food", entryKobo: 0, maxPlayers: 50, funding: "host" as const, hostPoolKobo: kobo(20_000), split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#FF8A3D", coverEmoji: "🍛", questionsStatus: "generating" as const, startsAt: soon(60) },
+    { id: randomUUID(), createdByUserId: by["funmi"], brandId: by["afrobeatsweekly"], title: "Afrobeats Weekly giveaway", brief: "Afrobeats in the 2020s: the albums, the collaborations and the global hits", category: "Afrobeats", entryKobo: 0, maxPlayers: 30, funding: "host" as const, hostPoolKobo: 0, prizeKind: "product" as const, split: split("60_30_10"), limits, visibility: "public" as const, coverColor: "#E8467C", coverEmoji: "🎧", questionsStatus: "generating" as const, startsAt: soon(90) },
   ];
   const [afro, football, jollof, giveaway] = demoParties;
   await tx.insert(parties).values(demoParties);
 
   // The host's prize is held up front, as POST /parties does.
-  await topUp(tx, jollof.createdByUserId, jollof.hostPoolKobo, `party_fund:${jollof.id}`);
-  await ledger.hold(tx, { userId: jollof.createdByUserId, amountKobo: jollof.hostPoolKobo, type: "party_fund", refType: "party", refId: jollof.id, idempotencyKey: `party_fund:${jollof.id}` });
+  // From the brand's wallet: the brand publicly hosts it (publicHostId).
+  await topUp(tx, jollof.brandId!, jollof.hostPoolKobo, `party_fund:${jollof.id}`);
+  await ledger.hold(tx, { userId: jollof.brandId!, amountKobo: jollof.hostPoolKobo, type: "party_fund", refType: "party", refId: jollof.id, idempotencyKey: `party_fund:${jollof.id}` });
   // A verified brand's goods: one prize per winning place.
   await tx.insert(partyPrizes).values([
     { partyId: giveaway.id, place: 1, text: "Two tickets to Afro Nation", valueKobo: kobo(250_000) },

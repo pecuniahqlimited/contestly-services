@@ -165,6 +165,8 @@ export const AMOUNT_OWED = "amount_owed";
 export const PAYMENT_ISSUE = "payment_issue";
 /** 409: one of the last two payments admins who can change payments settings (ADR 0013): another admin takes over first. */
 export const CONFIG_HOLDER_FLOOR_BLOCKER = "config_holder_floor";
+/** 409: owns a live brand (ADR 0017): hand it over or delete it first. */
+export const OWNS_BRAND = "owns_brand";
 /** What the app shows for each blocker. */
 export const DELETION_BLOCKER_MESSAGES = {
   [CASH_BALANCE]: "Withdraw your cash first",
@@ -173,6 +175,7 @@ export const DELETION_BLOCKER_MESSAGES = {
   [AMOUNT_OWED]: "You owe money from a duplicate payout. Contact support",
   [PAYMENT_ISSUE]: "You have an open payment issue. Contact support",
   [CONFIG_HOLDER_FLOOR_BLOCKER]: "You're one of the last two payments admins. Ask another admin to take over first",
+  [OWNS_BRAND]: "You own a brand. Hand it over or delete it first",
 } as const;
 export type DeletionBlocker = keyof typeof DELETION_BLOCKER_MESSAGES;
 /** active_party when one of the parties can't be left right now (it starts within the lock, or is live). */
@@ -190,7 +193,7 @@ export const blockingPartySchema = z.object({
 export type BlockingParty = z.infer<typeof blockingPartySchema>;
 /** A blocker as GET /me/deletion lists it and DELETE /me's 409 carries it in `details`. */
 export const deletionBlockerViewSchema = z.object({
-  code: z.enum([CASH_BALANCE, WITHDRAWAL_IN_PROGRESS, ACTIVE_PARTY, AMOUNT_OWED, PAYMENT_ISSUE, CONFIG_HOLDER_FLOOR_BLOCKER]), message: z.string(),
+  code: z.enum([CASH_BALANCE, WITHDRAWAL_IN_PROGRESS, ACTIVE_PARTY, AMOUNT_OWED, PAYMENT_ISSUE, CONFIG_HOLDER_FLOOR_BLOCKER, OWNS_BRAND]), message: z.string(),
   /** active_party only. */
   parties: z.array(blockingPartySchema).optional(),
 });
@@ -303,3 +306,7 @@ export const publicConfigSchema = publicEnvConfigSchema.extend({
   social: z.object({ cornerPostMaxChars: z.number().int(), yourPeopleDays: z.number().int() }),
 });
 export type PublicConfig = z.infer<typeof publicConfigSchema>;
+
+/** A handle, a person's or a brand's (one namespace: users.handle). */
+export const handleSchema = z.string().min(3).max(20).regex(/^[a-z0-9_.]+$/, "lowercase letters, numbers, _ and . only")
+  .refine((h) => !h.startsWith(GUEST_HANDLE_PREFIX) && !h.startsWith(DELETED_HANDLE_PREFIX), "that handle is reserved");

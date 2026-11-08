@@ -9,7 +9,7 @@ import { chatThreadChannel, chatUserChannel, dmKey, dmPermission, maskProfanity,
 import { db, type Tx } from "./client.js";
 import { chatMembers, chatMessages, chatThreads, crewMembers, crews, parties, partyPlayers, users, voiceNotes, type ChatThread, type User, type VoiceNote } from "./schema.js";
 import { areContacts, playedTogether as finishedAPartyTogether } from "./social.js";
-import { hostTeamOf } from "./host.js";
+import { publiclyHostedBy } from "./host.js";
 import { resolveMentions } from "./mentions.js";
 import { blockedEitherWay, visibleAuthorTo } from "./safety/people.js";
 import { assertCanChat } from "./safety/standing.js";
@@ -20,7 +20,8 @@ type Conn = Tx | typeof db;
 export const chatError = (code: string, statusCode = 403) => Object.assign(new Error(code), { statusCode });
 
 /** The author fields a line needs. Rooms keep these on the client; the API has the whole row. */
-export type ChatSender = Pick<User, "id" | "handle" | "displayName" | "avatarEmoji" | "isVerified" | "isGuest" | "isBrand" | "isSystem">;
+/** Who a line is from. A brand's line (ADR 0017): the brand's account, and `sentBy` the team member who wrote it (kept, never shown). */
+export type ChatSender = Pick<User, "id" | "handle" | "displayName" | "avatarEmoji" | "isVerified" | "isGuest" | "isBrand" | "isSystem"> & { sentBy?: string };
 
 // ---- threads and members ---------------------------------------------------------------
 
@@ -72,7 +73,7 @@ export async function dmPermissionBetween(q: Conn, sender: ChatSender, recipient
                   where a.user_id = ${sender.id} and b.user_id = ${recipient.id} and c.archived_at is null`),
     sender.isBrand
       ? q.select({ id: partyPlayers.partyId }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId))
-        .where(and(eq(partyPlayers.userId, recipient.id), hostTeamOf(sender.id))).limit(1).then((r) => r.length > 0)
+        .where(and(eq(partyPlayers.userId, recipient.id), publiclyHostedBy(sender.id))).limit(1).then((r) => r.length > 0)
       : false,
     blockedEitherWay(q, sender.id, recipient.id),
     exists(q, sql`select 1 from ${chatThreads} t join ${chatMembers} r on r.thread_id = t.id and r.user_id = ${recipient.id}
@@ -268,6 +269,8 @@ export async function postMessage(input: PostInput, deps: PostDeps): Promise<Pos
   const mine = await memberOf(db, thread.id, sender.id);
   if (!mine) throw chatError("not_in_thread");
   await assertCanChat(db, sender.id);
+  // A team member in a chat timeout can't write as their brand either (ADR 0014, 0017).
+  if (sender.sentBy) await assertCanChat(db, sender.sentBy);
   if (thread.kind === "dm") await checkDm(thread, sender, mine, input, deps);
 
   let note: VoiceNote | undefined;
@@ -282,7 +285,7 @@ export async function postMessage(input: PostInput, deps: PostDeps): Promise<Pos
 
   return db.transaction(async (tx) => {
     const [row] = await tx.insert(chatMessages)
-      .values({ threadId: thread.id, userId: sender.id, kind, text, sticker: input.sticker, mentions, voiceNoteId: note?.id, clientMsgId })
+      .values({ threadId: thread.id, userId: sender.id, sentByUserId: sender.sentBy ?? null, kind, text, sticker: input.sticker, mentions, voiceNoteId: note?.id, clientMsgId })
       .onConflictDoNothing({ target: [chatMessages.userId, chatMessages.clientMsgId] }).returning();
     if (!row) return { message: (await keptLine(sender.id, clientMsgId, tx))!, duplicate: true, mentionedUserIds: [] };
     await tx.update(chatThreads).set({ lastMessageAt: row.createdAt }).where(eq(chatThreads.id, thread.id));

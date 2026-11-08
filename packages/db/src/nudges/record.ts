@@ -18,7 +18,7 @@ export type NudgeInput<K extends NudgeKind> = {
   kind: K;
   data: NudgeData[K];
   /** What it's about (a party, a corner), for per-thing caps and withdrawals. */
-  ref?: { type: "party" | "corner" | "thread" | "post"; id: string };
+  ref?: { type: "party" | "corner" | "thread" | "post" | "brand" | "prize"; id: string };
   dedupeKey?: string;
   /** Batched kinds only. */
   batchKey?: string;

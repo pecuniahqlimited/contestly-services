@@ -8,10 +8,10 @@
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { takeSeat, cleanName,
   canOfferNonCashPrize, curateHostType, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles, partyInvites,
-  partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Party, type Tx, type User,
+  partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Acting, type Party, type Tx, type User,
 } from "@contestly/db";
 import { notifyQueue, partyQueue } from "@contestly/queue";
-import { SPLITS, checkStakes, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput, type PartyTemplateCopy } from "@contestly/shared";
+import { BRAND_NOT_VERIFIED, SPLITS, checkStakes, isFreeParty, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput, type PartyTemplateCopy } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { inviteToParty } from "./invites.js";
 import { enqueueSealedSet } from "./questionSet.js";
@@ -30,6 +30,8 @@ export interface CreateOptions {
   alsoInvite?: string[];
   /** The party's copy of the template the body was prefilled from (withTemplate in partyTemplates.ts). */
   template?: PartyTemplateCopy | null;
+  /** Created as this brand (ADR 0017): it publicly hosts the party and funds its prize; the creator isn't seated. */
+  brand?: Acting | null;
 }
 
 export interface Created {
@@ -60,9 +62,15 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   const body = { ...input, title: await cleanName("partyTitle", input.title) };
   const startsAt = startsAtFor(body);
   // The server decides: the current limits, and whether this host may offer goods (canOfferNonCashPrize, the one place that says).
-  const [cfg, host, hostRules] = await Promise.all([getPartyConfig(), prospectiveHost(me.id), currentHostRules()]);
+  const brandId = opts.brand?.account.id ?? null;
+  const [cfg, host, hostRules] = await Promise.all([getPartyConfig(), prospectiveHost(me.id, brandId), currentHostRules()]);
   const [refused] = checkStakes(body, cfg.limits, canOfferNonCashPrize(host));
   if (refused) throw httpError(422, refused);
+  // An unverified brand hosts free parties only: approval unlocks entry fees, cash prizes and goods (ADR 0017 §7).
+  if (host.isBrand && !host.isVerified && !isFreeParty(body)) throw httpError(422, BRAND_NOT_VERIFIED);
+  if (brandId && body.crewId) throw httpError(422, "brand_crew_party");
+  /** Whose wallet the prize comes from: the party's public host. */
+  const funder = brandId ?? me.id;
   // ADR 0015: a template party is never free; host-written questions add the caps, the share, the safety filter
   // on the host's words, and curate mode (the host knows those answers, so they host and don't play).
   const template = opts.template ?? null;
@@ -73,14 +81,15 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   const lines: ChatMessage[] = [];
   const { party, invited, hostChecks } = await db.transaction(async (tx) => {
     const crew = body.crewId ? await crewForParty(tx, body.crewId, me.id) : null;
-    const [p] = await tx.insert(parties).values({ createdByUserId: me.id, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode, questionsStatus: mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, split: [...SPLITS[body.split].shares], limits: cfg.limits, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt, crewId: crew?.id, rematchOf: opts.rematchOf, isSim: me.isSim, template, hostRules }).returning();
+    const [p] = await tx.insert(parties).values({ createdByUserId: me.id, brandId, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode, questionsStatus: mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, split: [...SPLITS[body.split].shares], limits: cfg.limits, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt, crewId: crew?.id, rematchOf: opts.rematchOf, isSim: me.isSim, template, hostRules }).returning();
     // The host's cash prize is held now, so it can't be spent elsewhere: paid out by place at settlement, released if cancelled.
     // Goods move no money: one fulfilment record per winning place at settlement.
-    if (body.funding === "host" && body.prizeKind === "cash") await ledger.hold(tx, { userId: me.id, amountKobo: body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
+    if (body.funding === "host" && body.prizeKind === "cash") await ledger.hold(tx, { userId: funder, amountKobo: body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });
     if (isGoods(body.prizeKind)) await tx.insert(partyPrizes).values(body.places.map((g, i) => ({ partyId: p.id, place: i + 1, text: g.text, valueKobo: g.valueKobo ?? null })));
     // A sealed party's host plays: seated, and pooled hosts pay their own entry like everyone else.
     // A curate host reviews the questions and so never plays: not seated, never charged an entry.
-    if (mode === "sealed") {
+    // Brands host; they never play (ADR 0017 §6): a brand's party seats nobody for hosting it.
+    if (mode === "sealed" && !brandId) {
       await takeSeat(tx, p, me.id, body.funding === "pooled" ? body.entryKobo : 0);
     }
     const hostChecks = await writeHostQuestions(tx, p, body.hostQuestions, me.id);
@@ -105,7 +114,7 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   // The model safety check on the host's own words, once they've committed (ADR 0015).
   await queueHostChecks(hostChecks);
   // A public party goes up on the host's corner and pings its followers; a private one does neither (postsToCorner).
-  if (postsToCorner(party.visibility)) await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: me.id });
+  if (postsToCorner(party.visibility)) await notify.add("party_created", { kind: "party_created", partyId: party.id, hostId: funder });
   if (invited.length) await notify.add("party_invite", { kind: "party_invite", partyId: party.id, fromUserId: me.id, toUserIds: invited });
   // Sealed sets are built now, so they're ready long before start and a failure reaches the host in time (ADR 0002).
   // With files on the way, the questions service builds it once they're read (sealWhenFilesRead).

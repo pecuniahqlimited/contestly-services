@@ -10,7 +10,7 @@ import { chatMessages, chatThreads, cornerPostReplies, cornerPosts, corners, mod
 import { canReadThread } from "../chat.js";
 import { cornerShown } from "../corners.js";
 import { liveUser } from "../accounts.js";
-import { isHostTeam } from "../host.js";
+import { isHostTeam, publicHostId } from "../host.js";
 
 const notFound = () => Object.assign(new Error("not_found"), { statusCode: 404 });
 
@@ -74,11 +74,11 @@ const FINDERS: Record<ReportTargetType, (tx: Tx, id: string, reporterId: string)
   async party(tx, id, reporterId) {
     const [p] = await tx.select().from(parties).where(eq(parties.id, id));
     if (!p) throw notFound();
-    if (p.visibility !== "public" && !isHostTeam(p, reporterId)) {
+    if (p.visibility !== "public" && !(await isHostTeam(p, reporterId))) {
       const [seat] = await tx.select({ id: partyPlayers.id }).from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, reporterId)));
       if (!seat) throw notFound();
     }
-    return { kind: "party", refId: p.id, subjectUserId: p.createdByUserId, snapshot: { title: p.title, coverEmoji: p.coverEmoji, coverColor: p.coverColor } };
+    return { kind: "party", refId: p.id, subjectUserId: publicHostId(p), snapshot: { title: p.title, coverEmoji: p.coverEmoji, coverColor: p.coverColor } };
   },
 };
 

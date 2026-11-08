@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { db, guestForFirebaseUid, identityWasDisabled, isBanned, ledger, markSimUser, userByIdentity, users, type User } from "@contestly/db";
-import { ACCOUNT_BANNED, ACCOUNT_GONE, UNAUTHORIZED } from "@contestly/shared";
+import { claimEmailInvites, db, guestForFirebaseUid, identityWasDisabled, isBanned, ledger, markSimUser, userByIdentity, users, type User } from "@contestly/db";
+import { ACCOUNT_BANNED, ACCOUNT_GONE, BRAND_ACCOUNT_SESSION, UNAUTHORIZED } from "@contestly/shared";
 import { authMode } from "./mode.js";
 import { checkIdToken, firebaseUserActive, isAnonymousToken } from "./firebase.js";
 
@@ -38,6 +38,8 @@ async function devUser(raw: string): Promise<User> {
   const created = await db.transaction(async (tx) => {
     const [u] = await tx.insert(users).values({ handle, displayName: handle, email: `${handle}@${DEV_EMAIL_DOMAIN}`, emailVerifiedAt: new Date() }).onConflictDoNothing().returning();
     if (u) await ledger.grantWelcome(tx, u.id);
+    // Like any sign-up: brand team invites sent to this email wait for them (ADR 0017).
+    if (u) await claimEmailInvites(tx, u.id, u.email!);
     return u;
   });
   // Two first requests at once: the other one created it.
@@ -59,6 +61,9 @@ async function devUser(raw: string): Promise<User> {
  */
 export async function resolveUser(h: { authorization?: string; devUser?: string; sim?: boolean; beforeNewGuest?: () => Promise<void> }): Promise<Session> {
   const session = await resolveCredentials(h);
+  // Nobody signs in as a brand: people act as one with the x-act-as header (ADR 0017). A brand account never has
+  // identities, so only the dev header could reach one; refused the same way.
+  if (session.user.isBrand) throw new Unauthorized(BRAND_ACCOUNT_SESSION);
   // A sim's account (AUTH_MODE=dev only): what it makes stays out of real people's suggestions.
   if (h.sim && authMode() === "dev") session.user = await markSimUser(session.user);
   return session;

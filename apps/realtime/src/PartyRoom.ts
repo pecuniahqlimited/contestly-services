@@ -12,7 +12,7 @@ import { SafeRoom } from "./SafeRoom.js";
 import { firstSighting, parsePublished, sendLine } from "./chat.js";
 import type { ChatMessage } from "@contestly/shared";
 import { and, asc, eq, notInArray } from "drizzle-orm";
-import { db, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
+import { db, isHostTeam, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
 import { PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue } from "@contestly/queue";
 import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, partyHereKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
@@ -21,6 +21,8 @@ import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Rev
 interface Member extends ChatSender {
   /** Seated players play; the host of a curate party is in the room but never in the match. */
   plays: boolean;
+  /** On the host's team (isHostTeam): may cut a reveal or standings short. */
+  hosts: boolean;
 }
 
 const toMatchQuestion = (q: typeof partyQuestions.$inferSelect): MatchQuestion =>
@@ -90,7 +92,7 @@ export class PartyRoom extends SafeRoom {
 
     // Host only: cut a reveal or standings short, never below the floor.
     this.handle(MSG.skip, (client) => {
-      if (!this.match || (client.auth as Member)?.id !== this.party.createdByUserId) return;
+      if (!this.match || !(client.auth as Member)?.hosts) return;
       const now = Date.now();
       if (this.phase === "reveal" && this.match.canSkipReveal(now)) this.advance(() => this.showStandings());
       else if (this.phase === "standings" && this.match.canSkipStandings(now)) this.advance(() => this.afterStandings());
@@ -195,9 +197,11 @@ export class PartyRoom extends SafeRoom {
     const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser, beforeNewGuest: refuseNewGuests });
     assertNotBanned(user);
     const seated = await db.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, this.partyId), eq(partyPlayers.userId, user.id)));
-    if (!seated.length && user.id !== this.party.createdByUserId) throw new Error("join_the_party_first");
+    // The host's team watches (for a brand's party: its owners, admins and hosts, ADR 0017) and runs the beats.
+    const hosts = await isHostTeam(this.party, user.id);
+    if (!seated.length && !hosts) throw new Error("join_the_party_first");
     await joinThread(db, this.thread.id, user.id);
-    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, isVerified: user.isVerified, isGuest: user.isGuest, isBrand: user.isBrand, isSystem: user.isSystem, plays: seated.length > 0 } satisfies Member;
+    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, isVerified: user.isVerified, isGuest: user.isGuest, isBrand: user.isBrand, isSystem: user.isSystem, plays: seated.length > 0, hosts } satisfies Member;
   }
 
   onJoin(client: Client) {

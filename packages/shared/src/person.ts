@@ -32,6 +32,8 @@ export const peopleSearchQuerySchema = z.object({
 
 /** One result: the person, how you know them, and whether you can message them (dmPermission()). */
 export const foundPersonSchema = personSchema.extend({
+  /** A brand's account (ADR 0017): shown as a brand, messaged only if you've joined its parties. */
+  isBrand: z.boolean(),
   /** One of your people (crew, contacts, played with lately): these come first. */
   yourPeople: z.boolean(),
   relationship: z.enum(PERSON_RELATIONSHIPS).nullable(),

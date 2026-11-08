@@ -17,6 +17,7 @@ import { nudge } from "./record.js";
 import { notBlockedWith } from "../safety/people.js";
 import { relationshipColumns, relationshipOf, searchPeople } from "../peopleSearch.js";
 import { simVisibleTo } from "../sim.js";
+import { publiclyHostedBy } from "../host.js";
 
 const DAY = 24 * 60 * 60_000;
 export const followAskKey = (cornerId: string) => `corner_follow_ask:${cornerId}`;
@@ -50,7 +51,7 @@ async function recentPlayers(host: User, cornerId: string, cfg: NudgeConfig, now
   const since = new Date(now.getTime() - cfg.followAskRecentDays * DAY);
   const rows = await db.selectDistinct({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, isVerified: users.isVerified, ...relationshipColumns(host.id) })
     .from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).innerJoin(users, eq(users.id, partyPlayers.userId))
-    .where(and(eq(parties.createdByUserId, host.id), eq(parties.status, "finished"), gt(parties.endedAt, since), askable(host), notFollowing(cornerId)))
+    .where(and(publiclyHostedBy(host.id), eq(parties.status, "finished"), gt(parties.endedAt, since), askable(host), notFollowing(cornerId)))
     .orderBy(users.displayName).limit(FOLLOW_ASK_RECENT_SHOWN);
   return rows.map(({ crew, contact, played, ...r }) => ({ ...r, relationship: relationshipOf({ crew, contact, played }) }));
 }
@@ -60,7 +61,7 @@ async function partiesFinishedWith(hostId: string, userIds: string[]): Promise<M
   if (!userIds.length) return new Map();
   const rows = await db.select({ id: partyPlayers.userId, n: sql<number>`count(distinct ${partyPlayers.partyId})::int` })
     .from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId))
-    .where(and(eq(parties.createdByUserId, hostId), eq(parties.status, "finished"), inArray(partyPlayers.userId, userIds)))
+    .where(and(publiclyHostedBy(hostId), eq(parties.status, "finished"), inArray(partyPlayers.userId, userIds)))
     .groupBy(partyPlayers.userId);
   return new Map(rows.map((r) => [r.id, Number(r.n)]));
 }
@@ -79,7 +80,7 @@ export async function followAskOptions(host: User, opts: { q?: string; limit?: n
   const c = await shownCornerOf(host.id);
   const cfg = await getNudgeConfig();
   const found = opts.q
-    ? await searchPeople(host, { q: opts.q, limit: opts.limit ?? FOLLOW_ASK_RECENT_SHOWN, where: notFollowing(c.id) })
+    ? await searchPeople(host, { q: opts.q, limit: opts.limit ?? FOLLOW_ASK_RECENT_SHOWN, where: and(notFollowing(c.id), eq(users.isBrand, false)) })
     : await recentPlayers(host, c.id, cfg, now);
   const ids = found.map((p) => p.id);
   const [asked, finished, sent] = await Promise.all([alreadyAsked(c.id, ids), partiesFinishedWith(host.id, ids), askedSince(c.id, startOfLocalDay(now, host.timeZone))]);

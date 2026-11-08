@@ -8,9 +8,9 @@
  */
 import type { Client } from "colyseus";
 import { eq } from "drizzle-orm";
-import { canReadThread, db, getChatConfig, parties, threadById, type ChatSender, type ChatThread } from "@contestly/db";
+import { assertBrandCan, canReadThread, db, getChatConfig, parties, threadById, type ChatSender, type ChatThread } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
-import { MSG, SIGN_UP_REQUIRED, chatThreadChannel, chatUserChannel, inboxSendSchema, partyChatFromOutside, watchThreadSchema } from "@contestly/shared";
+import { BRAND_ROLE_FORBIDDEN, MSG, SIGN_UP_REQUIRED, brandRoleCan, chatThreadChannel, chatUserChannel, inboxSendSchema, partyChatFromOutside, watchThreadSchema } from "@contestly/shared";
 import { nudgeChannel } from "@contestly/queue";
 import { SafeRoom } from "./SafeRoom.js";
 import { firstSighting, parsePublished, sendLine } from "./chat.js";
@@ -19,7 +19,8 @@ import type { ChatMessage, InboxUpdate } from "@contestly/shared";
 /** A user's devices share their inbox room. */
 const MAX_DEVICES = 10;
 
-type Sender = ChatSender;
+/** Who's on this socket: the inbox's owner, or a brand team member acting as the brand (sentBy). */
+type Sender = ChatSender & { canWrite: boolean };
 
 export class InboxRoom extends SafeRoom {
   private userId!: string;
@@ -57,9 +58,11 @@ export class InboxRoom extends SafeRoom {
       const { threadId, ...body } = parsed.data;
       const thread = await threadById(threadId);
       if (!thread) return client.send(MSG.error, { error: "not_found", clientMsgId: body.clientMsgId });
+      if (!(client.auth as Sender).canWrite) return client.send(MSG.error, { error: BRAND_ROLE_FORBIDDEN, clientMsgId: body.clientMsgId });
       const refused = await this.outsideRoomRefusal(thread);
       if (refused) return client.send(MSG.error, { error: refused, clientMsgId: body.clientMsgId });
-      await sendLine(this.presence, client, thread, client.auth as Sender, body);
+      const { canWrite: _w, ...sender } = client.auth as Sender;
+      await sendLine(this.presence, client, thread, sender, body);
     });
 
     this.handle(MSG.watch, async (client, raw) => {
@@ -76,13 +79,23 @@ export class InboxRoom extends SafeRoom {
     });
   }
 
-  /** Only the user whose inbox this is, signed up, not banned. */
-  async onAuth(_client: Client, options: { token?: string; devUser?: string }) {
+  /**
+   * Only the user whose inbox this is, signed up, not banned; or, with `actAs` (a brand's id, ADR 0017), a member of
+   * that brand's team joining the brand's inbox: every role reads, hosts and up write (canWrite), and a line goes out
+   * from the brand with the member kept as `sentBy`.
+   */
+  async onAuth(_client: Client, options: { token?: string; devUser?: string; actAs?: string }) {
     const { user } = await resolveUser({ authorization: options?.token ? `Bearer ${options.token}` : undefined, devUser: options?.devUser, beforeNewGuest: refuseNewGuests });
     assertNotBanned(user);
     if (user.isGuest) throw new Error(SIGN_UP_REQUIRED);
+    if (options?.actAs) {
+      if (options.actAs !== this.userId) throw new Error("not_your_inbox");
+      const { account, role } = await assertBrandCan(db, options.actAs, user, "inbox.read");
+      const sender = { id: account.id, handle: account.handle, displayName: account.displayName, avatarEmoji: account.avatarEmoji, isVerified: account.isVerified, isGuest: false, isBrand: true, isSystem: false, sentBy: user.id };
+      return { ...sender, canWrite: brandRoleCan(role, "inbox.write") };
+    }
     if (user.id !== this.userId) throw new Error("not_your_inbox");
-    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, isVerified: user.isVerified, isGuest: user.isGuest, isBrand: user.isBrand, isSystem: user.isSystem } satisfies Sender;
+    return { id: user.id, handle: user.handle, displayName: user.displayName, avatarEmoji: user.avatarEmoji, isVerified: user.isVerified, isGuest: user.isGuest, isBrand: user.isBrand, isSystem: user.isSystem, canWrite: true };
   }
 
   onLeave(client: Client) {

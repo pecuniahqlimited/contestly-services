@@ -64,7 +64,7 @@ export const SECOND_ADMIN_BECAUSE = ["over_threshold", "check_not_definite", "ch
 export type SecondAdminBecause = (typeof SECOND_ADMIN_BECAUSE)[number];
 
 /** Why a withdrawal is refused (details.reason with withdraw_not_allowed). */
-export const WITHDRAW_BLOCK_REASONS = ["guest", "email_unverified", "phone_unverified", "deleted", "frozen", "payment_review", "amount_owed", "linked_payment_issue", "system"] as const;
+export const WITHDRAW_BLOCK_REASONS = ["guest", "email_unverified", "phone_unverified", "deleted", "frozen", "payment_review", "amount_owed", "linked_payment_issue", "system", "brand_unverified", "owner_cannot_withdraw"] as const;
 export type WithdrawBlockReason = (typeof WITHDRAW_BLOCK_REASONS)[number];
 /** Why a person owes: a payout we reversed was paid after all, and their cash didn't cover it. */
 export const OWED_REASONS = ["duplicate_payout"] as const;

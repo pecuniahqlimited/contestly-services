@@ -400,6 +400,20 @@
       "when": 1794057391027,
       "tag": "0056_curate_caps_by_host",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1794151476456,
+      "tag": "0057_brands_and_teams",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1794152014550,
+      "tag": "0058_brand_curate_caps",
+      "breakpoints": true
     }
   ]
 }

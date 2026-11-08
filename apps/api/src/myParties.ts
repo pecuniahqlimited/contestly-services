@@ -1,6 +1,6 @@
 /** GET /me/parties: the parties I host, play or am invited to, grouped, each with its chat thread, last line and unread count. */
 import { and, eq, inArray, or, sql } from "drizzle-orm";
-import { db, hostTeamOf, isHostTeam, parties, partyInvites, partyPlayers, users, type Party, type User } from "@contestly/db";
+import { db, hostTeamOf, parties, partyInvites, partyPlayers, users, type Party, type User } from "@contestly/db";
 import { MY_RECENT_DAYS, type MyPartyRole, type Person } from "@contestly/shared";
 import { threadsFor } from "./chats.js";
 import { partyLinks } from "./invites.js";
@@ -26,8 +26,10 @@ export async function myParties(me: User, now = new Date()) {
       .where(and(eq(partyInvites.inviteeId, me.id), eq(partyInvites.status, "pending"), eq(parties.status, "open"))),
   ]);
   const ownIds = new Set(own.map((p) => p.id));
+  // isHostTeam as one query: the creator, or a brand party's owners, admins and hosts (ADR 0017).
+  const hosting = new Set(own.length ? (await db.select({ id: parties.id }).from(parties).where(and(inArray(parties.id, [...ownIds]), hostTeamOf(me.id)))).map((r) => r.id) : []);
   const groups = groupMyParties([
-    ...own.map((p) => mine(p, isHostTeam(p, me.id) ? "hosting" : "playing")),
+    ...own.map((p) => mine(p, hosting.has(p.id) ? "hosting" : "playing")),
     ...invites.filter((i) => !ownIds.has(i.p.id)).map((i) => mine(i.p, "invited", i.inviter)),
   ], now);
 

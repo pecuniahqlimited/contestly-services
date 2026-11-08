@@ -10,9 +10,11 @@ import { and, eq, inArray, isNotNull, isNull, lt, or, sql, type AnyColumn, type 
 import { DELETED_AVATAR_EMOJI, DELETED_DISPLAY_NAME, DELETED_HANDLE_PREFIX, PAYOUT_OPEN_STATUSES, leaveWindow, normaliseEmail, type BlockingParty, type DeletionBlocker } from "@contestly/shared";
 import { db, type Tx } from "./client.js";
 import {
-  archivedCrewInvites, archivedFollows, climbAwards, climbRuns, corners, crewInvites, follows, ledgerAccounts, nudges, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
+  archivedCrewInvites, archivedFollows, brandMembers, climbAwards, climbRuns, corners, crewInvites, follows, ledgerAccounts, nudges, parties, partyInvites, partyPlayers, payouts, userIdentities, users, type User,
 } from "./schema.js";
 import * as ledger from "./ledger.js";
+import { publiclyHostedBy } from "./host.js";
+import { leaveBrandsOnDelete } from "./brands/team.js";
 import { heldPrizeKobo } from "./templates/hostQuestions.js";
 import { removeDevicesOf } from "./nudges/devices.js";
 import { isConfigHolderAtFloor, recordAdminAction, systemActorId } from "./admin.js";
@@ -28,7 +30,7 @@ export async function deletionBlockers(conn: Conn, userId: string): Promise<Dele
     conn.select({ balance: ledgerAccounts.balanceKobo }).from(ledgerAccounts).where(and(eq(ledgerAccounts.userId, userId), eq(ledgerAccounts.kind, "cash"))),
     conn.select({ id: payouts.id }).from(payouts).where(and(eq(payouts.userId, userId), inArray(payouts.status, [...PAYOUT_OPEN_STATUSES]))).limit(1),
     conn.select({ id: parties.id }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).where(and(eq(partyPlayers.userId, userId), unfinished)).limit(1),
-    conn.select({ id: parties.id }).from(parties).where(and(eq(parties.createdByUserId, userId), unfinished)).limit(1),
+    conn.select({ id: parties.id }).from(parties).where(and(publiclyHostedBy(userId), unfinished)).limit(1),
   ]);
   const blockers: DeletionBlocker[] = [];
   if ((cash?.balance ?? 0) > 0) blockers.push("cash_balance");
@@ -43,6 +45,10 @@ export async function deletionBlockers(conn: Conn, userId: string): Promise<Dele
   // One of the last unbanned payments.config holders: the console would be left stuck (ADR 0013). The
   // delete takes the permissions lock first, so two holders can't both pass this.
   if (await isConfigHolderAtFloor(conn, userId)) blockers.push("config_holder_floor");
+  // The owner of a live brand hands it over or deletes it first: a brand always has an owner (ADR 0017).
+  const [owned] = await conn.select({ id: brandMembers.brandId }).from(brandMembers).innerJoin(users, eq(users.id, brandMembers.brandId))
+    .where(and(eq(brandMembers.userId, userId), eq(brandMembers.role, "owner"), isNull(users.deletedAt))).limit(1);
+  if (owned) blockers.push("owns_brand");
   return blockers;
 }
 
@@ -53,7 +59,7 @@ export async function deletionBlockers(conn: Conn, userId: string): Promise<Dele
 export async function blockingParties(conn: Conn, userId: string, now = new Date()): Promise<BlockingParty[]> {
   const [seated, hosted] = await Promise.all([
     conn.select({ p: parties }).from(partyPlayers).innerJoin(parties, eq(parties.id, partyPlayers.partyId)).where(and(eq(partyPlayers.userId, userId), unfinished)),
-    conn.select().from(parties).where(and(eq(parties.createdByUserId, userId), unfinished)),
+    conn.select().from(parties).where(and(publiclyHostedBy(userId), unfinished)),
   ]);
   const byId = new Map<string, BlockingParty>();
   for (const { p } of seated) byId.set(p.id, { id: p.id, title: p.title, startsAt: p.startsAt.toISOString(), action: leaveWindow(p, now) === "open" ? "leave" : "starts_soon" });
@@ -100,6 +106,7 @@ export async function archiveAccount(tx: Tx, user: User, reason: string | null, 
   await archiveFollows(tx, user.id, now);
   await archiveCrewInvites(tx, user.id, now);
   await tx.update(partyInvites).set({ status: "dismissed", respondedAt: now }).where(and(eq(partyInvites.inviteeId, user.id), eq(partyInvites.status, "pending")));
+  await leaveBrandsOnDelete(tx, user.id, now);
   await voidUnpaidAwards(tx, user.id);
   await tx.update(climbRuns).set({ status: "abandoned", endedAt: now }).where(and(eq(climbRuns.userId, user.id), eq(climbRuns.status, "active")));
   // No more pushes to the account's devices; nudges still pending are withdrawn.

@@ -8,7 +8,7 @@ export async function withMessaging(me: User, rows: FoundRow[]): Promise<FoundPe
   return Promise.all(rows.map(async (r) => {
     const permission = await dmPermissionBetween(db, me, r);
     return {
-      id: r.id, handle: r.handle, displayName: r.displayName, avatarEmoji: r.avatarEmoji, isVerified: r.isVerified,
+      id: r.id, handle: r.handle, displayName: r.displayName, avatarEmoji: r.avatarEmoji, isVerified: r.isVerified, isBrand: r.isBrand,
       yourPeople: r.yourPeople, relationship: r.relationship, canMessage: permission !== "refused", messageIsRequest: permission === "request",
     };
   }));

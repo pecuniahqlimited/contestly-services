@@ -50,7 +50,8 @@ export type LeaveOutcome =
  * leave is recorded. A player who already left gets that leave back (replayed), whatever the party's state.
  */
 export async function leaveSeat(tx: Tx, p: Party, user: { id: string; displayName: string }, now = new Date()): Promise<LeaveOutcome> {
-  if (isHostTeam(p, user.id)) return { ok: false, status: 409, error: HOST_MUST_CANCEL };
+  // A brand's host team is never seated by hosting (ADR 0017 §6): a seated team member is a player and may leave.
+  if (!p.brandId && (await isHostTeam(p, user.id, tx))) return { ok: false, status: 409, error: HOST_MUST_CANCEL };
   const [seat] = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, user.id)));
   if (!seat) {
     const [left] = await tx.select().from(partyLeaves).where(and(eq(partyLeaves.partyId, p.id), eq(partyLeaves.userId, user.id))).orderBy(desc(partyLeaves.leftAt)).limit(1);
@@ -80,7 +81,7 @@ async function freeSeat(tx: Tx, p: Party, seat: typeof partyPlayers.$inferSelect
  * Caller holds the party row lock.
  */
 export async function removeSeat(tx: Tx, p: Party, user: { id: string; displayName: string }, now = new Date()) {
-  if (p.status !== "open" || isHostTeam(p, user.id)) return null;
+  if (p.status !== "open" || (!p.brandId && (await isHostTeam(p, user.id, tx)))) return null;
   const [seat] = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, user.id)));
   return seat ? freeSeat(tx, p, seat, user, now) : null;
 }

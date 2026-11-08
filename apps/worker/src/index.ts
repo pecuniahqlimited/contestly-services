@@ -2,7 +2,7 @@ import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import {
   db, parties, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
-  emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, cornersAfterStandingChange, liftExpiredSuspensions, getAccountsConfig, currentEmailConfig } from "@contestly/db";
+  emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, cornersAfterStandingChange, liftExpiredSuspensions, getAccountsConfig, currentEmailConfig, recordDeliveryNudges } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyHereKey, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
@@ -52,8 +52,8 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
     const [starting, live, filling] = [await emitPartyStarting(), await emitRecentlyLive(), await emitFillingUp()];
     if (starting + live + filling) console.log(`[nudges] recorded: ${starting} starting, ${live} live, ${filling} filling up`);
   } else if (d.kind === "nudge_hourly") {
-    const [streaks, guests, winBacks] = [await emitStreakRisk(), await emitGuestFollowUps(), await emitWinBack()];
-    if (streaks + guests + winBacks) console.log(`[nudges] recorded: ${streaks} streak, ${guests} guest follow-up, ${winBacks} win-back`);
+    const [streaks, guests, winBacks, prizes] = [await emitStreakRisk(), await emitGuestFollowUps(), await emitWinBack(), await recordDeliveryNudges()];
+    if (streaks + guests + winBacks + prizes) console.log(`[nudges] recorded: ${streaks} streak, ${guests} guest follow-up, ${winBacks} win-back, ${prizes} prize delivery`);
   } else if (d.kind === "party_created") {
     await emitCornerParty(d.partyId, d.hostId);
   } else if (d.kind === "party_joined") {

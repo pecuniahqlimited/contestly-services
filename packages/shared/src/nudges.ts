@@ -137,6 +137,8 @@ export const DEEP_LINKS = {
   climb: () => "contestly://climb",
   home: () => "contestly://home",
   signUp: () => "contestly://sign-up",
+  brand: (id: string) => `contestly://brand/${id}`,
+  prize: (fulfilmentId: string) => `contestly://prize/${fulfilmentId}`,
 } as const;
 
 // ---- the kinds ------------------------------------------------------------------------
@@ -157,6 +159,12 @@ export type NudgeData = {
   host_cancelled: { partyId: string; title: string; entryBack: boolean };
   guest_follow_up: { partyId: string; title: string };
   win_back: { personName: string; personHandle: string; what: string };
+  /** A brand's review (ADR 0017), to its owner and admins. */
+  verification_update: { brandId: string; brandName: string; outcome: "approved" | "changes_needed" };
+  /** A goods prize the brand arranged: to the winner (`for: "winner"`) and the brand's hosts. */
+  prize_ready: { fulfilmentId: string; partyId: string; title: string; brandName: string; for: "winner" | "brand" };
+  /** Day 3 and 7 after a goods prize was awarded, while it isn't delivered: to both sides. */
+  prize_delivery_due: { fulfilmentId: string; partyId: string; title: string; brandName: string; day: number; for: "winner" | "brand" };
 };
 export type NudgeKind = keyof NudgeData;
 
@@ -240,6 +248,24 @@ const kinds: { [K in NudgeKind]: NudgeKindDef<K> } = {
   guest_follow_up: {
     category: "account",
     render: (d) => ({ title: "Keep your score next time", body: `You played ${d.title} as a guest. Sign up to save your scores and play with friends.`, deepLink: DEEP_LINKS.signUp(), reason: "You played as a guest" }),
+  },
+  verification_update: {
+    category: "account", inActivity: true,
+    render: (d) => d.outcome === "approved"
+      ? { title: `${d.brandName} is verified`, body: "Your corner is open and every kind of party is unlocked.", deepLink: DEEP_LINKS.brand(d.brandId), reason: "Your brand's review" }
+      : { title: `${d.brandName} needs a few changes`, body: "See the reviewer's note and send it again.", deepLink: DEEP_LINKS.brand(d.brandId), reason: "Your brand's review" },
+  },
+  prize_ready: {
+    category: "account", inActivity: true,
+    render: (d) => d.for === "winner"
+      ? { title: `Your prize from ${d.title} is on its way`, body: `${d.brandName} has arranged it. Tap to see the details.`, deepLink: DEEP_LINKS.prize(d.fulfilmentId), reason: "You placed in this party" }
+      : { title: `A prize from ${d.title} is arranged`, body: "Mark it delivered once the winner has it.", deepLink: DEEP_LINKS.prize(d.fulfilmentId), reason: `You host for ${d.brandName}` },
+  },
+  prize_delivery_due: {
+    category: "account", inActivity: true,
+    render: (d) => d.for === "winner"
+      ? { title: `Did your prize from ${d.title} arrive?`, body: "Let us know if something's wrong.", deepLink: DEEP_LINKS.prize(d.fulfilmentId), reason: "You placed in this party" }
+      : { title: `A prize from ${d.title} isn't delivered yet`, body: `It was awarded ${d.day} days ago. Arrange it or mark it delivered.`, deepLink: DEEP_LINKS.prize(d.fulfilmentId), reason: `You host for ${d.brandName}` },
   },
   win_back: {
     category: "people",

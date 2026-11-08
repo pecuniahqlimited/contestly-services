@@ -21,6 +21,9 @@ const SAMPLE: { [K in NudgeKind]: NudgeData[K] } = {
   host_cancelled: { partyId: id, title: "Friday Night Quiz", entryBack: true },
   guest_follow_up: { partyId: id, title: "Friday Night Quiz" },
   win_back: { personName: "Kemi", personHandle: "kemz", what: "hosted 2 parties" },
+  verification_update: { brandId: id, brandName: "Indomie", outcome: "approved" },
+  prize_ready: { fulfilmentId: id, partyId: id, title: "Friday Night Quiz", brandName: "Indomie", for: "winner" },
+  prize_delivery_due: { fulfilmentId: id, partyId: id, title: "Friday Night Quiz", brandName: "Indomie", day: 3, for: "brand" },
 };
 
 describe("the no-money guard", () => {
@@ -43,6 +46,11 @@ describe("the no-money guard", () => {
     }
     expect(renderNudge("party_starting", { ...SAMPLE.party_starting, minutes: 1 }).title).toBe("Friday Night Quiz starts in a minute");
     expect(renderNudge("rival", { by: "climb", rivalHandle: "kemz", rivalName: "Kemi", stage: 4 }).title).toBe("Kemi climbed past your best");
+    for (const outcome of ["approved", "changes_needed"] as const) renderNudge("verification_update", { ...SAMPLE.verification_update, outcome });
+    for (const side of ["winner", "brand"] as const) {
+      renderNudge("prize_ready", { ...SAMPLE.prize_ready, for: side });
+      renderNudge("prize_delivery_due", { ...SAMPLE.prize_delivery_due, for: side, day: 7 });
+    }
   });
 
   it("the host's cancel never says refund, in the title or anywhere", () => {

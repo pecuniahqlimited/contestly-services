@@ -24,7 +24,7 @@ export async function retrySealedSet(partyId: string, user: User, edit: RetryQue
   const fileStillReading = await db.transaction(async (tx) => {
     const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
     if (!p) throw httpError(404, "not_found");
-    if (!isHostTeam(p, user.id)) throw httpError(403, "host_team_only");
+    if (!(await isHostTeam(p, user.id))) throw httpError(403, "host_team_only");
     if (p.mode !== "sealed") throw httpError(409, "not_a_sealed_party"); // curate: ask for drafts again
     if (p.status !== "open") throw httpError(409, "party_not_open");
     if (p.questionsStatus !== "failed") throw httpError(409, "questions_not_failed");

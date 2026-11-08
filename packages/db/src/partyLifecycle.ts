@@ -116,7 +116,7 @@ export type HostCancelOutcome =
 export async function hostCancelParty(tx: Tx, partyId: string, userId: string, reason?: string): Promise<HostCancelOutcome | null> {
   const [p] = await tx.select().from(parties).where(eq(parties.id, partyId)).for("update");
   if (!p) return null;
-  if (!isHostTeam(p, userId)) return { ok: false, status: 403, error: NOT_HOST };
+  if (!(await isHostTeam(p, userId, tx))) return { ok: false, status: 403, error: NOT_HOST };
   if (p.status === "cancelled" && p.cancelledBy === "host") {
     return { ok: true, result: { cancelled: true, replayed: true, refunded: await cancelRefunds(tx, p.id) }, party: p, seatedUserIds: [] };
   }

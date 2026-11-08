@@ -11,6 +11,7 @@ import { db, type Tx } from "./client.js";
 import { userIdentities, users, type User } from "./schema.js";
 import { payHeldAwards } from "./climb.js";
 import { attributeAtSignUp } from "./corners.js";
+import { claimEmailInvites } from "./brands/team.js";
 
 type Conn = Tx | typeof db;
 
@@ -35,7 +36,8 @@ export async function identityWasDisabled(provider: IdentityProvider, externalId
 
 /** A signed-up account by its (lowercased) email. Guests never own an email. */
 export async function memberByEmail(email: string, conn: Conn = db): Promise<User | null> {
-  const [u] = await conn.select().from(users).where(and(eq(users.email, email), eq(users.isGuest, false), liveUser));
+  // A brand's account has no email and is never signed into (ADR 0017); the check keeps it that way.
+  const [u] = await conn.select().from(users).where(and(eq(users.email, email), eq(users.isGuest, false), eq(users.isBrand, false), liveUser));
   return u ?? null;
 }
 
@@ -107,6 +109,8 @@ export async function becomeMember(tx: Tx, userId: string, email: string): Promi
   const awardsPaid = await payHeldAwards(tx, userId);
   // Whose new player they are: the invite they signed up from, or the party they finished as a guest (ADR 0012).
   await attributeAtSignUp(tx, userId);
+  // Invites to a brand's team sent to this email before the account existed now wait for them (ADR 0017).
+  await claimEmailInvites(tx, userId, email);
   return { user, awardsPaid };
 }
 

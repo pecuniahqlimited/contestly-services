@@ -7,6 +7,7 @@ import { ZodError } from "zod";
 import { InsufficientFunds } from "@contestly/db";
 import { Unauthorized } from "@contestly/auth";
 import { authPlugin, type SessionResolver } from "./auth.js";
+import { actingPlugin } from "./acting.js";
 import { clientIpResolver, trustConfigFromEnv, type TrustConfig } from "./clientIp.js";
 import { limitsFromEnv, type Limits } from "./limits.js";
 import { publicConfigFromEnv } from "./publicConfig.js";
@@ -36,6 +37,8 @@ import { chatsRoutes } from "./routes/chats.js";
 import { crewsRoutes } from "./routes/crews.js";
 import { cornersRoutes } from "./routes/corners.js";
 import { adminCornersRoutes } from "./routes/adminCorners.js";
+import { brandsRoutes } from "./routes/brands.js";
+import { adminBrandsRoutes } from "./routes/adminBrands.js";
 import { socialRoutes } from "./routes/social.js";
 import { adminPaymentsRoutes } from "./routes/adminPayments.js";
 import { mockCheckoutRoutes, paymentWebhookRoutes } from "./routes/paymentWebhooks.js";
@@ -83,6 +86,8 @@ export async function buildApp(opts: AppOptions = {}) {
 
   await app.register(cors, { origin: (process.env.WEB_ORIGIN ?? "http://localhost:5173").split(","), credentials: true });
   await app.register(authPlugin, { resolve: opts.resolveSession });
+  // After the session: the act-as header is refused on routes that don't opt in (ADR 0017).
+  await app.register(actingPlugin);
   // After the session is resolved (both preHandler, in registration order): per user when signed in, else per client IP.
   const cfg = opts.limits ?? limitsFromEnv();
   app.decorate("limits", cfg);
@@ -149,6 +154,8 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(socialRoutes);
   await app.register(cornersRoutes);
   await app.register(adminCornersRoutes);
+  await app.register(brandsRoutes);
+  await app.register(adminBrandsRoutes);
   await app.register(paymentWebhookRoutes);
   await app.register(mockCheckoutRoutes);
   await app.register(adminPaymentsRoutes);

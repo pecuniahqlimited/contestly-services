@@ -6,7 +6,7 @@
  * possible yet (email_already_verified).
  */
 import { and, eq, ne } from "drizzle-orm";
-import { db, users, type User } from "@contestly/db";
+import { claimEmailInvites, db, users, type User } from "@contestly/db";
 import { EMAIL_ALREADY_VERIFIED, EMAIL_IN_USE, type AddEmailResponse } from "@contestly/shared";
 import type { Limits } from "../limits.js";
 import { httpError } from "../httpError.js";
@@ -39,6 +39,8 @@ export async function verifyAddEmail(me: User, email: string, code: string, ip: 
       assertCanAdd(fresh);
       await assertFree(tx, me.id, email);
       const [u] = await tx.update(users).set({ email, emailVerifiedAt: new Date() }).where(eq(users.id, me.id)).returning();
+      // Brand team invites sent to this address before it was theirs now wait for them (ADR 0017).
+      await claimEmailInvites(tx, me.id, email);
       return { email: u.email!, emailVerifiedAt: u.emailVerifiedAt!.toISOString() };
     });
   } catch (e) {

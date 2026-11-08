@@ -22,7 +22,7 @@ const fileView = { id: partyFiles.id, filename: partyFiles.filename, contentType
  * from a file that's already been read (a sealed set waiting for its file is fine).
  */
 async function assertReplaceable(q: Tx | typeof db, p: Party, user: User) {
-  if (!isHostTeam(p, user.id)) throw httpError(403, "host_team_only");
+  if (!(await isHostTeam(p, user.id))) throw httpError(403, "host_team_only");
   if (p.status !== "open") throw httpError(409, "party_not_open");
   const built = await q.select({ id: partyQuestions.id }).from(partyQuestions).where(eq(partyQuestions.partyId, p.id)).limit(1);
   if (built.length) throw httpError(409, "questions_already_made");
@@ -62,6 +62,6 @@ export async function replaceSource(partyId: string, user: User, file: { filenam
 export async function listFiles(partyId: string, user: User) {
   const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
   if (!p) throw httpError(404, "not_found");
-  if (!isHostTeam(p, user.id)) throw httpError(403, "host_team_only");
+  if (!(await isHostTeam(p, user.id))) throw httpError(403, "host_team_only");
   return db.select(fileView).from(partyFiles).where(eq(partyFiles.partyId, partyId)).orderBy(asc(partyFiles.createdAt));
 }

@@ -250,6 +250,9 @@ async function countedNewPlayers(q: Conn, hostId: string) {
  * install id with each other or the host. Returns whether it unlocked.
  */
 export async function checkUnlock(tx: Tx, hostId: string, now = new Date()): Promise<boolean> {
+  // A brand's corner opens only by approval (createBrandCorner, ADR 0012 §4, 0017 §11), never by the thresholds.
+  const [hostKind] = await tx.select({ isBrand: users.isBrand }).from(users).where(eq(users.id, hostId));
+  if (hostKind?.isBrand) return false;
   const ensured = await ensureCorner(tx, hostId);
   const [corner] = await tx.select().from(corners).where(eq(corners.id, ensured.id)).for("update");
   if (corner.status !== "locked" || corner.archivedAt) return false;

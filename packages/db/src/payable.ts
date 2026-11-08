@@ -25,21 +25,33 @@ export const isWalletFrozen = (u: BanFields) => isBanned(u);
 /** Withdrawals frozen by payments itself: a payout we reversed was paid after all, until an admin resolves it (ADR 0013). */
 export const isUnderPaymentReview = (u: Pick<User, "withdrawalsFrozenAt">) => !!u.withdrawalsFrozenAt;
 
-type WithdrawFields = Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "deletedAt" | "phoneVerifiedAt" | "bannedAt" | "withdrawalsFrozenAt">;
+type WithdrawFields = Pick<User, "isSystem" | "isGuest" | "emailVerifiedAt" | "deletedAt" | "phoneVerifiedAt" | "bannedAt" | "withdrawalsFrozenAt"> & Partial<Pick<User, "isBrand">>;
 
 /**
  * What the user row doesn't say: what they owe (ledger.owedKobo), and whether a deleted account with their
  * email or phone had a payment issue an admin hasn't cleared for this account (withdrawContext in payments).
  */
-export interface WithdrawContext { owedKobo: number; linkedIssue?: boolean }
+export interface WithdrawContext {
+  owedKobo: number;
+  linkedIssue?: boolean;
+  /** A brand's account (ADR 0017 §8): whether it's verified, and why its owner couldn't withdraw as a person (null: they could). */
+  brand?: { verified: boolean; ownerBlock: WithdrawBlockReason | null };
+}
 
 /** Why this account can't withdraw, or null if it can. The app shows the reason (withdraw_not_allowed). */
 export function withdrawBlockReason(u: WithdrawFields, ctx: WithdrawContext): WithdrawBlockReason | null {
   if (u.isSystem) return "system";
   if (u.isGuest) return "guest";
   if (u.deletedAt) return "deleted";
-  if (!u.emailVerifiedAt) return "email_unverified";
-  if (!u.phoneVerifiedAt) return "phone_unverified";
+  if (u.isBrand) {
+    // A brand has no email or phone of its own: it must be verified, and its owner must pass a person's checks,
+    // so a brand's payout still reaches one real person (ADR 0017 §8).
+    if (!ctx.brand?.verified) return "brand_unverified";
+    if (ctx.brand.ownerBlock) return "owner_cannot_withdraw";
+  } else {
+    if (!u.emailVerifiedAt) return "email_unverified";
+    if (!u.phoneVerifiedAt) return "phone_unverified";
+  }
   if (isWalletFrozen(u)) return "frozen";
   if (isUnderPaymentReview(u)) return "payment_review";
   if (ctx.owedKobo > 0) return "amount_owed";
@@ -48,4 +60,4 @@ export function withdrawBlockReason(u: WithdrawFields, ctx: WithdrawContext): Wi
 }
 
 /** Withdrawing cash also needs a verified phone number, one per account, so payouts reach one real person; and a wallet that isn't frozen. */
-export const canWithdraw = (u: WithdrawFields, ctx: WithdrawContext) => canBePaidCash(u) && withdrawBlockReason(u, ctx) === null;
+export const canWithdraw = (u: WithdrawFields, ctx: WithdrawContext) => (u.isBrand || canBePaidCash(u)) && withdrawBlockReason(u, ctx) === null;

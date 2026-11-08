@@ -1,5 +1,5 @@
 /**
- * Step 2b sim: a curate-mode party built from an uploaded PDF, reviewed by its host, then played
+ * Step 2b sim: a curate-mode party built from an uploaded PDF, hosted as a brand (its team API) and reviewed by its host, then played
  * by three players who flag two questions until they're voided (one while open, one during its
  * reveal). Asserts the send → read in memory → chunk → embed → cite path (the file itself is never
  * stored, and a new one replaces the old), the curate review actions
@@ -20,7 +20,7 @@ import {
 import { partyQueue, questionsQueue } from "@contestly/queue";
 import { MAX_UPLOAD_BYTES, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
-import { GENERATION_TRIES, MOCK_GENERATOR, MODEL_SAFETY, RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, putBack, putBackLater, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
+import { GENERATION_TRIES, MOCK_GENERATOR, MODEL_SAFETY, RT, api, call, onTeam, verifiedBrand, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, putBack, putBackLater, sendFile, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 import { minimalPdf } from "./sim-pdf.js";
 
 const HOST = "tunde";
@@ -76,8 +76,13 @@ console.log("curate party with an unreviewed set: start must cancel and refund�
 
 // ---- create + send a source file -----------------------------------------------------------
 
-console.log("\ncurate party from a PDF sent to the API…");
-const party = await api(HOST, "POST", "/parties", curateParty("Curate sim party"));
+console.log("\ncurate party from a PDF sent to the API, hosted as a brand with a team…");
+// Tunde hosts as his own verified brand (ADR 0017), so its team, not a database insert, is who sees the drafts.
+const BRAND_HANDLE = "tundesquizclub";
+const brandId = await verifiedBrand(HOST, BRAND_HANDLE, "Tunde's Quiz Club", "simadmin");
+const AS_BRAND = { person: HOST, brand: BRAND_HANDLE };
+const party = await api(AS_BRAND, "POST", "/parties", curateParty("Curate sim party"));
+ok(party.host?.id === brandId && party.host?.kind === "brand", "the party is publicly hosted by the brand");
 const partyId: string = party.id;
 ok(party.playerCount === 0 && party.questions?.review === "host_reviewed" && party.questions?.aiGenerated === true, "curate host isn't seated; party discloses AI-generated, host-reviewed questions");
 ok((await partyNetKobo(userIds.get(HOST)!, partyId)) === 0, "curate host isn't charged an entry");
@@ -188,12 +193,15 @@ ok(kinds("approve").every((e) => e.userId), "every approval records who approved
 const hostJoin = await call(HOST, "POST", `/parties/${partyId}/join`);
 ok(hostJoin.status === 403, `curate host can't join as a player (${hostJoin.status} ${JSON.stringify(hostJoin.body)})`);
 
-// A team member who opened the drafts. Brand teams arrive in step 4 (until then isHostTeam() is the
-// creator alone), so record the view GET /drafts would write for them, then try to join.
+// A team member who opened the drafts: on the brand's team as a host (the real invite and accept), they open the
+// drafts through the API like the host, which records the view; then they try to join.
 const TEAM_MEMBER = "segunola";
 await topUp(TEAM_MEMBER);
 const teamMemberId: string = (await api(TEAM_MEMBER, "GET", "/me")).id;
-await db.insert(partyDraftViews).values({ partyId, userId: teamMemberId }).onConflictDoNothing();
+await onTeam(HOST, brandId, TEAM_MEMBER, "host");
+ok((await call(TEAM_MEMBER, "GET", `/parties/${partyId}/drafts`)).status === 200, "a host on the brand's team reads the drafts");
+const [memberView] = await db.select().from(partyDraftViews).where(and(eq(partyDraftViews.partyId, partyId), eq(partyDraftViews.userId, teamMemberId)));
+ok(!!memberView, "their view of the drafts was recorded");
 const teamJoin = await call(TEAM_MEMBER, "POST", `/parties/${partyId}/join`);
 ok(teamJoin.status === 403 && teamJoin.body?.error === "seen_the_questions_cannot_play", `a team member who opened the drafts gets 403 on join (${teamJoin.status} ${JSON.stringify(teamJoin.body)})`);
 ok((await partyNetKobo(teamMemberId, partyId)) === 0, "and is never charged an entry");
