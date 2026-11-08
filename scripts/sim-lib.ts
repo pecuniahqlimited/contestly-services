@@ -49,9 +49,24 @@ export async function putBack() {
   }
 }
 
-/** The stack generates with the mock deck (its planted bad questions and fill-the-gap file drafts), read from the same .env. */
-/** The stack's AI profile (ADR 0016), from the same .env: mock unless set. */
-export const AI_PROFILE = process.env.AI_PROFILE?.trim() || "mock";
+/**
+ * The running stack's AI profile (ADR 0016), asked of the stack itself (GET /admin/questions/providers as a dev
+ * admin), never read from this process's env: a shell's AI_PROFILE overrides --env-file, and a sim that thought
+ * the stack ran a real model checked what only a model catches against the mocks.
+ */
+async function stackProfile(): Promise<string> {
+  const admin = (process.env.DEV_ADMIN_HANDLES ?? "tunde").split(",")[0].trim();
+  const res = await fetch(`${API}/admin/questions/providers`, { headers: { "x-dev-user": admin } }).catch(() => null);
+  if (!res?.ok) {
+    console.error(`Couldn't ask the stack for its AI profile (GET /admin/questions/providers as ${admin}: ${res?.status ?? "no answer"}). Is the API running?`);
+    process.exit(2);
+  }
+  const { profile } = (await res.json()) as { profile: string };
+  const own = process.env.AI_PROFILE?.trim();
+  if (own && own !== profile) console.log(`(this shell says AI_PROFILE=${own}; the stack runs ${profile}, and the sim follows the stack)`);
+  return profile;
+}
+export const AI_PROFILE = await stackProfile();
 // The sims never spend money by accident: against a paid stack they stop unless asked for in so many words.
 if (AI_PROFILE === "paid" && process.env.SIM_ALLOW_PAID !== "1") {
   console.error("The stack's AI_PROFILE is paid: the sims would spend money. Use the mock or free profile, or set SIM_ALLOW_PAID=1 to mean it.");
