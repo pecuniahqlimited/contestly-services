@@ -64,7 +64,8 @@ console.log("\n1. Messages");
 const refusedForGuestless = await call(A, "POST", `/dm/${ids.get(A)}`);
 ok(refusedForGuestless.body.error === "cannot_message_self", "nobody can message themselves");
 const ab = await api(A, "POST", `/dm/${ids.get(B)}`);
-ok(ab.permission === "request" && ab.request === "sent", "a stranger's DM is a message request");
+// An empty thread is no request yet (d909eb8): its first line decides who asked.
+ok(ab.permission === "request" && ab.request === "none", "a stranger's DM is a message request, and no request until its first line");
 const sendAB = (body: Record<string, unknown>, id?: string) => inboxes[A].send({ threadId: ab.threadId, ...body }, id);
 for (let i = 1; i <= 3; i++) ok(acked(await sendAB({ text: `hi ${i}, saw you on the board` })), `request line ${i} kept`);
 const fourth = await sendAB({ text: "hello??" });
