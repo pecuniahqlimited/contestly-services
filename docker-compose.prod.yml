@@ -1,8 +1,13 @@
 # Production on one droplet: the four services behind Caddy (HTTPS + WSS). Postgres and Valkey are
 # DO Managed clusters, reached through DATABASE_URL / REDIS_URL in .env (see .env.production.example).
 #
-#   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate   # once, and after each schema change
-#   docker compose -f docker-compose.prod.yml up -d --build
+# A push to main deploys through .github/workflows/deploy.yml: images built in CI, pulled here by tag
+# (IMAGE_REGISTRY and IMAGE_TAG in .env), then scripts/deploy.sh. By hand, building here instead:
+#
+#   docker compose -f docker-compose.prod.yml build api realtime worker questions
+#   docker compose -f docker-compose.prod.yml stop api realtime worker questions
+#   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
+#   docker compose -f docker-compose.prod.yml up -d
 name: contestly
 
 x-service: &service
@@ -15,22 +20,22 @@ services:
   api:
     <<: *service
     build: { context: ., args: { APP: api } }
-    image: contestly-api
+    image: ${IMAGE_REGISTRY:-local}/contestly-api:${IMAGE_TAG:-latest}
 
   realtime:
     <<: *service
     build: { context: ., args: { APP: realtime } }
-    image: contestly-realtime
+    image: ${IMAGE_REGISTRY:-local}/contestly-realtime:${IMAGE_TAG:-latest}
 
   worker:
     <<: *service
     build: { context: ., args: { APP: worker } }
-    image: contestly-worker
+    image: ${IMAGE_REGISTRY:-local}/contestly-worker:${IMAGE_TAG:-latest}
 
   questions:
     <<: *service
     build: { context: ., args: { APP: questions } }
-    image: contestly-questions
+    image: ${IMAGE_REGISTRY:-local}/contestly-questions:${IMAGE_TAG:-latest}
 
   # The only container with public ports. Gets TLS certificates for API_HOST and RT_HOST on first request.
   caddy:
@@ -59,13 +64,13 @@ services:
       MP_SEND_API_AUTH_ACCEPT_ANY: "true"
       MP_MAX_MESSAGES: 500
 
-  # One-off: applies packages/db/drizzle migrations to DATABASE_URL.
+  # One-off: applies packages/db/drizzle migrations to DATABASE_URL, from the release's api image (it carries
+  # the migrations and drizzle-kit), so it always matches the code about to start.
   migrate:
     profiles: ["tools"]
-    image: node:22-alpine
-    working_dir: /repo
-    volumes: [".:/repo"]
-    command: sh -c "npm ci && npm run db:migrate"
+    image: ${IMAGE_REGISTRY:-local}/contestly-api:${IMAGE_TAG:-latest}
+    env_file: .env
+    command: ["npm", "run", "db:migrate"]
 
 volumes:
   caddydata:
