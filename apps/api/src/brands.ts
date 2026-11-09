@@ -30,7 +30,7 @@ export async function settingsView(account: User, brand: Brand, role: BrandRole,
   const cornerId = (await cornerIdsOf([account.id])).get(account.id) ?? null;
   return {
     ...publicBrandView(account, brand, cornerId), role, registrationNumber: brand.registrationNumber, businessEmail: brand.businessEmail,
-    businessEmailVerifiedAt: iso(brand.businessEmailVerifiedAt), cashPrizes: brand.cashPrizes, verification: verificationView(brand), checklist: checklist ?? (await checklistFor(db, brand)),
+    businessEmailVerifiedAt: iso(brand.businessEmailVerifiedAt), cashPrizes: brand.cashPrizes, hostSpendLimitKobo: brand.hostSpendLimitKobo, verification: verificationView(brand), checklist: checklist ?? (await checklistFor(db, brand)),
   };
 }
 

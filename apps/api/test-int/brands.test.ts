@@ -313,7 +313,22 @@ describe("the brand wallet", () => {
     await call({ method: "POST", url: "/wallet/dev-topup", headers: asBrand(t.admin, t.brand), payload: { nairaAmount: 20_000 } });
     const hostOwn = (await ledger.balances(t.host.id)).cashKobo;
     const prize = kobo(5_000);
-    const made = await call({ method: "POST", url: "/parties", headers: asBrand(t.host, t.brand), payload: freeParty({ funding: "host", hostPoolKobo: prize, maxPlayers: 4 }) });
+    const cashParty = (hostPoolKobo: number) => freeParty({ funding: "host", hostPoolKobo, maxPlayers: 4 });
+    // A Host spends from the brand's wallet only up to its host spending limit: ₦0 until an admin or the owner sets one.
+    const refused = await call({ method: "POST", url: "/parties", headers: asBrand(t.host, t.brand), payload: cashParty(prize) });
+    expect([refused.statusCode, refused.json().error, refused.json().details]).toEqual([403, "brand_role_forbidden", { capability: "parties.fund", role: "host", limitKobo: 0 }]);
+    expect((await call({ method: "PATCH", url: `/brands/${t.brand.id}`, headers: as(t.host), payload: { hostSpendLimitKobo: prize } })).statusCode).toBe(403);
+    const set = await call({ method: "PATCH", url: `/brands/${t.brand.id}`, headers: as(t.admin), payload: { hostSpendLimitKobo: prize } });
+    expect(set.json().hostSpendLimitKobo).toBe(prize);
+    const [logged] = await db.select().from(brandEvents).where(and(eq(brandEvents.brandId, t.brand.id), eq(brandEvents.kind, "settings_changed"), eq(brandEvents.actorUserId, t.admin.id)));
+    expect(logged.detail).toMatchObject({ hostSpendLimitKobo: { from: 0, to: prize } });
+    const over = await call({ method: "POST", url: "/parties", headers: asBrand(t.host, t.brand), payload: cashParty(prize + kobo(500)) });
+    expect([over.json().error, over.json().details?.limitKobo]).toEqual(["brand_role_forbidden", prize]);
+    // Admins and the owner fund up to the caps, whatever the hosts' limit; goods and entry parties aren't spending.
+    const byAdmin = await call({ method: "POST", url: "/parties", headers: asBrand(t.admin, t.brand), payload: cashParty(prize * 2) });
+    expect(byAdmin.statusCode, byAdmin.body).toBe(201);
+    await call({ method: "POST", url: `/parties/${byAdmin.json().id}/cancel`, headers: as(t.admin), payload: {} });
+    const made = await call({ method: "POST", url: "/parties", headers: asBrand(t.host, t.brand), payload: cashParty(prize) });
     expect(made.statusCode, made.body).toBe(201);
     expect((await ledger.balances(t.brand.id)).cashKobo).toBe(kobo(20_000) - prize);
     expect((await ledger.balances(t.host.id)).cashKobo).toBe(hostOwn);
@@ -339,8 +354,8 @@ describe("the brand wallet", () => {
     await call({ method: "POST", url: "/wallet/dev-topup", headers: asBrand(u2.owner, u2.brand), payload: { nairaAmount: 5_000 } });
     const r2 = (await call({ method: "POST", url: "/wallet/bank-accounts/resolve", headers: asBrand(u2.owner, u2.brand), payload: { bankCode: "001", accountNumber: `04${String(Date.now()).slice(-8)}` } })).json();
     const a2 = (await call({ method: "POST", url: "/wallet/bank-accounts", headers: asBrand(u2.owner, u2.brand), payload: { resolveToken: r2.resolveToken, accountName: r2.accountName } })).json().accounts[0];
-    const refused = await call({ method: "POST", url: "/wallet/withdrawals", headers: asBrand(u2.owner, u2.brand), payload: { amountKobo: kobo(1_500), bankAccountId: a2.id, clientRequestId: randomUUID() } });
-    expect(refused.json()).toMatchObject({ error: "withdraw_not_allowed", details: { reason: "brand_unverified" } });
+    const unverified = await call({ method: "POST", url: "/wallet/withdrawals", headers: asBrand(u2.owner, u2.brand), payload: { amountKobo: kobo(1_500), bankAccountId: a2.id, clientRequestId: randomUUID() } });
+    expect(unverified.json()).toMatchObject({ error: "withdraw_not_allowed", details: { reason: "brand_unverified" } });
   });
 });
 

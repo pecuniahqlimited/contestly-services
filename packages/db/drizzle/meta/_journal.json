@@ -414,6 +414,13 @@
       "when": 1794152014550,
       "tag": "0058_brand_curate_caps",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1794222706835,
+      "tag": "0059_brand_host_spend_limit",
+      "breakpoints": true
     }
   ]
 }

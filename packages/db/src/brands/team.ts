@@ -123,10 +123,14 @@ export async function updateBrand(brandId: string, person: User, input: UpdateBr
   if (input.socials !== undefined) row.socials = input.socials;
   if (input.registrationNumber !== undefined) row.registrationNumber = input.registrationNumber ? normaliseCac(input.registrationNumber) : null;
   if (input.cashPrizes !== undefined) row.cashPrizes = input.cashPrizes;
+  if (input.hostSpendLimitKobo !== undefined) row.hostSpendLimitKobo = input.hostSpendLimitKobo;
   await db.transaction(async (tx) => {
     if (Object.keys(account).length) await tx.update(users).set(account).where(eq(users.id, brandId));
     if (Object.keys(row).length) await tx.update(brands).set(row).where(eq(brands.id, brandId));
-    await recordBrandEvent(tx, { brandId, kind: "settings_changed", actorUserId: person.id, detail: { fields: Object.keys(input) } });
+    // A change to the host spending limit is logged with what it was and what it became.
+    const limit = input.hostSpendLimitKobo !== undefined && input.hostSpendLimitKobo !== brand.hostSpendLimitKobo
+      ? { hostSpendLimitKobo: { from: brand.hostSpendLimitKobo, to: input.hostSpendLimitKobo } } : {};
+    await recordBrandEvent(tx, { brandId, kind: "settings_changed", actorUserId: person.id, detail: { fields: Object.keys(input), ...limit } });
   });
 }
 

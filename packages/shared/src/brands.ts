@@ -63,6 +63,9 @@ export const brandRoleCan = (role: BrandRole, capability: BrandCapability) => BR
 /** The roles on a brand party's host team (isHostTeam): they can't play its curate parties. */
 export const HOST_TEAM_ROLES = BRAND_ROLES.filter((r) => brandRoleCan(r, "parties.host"));
 
+/** The highest host spending limit settings accept: the default party limits' biggest host prize (₦500,000). */
+export const MAX_HOST_SPEND_LIMIT_KOBO = 50_000_000;
+
 /** Team size, owner included, and open invites counted. */
 export const BRAND_MAX_TEAM = 20;
 
@@ -92,6 +95,11 @@ const brandFields = {
   registrationNumber: z.string().trim().max(20).refine((v) => CAC_NUMBER_RE.test(v), "a CAC number: RC, BN or IT and its digits").nullable(),
   /** Whether the brand will give cash prizes: then verification needs a payout account. */
   cashPrizes: z.boolean(),
+  /**
+   * The most a Host may put up from the brand's wallet as one party's cash prize (ADR 0017 §3). Set by the owner and
+   * admins in settings; ₦0 by default (hosts run free and entry parties only); owners and admins fund up to the caps.
+   */
+  hostSpendLimitKobo: z.number().int().min(0).max(MAX_HOST_SPEND_LIMIT_KOBO),
 };
 
 /** POST /brands: the signed-in person makes a brand and is its owner. Everything but name and handle can come later. */
@@ -109,7 +117,9 @@ export const createBrandSchema = z.object({
 });
 export type CreateBrandInput = z.infer<typeof createBrandSchema>;
 /** PATCH /brands/:id (settings): any field; null clears an optional one. The handle can't change. */
-export const updateBrandSchema = createBrandSchema.omit({ handle: true }).partial().extend({ logoEmoji: brandFields.logoEmoji.optional(), cashPrizes: brandFields.cashPrizes.optional() });
+export const updateBrandSchema = createBrandSchema.omit({ handle: true }).partial().extend({
+  logoEmoji: brandFields.logoEmoji.optional(), cashPrizes: brandFields.cashPrizes.optional(), hostSpendLimitKobo: brandFields.hostSpendLimitKobo.optional(),
+});
 export type UpdateBrandInput = z.infer<typeof updateBrandSchema>;
 
 /** A brand as anyone sees it (its profile, a party's host, search). */
@@ -156,6 +166,7 @@ export const brandSettingsSchema = publicBrandSchema.extend({
   businessEmail: z.string().nullable(),
   businessEmailVerifiedAt: z.string().datetime().nullable(),
   cashPrizes: z.boolean(),
+  hostSpendLimitKobo: z.number().int(),
   verification: brandVerificationSchema,
   checklist: brandChecklistSchema,
 });

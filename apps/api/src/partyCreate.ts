@@ -11,7 +11,7 @@ import { takeSeat, cleanName,
   partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Acting, type Party, type Tx, type User,
 } from "@contestly/db";
 import { notifyQueue, partyQueue } from "@contestly/queue";
-import { BRAND_NOT_VERIFIED, SPLITS, checkStakes, isFreeParty, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput, type PartyTemplateCopy } from "@contestly/shared";
+import { BRAND_NOT_VERIFIED, BRAND_ROLE_FORBIDDEN, SPLITS, checkStakes, isFreeParty, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput, type PartyTemplateCopy } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { inviteToParty } from "./invites.js";
 import { enqueueSealedSet } from "./questionSet.js";
@@ -69,6 +69,12 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   // An unverified brand hosts free parties only: approval unlocks entry fees, cash prizes and goods (ADR 0017 §7).
   if (host.isBrand && !host.isVerified && !isFreeParty(body)) throw httpError(422, BRAND_NOT_VERIFIED);
   if (brandId && body.crewId) throw httpError(422, "brand_crew_party");
+  // A Host funds a cash prize from the brand's wallet only up to the brand's host spending limit; owners and admins
+  // up to the caps above (ADR 0017 §3).
+  const brand = opts.brand;
+  if (brand?.role === "host" && body.funding === "host" && body.prizeKind === "cash" && body.hostPoolKobo > brand.brand.hostSpendLimitKobo) {
+    throw httpError(403, BRAND_ROLE_FORBIDDEN, { capability: "parties.fund", role: "host", limitKobo: brand.brand.hostSpendLimitKobo });
+  }
   /** Whose wallet the prize comes from: the party's public host. */
   const funder = brandId ?? me.id;
   // ADR 0015: a template party is never free; host-written questions add the caps, the share, the safety filter

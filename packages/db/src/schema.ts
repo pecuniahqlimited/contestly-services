@@ -1800,6 +1800,8 @@ export const brands = pgTable("brands", {
   businessEmailVerifiedAt: timestamp("business_email_verified_at", { withTimezone: true }),
   /** The brand says it will give cash prizes: verification then needs a payout account. */
   cashPrizes: boolean("cash_prizes").notNull().default(false),
+  /** The most a Host may put up from the brand's wallet as one party's cash prize; owners and admins set it (ADR 0017 §3). */
+  hostSpendLimitKobo: integer("host_spend_limit_kobo").notNull().default(0),
   verificationStatus: brandVerificationStatus("verification_status").notNull().default("draft"),
   /** The reviewer's note when changes are needed (shown to the brand's team). */
   verificationNote: text("verification_note"),

@@ -1,0 +1,1 @@
+ALTER TABLE "brands" ADD COLUMN "host_spend_limit_kobo" integer DEFAULT 0 NOT NULL;

@@ -115,7 +115,11 @@ ok(detail.teamSize === 4 && detail.events.some((e: any) => e.kind === "changes_r
 console.log("\n==== the brand wallet ====");
 await api(as(ADMIN), "POST", "/wallet/dev-topup", { nairaAmount: 20_000 });
 const hostOwnBefore = (await api(HOST, "GET", "/wallet")).cashKobo;
-const cashParty = await api(as(HOST), "POST", "/parties", free({ funding: "host", hostPoolKobo: kobo(2_000), maxPlayers: 4 }));
+const cashBody = free({ funding: "host", hostPoolKobo: kobo(2_000), maxPlayers: 4 });
+const overLimit = await call(as(HOST), "POST", "/parties", cashBody);
+ok(overLimit.body.error === "brand_role_forbidden" && overLimit.body.details?.limitKobo === 0, "a host can't spend the brand's cash until a limit is set (₦0 by default)");
+await api(ADMIN, "PATCH", `/brands/${brandId}`, { hostSpendLimitKobo: kobo(2_000) });
+const cashParty = await api(as(HOST), "POST", "/parties", cashBody);
 ok((await api(as(ADMIN), "GET", "/wallet")).cashKobo === kobo(18_000), "a host's cash prize is held from the brand's wallet");
 ok((await api(HOST, "GET", "/wallet")).cashKobo === hostOwnBefore, "the host's own wallet is untouched");
 await api(HOST, "POST", `/parties/${cashParty.id}/cancel`, {});
