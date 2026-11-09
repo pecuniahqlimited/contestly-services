@@ -6,7 +6,7 @@
  * What it tells the outside world is passed in.
  */
 import { and, asc, eq } from "drizzle-orm";
-import { cancelIfUnplaceable, db, getPartyConfig, lockPeopleRows, payCashPrizes, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, publicHostId, recordPartyFinish, users } from "@contestly/db";
+import { brandTeamBarredFrom, cancelIfUnplaceable, db, getPartyConfig, lockPeopleRows, payCashPrizes, ledger, parties, partyLifecycleLine, partyLineByKey, partyPlayers, partyPrizes, prizeFulfilments, publicHostId, recordPartyFinish, users } from "@contestly/db";
 import { isGoods, type ChatMessage } from "@contestly/shared";
 import { computeSettlement, goodsAwards } from "@contestly/game";
 
@@ -62,7 +62,9 @@ export async function settle(deps: SettleDeps, partyId: string): Promise<boolean
     if (!players.some((x) => x.rank !== null)) throw new Error(`settle ${partyId}: no ranks persisted yet`); // BullMQ retries
     // Prizes go by place among signed-up players in good standing: a guest (only free parties have them) or a
     // player banned mid-party keeps their rank on the board but can't win.
-    const ranked = players.filter((x) => x.rank !== null && !x.isGuest && !x.bannedAt).map((x) => x.userId);
+    // Nor anyone on the brand's team in its party with a prize (ADR 0017 §6): joining the team after taking a seat wins nothing.
+    const team = await brandTeamBarredFrom(tx, p);
+    const ranked = players.filter((x) => x.rank !== null && !x.isGuest && !x.bannedAt && !team.has(x.userId)).map((x) => x.userId);
 
     if (isGoods(p.prizeKind)) {
       const prizes = await tx.select().from(partyPrizes).where(eq(partyPrizes.partyId, p.id));

@@ -6,11 +6,12 @@
  */
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq } from "drizzle-orm";
-import { HOST_MUST_CANCEL, NOT_IN_PARTY, PARTY_CLOSED, PARTY_LOCKED, WALLET_FROZEN, leaveWindow, type ChatMessage } from "@contestly/shared";
+import { BRAND_TEAM_MEMBER, HOST_MUST_CANCEL, NOT_IN_PARTY, PARTY_CLOSED, PARTY_LOCKED, WALLET_FROZEN, leaveWindow, type ChatMessage } from "@contestly/shared";
 import type { Tx } from "./client.js";
 import { chatMembers, partyLeaves, partyPlayers, users, type Party } from "./schema.js";
 import { isWalletFrozen } from "./payable.js";
 import { isHostTeam } from "./host.js";
+import { brandTeamBarredFrom } from "./brands/team.js";
 import { partyThreadId, systemLine } from "./chat.js";
 import * as ledger from "./ledger.js";
 
@@ -21,11 +22,14 @@ export const entryChargeKey = (s: Seat) => s.entryKey ?? `party_entry:${s.partyI
 
 /**
  * Take a seat: charge the entry (bonus first, then cash; InsufficientFunds if short) and seat the player. A frozen
- * wallet (a banned or suspended account, ADR 0014) takes no entry, whichever door it came through.
+ * wallet (a banned or suspended account, ADR 0014) takes no entry, whichever door it came through; nor does anyone on
+ * the brand's team in a brand's party with a prize (brand_team_member).
  */
-export async function takeSeat(tx: Tx, p: Pick<Party, "id">, userId: string, amountKobo: number) {
+export async function takeSeat(tx: Tx, p: Pick<Party, "id" | "brandId" | "entryKobo" | "funding" | "prizeKind" | "hostPoolKobo">, userId: string, amountKobo: number) {
   const [u] = await tx.select({ bannedAt: users.bannedAt, bannedUntil: users.bannedUntil }).from(users).where(eq(users.id, userId));
   if (u && isWalletFrozen(u)) throw Object.assign(new Error(WALLET_FROZEN), { statusCode: 403 });
+  // A brand's team never plays for its prizes (ADR 0017 §6): its free parties only. Settlement checks again.
+  if ((await brandTeamBarredFrom(tx, p)).has(userId)) throw Object.assign(new Error(BRAND_TEAM_MEMBER), { statusCode: 403 });
   const id = randomUUID();
   const entryKey = `party_entry:${id}`;
   const paid = await ledger.charge(tx, { userId, amountKobo, type: "party_entry", refType: "party", refId: p.id, idempotencyKey: entryKey });

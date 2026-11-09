@@ -23,6 +23,14 @@ export const NOT_A_MEMBER = "not_a_member";
 export const BRAND_ROLE_FORBIDDEN = "brand_role_forbidden";
 /** 422: an unverified brand hosts free parties only (entry 0, no prize). */
 export const BRAND_NOT_VERIFIED = "brand_not_verified";
+/**
+ * 403: a member of the brand's team can't take a seat in one of its parties with a prize of any kind (entry, cash or
+ * goods); its free parties are fine. Settlement checks it again, so joining the team after taking a seat wins nothing.
+ */
+export const BRAND_TEAM_MEMBER = "brand_team_member";
+/** A party with something to win: an entry (a pot), a host's cash prize, or goods. A free party has none. */
+export const partyHasPrize = (p: { entryKobo: number; funding: string; prizeKind: string; hostPoolKobo: number }) =>
+  p.entryKobo > 0 || (p.funding === "host" && (p.prizeKind !== "cash" || p.hostPoolKobo > 0));
 /** 409: the owner can't leave or be removed; they hand over or delete the brand. */
 export const OWNER_MUST_HAND_OVER = "owner_must_hand_over";
 

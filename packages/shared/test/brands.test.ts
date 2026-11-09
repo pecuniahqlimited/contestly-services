@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ASSIGNABLE_BRAND_ROLES, BRAND_CAPABILITIES, BRAND_ROLES, CAC_NUMBER_RE, FULFILMENT_STATUSES, HOST_TEAM_ROLES, brandRoleCan, canMoveFulfilment, createBrandSchema,
-  inviteBrandMemberSchema, normaliseCac,
+  inviteBrandMemberSchema, normaliseCac, partyHasPrize,
 } from "../src/index.js";
 
 describe("brand roles (ADR 0017 §3)", () => {
@@ -46,5 +46,15 @@ describe("CAC numbers and handles", () => {
     expect(createBrandSchema.safeParse({ name: "Jollof Republic", handle: "jollof.republic" }).success).toBe(true);
     expect(createBrandSchema.safeParse({ name: "Jollof Republic", handle: "Jollof Republic" }).success).toBe(false);
     expect(createBrandSchema.safeParse({ name: "Jollof Republic", handle: "deleted_x1" }).success).toBe(false);
+  });
+});
+
+describe("a party with a prize (the team's seat rule)", () => {
+  const base = { entryKobo: 0, funding: "pooled", prizeKind: "cash", hostPoolKobo: 0 };
+  it("an entry, a host's cash prize or goods is a prize; a free party isn't", () => {
+    expect(partyHasPrize(base)).toBe(false);
+    expect(partyHasPrize({ ...base, entryKobo: 20_000 })).toBe(true);
+    expect(partyHasPrize({ ...base, funding: "host", hostPoolKobo: 50_000 })).toBe(true);
+    expect(partyHasPrize({ ...base, funding: "host", prizeKind: "product" })).toBe(true);
   });
 });

@@ -5,11 +5,11 @@
  */
 import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
-  BRAND_MAX_TEAM, BRAND_ROLE_FORBIDDEN, NOT_A_MEMBER, OWNER_MUST_HAND_OVER, brandRoleCan, normaliseCac,
+  BRAND_MAX_TEAM, BRAND_ROLE_FORBIDDEN, NOT_A_MEMBER, OWNER_MUST_HAND_OVER, brandRoleCan, normaliseCac, partyHasPrize,
   type AssignableBrandRole, type BrandCapability, type BrandEventKind, type BrandRole, type CreateBrandInput, type InviteBrandMemberInput, type UpdateBrandInput,
 } from "@contestly/shared";
 import { db, type Tx } from "../client.js";
-import { brandEvents, brandInvites, brandMembers, brands, users, type Brand, type User } from "../schema.js";
+import { brandEvents, brandInvites, brandMembers, brands, users, type Brand, type Party, type User } from "../schema.js";
 import { liveUser } from "../accounts.js";
 import { cleanName, cleanOptionalName } from "../safety/names.js";
 import { isBanned } from "../payable.js";
@@ -58,6 +58,16 @@ export async function ownerOf(conn: Conn, brandId: string): Promise<User | null>
   const [row] = await conn.select({ u: users }).from(brandMembers).innerJoin(users, eq(users.id, brandMembers.userId))
     .where(and(eq(brandMembers.brandId, brandId), eq(brandMembers.role, "owner")));
   return row?.u ?? null;
+}
+
+/**
+ * Who on the brand's team can't hold a prize in this party (ADR 0017 §6): everyone on the team, any role, when the
+ * party is the brand's and has a prize of any kind; nobody for a free one or someone else's party.
+ */
+export async function brandTeamBarredFrom(conn: Conn, p: Pick<Party, "brandId" | "entryKobo" | "funding" | "prizeKind" | "hostPoolKobo">): Promise<Set<string>> {
+  if (!p.brandId || !partyHasPrize(p)) return new Set();
+  const rows = await conn.select({ id: brandMembers.userId }).from(brandMembers).where(eq(brandMembers.brandId, p.brandId));
+  return new Set(rows.map((r) => r.id));
 }
 
 /** Team members holding a capability (whom a brand-side nudge goes to). */

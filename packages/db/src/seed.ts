@@ -119,7 +119,7 @@ await db.transaction(async (tx) => {
   ] as const;
   for (const [p, handle] of seats) {
     if (p.entryKobo) await topUp(tx, by[handle], p.entryKobo, `party_entry:${p.id}:${by[handle]}`);
-    await takeSeat(tx, p, by[handle], p.entryKobo);
+    await takeSeat(tx, { ...p, prizeKind: p.prizeKind ?? "cash" }, by[handle], p.entryKobo);
   }
 
   // Each party's chat: the host and seats are members; a few lines in the Afrobeats lobby.

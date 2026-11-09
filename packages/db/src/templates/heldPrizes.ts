@@ -23,6 +23,7 @@ import { adminAlert } from "../alerts.js";
 import { recordAdminAction } from "../admin.js";
 import { moneyTransaction } from "../retry.js";
 import { publicHostId } from "../host.js";
+import { brandTeamBarredFrom } from "../brands/team.js";
 import { currentPartyTemplates, getSocialConfig } from "../config.js";
 import * as ledger from "../ledger.js";
 
@@ -240,8 +241,9 @@ async function planReject(tx: Tx, held: HeldPrize, p: Party): Promise<RejectPlan
   const rejected = await tx.select({ userId: heldPrizes.userId }).from(heldPrizes).where(and(eq(heldPrizes.partyId, p.id), eq(heldPrizes.status, "rejected")));
   const excluded = new Set([held.userId, ...rejected.map((r) => r.userId)]);
   const paid = new Set(seats.filter((s) => (s.prizeKobo ?? 0) > 0).map((s) => s.userId));
-  // The same eligibility as settlement: signed up and not banned.
-  const next = nextPlaced(seats.map((s) => ({ userId: s.userId, rank: s.rank, eligible: !s.isGuest && !s.bannedAt })), paid, excluded);
+  // The same eligibility as settlement: signed up, not banned, not on the brand's team.
+  const team = await brandTeamBarredFrom(tx, p);
+  const next = nextPlaced(seats.map((s) => ({ userId: s.userId, rank: s.rank, eligible: !s.isGuest && !s.bannedAt && !team.has(s.userId) })), paid, excluded);
   if (next) return { outcome: { kind: "passed_on", to: [{ userId: next, amountKobo: held.amountKobo }] }, place: seats.find((s) => s.userId === next)!.rank };
   // Back to whoever funded it: the party's public host (a brand's wallet for a brand's party, ADR 0017).
   if (p.funding === "host") return { outcome: { kind: "returned_to_host", to: [{ userId: publicHostId(p), amountKobo: held.amountKobo }] }, place: null };

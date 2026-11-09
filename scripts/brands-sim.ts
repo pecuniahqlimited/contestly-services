@@ -139,6 +139,7 @@ ok(!!settled, "the mock provider settled it");
 
 console.log("\n==== goods: settled, arranged, disputed, delivered ====");
 const goods = await api(as(HOST), "POST", "/parties", free({ funding: "host", prizeKind: "product", places: [{ text: "A dozen cupcakes" }], maxPlayers: 4 }));
+ok((await call(VIEWER, "POST", `/parties/${goods.id}/join`)).body.error === "brand_team_member", "nobody on the brand's team takes a seat in its prize party");
 for (const p of PLAYERS) await api(p, "POST", `/parties/${goods.id}/join`);
 await db.update(parties).set({ status: "live", liveAt: new Date() }).where(eq(parties.id, goods.id));
 for (const [i, h] of PLAYERS.entries()) await db.update(partyPlayers).set({ rank: i + 1, score: 100 * (3 - i) }).where(and(eq(partyPlayers.partyId, goods.id), eq(partyPlayers.userId, (await idOf(h))!)));

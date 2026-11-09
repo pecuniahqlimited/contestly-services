@@ -18,6 +18,7 @@ import { resetProviders } from "@contestly/payments";
 import { valkey } from "../src/redis.js";
 import { hmac } from "../src/signin/secrets.js";
 import { as, asBrand, clientAddress, makeBrand, makeUser, tag, testApp } from "./harness.js";
+import { settle } from "../../worker/src/partySettle.js";
 
 type App = Awaited<ReturnType<typeof testApp>>["app"];
 let app: App;
@@ -461,3 +462,57 @@ describe("the team and the brand's parties", () => {
     expect(JSON.stringify(mine)).toContain(curate.id);
   });
 });
+
+describe("the brand's team and its prizes", () => {
+  const settleDeps = { emit: async () => undefined, publishLine: async () => undefined, queueRecordPlay: async () => undefined, queueRecordProgress: async () => undefined };
+  const join = (u: User, partyId: string) => call({ method: "POST", url: `/parties/${partyId}/join`, headers: as(u) });
+  /** Ranks written straight to the seats (best first), live, then the worker's own settle. */
+  async function settleWith(partyId: string, order: User[]) {
+    await db.update(parties).set({ status: "live", liveAt: new Date() }).where(eq(parties.id, partyId));
+    for (const [i, u] of order.entries()) await db.update(partyPlayers).set({ rank: i + 1, score: 100 * (order.length - i) }).where(and(eq(partyPlayers.partyId, partyId), eq(partyPlayers.userId, u.id)));
+    await settle(settleDeps, partyId);
+  }
+
+  it("no one on the team, any role, takes a seat in the brand's parties with a prize; its free parties are fine", async () => {
+    const t = await team({ verified: true });
+    await call({ method: "POST", url: "/wallet/dev-topup", headers: asBrand(t.owner, t.brand), payload: { nairaAmount: 5_000 } });
+    const make = async (body: Record<string, unknown>) => (await call({ method: "POST", url: "/parties", headers: asBrand(t.admin, t.brand), payload: body })).json().id as string;
+    const prized = [await make(freeParty({ entryKobo: kobo(200) })), await make(freeParty({ funding: "host", hostPoolKobo: kobo(1_000), maxPlayers: 4 })), await make(goodsParty())];
+    for (const u of [t.owner, t.admin, t.host, t.viewer]) {
+      await call({ method: "POST", url: "/wallet/dev-topup", headers: as(u), payload: { nairaAmount: 1_000 } });
+      for (const id of prized) {
+        const r = await join(u, id);
+        expect([r.statusCode, r.json().error], `${u.handle} ${id}`).toEqual([403, "brand_team_member"]);
+      }
+      expect(await db.select().from(partyPlayers).where(eq(partyPlayers.userId, u.id))).toEqual([]);
+    }
+    expect((await join(t.viewer, await make(freeParty()))).statusCode).toBe(201);
+    // Another brand's prize party is no business of this team's.
+    const other = await team({ verified: true });
+    const theirs = (await call({ method: "POST", url: "/parties", headers: asBrand(other.admin, other.brand), payload: freeParty({ entryKobo: kobo(200) }) })).json().id;
+    expect((await join(t.viewer, theirs)).statusCode).toBe(201);
+  });
+
+  it("settlement checks it again: someone who joined the team after taking a seat wins nothing; the next player does", async () => {
+    const t = await team({ verified: true });
+    await call({ method: "POST", url: "/wallet/dev-topup", headers: asBrand(t.owner, t.brand), payload: { nairaAmount: 5_000 } });
+    const prize = kobo(1_000);
+    const cashId = (await call({ method: "POST", url: "/parties", headers: asBrand(t.admin, t.brand), payload: freeParty({ funding: "host", hostPoolKobo: prize, maxPlayers: 4 }) })).json().id;
+    const goodsId = (await call({ method: "POST", url: "/parties", headers: asBrand(t.admin, t.brand), payload: goodsParty() })).json().id;
+    const insider = await makeUser(name("ins"));
+    const runnerUp = await makeUser(name("run"));
+    for (const id of [cashId, goodsId]) for (const u of [insider, runnerUp]) expect((await join(u, id)).statusCode).toBe(201);
+    // Seated, then on the team.
+    const inv = (await call({ method: "POST", url: `/brands/${t.brand.id}/invites`, headers: as(t.owner), payload: { handle: insider.handle, role: "viewer" } })).json();
+    await call({ method: "POST", url: `/brand-invites/${inv.inviteId}/accept`, headers: as(insider) });
+    const insiderBefore = (await ledger.balances(insider.id)).cashKobo;
+    await settleWith(cashId, [insider, runnerUp]);
+    expect((await ledger.balances(insider.id)).cashKobo).toBe(insiderBefore);
+    const seats = await db.select().from(partyPlayers).where(eq(partyPlayers.partyId, cashId));
+    expect(seats.find((x) => x.userId === runnerUp.id)?.prizeKobo).toBe(prize);
+    expect(seats.find((x) => x.userId === insider.id)?.prizeKobo ?? 0).toBe(0);
+    await settleWith(goodsId, [insider, runnerUp]);
+    expect((await db.select().from(prizeFulfilments).where(eq(prizeFulfilments.partyId, goodsId))).map((f) => f.winnerUserId)).toEqual([runnerUp.id]);
+  });
+});
+
