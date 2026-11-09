@@ -17,6 +17,8 @@ export const UNAUTHORIZED = "unauthorized";
  * should sign out of Firebase and start a fresh anonymous session; retrying with this token never works.
  */
 export const ACCOUNT_GONE = "account_gone";
+/** 400: the request said its body was JSON (content-type: application/json) and it wasn't. An empty body is fine. */
+export const INVALID_JSON = "invalid_json";
 
 // ---------------------------------------------------------------- email
 

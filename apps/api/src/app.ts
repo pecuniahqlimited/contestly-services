@@ -2,12 +2,13 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import multipart from "@fastify/multipart";
-import { MAX_UPLOAD_BYTES, RATE_LIMITED } from "@contestly/shared";
+import { INVALID_JSON, MAX_UPLOAD_BYTES, RATE_LIMITED } from "@contestly/shared";
 import { ZodError } from "zod";
 import { InsufficientFunds } from "@contestly/db";
 import { Unauthorized } from "@contestly/auth";
 import { authPlugin, type SessionResolver } from "./auth.js";
 import { actingPlugin } from "./acting.js";
+import { httpError } from "./httpError.js";
 import { clientIpResolver, trustConfigFromEnv, type TrustConfig } from "./clientIp.js";
 import { limitsFromEnv, type Limits } from "./limits.js";
 import { publicConfigFromEnv } from "./publicConfig.js";
@@ -104,10 +105,11 @@ export async function buildApp(opts: AppOptions = {}) {
   // Source files only (PUT /parties/:id/files): one file, no other fields. The route sets the size cap.
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES + 1, files: 1, fields: 0 } });
 
-  // Allow empty JSON bodies (e.g. POST /corners/:id/follow with no payload).
+  // Allow empty JSON bodies (e.g. POST /corners/:id/follow with no payload). A body that isn't JSON is the client's
+  // mistake: 400 invalid_json, never a 500.
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {
     if (!body || !(body as string).trim()) return done(null, {});
-    try { done(null, JSON.parse(body as string)); } catch (e) { done(e as Error); }
+    try { done(null, JSON.parse(body as string)); } catch { done(httpError(400, INVALID_JSON)); }
   });
 
   // Sign in with Apple posts its callback as a form.

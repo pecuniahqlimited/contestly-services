@@ -133,7 +133,11 @@ describe("invites", () => {
     expect([again.statusCode, again.json().inviteId, again.json().replayed]).toEqual([200, first.json().inviteId, true]);
     const mine = (await call({ method: "GET", url: "/me/brands", headers: as(ade) })).json();
     expect(mine.invites).toMatchObject([{ id: first.json().inviteId, role: "host", brand: { id: brand.id }, invitedBy: { id: owner.id } }]);
-    expect((await call({ method: "POST", url: `/brand-invites/${first.json().inviteId}/accept`, headers: as(ade) })).json()).toMatchObject({ status: "accepted", replayed: false });
+    // A body that isn't JSON (the app's live run sent the invite id) is a 400 that changes nothing, not a 500.
+    const garbled = await call({ method: "POST", url: `/brand-invites/${first.json().inviteId}/accept`, headers: { ...as(ade), "content-type": "application/json" }, payload: first.json().inviteId });
+    expect([garbled.statusCode, garbled.json().error]).toEqual([400, "invalid_json"]);
+    expect((await call({ method: "GET", url: "/me/brands", headers: as(ade) })).json().invites).toHaveLength(1);
+    expect((await call({ method: "POST", url: `/brand-invites/${first.json().inviteId}/accept`, headers: { ...as(ade), "content-type": "application/json" }, payload: "{}" })).json()).toMatchObject({ status: "accepted", replayed: false });
     expect((await call({ method: "GET", url: "/me/brands", headers: as(ade) })).json().brands).toMatchObject([{ id: brand.id, role: "host" }]);
     expect((await call({ method: "POST", url: `/brands/${brand.id}/invites`, headers: as(owner), payload: { handle: ade.handle, role: "admin" } })).json().error).toBe("already_member");
     // Someone else declines; another invite is revoked before an answer.
