@@ -89,7 +89,8 @@ export async function approveBrand(adminUserId: string, brandId: string, reason:
   return db.transaction(async (tx) => {
     await assertNoInterest(tx, adminUserId, brandId);
     const { account, brand } = await lockForDecision(tx, brandId);
-    if (brand.verificationStatus === "verified") return { status: "verified" as const, replayed: true };
+    // A repeat answers the same, with the corner approval opened (createBrandCorner leaves an open one as it is).
+    if (brand.verificationStatus === "verified") return { status: "verified" as const, replayed: true, cornerId: (await createBrandCorner(tx, brandId, now)).id };
     if (brand.verificationStatus !== "in_review") throw brandError(409, "not_in_review", { status: brand.verificationStatus });
     // The checklist could have changed since it was sent (a payout account removed): review what's there now.
     const checklist = await checklistFor(tx, brand);
@@ -124,7 +125,7 @@ export async function requestBrandChanges(adminUserId: string, brandId: string, 
       before: { verificationStatus: brand.verificationStatus, isVerified: account.isVerified }, after: { verificationStatus: "changes_needed", isVerified: false },
     });
     await tellTeam(tx, account, "changes_needed", now);
-    return { status: "changes_needed" as const };
+    return { status: "changes_needed" as const, note };
   });
 }
 

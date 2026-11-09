@@ -9,7 +9,7 @@ import {
   approveBrand, brandEvents, brandMembers, brands, checklistOf, db, hasPayoutAccount, ledger, ownerOf, payoutAccounts, requestBrandChanges, reviewQueueOrder, teamOf, users,
   type Brand, type User,
 } from "@contestly/db";
-import { adminBrandDecisionSchema, adminBrandDetailSchema, adminBrandsQuerySchema, adminBrandsResponseSchema } from "@contestly/shared";
+import { adminBrandApproveResponseSchema, adminBrandChangesResponseSchema, adminBrandDecisionSchema, adminBrandDetailSchema, adminBrandsQuerySchema, adminBrandsResponseSchema } from "@contestly/shared";
 import { requireAdmin, uuidParam } from "../auth.js";
 import { httpError } from "../httpError.js";
 import { inviteView, memberView, personView, settingsView, verificationView } from "../brands.js";
@@ -70,12 +70,12 @@ export async function adminBrandsRoutes(app: FastifyInstance) {
   /** Approve a brand in review: verified, its corner opens, its owner and admins are told. The reason is logged. */
   app.post("/admin/brands/:id/approve", async (req) => {
     const admin = requireAdmin(req);
-    return approveBrand(admin.id, uuidParam(req), adminBrandDecisionSchema.parse(req.body).reason);
+    return adminBrandApproveResponseSchema.parse(await approveBrand(admin.id, uuidParam(req), adminBrandDecisionSchema.parse(req.body).reason));
   });
 
   /** Send it back with a note the brand's team sees (a verified brand is unverified until approved again). */
   app.post("/admin/brands/:id/request-changes", async (req) => {
     const admin = requireAdmin(req);
-    return requestBrandChanges(admin.id, uuidParam(req), adminBrandDecisionSchema.parse(req.body).reason);
+    return adminBrandChangesResponseSchema.parse(await requestBrandChanges(admin.id, uuidParam(req), adminBrandDecisionSchema.parse(req.body).reason));
   });
 }

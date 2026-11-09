@@ -317,3 +317,9 @@ export const adminBrandDetailSchema = adminBrandRowSchema.extend({
 });
 /** POST /admin/brands/:id/approve { reason } · /request-changes { reason }: the reason is the note the brand sees. */
 export const adminBrandDecisionSchema = z.object({ reason: reasonSchema });
+/** POST /admin/brands/:id/approve: verified, and the corner approval opened. A repeat answers the same (replayed). */
+export const adminBrandApproveResponseSchema = z.object({ status: z.literal("verified"), replayed: z.boolean(), cornerId: z.string().uuid() });
+export type AdminBrandApproveResponse = z.infer<typeof adminBrandApproveResponseSchema>;
+/** POST /admin/brands/:id/request-changes: sent back, with the note the brand's team sees. */
+export const adminBrandChangesResponseSchema = z.object({ status: z.literal("changes_needed"), note: z.string() });
+export type AdminBrandChangesResponse = z.infer<typeof adminBrandChangesResponseSchema>;

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
 import { assertBrandCan, db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach } from "@contestly/db";
-import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits, postsToCorner } from "@contestly/shared";
+import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, partyLimitsResponseSchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits, postsToCorner } from "@contestly/shared";
 import { notifyQueue, PARTY_EVENTS_CHANNEL } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
 import { actor } from "../acting.js";
@@ -45,7 +45,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const { person, as } = await actor(req);
     // As a brand (ADR 0017): its goods, its corner's reach, and whether it's verified (an unverified brand hosts free parties only).
     const [cfg, host, corner] = await Promise.all([getPartyConfig(), prospectiveHost(person.id, as.isBrand ? as.id : null), cornerReach(as.id)]);
-    return { limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host), freeOnly: host.isBrand && !host.isVerified, corner };
+    return partyLimitsResponseSchema.parse({ limits: visibleLimits(cfg.limits), rakeBps: cfg.rakeBps, hostCutBps: cfg.hostCutBps, canOfferGoods: canOfferNonCashPrize(host), freeOnly: host.isBrand && !host.isVerified, corner });
   });
 
   /** The builder. With `template`, anything the host left out of title, brief, cover and dials is the template's (ADR 0015). */

@@ -253,7 +253,7 @@ describe("verification", () => {
     expect([own.statusCode, own.json().error]).toEqual([403, "own_brand"]);
     await db.update(users).set({ isAdmin: false }).where(eq(users.id, t.viewer.id));
     // Changes needed, with a note the team sees and a nudge to the owner and admins (not hosts or viewers).
-    expect((await call({ method: "POST", url: `/admin/brands/${id}/request-changes`, headers: as(admin), payload: { reason: "The logo is blurry" } })).json()).toEqual({ status: "changes_needed" });
+    expect((await call({ method: "POST", url: `/admin/brands/${id}/request-changes`, headers: as(admin), payload: { reason: "The logo is blurry" } })).json()).toEqual({ status: "changes_needed", note: "The logo is blurry" });
     expect((await call({ method: "GET", url: `/brands/${id}/settings`, headers: as(t.viewer) })).json().verification).toMatchObject({ status: "changes_needed", note: "The logo is blurry" });
     for (const u of [t.owner, t.admin]) expect((await nudgesOf(u.id, "verification_update")).map((x) => (x.data as { outcome: string }).outcome)).toEqual(["changes_needed"]);
     for (const u of [t.host, t.viewer]) expect(await nudgesOf(u.id, "verification_update")).toEqual([]);
@@ -265,6 +265,9 @@ describe("verification", () => {
     expect((await reload(t.brand)).isVerified).toBe(true);
     const [corner] = await db.select().from(corners).where(eq(corners.ownerUserId, id));
     expect(corner).toMatchObject({ status: "unlocked", level: 1, id: approved.json().cornerId });
+    // Approving again answers the same, with the same corner.
+    expect((await call({ method: "POST", url: `/admin/brands/${id}/approve`, headers: as(admin), payload: { reason: "CAC checks out" } })).json())
+      .toEqual({ status: "verified", replayed: true, cornerId: approved.json().cornerId });
     expect((await call({ method: "GET", url: `/brands/${id}`, headers: as(t.viewer) })).json()).toMatchObject({ isVerified: true, cornerId: corner.id });
     expect((await call({ method: "GET", url: `/corners/${corner.id}`, headers: as(t.viewer) })).statusCode).toBe(200);
     for (const u of [t.owner, t.admin]) expect((await nudgesOf(u.id, "verification_update")).map((x) => (x.data as { outcome: string }).outcome).sort()).toEqual(["approved", "changes_needed"]);

@@ -785,6 +785,8 @@ export const partyLimitsResponseSchema = z.object({
   rakeBps: z.number().int(),
   hostCutBps: z.number().int(),
   canOfferGoods: z.boolean(),
+  /** Acting as a brand that isn't verified yet: only free parties (entry 0, no prize; brand_not_verified otherwise). */
+  freeOnly: z.boolean(),
   /** The host's shown corner, for the Doors scene: a public party goes up on it (postsToCorner). Null without one. */
   corner: cornerReachSchema.nullable(),
 });
