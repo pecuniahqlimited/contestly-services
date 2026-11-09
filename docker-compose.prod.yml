@@ -36,6 +36,10 @@ services:
     <<: *service
     build: { context: ., args: { APP: questions } }
     image: ${IMAGE_REGISTRY:-local}/contestly-questions:${IMAGE_TAG:-latest}
+    # Generation holds model replies, embeddings and drafts in memory; Node's default heap at 384m ran out.
+    mem_limit: 640m
+    environment:
+      NODE_OPTIONS: --max-old-space-size=480
 
   # The only container with public ports. Gets TLS certificates for API_HOST and RT_HOST on first request.
   caddy:
