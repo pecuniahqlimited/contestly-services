@@ -23,7 +23,7 @@ export async function hasPayoutAccount(conn: Conn, accountId: string): Promise<b
 export function checklistOf(brand: Brand, payoutAccount: boolean): BrandChecklist {
   const items = {
     registrationNumber: !!brand.registrationNumber && CAC_NUMBER_RE.test(brand.registrationNumber),
-    logo: !!brand.logoUrl,
+    logo: !!brand.logoKey,
     link: !!brand.siteUrl || Object.values(brand.socials ?? {}).some(Boolean),
     businessEmail: !!brand.businessEmail && !!brand.businessEmailVerifiedAt,
     payoutAccount: (!brand.cashPrizes ? "not_needed" : payoutAccount ? "done" : "missing") as BrandChecklist["payoutAccount"],

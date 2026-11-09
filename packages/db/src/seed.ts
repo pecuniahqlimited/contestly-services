@@ -71,8 +71,8 @@ await db.transaction(async (tx) => {
   // The demo brands: their rows (verified, as an approval leaves them) and their owners.
   for (const [brand, owner] of Object.entries(BRAND_OWNERS) as [keyof typeof BRAND_OWNERS, string][]) {
     const files = BRAND_FILES[brand];
-    await tx.insert(brands).values({ id: by[brand], createdByUserId: by[owner], ...files, logoUrl: `https://${brand}.example/logo.png`, businessEmailVerifiedAt: new Date(), verificationStatus: "verified", decidedAt: new Date() })
-      .onConflictDoUpdate({ target: brands.id, set: { ...files, logoUrl: `https://${brand}.example/logo.png`, createdByUserId: by[owner], verificationStatus: "verified", businessEmailVerifiedAt: new Date() } });
+    await tx.insert(brands).values({ id: by[brand], createdByUserId: by[owner], ...files, businessEmailVerifiedAt: new Date(), verificationStatus: "verified", decidedAt: new Date() })
+      .onConflictDoUpdate({ target: brands.id, set: { ...files, createdByUserId: by[owner], verificationStatus: "verified", businessEmailVerifiedAt: new Date() } });
     await tx.insert(brandMembers).values({ brandId: by[brand], userId: by[owner], role: "owner" }).onConflictDoNothing();
   }
 

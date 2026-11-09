@@ -3,15 +3,12 @@ import { randomUUID } from "node:crypto";
 import { and, eq, ne } from "drizzle-orm";
 import { answerRequest, canReadThread, chatMembers, db, getChatConfig, markRead, memberOf, messagesPage, liveUser, openDm, threadById, users, voiceNotes } from "@contestly/db";
 import { VOICE_PLAYBACK_URL_SECONDS, VOICE_UPLOAD_URL_SECONDS, chatPageQuerySchema, voiceUploadRequestSchema } from "@contestly/shared";
-import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
+import { storage } from "../objectStore.js";
 import { uuidParam } from "../auth.js";
 import { actor, sessionOrBrand } from "../acting.js";
 import { httpError } from "../httpError.js";
 import { limit } from "../redis.js";
 import { dmThreads, unreadTotals } from "../chats.js";
-
-let store: ObjectStore | undefined;
-const storage = () => (store ??= objectStoreFromEnv());
 
 const voiceKey = (threadId: string, noteId: string) => `voice/${threadId}/${noteId}`;
 

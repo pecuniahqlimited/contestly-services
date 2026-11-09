@@ -1790,7 +1790,8 @@ export const brandVerificationStatus = pgEnum("brand_verification_status", BRAND
  */
 export const brands = pgTable("brands", {
   id: uuid("id").primaryKey().references(() => users.id),
-  logoUrl: text("logo_url"),
+  /** The uploaded logo's object key (images/brand_logo/<brand id>/…), read through a presigned URL. */
+  logoKey: text("logo_key"),
   lane: text("lane").$type<Category>(),
   siteUrl: text("site_url"),
   socials: jsonb("socials").$type<Record<string, string>>().notNull().default({}),

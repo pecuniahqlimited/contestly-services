@@ -2,6 +2,7 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { checklistFor, corners, db, type Brand, type BrandMember, type User } from "@contestly/db";
 import type { BrandChecklist, BrandRole, PublicBrand } from "@contestly/shared";
+import { imageUrl } from "./images.js";
 
 export const personView = (u: Pick<User, "id" | "handle" | "displayName" | "avatarEmoji" | "isVerified">) =>
   ({ id: u.id, handle: u.handle, displayName: u.displayName, avatarEmoji: u.avatarEmoji, isVerified: u.isVerified });
@@ -16,9 +17,9 @@ export async function cornerIdsOf(brandIds: string[]): Promise<Map<string, strin
   return new Map(rows.map((r) => [r.owner, r.id]));
 }
 
-export function publicBrandView(account: User, brand: Brand, cornerId: string | null): PublicBrand {
+export async function publicBrandView(account: User, brand: Brand, cornerId: string | null): Promise<PublicBrand> {
   return {
-    id: account.id, handle: account.handle, displayName: account.displayName, avatarEmoji: account.avatarEmoji, logoUrl: brand.logoUrl, bio: account.bio,
+    id: account.id, handle: account.handle, displayName: account.displayName, avatarEmoji: account.avatarEmoji, logoUrl: await imageUrl(brand.logoKey), bio: account.bio,
     lane: brand.lane ?? null, siteUrl: brand.siteUrl, socials: brand.socials ?? {}, isVerified: account.isVerified && brand.verificationStatus === "verified", cornerId,
   };
 }
@@ -29,7 +30,7 @@ export const verificationView = (b: Brand) => ({ status: b.verificationStatus, n
 export async function settingsView(account: User, brand: Brand, role: BrandRole, checklist?: BrandChecklist) {
   const cornerId = (await cornerIdsOf([account.id])).get(account.id) ?? null;
   return {
-    ...publicBrandView(account, brand, cornerId), role, registrationNumber: brand.registrationNumber, businessEmail: brand.businessEmail,
+    ...(await publicBrandView(account, brand, cornerId)), role, logoKey: brand.logoKey, registrationNumber: brand.registrationNumber, businessEmail: brand.businessEmail,
     businessEmailVerifiedAt: iso(brand.businessEmailVerifiedAt), cashPrizes: brand.cashPrizes, hostSpendLimitKobo: brand.hostSpendLimitKobo, verification: verificationView(brand), checklist: checklist ?? (await checklistFor(db, brand)),
   };
 }

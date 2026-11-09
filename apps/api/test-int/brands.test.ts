@@ -13,9 +13,10 @@ import {
   adminActions, adminAlerts, newMember, brandEvents, brandMembers, chatMessages, corners, db, getChatConfig, ledger, nudges, parties, partyPlayers, postMessage,
   prizeFulfilments, recordDeliveryNudges, sql, threadById, users, type User,
 } from "@contestly/db";
-import { kobo, type NudgeKind } from "@contestly/shared";
+import { IMAGE_MAX_BYTES, imageKey, kobo, type NudgeKind } from "@contestly/shared";
 import { resetProviders } from "@contestly/payments";
 import { valkey } from "../src/redis.js";
+import { storage } from "../src/objectStore.js";
 import { hmac } from "../src/signin/secrets.js";
 import { as, asBrand, clientAddress, makeBrand, makeUser, tag, testApp } from "./harness.js";
 import { settle } from "../../worker/src/partySettle.js";
@@ -56,6 +57,17 @@ async function team(opts: { verified?: boolean } = {}) {
     expect((await call({ method: "POST", url: `/brand-invites/${inv.json().inviteId}/accept`, headers: as(u) })).statusCode).toBe(200);
   }
   return { owner, brand, ...members };
+}
+
+/** The 8-byte PNG signature and a little after it: enough for the attach check, which reads the signature. */
+const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(56).fill(7)]);
+/** Ask for a logo upload acting as the brand and PUT the bytes to object storage, as the app does. Returns the key. */
+async function uploadLogo(person: User, brand: User, bytes: Uint8Array = PNG, contentType = "image/png"): Promise<string> {
+  const asked = await call({ method: "POST", url: "/images/uploads", headers: asBrand(person, brand), payload: { purpose: "brand_logo", contentType, bytes: bytes.length } });
+  expect(asked.statusCode, asked.body).toBe(200);
+  const { key, upload } = asked.json();
+  expect((await fetch(upload.url, { method: "PUT", headers: upload.headers, body: bytes })).status).toBe(200);
+  return key;
 }
 
 /** TEST-ONLY: the code went out by mail; swap its HMAC for one of a code we know (as addEmail.test does). */
@@ -120,6 +132,38 @@ describe("each role's permissions", () => {
     expect((await call({ method: "PATCH", url: `/brands/${t.brand.id}/members/${t.viewer.id}`, headers: as(t.admin), payload: { role: "host" } })).statusCode).toBe(204);
     expect((await call({ method: "PATCH", url: `/brands/${t.brand.id}/members/${t.viewer.id}`, headers: as(t.admin), payload: { role: "owner" } })).statusCode).toBe(400);
     expect((await call({ method: "POST", url: "/parties", headers: asBrand(t.viewer, t.brand), payload: freeParty() })).statusCode).toBe(201);
+  });
+});
+
+describe("logo uploads", () => {
+  it("go straight to storage for someone with settings, acting as the brand; the key is checked when attached", async () => {
+    const t = await team();
+    const other = await team();
+    const ask = (headers: Record<string, string>, payload: object) => call({ method: "POST", url: "/images/uploads", headers, payload });
+    const logo = { purpose: "brand_logo", contentType: "image/png", bytes: PNG.length };
+    expect((await ask(as(t.owner), logo)).json().error).toBe("act_as_brand_required");
+    expect((await ask(asBrand(t.host, t.brand), logo)).json()).toMatchObject({ error: "brand_role_forbidden", details: { capability: "settings" } });
+    expect((await ask(asBrand(t.owner, t.brand), { ...logo, bytes: IMAGE_MAX_BYTES.brand_logo + 1 })).json().error).toBe("image_too_large");
+    expect((await ask(asBrand(t.owner, t.brand), { ...logo, contentType: "image/gif" })).statusCode).toBe(400);
+    const patch = (payload: object) => call({ method: "PATCH", url: `/brands/${t.brand.id}`, headers: as(t.owner), payload });
+    // Attached: the settings and the public brand carry a read URL that serves the bytes.
+    const key = await uploadLogo(t.admin, t.brand);
+    expect(key).toMatch(new RegExp(`^images/brand_logo/${t.brand.id}/`));
+    const set = await patch({ logoKey: key });
+    expect(set.json()).toMatchObject({ logoKey: key, checklist: { logo: true } });
+    const shown = (await call({ method: "GET", url: `/brands/${t.brand.id}`, headers: as(t.viewer) })).json().logoUrl;
+    expect(new Uint8Array(await (await fetch(shown)).arrayBuffer())).toEqual(PNG);
+    // Someone else's key, one never uploaded, and bytes that aren't the type (deleted) are refused.
+    expect((await patch({ logoKey: await uploadLogo(other.owner, other.brand) })).json().error).toBe("image_not_yours");
+    expect((await patch({ logoKey: imageKey("brand_logo", t.brand.id, randomUUID(), "image/png") })).json().error).toBe("image_not_uploaded");
+    const fake = await uploadLogo(t.owner, t.brand, new TextEncoder().encode("<svg>not a png at all</svg>"));
+    expect((await patch({ logoKey: fake })).json().error).toBe("image_not_an_image");
+    expect(await storage().head(fake)).toBeNull();
+    // A new logo replaces the old one, which is deleted; clearing it shows the emoji.
+    const next = await uploadLogo(t.owner, t.brand);
+    expect((await patch({ logoKey: next })).json().logoKey).toBe(next);
+    expect(await storage().head(key)).toBeNull();
+    expect((await patch({ logoKey: null })).json()).toMatchObject({ logoKey: null, logoUrl: null, checklist: { logo: false } });
   });
 });
 
@@ -230,7 +274,7 @@ describe("verification", () => {
     expect(incomplete.json().details.checklist).toMatchObject({ registrationNumber: false, logo: false, link: false, businessEmail: false, payoutAccount: "not_needed", complete: false });
     expect((await call({ method: "PATCH", url: `/brands/${id}`, headers: as(t.owner), payload: { registrationNumber: "rc 1234567" } })).json().registrationNumber).toBe("RC1234567");
     expect((await call({ method: "PATCH", url: `/brands/${id}`, headers: as(t.owner), payload: { registrationNumber: "12345" } })).statusCode).toBe(400);
-    await call({ method: "PATCH", url: `/brands/${id}`, headers: as(t.owner), payload: { logoUrl: "https://brand.example/logo.png", socials: { instagram: "https://instagram.com/brand" }, cashPrizes: true } });
+    await call({ method: "PATCH", url: `/brands/${id}`, headers: as(t.owner), payload: { logoKey: await uploadLogo(t.owner, t.brand), socials: { instagram: "https://instagram.com/brand" }, cashPrizes: true } });
     // The business email: a code to it, bound to this person and brand.
     const email = `biz-${tag}-${++n}@brand.example`;
     expect((await call({ method: "POST", url: `/brands/${id}/business-email/start`, headers: as(t.owner), remoteAddress: clientAddress(), payload: { email } })).statusCode).toBe(200);
@@ -258,7 +302,7 @@ describe("verification", () => {
     for (const u of [t.owner, t.admin]) expect((await nudgesOf(u.id, "verification_update")).map((x) => (x.data as { outcome: string }).outcome)).toEqual(["changes_needed"]);
     for (const u of [t.host, t.viewer]) expect(await nudgesOf(u.id, "verification_update")).toEqual([]);
     // Fixed and sent again: approved. Verified, the corner opens, the team hears.
-    await call({ method: "PATCH", url: `/brands/${id}`, headers: as(t.owner), payload: { logoUrl: "https://brand.example/logo-sharp.png" } });
+    await call({ method: "PATCH", url: `/brands/${id}`, headers: as(t.owner), payload: { logoKey: await uploadLogo(t.owner, t.brand) } });
     expect((await submit()).statusCode).toBe(200);
     const approved = await call({ method: "POST", url: `/admin/brands/${id}/approve`, headers: as(admin), payload: { reason: "CAC checks out" } });
     expect(approved.json()).toMatchObject({ status: "verified", replayed: false });

@@ -421,6 +421,13 @@
       "when": 1794222706835,
       "tag": "0059_brand_host_spend_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1794232720756,
+      "tag": "0060_brand_logo_key",
+      "breakpoints": true
     }
   ]
 }

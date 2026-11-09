@@ -18,7 +18,7 @@ import { and, eq } from "drizzle-orm";
 import { brandEvents, chatMessages, corners, db, nudges, parties, partyPlayers, prizeFulfilments, recordDeliveryNudges, sql, users } from "@contestly/db";
 import { closeQueues, partyQueue } from "@contestly/queue";
 import { INBOX_ROOM, MSG, kobo, type NudgeKind } from "@contestly/shared";
-import { RT, api, call, failureCount, latestMail, mailedCode, ok, waitFor, type ActingAs } from "./sim-lib.js";
+import { RT, SIM_PNG, api, call, failureCount, latestMail, mailedCode, ok, uploadLogo, waitFor, type ActingAs } from "./sim-lib.js";
 
 const run = Date.now().toString(36).slice(-6);
 const OWNER = `sbo_${run}`;
@@ -81,7 +81,9 @@ ok((await call(as(VIEWER), "GET", "/chats")).status === 200, "a viewer reads the
 console.log("\n==== verification ====");
 const incomplete = await call(OWNER, "POST", `/brands/${brandId}/verification/submit`);
 ok(incomplete.status === 422 && incomplete.body.error === "checklist_incomplete", "it can't be sent for review with the checklist incomplete");
-await api(ADMIN, "PATCH", `/brands/${brandId}`, { registrationNumber: "BN 7654321", logoUrl: `https://${BRAND.replace(/[^a-z0-9]/g, "")}.example/logo.png`, socials: { instagram: `https://instagram.com/${BRAND}` }, cashPrizes: true });
+await api(ADMIN, "PATCH", `/brands/${brandId}`, { registrationNumber: "BN 7654321", logoKey: await uploadLogo({ person: ADMIN, brand: BRAND }), socials: { instagram: `https://instagram.com/${BRAND}` }, cashPrizes: true });
+const shownLogo = (await api(OWNER, "GET", `/brands/${brandId}`)).logoUrl as string | null;
+ok(!!shownLogo && (await (await fetch(shownLogo)).arrayBuffer()).byteLength === SIM_PNG.length, "the logo goes straight to storage and the brand shows it");
 const bizEmail = `hello+${run}@${BRAND.replace(/[^a-z0-9]/g, "")}.example`;
 await api(ADMIN, "POST", `/brands/${brandId}/business-email/start`, { email: bizEmail });
 const code = await mailedCode(bizEmail);

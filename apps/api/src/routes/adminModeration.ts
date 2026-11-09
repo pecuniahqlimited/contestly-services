@@ -5,15 +5,12 @@ import {
   VOICE_PLAYBACK_URL_SECONDS, adminReasonBodySchema, bulkDismissBodySchema, bulkDismissResponseSchema, moderationActionBodySchema, moderationActionResponseSchema, moderationItemDetailSchema, moderationPageSchema, moderationQuerySchema,
   reasonSchema, safetyConfigSchema, type ModerationActionBody,
 } from "@contestly/shared";
-import { objectStoreFromEnv, type ObjectStore } from "@contestly/storage";
+import { storage } from "../objectStore.js";
 import { z } from "zod";
 import { requireAdmin, uuidParam } from "../auth.js";
 import { httpError } from "../httpError.js";
 import { publishSafety } from "../safetyEvents.js";
 import { afterBan } from "../standing.js";
-
-let store: ObjectStore | undefined;
-const storage = () => (store ??= objectStoreFromEnv());
 
 const HOUR_MS = 3_600_000;
 

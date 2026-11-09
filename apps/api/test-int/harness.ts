@@ -3,11 +3,11 @@
  * as a real token session would be, so the admin role is really checked (no dev-header pass). Users are
  * written straight to the database with a per-run tag.
  */
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { NoCredentials, Unauthorized, type Session } from "@contestly/auth";
 import { approveBrand, brands, createBrand, db, systemActorId, users, type User } from "@contestly/db";
-import { ACT_AS_HEADER } from "@contestly/shared";
+import { ACT_AS_HEADER, imageKey } from "@contestly/shared";
 import { buildApp, type AppOptions } from "../src/app.js";
 
 export const tag = randomBytes(3).toString("hex");
@@ -54,7 +54,7 @@ export async function makeBrand(owner: User, opts: { verified?: boolean; cashPri
   const { account } = await createBrand(owner, { name: `Brand ${brandsMade}`, handle, logoEmoji: "🏷️", cashPrizes: opts.cashPrizes ?? false });
   if (opts.verified) {
     await db.update(brands).set({
-      registrationNumber: "RC123456", logoUrl: `https://${handle}.example/logo.png`, siteUrl: `https://${handle}.example`,
+      registrationNumber: "RC123456", logoKey: imageKey("brand_logo", account.id, randomUUID(), "image/png"), siteUrl: `https://${handle}.example`,
       businessEmail: `${handle}@biz.example`, businessEmailVerifiedAt: new Date(), verificationStatus: "in_review", submittedAt: new Date(),
     }).where(eq(brands.id, account.id));
     await approveBrand(await systemActorId(db as never), account.id, "test brand");

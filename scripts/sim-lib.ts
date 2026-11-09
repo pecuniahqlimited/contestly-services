@@ -268,6 +268,17 @@ export async function mailedCode(to: string): Promise<string> {
   return code;
 }
 
+/** The PNG signature and a few bytes: what a logo upload's attach check reads. */
+export const SIM_PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(56).fill(7)]);
+
+/** A logo uploaded as the app does it: an upload URL acting as the brand, the bytes PUT straight to storage. Returns the key. */
+export async function uploadLogo(as: ActingAs, bytes: Uint8Array = SIM_PNG): Promise<string> {
+  const { key, upload } = await api<{ key: string; upload: { url: string; headers: Record<string, string> } }>(as, "POST", "/images/uploads", { purpose: "brand_logo", contentType: "image/png", bytes: bytes.length });
+  const put = await fetch(upload.url, { method: "PUT", headers: upload.headers, body: bytes });
+  if (!put.ok) throw new Error(`logo upload → ${put.status}`);
+  return key;
+}
+
 /**
  * A verified brand `owner` owns, through the real API (ADR 0017): made if missing, its checklist filled in, the
  * business email confirmed by the code from Mailpit, sent for review and approved by `approver` (any dev header
@@ -279,7 +290,7 @@ export async function verifiedBrand(owner: string, handle: string, name: string,
   if (id && mine.brands.find((b) => b.id === id)!.verificationStatus === "verified") return id;
   if (!id) id = (await api(owner, "POST", "/brands", { name, handle, logoEmoji: "🏷️", lane: "General knowledge" })).id as string;
   const domain = `${handle.replace(/[^a-z0-9]/g, "")}.example`;
-  await api(owner, "PATCH", `/brands/${id}`, { registrationNumber: "RC1234567", logoUrl: `https://${domain}/logo.png`, siteUrl: `https://${domain}`, cashPrizes: false });
+  await api(owner, "PATCH", `/brands/${id}`, { registrationNumber: "RC1234567", logoKey: await uploadLogo({ person: owner, brand: handle }), siteUrl: `https://${domain}`, cashPrizes: false });
   const settings = await api(owner, "GET", `/brands/${id}/settings`);
   if (!settings.checklist.businessEmail) {
     const email = `team+${Date.now()}@${domain}`;

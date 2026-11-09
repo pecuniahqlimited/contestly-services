@@ -99,7 +99,7 @@ export async function createBrand(person: User, input: CreateBrandInput): Promis
         handle, displayName: name, avatarEmoji: input.logoEmoji, bio, isBrand: true, who: "brand", interests: input.lane ? [input.lane] : [], isSim: person.isSim,
       }).returning();
       const [brand] = await tx.insert(brands).values({
-        id: account.id, logoUrl: input.logoUrl ?? null, lane: input.lane ?? null, siteUrl: input.siteUrl ?? null, socials: input.socials ?? {},
+        id: account.id, lane: input.lane ?? null, siteUrl: input.siteUrl ?? null, socials: input.socials ?? {},
         registrationNumber: input.registrationNumber ? normaliseCac(input.registrationNumber) : null, cashPrizes: input.cashPrizes, createdByUserId: person.id,
       }).returning();
       await tx.insert(brandMembers).values({ brandId: account.id, userId: person.id, role: "owner" });
@@ -127,7 +127,7 @@ export async function updateBrand(brandId: string, person: User, input: UpdateBr
   if (input.bio !== undefined) account.bio = await cleanOptionalName("bio", input.bio);
   if (input.lane !== undefined) account.interests = input.lane ? [input.lane] : [];
   const row: Partial<typeof brands.$inferInsert> = {};
-  if (input.logoUrl !== undefined) row.logoUrl = input.logoUrl;
+  if (input.logoKey !== undefined) row.logoKey = input.logoKey;
   if (input.lane !== undefined) row.lane = input.lane;
   if (input.siteUrl !== undefined) row.siteUrl = input.siteUrl;
   if (input.socials !== undefined) row.socials = input.socials;

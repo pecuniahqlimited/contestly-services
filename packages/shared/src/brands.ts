@@ -7,6 +7,7 @@ import { CATEGORIES } from "./categories.js";
 import { handleSchema } from "./accounts.js";
 import { personSchema } from "./person.js";
 import { reasonSchema } from "./admin.js";
+import { imageKeySchema } from "./images.js";
 
 // ---- acting as a brand -----------------------------------------------------------------
 
@@ -19,6 +20,8 @@ export const BRAND_ACCOUNT_SESSION = "brand_account_session";
 export const NOT_AVAILABLE_AS_BRAND = "not_available_as_brand";
 /** 404: not on this brand's team (never says whether the brand exists). */
 export const NOT_A_MEMBER = "not_a_member";
+/** 400: something only a brand has (its logo) was asked for without acting as the brand (x-act-as). */
+export const ACT_AS_BRAND_REQUIRED = "act_as_brand_required";
 /** 403: on the team, but the role doesn't allow it. details: { capability, role }. */
 export const BRAND_ROLE_FORBIDDEN = "brand_role_forbidden";
 /** 422: an unverified brand hosts free parties only (entry 0, no prize). */
@@ -94,8 +97,8 @@ const socialsSchema = z.record(z.enum(BRAND_SOCIALS), urlSchema);
 const brandFields = {
   name: z.string().trim().min(2).max(40),
   logoEmoji: z.string().min(1).max(8),
-  /** The uploaded logo (object storage, presigned like an avatar). Null: the emoji shows. */
-  logoUrl: urlSchema.nullable(),
+  /** The uploaded logo's key (POST /images/uploads, purpose brand_logo, acting as the brand). Null: the emoji shows. */
+  logoKey: imageKeySchema.nullable(),
   bio: z.string().trim().max(200).nullable(),
   lane: z.enum(CATEGORIES).nullable(),
   siteUrl: urlSchema.nullable(),
@@ -115,7 +118,6 @@ export const createBrandSchema = z.object({
   name: brandFields.name,
   handle: handleSchema,
   logoEmoji: brandFields.logoEmoji.default("🏷️"),
-  logoUrl: brandFields.logoUrl.optional(),
   bio: brandFields.bio.optional(),
   lane: brandFields.lane.optional(),
   siteUrl: brandFields.siteUrl.optional(),
@@ -126,7 +128,7 @@ export const createBrandSchema = z.object({
 export type CreateBrandInput = z.infer<typeof createBrandSchema>;
 /** PATCH /brands/:id (settings): any field; null clears an optional one. The handle can't change. */
 export const updateBrandSchema = createBrandSchema.omit({ handle: true }).partial().extend({
-  logoEmoji: brandFields.logoEmoji.optional(), cashPrizes: brandFields.cashPrizes.optional(), hostSpendLimitKobo: brandFields.hostSpendLimitKobo.optional(),
+  logoEmoji: brandFields.logoEmoji.optional(), logoKey: brandFields.logoKey.optional(), cashPrizes: brandFields.cashPrizes.optional(), hostSpendLimitKobo: brandFields.hostSpendLimitKobo.optional(),
 });
 export type UpdateBrandInput = z.infer<typeof updateBrandSchema>;
 
@@ -136,6 +138,7 @@ export const publicBrandSchema = z.object({
   handle: z.string(),
   displayName: z.string(),
   avatarEmoji: z.string(),
+  /** The uploaded logo, as a read URL that works for IMAGE_READ_URL_SECONDS (fetch the brand again for a fresh one). Null: show the emoji. */
   logoUrl: z.string().nullable(),
   bio: z.string().nullable(),
   lane: z.enum(CATEGORIES).nullable(),
@@ -175,6 +178,8 @@ export const brandSettingsSchema = publicBrandSchema.extend({
   businessEmailVerifiedAt: z.string().datetime().nullable(),
   cashPrizes: z.boolean(),
   hostSpendLimitKobo: z.number().int(),
+  /** The logo's key, as attached (logoUrl reads it). */
+  logoKey: z.string().nullable(),
   verification: brandVerificationSchema,
   checklist: brandChecklistSchema,
 });

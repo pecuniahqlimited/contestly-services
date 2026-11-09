@@ -39,6 +39,7 @@ import { crewsRoutes } from "./routes/crews.js";
 import { cornersRoutes } from "./routes/corners.js";
 import { adminCornersRoutes } from "./routes/adminCorners.js";
 import { brandsRoutes } from "./routes/brands.js";
+import { imagesRoutes } from "./routes/images.js";
 import { adminBrandsRoutes } from "./routes/adminBrands.js";
 import { socialRoutes } from "./routes/social.js";
 import { adminPaymentsRoutes } from "./routes/adminPayments.js";
@@ -157,6 +158,7 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(cornersRoutes);
   await app.register(adminCornersRoutes);
   await app.register(brandsRoutes);
+  await app.register(imagesRoutes);
   await app.register(adminBrandsRoutes);
   await app.register(paymentWebhookRoutes);
   await app.register(mockCheckoutRoutes);

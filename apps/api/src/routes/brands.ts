@@ -16,6 +16,8 @@ import {
 } from "@contestly/shared";
 import { optionalSession, requireUser, uuidParam } from "../auth.js";
 import { httpError } from "../httpError.js";
+import { checkUploadedImage } from "../images.js";
+import { storage } from "../objectStore.js";
 import { cornerIdsOf, inviteView, memberView, personView, publicBrandView, settingsView } from "../brands.js";
 import { checkEmailCode, startEmailCode, watchCodeSends } from "../signin/emailCode.js";
 import { sendBrandInvite, sendBusinessEmailCode } from "../email.js";
@@ -38,10 +40,10 @@ export async function brandsRoutes(app: FastifyInstance) {
     const { memberships, invites } = await brandsOf(me.id);
     const cornerOf = await cornerIdsOf([...memberships.map((m) => m.account.id), ...invites.map((i) => i.account.id)]);
     return myBrandsResponseSchema.parse({
-      brands: memberships.map((m) => ({ ...publicBrandView(m.account, m.brand, cornerOf.get(m.account.id) ?? null), role: m.role, verificationStatus: m.brand.verificationStatus })),
-      invites: invites.map((i) => ({
-        id: i.invite.id, brand: publicBrandView(i.account, i.brand, cornerOf.get(i.account.id) ?? null), role: i.invite.role, invitedBy: personView(i.inviter), createdAt: i.invite.createdAt.toISOString(),
-      })),
+      brands: await Promise.all(memberships.map(async (m) => ({ ...(await publicBrandView(m.account, m.brand, cornerOf.get(m.account.id) ?? null)), role: m.role, verificationStatus: m.brand.verificationStatus }))),
+      invites: await Promise.all(invites.map(async (i) => ({
+        id: i.invite.id, brand: await publicBrandView(i.account, i.brand, cornerOf.get(i.account.id) ?? null), role: i.invite.role, invitedBy: personView(i.inviter), createdAt: i.invite.createdAt.toISOString(),
+      }))),
     });
   });
 
@@ -55,7 +57,7 @@ export async function brandsRoutes(app: FastifyInstance) {
     optionalSession(req);
     const found = await liveBrand(db, uuidParam(req));
     if (!found) throw httpError(404, "not_found");
-    return publicBrandSchema.parse(publicBrandView(found.account, found.brand, (await cornerIdsOf([found.account.id])).get(found.account.id) ?? null));
+    return publicBrandSchema.parse(await publicBrandView(found.account, found.brand, (await cornerIdsOf([found.account.id])).get(found.account.id) ?? null));
   });
 
   /** Settings, the checklist and my role (every role reads; settings writes). */
@@ -64,11 +66,17 @@ export async function brandsRoutes(app: FastifyInstance) {
     return brandSettingsSchema.parse(await settingsView(account, brand, role));
   });
 
+  /** Settings. A new logo is the key of an upload made for this brand (POST /images/uploads); the old one is deleted. */
   app.patch("/brands/:id", async (req) => {
     const me = requireUser(req);
     const id = uuidParam(req);
-    await updateBrand(id, me, updateBrandSchema.parse(req.body));
+    const input = updateBrandSchema.parse(req.body);
+    const before = await assertBrandCan(db, id, me, "settings");
+    if (input.logoKey) await checkUploadedImage(input.logoKey, "brand_logo", id);
+    await updateBrand(id, me, input);
     const { account, brand, role } = await assertBrandCan(db, id, me, "view");
+    const replaced = before.brand.logoKey;
+    if (replaced && replaced !== brand.logoKey) await storage().remove(replaced).catch((err) => req.log.warn({ err, key: replaced }, "old brand logo not deleted"));
     return brandSettingsSchema.parse(await settingsView(account, brand, role));
   });
 
