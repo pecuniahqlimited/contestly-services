@@ -10,6 +10,7 @@ import { z } from "zod";
 import { DIFFICULTIES, QUESTION_FORMATS } from "./questionKinds.js";
 import { checkSafety, parseExclusions, type SafetyResult } from "./safety.js";
 import { personSchema } from "./person.js";
+import { DISTRACTOR_COUNT, MAX_HOST_ANSWER_CHARS, MAX_HOST_QUESTION_CHARS, MAX_HOST_QUESTIONS, templateIdSchema as idSchema, type HostQuestion } from "./hostQuestion.js";
 
 const KOBO_PER_NAIRA = 100;
 const toKobo = (naira: number) => naira * KOBO_PER_NAIRA;
@@ -18,30 +19,11 @@ const PERCENT = 100;
 
 /** Host-written questions are pick-one only at launch (ADR 0015, "Not decided here": other formats). */
 export const HOST_WRITTEN_FORMATS = ["pick_one"] as const;
-/** Three wrong options beside the host's right one. */
-export const DISTRACTOR_COUNT = 3;
-export const MAX_HOST_QUESTION_CHARS = 200;
-export const MAX_HOST_ANSWER_CHARS = 80;
-export const MAX_HOST_EXPLANATION_CHARS = 300;
-/** The most host-written questions one party can carry (the share cap usually bites first). */
-export const MAX_HOST_QUESTIONS = 15;
 
-const sameText = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
-
-/**
- * One host-written question as the host gives it: the question, the right answer and three wrong ones (suggested
- * by POST /parties/host-questions/distractors, editable). The server shuffles where the right answer lands.
- */
-export const hostQuestionSchema = z.object({
-  question: z.string().trim().min(3).max(MAX_HOST_QUESTION_CHARS),
-  answer: z.string().trim().min(1).max(MAX_HOST_ANSWER_CHARS),
-  distractors: z.array(z.string().trim().min(1).max(MAX_HOST_ANSWER_CHARS)).length(DISTRACTOR_COUNT),
-  explanation: z.string().trim().max(MAX_HOST_EXPLANATION_CHARS).optional(),
-}).refine((q) => {
-  const options = [q.answer, ...q.distractors];
-  return options.every((o, i) => options.findIndex((x) => sameText(x, o)) === i);
-}, { message: "the answer and the three wrong options must all be different", path: ["distractors"] });
-export type HostQuestion = z.infer<typeof hostQuestionSchema>;
+export {
+  DISTRACTOR_COUNT, MAX_HOST_QUESTION_CHARS, MAX_HOST_ANSWER_CHARS, MAX_HOST_EXPLANATION_CHARS, MAX_HOST_QUESTIONS, hostQuestionSchema, templateRefSchema,
+  type HostQuestion, type TemplateRef,
+} from "./hostQuestion.js";
 
 /** The stored pick-one payload: the options in display order with the right one at `correctIndex`. */
 export function hostQuestionPayload(q: HostQuestion, correctIndex: number) {
@@ -85,7 +67,6 @@ export const hostQuestionCreatedSchema = z.object({ id: z.string().uuid(), idx: 
 
 // ---- templates ----------------------------------------------------------------------------------
 
-const idSchema = z.string().trim().regex(/^[a-z0-9_-]{1,40}$/, "lowercase letters, digits, _ or -");
 
 /**
  * A host prompt: a question with blanks for the host to fill ("Where did [name] and [name] first meet?"). The
@@ -234,9 +215,6 @@ export const partyTemplateCopySchema = z.object({
 export type PartyTemplateCopy = z.infer<typeof partyTemplateCopySchema>;
 export const templateCopy = (t: PartyTemplate, version: number): PartyTemplateCopy => ({ id: t.id, version, name: t.name, occasion: t.occasion, themed: t.themed });
 
-/** POST /parties `template`: which template, and the version the builder showed (it must still exist in that version). */
-export const templateRefSchema = z.object({ id: idSchema, version: z.number().int().positive() });
-export type TemplateRef = z.infer<typeof templateRefSchema>;
 
 /**
  * The create-party fields a template fills in. The API lays the host's own fields over these, so anything the

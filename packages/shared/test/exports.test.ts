@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import * as root from "../src/index.js";
 
 describe("package exports", () => {
@@ -12,10 +13,19 @@ describe("package exports", () => {
 
   it("@contestly/shared/templates resolves by its subpath to the same templates contract as the root", async () => {
     const templates = await import("@contestly/shared/templates");
-    for (const name of ["hostQuestionSchema", "partyTemplateSchema", "partyTemplatesConfigSchema", "distractorRequestSchema", "templatePrefill", "maxHostQuestions", "checkHostText", "CURATE_HOST_TYPES"]) {
+    for (const name of ["hostQuestionSchema", "partyTemplateSchema", "partyTemplatesConfigSchema", "distractorRequestSchema", "templatePrefill", "maxHostQuestions", "checkHostText", "CURATE_HOST_TYPES", "templateRefSchema", "MAX_HOST_QUESTIONS", "DISTRACTOR_COUNT"]) {
       expect(templates[name as keyof typeof templates], name).toBeDefined();
       expect(Object.keys(root)).toContain(name);
     }
+  });
+
+  // createPartySchema needs a host question and a template ref; it takes them (and the root re-exports them) from
+  // hostQuestion.ts, so a tree-shaking bundler can leave templates.ts out of the app's startup (measured: 378.9 → 377.9 KB).
+  it("the root takes nothing from templates.ts itself, so an app that tree-shakes leaves templates out of its startup", () => {
+    const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+    expect(index.match(/from "\.\/templates\.js"/g)).toEqual(['from "./templates.js"']);
+    expect(index).toContain('export * from "./templates.js"');
+    expect(index).toContain('export * from "./hostQuestion.js"');
   });
 
   it("@contestly/shared/brands resolves by its subpath to the brands contract on the root", async () => {
