@@ -27,7 +27,8 @@ export * from "./images.js";
 export * from "./questionKinds.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
-import { CORNER_STATUSES, cornerColorSchema, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
+import { BRAND_ROLES } from "./brands.js";
+import { CORNER_STATUSES, cornerColorSchema, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerCanSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
 import { owedSchema } from "./payments.js";
@@ -708,7 +709,11 @@ export const userProfileSchema = publicUserSchema.merge(profileSocialSchema).ext
  */
 export const cornerPageSchema = z.object({
   corner: cornerRefSchema.extend({ bio: z.string().nullable(), status: z.enum(CORNER_STATUSES), unlockedAt: z.string().datetime().nullable() }),
-  viewer: cornerViewerSchema.extend({ isOwner: z.boolean() }),
+  /**
+   * isOwner: the viewer is the corner's account (themselves, or the brand they act as with x-act-as). brandRole: their
+   * role on the brand that owns it, acting or not (null otherwise). can: what to show them (cornerViewerCanSchema).
+   */
+  viewer: cornerViewerSchema.extend({ isOwner: z.boolean(), brandRole: z.enum(BRAND_ROLES).nullable(), can: cornerViewerCanSchema }),
   yourPeopleFollowing: yourPeopleFollowingSchema,
   upNext: z.array(partySummarySchema),
   winners: z.array(cornerWinnerSchema),

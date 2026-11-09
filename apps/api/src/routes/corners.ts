@@ -7,7 +7,7 @@ import {
 import { askToFollow, followAskOptions } from "@contestly/db";
 import { countSearch } from "../peopleSearch.js";
 import { requireUser, uuidParam } from "../auth.js";
-import { actor } from "../acting.js";
+import { actAsHeader, actor } from "../acting.js";
 import {
   cornerPage, createPost, deletePost, deleteReply, follow, followersPage, mute, mutesOf, myFollows, postDetail, postsPage, progressOf, react, reply, repliesPage, setAlerts, shownCorner,
   unfollow, unmute, unreact, updateMyCorner, celebrationSeen, suggestedCorners,
@@ -21,7 +21,7 @@ export async function cornersRoutes(app: FastifyInstance) {
   app.get("/corners/suggested", async (req) => suggestedCorners(req.auth?.user, suggestedCornersQuerySchema.parse(req.query ?? {}).limit));
 
   /** Up next, winners, this week's Regulars, followers and posts. Public. */
-  app.get("/corners/:id", async (req) => cornerPage(uuidParam(req), req.auth?.user));
+  app.get("/corners/:id", { config: { actAs: "view" } }, async (req) => cornerPage(uuidParam(req), req.auth?.user, actAsHeader(req) ? (await actor(req)).brand : null));
 
   /** Public, newest first, a page at a time, with "N of your people follow this" on top. */
   app.get("/corners/:id/followers", async (req) => followersPage(uuidParam(req), req.auth?.user?.id, cornerFollowersQuerySchema.parse(req.query ?? {})));
@@ -37,7 +37,7 @@ export async function cornersRoutes(app: FastifyInstance) {
     return postsPage(id, req.auth?.user?.id, cornerPageQuerySchema.parse(req.query ?? {}));
   });
   /** The owner posts text (capped in social config). */
-  app.post("/corners/:id/posts", { config: { actAs: "corner.manage" } }, async (req, res) => res.code(201).send(await createPost((await actor(req)).as, uuidParam(req), cornerPostBodySchema.parse(req.body).text)));
+  app.post("/corners/:id/posts", { config: { actAs: "corner.post" } }, async (req, res) => res.code(201).send(await createPost((await actor(req)).as, uuidParam(req), cornerPostBodySchema.parse(req.body).text)));
   app.get("/corner-posts/:id", async (req) => cornerPostDetailSchema.parse(await postDetail(uuidParam(req), req.auth?.user?.id)));
   app.delete("/corner-posts/:id", { config: { actAs: "corner.manage" } }, async (req) => deletePost((await actor(req)).as, uuidParam(req)));
 

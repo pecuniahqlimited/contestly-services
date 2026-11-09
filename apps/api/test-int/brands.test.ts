@@ -135,6 +135,35 @@ describe("each role's permissions", () => {
   });
 });
 
+describe("the brand's corner", () => {
+  it("knows the team by role when they act as the brand: owners and admins post, mute and edit, hosts post, viewers read; the team never follows it", async () => {
+    const t = await team({ verified: true });
+    const [corner] = await db.select().from(corners).where(eq(corners.ownerUserId, t.brand.id));
+    const fan = await makeUser(name("fan"));
+    expect((await call({ method: "POST", url: `/corners/${corner.id}/follow`, headers: as(fan) })).statusCode).toBe(200);
+    const page = async (headers: Record<string, string>) => (await call({ method: "GET", url: `/corners/${corner.id}`, headers })).json().viewer;
+    const can = { owner: { post: true, manage: true }, admin: { post: true, manage: true }, host: { post: true, manage: false }, viewer: { post: false, manage: false } };
+    for (const role of ["owner", "admin", "host", "viewer"] as const) {
+      const u = t[role];
+      expect(await page(asBrand(u, t.brand)), role).toEqual({ following: false, notify: false, isOwner: true, brandRole: role, can: { follow: false, ...can[role] } });
+      // As themselves: on the team, so no Follow, and no tools until they switch to the brand.
+      expect(await page(as(u)), role).toMatchObject({ isOwner: false, brandRole: role, can: { follow: false, post: false, manage: false } });
+      expect((await call({ method: "POST", url: `/corners/${corner.id}/follow`, headers: as(u) })).json().error, role).toBe("cannot_follow_own_corner");
+      const posted = await call({ method: "POST", url: `/corners/${corner.id}/posts`, headers: asBrand(u, t.brand), payload: { text: `Hello from the ${role}` } });
+      expect(posted.statusCode, `${role} posts`).toBe(can[role].post ? 201 : 403);
+      const muted = await call({ method: "POST", url: `/corners/${corner.id}/mutes`, headers: asBrand(u, t.brand), payload: { userId: fan.id } });
+      expect(muted.statusCode, `${role} mutes`).toBe(can[role].manage ? 200 : 403);
+      const edited = await call({ method: "PATCH", url: "/me/corner", headers: asBrand(u, t.brand), payload: { bio: `Edited by the ${role}` } });
+      expect(edited.statusCode, `${role} edits`).toBe(can[role].manage ? 200 : 403);
+    }
+    expect(await page(as(fan))).toMatchObject({ following: true, isOwner: false, brandRole: null, can: { follow: true, post: false, manage: false } });
+    // A host's post is the brand's; deleting one is managing (owners and admins).
+    const post = (await call({ method: "POST", url: `/corners/${corner.id}/posts`, headers: asBrand(t.host, t.brand), payload: { text: "Tonight at 8" } })).json();
+    expect((await call({ method: "DELETE", url: `/corner-posts/${post.id}`, headers: asBrand(t.host, t.brand) })).statusCode).toBe(403);
+    expect((await call({ method: "DELETE", url: `/corner-posts/${post.id}`, headers: asBrand(t.admin, t.brand) })).statusCode).toBeLessThan(300);
+  });
+});
+
 describe("logo uploads", () => {
   it("go straight to storage for someone with settings, acting as the brand; the key is checked when attached", async () => {
     const t = await team();

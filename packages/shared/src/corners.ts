@@ -208,6 +208,13 @@ export const cornerRefSchema = z.object({
 export type CornerRef = z.infer<typeof cornerRefSchema>;
 /** The viewer and a corner: following it (with party alerts on or off). All false signed out. */
 export const cornerViewerSchema = z.object({ following: z.boolean(), notify: z.boolean() });
+/**
+ * What the viewer may do on a corner page: follow (signed up, not acting as a brand, and not its owner or on the
+ * owning brand's team), post (its owner; for a brand's, acting as it with corner.post: owners, admins, hosts) and
+ * manage (edit it, mute, delete posts and replies: its owner; for a brand's, corner.manage: owners and admins).
+ */
+export const cornerViewerCanSchema = z.object({ follow: z.boolean(), post: z.boolean(), manage: z.boolean() });
+export type CornerViewerCan = z.infer<typeof cornerViewerCanSchema>;
 /** On a profile and in a party's lobby: the host's corner, if they have one (its colour and lane to dress the link), and whether the viewer follows it. */
 export const hostCornerSchema = cornerRefSchema.pick({ id: true, name: true, color: true, lane: true }).extend({ following: z.boolean() });
 /** POST/DELETE/PATCH /corners/:id/follow. */

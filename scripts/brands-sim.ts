@@ -107,7 +107,13 @@ const approved = await api(APPROVER, "POST", `/admin/brands/${brandId}/approve`,
 ok(approved.status === "verified" && !!approved.cornerId, "approved: verified, with a corner");
 const [corner] = await db.select().from(corners).where(eq(corners.ownerUserId, brandId));
 ok(corner?.status === "unlocked" && corner.unlockConfigVersion === null, "its corner opened on approval, not by the unlock thresholds");
-ok((await call(STRANGER, "GET", `/corners/${corner.id}`)).status === 200, "anyone can open the brand's corner");
+const strangerView = (await api(STRANGER, "GET", `/corners/${corner.id}`)).viewer;
+ok(strangerView.can.follow && !strangerView.can.post, "anyone can open the brand's corner and follow it");
+const hostView = (await api(as(HOST), "GET", `/corners/${corner.id}`)).viewer;
+ok(hostView.isOwner && hostView.brandRole === "host" && hostView.can.post && !hostView.can.manage && !hostView.can.follow, "acting as the brand, a host sees its corner as theirs: post, but no mutes or edits, and no Follow");
+ok((await call(as(HOST), "POST", `/corners/${corner.id}/posts`, { text: "Suya and trivia, Friday at 8" })).status === 201, "a host posts on the brand's corner");
+ok((await call(as(VIEWER), "POST", `/corners/${corner.id}/posts`, { text: "Me too" })).body.error === "brand_role_forbidden", "a viewer only reads it");
+ok((await call(HOST, "POST", `/corners/${corner.id}/follow`)).body.error === "cannot_follow_own_corner", "nobody on the team follows the brand's corner");
 ok((await nudgesFor(ADMIN, "verification_update")).some((x) => (x.data as any).outcome === "approved"), "the brand's admins hear it was approved");
 const found = await api(STRANGER, "GET", `/users/search?q=${BRAND}`);
 ok(found.people.some((p: any) => p.id === brandId && p.isBrand && p.isVerified), "people search shows it, marked as a verified brand");

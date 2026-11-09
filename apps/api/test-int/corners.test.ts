@@ -903,7 +903,9 @@ describe("the corner page", () => {
     expect(res.regulars.rows.slice(0, 2).map((r: { person: { id: string }; wins: number }) => [r.person.id, r.wins]).sort()).toEqual([[a.id, 1], [b.id, 1]].sort());
     expect(res.regulars.rows.find((r: { person: { id: string } }) => r.person.id === c.id)).toMatchObject({ parties: 2, wins: 0 });
     expect(res.yourPeopleFollowing).toEqual({ count: 0, faces: [] });
-    expect(res.viewer).toEqual({ following: false, notify: false, isOwner: false });
+    expect(res.viewer).toEqual({ following: false, notify: false, isOwner: false, brandRole: null, can: { follow: true, post: false, manage: false } });
+    const own = (await app.inject({ url: `/corners/${corner.id}`, headers: as(host) })).json().viewer;
+    expect(own).toMatchObject({ isOwner: true, brandRole: null, can: { follow: false, post: true, manage: true } });
   });
 });
 

@@ -8,12 +8,12 @@ import { and, asc, count, desc, eq, inArray, isNull, lt, ne, or, sql, type SQL }
 import {
   cornerMutes, cornerNewPlayers, cornerParties, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, currentCornerConfig, db, follows, getChatConfig,
   getSocialConfig, hostCounts, liveUser, moderationItems, parties, partyPlayers, publiclyHostedBy, users, addFeedEvent, cornerOf, refreshDefaultLane, simVisibleTo, type Corner, type User,
-  assertCanChat, blockedEitherWay, cleanName, cleanOptionalName, notBlockedWith, onCorner, visibleAuthorTo,
+  assertCanChat, blockedEitherWay, cleanName, cleanOptionalName, notBlockedWith, onCorner, roleIn, visibleAuthorTo, type Acting,
 } from "@contestly/db";
 import { notifyQueue, valkeyCounter } from "@contestly/queue";
 import {
   CORNER_REGULARS_SHOWN, CORNER_UP_NEXT_SHOWN, CORNER_WINNERS_SHOWN, POST_REPLIES_INLINE, YOUR_PEOPLE_FACES, chatRateCheck, isBraggingRights, lagosDay, maskProfanity,
-  partyPointsFor, unlockProgress, weekOf, type CornerPost, type CornerPostDetail, type CornerProgress, type CornerReaction, type CornerUpdate, type Person, type SuggestedCorners,
+  brandRoleCan, partyPointsFor, unlockProgress, weekOf, type BrandCapability, type CornerPost, type CornerPostDetail, type CornerProgress, type CornerReaction, type CornerUpdate, type Person, type SuggestedCorners,
 } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { peopleOf, personColumns } from "./people.js";
@@ -52,7 +52,7 @@ export async function hostCornerOf(hostId: string, viewerId: string | undefined)
 
 export async function follow(me: User, cornerId: string) {
   const { c } = await shownCorner(cornerId);
-  if (c.ownerUserId === me.id) throw httpError(409, "cannot_follow_own_corner");
+  if (c.ownerUserId === me.id || (await roleIn(db, c.ownerUserId, me.id))) throw httpError(409, "cannot_follow_own_corner");
   await db.insert(follows).values({ followerId: me.id, cornerId }).onConflictDoNothing();
   const f = await followOf(me.id, cornerId);
   return { following: true, notify: f!.notify, followerCount: await followerCount(cornerId) };
@@ -409,7 +409,20 @@ async function regulars(hostId: string) {
   return { week, rows: rows.slice(0, CORNER_REGULARS_SHOWN) };
 }
 
-export async function cornerPage(cornerId: string, viewer: User | undefined) {
+/**
+ * What the viewer may do on the corner (cornerViewerCanSchema). `acting`: the brand they act as (x-act-as), if any. A
+ * brand's team is recognised by role: acting as it, owners and admins manage and post, hosts post, viewers read; and
+ * nobody on its team follows it, acting or not.
+ */
+async function viewerOf(c: Corner, viewer: User | undefined, acting: Acting | null) {
+  const brandRole = viewer ? await roleIn(db, c.ownerUserId, viewer.id) : null; // only a brand has a team
+  const isOwner = (acting?.account.id ?? viewer?.id) === c.ownerUserId;
+  const may = (capability: BrandCapability) => isOwner && (!acting || brandRoleCan(acting.role, capability));
+  const can = { follow: !!viewer && !viewer.isGuest && !acting && !isOwner && !brandRole, post: may("corner.post"), manage: may("corner.manage") };
+  return { isOwner, brandRole, can };
+}
+
+export async function cornerPage(cornerId: string, viewer: User | undefined, acting: Acting | null = null) {
   const { c, owner } = await shownCorner(cornerId);
   const people = await peopleOf(viewer?.id);
   const upcoming = await db.select().from(parties).where(and(publiclyHostedBy(c.ownerUserId), inArray(parties.status, ["open", "live"]), onCorner))
@@ -418,9 +431,10 @@ export async function cornerPage(cornerId: string, viewer: User | undefined) {
     partySummaries(upcoming, viewer?.id), winners(c.ownerUserId), regulars(c.ownerUserId), followerCount(c.id), yourPeopleFollowing(c.id, people),
     followOf(viewer?.id, c.id), postsPage(c.id, viewer?.id, { limit: 10 }),
   ]);
+  const { isOwner, brandRole, can } = await viewerOf(c, viewer, acting);
   return {
     corner: { ...cornerRef(c, owner, fc), bio: c.bio, status: c.status, unlockedAt: c.unlockedAt?.toISOString() ?? null },
-    viewer: { following: !!f, notify: f?.notify ?? false, isOwner: viewer?.id === c.ownerUserId },
+    viewer: { following: !!f, notify: f?.notify ?? false, isOwner, brandRole, can },
     yourPeopleFollowing: mine, upNext, winners: win, regulars: regs, posts,
   };
 }

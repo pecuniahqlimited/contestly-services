@@ -55,7 +55,8 @@ export const BRAND_CAPABILITIES = [
   "settings", // profile, verification checklist, submit
   "wallet.view",
   "wallet.topup",
-  "corner.manage", // the brand's corner: name, posts, mutes
+  "corner.post", // post on the brand's corner
+  "corner.manage", // the brand's corner: its name and look, mutes, deleting posts and replies
   "wallet.withdraw",
   "payout_accounts",
   "ownership", // hand over
@@ -64,7 +65,7 @@ export const BRAND_CAPABILITIES = [
 export type BrandCapability = (typeof BRAND_CAPABILITIES)[number];
 
 const VIEWER: readonly BrandCapability[] = ["view", "inbox.read"];
-const HOST: readonly BrandCapability[] = [...VIEWER, "inbox.write", "parties.host", "prizes.fulfil"];
+const HOST: readonly BrandCapability[] = [...VIEWER, "inbox.write", "parties.host", "prizes.fulfil", "corner.post"];
 const ADMIN: readonly BrandCapability[] = [...HOST, "team.manage", "settings", "wallet.view", "wallet.topup", "corner.manage"];
 const OWNER: readonly BrandCapability[] = [...ADMIN, "wallet.withdraw", "payout_accounts", "ownership", "delete"];
 
