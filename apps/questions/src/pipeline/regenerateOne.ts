@@ -26,13 +26,13 @@ export async function regenerateOne(job: { partyId: string; partyQuestionId: str
   const [specEmbedding] = await deps.providers.embedder.embed([`${spec.topic} · ${spec.categoryTag}`]);
   const sources = spec.sourceScope === "open" ? undefined : await retrieveChunks(spec.sourceScope.fileIds, specEmbedding, deps.providers.embedder.model);
   const current = await db.select({ id: partyQuestions.id, format: partyQuestions.format, payload: partyQuestions.payload, status: partyQuestions.status }).from(partyQuestions).where(eq(partyQuestions.partyId, job.partyId));
-  // The rest of the live set counts toward the picture cap; the slot being replaced and swapped-out rows don't.
+  // The rest of the set, reserves included, counts toward the play order's picture cap; the slot being replaced and swapped-out rows don't.
   const rest = current.filter((q) => q.id !== slot.id && q.status !== "voided");
 
   const { judged, accepted } = await draftAndJudge({
     spec, providers: deps.providers, dedupeSimilarity: cfg.dedupeSimilarity, want: 1,
     avoid: current.map((q) => questionText(q.payload)), sources,
-    pictures: { limit: pictureLimit(rest.length + 1, IMAGE_POOL.length), inSet: rest },
+    pictures: { limit: pictureLimit(party.questionCount, IMAGE_POOL.length), inSet: rest },
   });
   const chosen = accepted[0];
   if (!chosen) {

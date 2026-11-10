@@ -92,8 +92,12 @@ step 3 and the spec (topic, audience, tone, difficulty, exclusions, register, Ni
 lane is Nigerian). File-scoped specs get only the retrieved chunks and must cite one per question; a draft
 citing a chunk it wasn't given is invalid. Picture questions are written only about images in the image pool
 (a code list with alt text until a licensed pool exists); a draft naming any other image is invalid, so the
-engine never hot-links. Because the pool is short, a set holds at most a quarter of its questions as
-pictures (rounded up), never more than the pool's images, and never one image twice (`pipeline/pictures.ts`):
+engine never hot-links. Because the pool is short, a set holds at most a quarter of its play order as
+pictures, rounded down (amended 10 Nov 2026: was rounded up and counted the reserves in the set's size, so a
+3-question set could play two), its reserves included, never more than the pool's images, and never one image
+twice (`pictureCap()` in shared, `pipeline/pictures.ts`). It holds at assembly, on the start-time reseal, on a
+curate swap and on the fill's fallback to bank originals; a void promotes a picture reserve only while the play
+order has room (`promotableReserve()`):
 retrieved bank pictures over the cap are dropped (generation fills the gap with other formats), the
 generator is asked for no more pictures than the room left, and its pictures over the cap or repeating an
 image are dropped before verification, so none is paid for. The `Generator` interface stays general: the client underneath is a plain

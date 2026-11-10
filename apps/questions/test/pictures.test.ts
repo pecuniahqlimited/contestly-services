@@ -6,9 +6,11 @@ const pic = (image: string) => ({ format: "picture", payload: { imageUrl: `pool/
 const text = (n: number) => ({ format: "pick_one", payload: { question: `q${n}` } });
 
 describe("picture cap", () => {
-  it("a quarter of the set, rounded up, never more than the pool has images", () => {
-    expect(pictureLimit(10, 7)).toBe(3);
-    expect(pictureLimit(1, 7)).toBe(1);
+  it("a quarter of the play order, rounded down, never more than the pool has images", () => {
+    expect(pictureLimit(10, 7)).toBe(2);
+    expect(pictureLimit(1, 7)).toBe(0);
+    expect(pictureLimit(3, 7)).toBe(0);
+    expect(pictureLimit(4, 7)).toBe(1);
     expect(pictureLimit(33, 7)).toBe(7);
     expect(pictureLimit(0, 7)).toBe(0);
     expect(pictureLimit(10, 0)).toBe(0);

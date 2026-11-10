@@ -46,7 +46,10 @@ export async function resealForRoster(partyId: string, deps: ResealDeps): Promis
         spec, providers: deps.providers, want: stillNeeded.length,
         excludeBankIds: [...seen.map((s) => s.bankId), ...all.map((q) => q.sourceRef!).filter(Boolean)],
         avoidPayloads: [...seen.map((s) => s.payload), ...all.map((q) => q.payload)],
-        inSet: all.filter((q) => !q.reserve && !stillNeeded.some((n) => n.id === q.id) && q.status !== "voided"),
+        // What the party will still hold: everything not voided, less the slots being replaced (by reserves or by
+        // this fill) and the seen reserves being dropped. The reserves moving into slots count where they are.
+        playSize: party.questionCount,
+        inSet: all.filter((q) => q.status !== "voided" && !seenIds.has(q.id)),
       })
     : null;
   if (spec && fill && fill.picked.length < stillNeeded.length) {

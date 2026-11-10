@@ -15,7 +15,7 @@ import { and, asc, eq, notInArray } from "drizzle-orm";
 import { db, isChallenge, isHostTeam, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
 import { PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue } from "@contestly/queue";
-import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, partyHereKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
+import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, partyHereKey, promotableReserve, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
 import { Match, flagThreshold, type MatchQuestion, type QuestionFormat, type Reveal } from "@contestly/game";
 
 interface Member extends ChatSender {
@@ -366,11 +366,14 @@ export class PartyRoom extends SafeRoom {
     await questionJobs.add("question_voided", { kind: "question_voided", partyQuestionId: questionId, flags: flaggers });
   }
 
-  /** The first approved, unused reserve joins the play order (it already sits after it by idx). */
+  /**
+   * The first approved, unused reserve joins the play order (it already sits after it by idx), unless it's a picture
+   * and the play order holds its cap of them (promotableReserve in shared), then the next that isn't.
+   */
   private async promoteReserve() {
-    const [next] = await db.select().from(partyQuestions)
-      .where(and(eq(partyQuestions.partyId, this.partyId), eq(partyQuestions.reserve, true), eq(partyQuestions.status, "pending")))
-      .orderBy(asc(partyQuestions.idx)).limit(1);
+    const rows = await db.select().from(partyQuestions).where(eq(partyQuestions.partyId, this.partyId)).orderBy(asc(partyQuestions.idx));
+    const reserves = rows.filter((q) => q.reserve && q.status === "pending");
+    const next = promotableReserve(reserves, rows.filter((q) => !q.reserve && q.status !== "draft"), this.party.questionCount);
     if (!next) return null;
     await db.update(partyQuestions).set({ reserve: false }).where(eq(partyQuestions.id, next.id));
     return next;

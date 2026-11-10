@@ -54,7 +54,7 @@ export async function generateSet(partyId: string, deps: GenerateSetDeps): Promi
   // Nobody seated gets a question they've already seen; if that leaves the bank short, generation fills the gap.
   const seen = await seenBySeated(partyId);
   const fill = await fillQuestions({
-    spec, providers: deps.providers, want: need, excludeBankIds: seen.map((s) => s.bankId), avoidPayloads: seen.map((s) => s.payload),
+    spec, providers: deps.providers, want: need, playSize: party.questionCount, excludeBankIds: seen.map((s) => s.bankId), avoidPayloads: seen.map((s) => s.payload),
     progress: forgeReporter(partyId, party.questionCount - hostCount, deps.publish),
   });
 

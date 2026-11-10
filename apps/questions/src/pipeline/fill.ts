@@ -20,11 +20,13 @@ export interface FillRequest {
   spec: GenerationSpec;
   providers: Providers;
   want: number;
+  /** The party's play order (questionCount): the picture cap is a quarter of it, whatever `want` adds for reserves. */
+  playSize: number;
   /** Bank questions that must not be used (seen by someone seated, or already in this set). */
   excludeBankIds: string[];
   /** Question texts the generator must steer clear of, for the same reasons. */
   avoidPayloads: unknown[];
-  /** Questions already in the party's set that stay (a reseal's kept slots): they count toward the picture cap. */
+  /** Questions already in the party's set that stay (a reseal's kept slots and reserves): they count toward the picture cap. */
   inSet?: { format: string; payload: unknown }[];
   /** Told each stage the fill reaches, with the formats of the questions it has so far (bank picks first). */
   progress?: FillProgress;
@@ -59,9 +61,10 @@ export async function fillQuestions(req: FillRequest): Promise<Fill> {
   if (req.spec.sourceScope === "open") retrieved = await retrieveFromBank(req.spec, specEmbedding, req.want, req.excludeBankIds, model);
   else sources = await retrieveChunks(req.spec.sourceScope.fileIds, specEmbedding, model);
 
-  // The picture cap covers the whole set: what stays, what the bank gave, then what's generated.
+  // The picture cap covers the whole set, reserves included: what stays, what the bank gave, what's generated, then
+  // any bank originals reused below.
   const inSet = req.inSet ?? [];
-  const limit = pictureLimit(inSet.length + req.want, IMAGE_POOL.length);
+  const limit = pictureLimit(req.playSize, IMAGE_POOL.length);
   retrieved = withinPictureCap(retrieved, pictureRoom(inSet, limit)).kept;
 
   const gap = req.want - retrieved.length;
@@ -86,7 +89,8 @@ export async function fillQuestions(req: FillRequest): Promise<Fill> {
   if (short > 0 && !sources) {
     const nearIds = [...new Set(judged.filter((j) => j.outcome === "rejected_dedupe" && j.nearest).map((j) => j.nearest!.id))];
     const reused = await reusableAmong(req.spec, nearIds, [...req.excludeBankIds, ...picked.map((p) => p.bankId)]);
-    picked.push(...reused.slice(0, short).map(fromBank));
+    const room = pictureRoom([...inSet, ...picked], limit);
+    picked.push(...withinPictureCap(reused, room).kept.slice(0, short).map(fromBank));
   }
   await req.progress?.("balance", picked.map((p) => p.format));
   return { picked, judged, accepted, unavailable, retrievedCount: picked.filter((p) => p.from === "bank").length };

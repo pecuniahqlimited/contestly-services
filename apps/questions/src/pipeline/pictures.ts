@@ -1,21 +1,19 @@
 /**
  * Picture rounds are capped (ADR 0016): the image pool is a short code list until a licensed pool exists, so
- * a set takes at most a quarter of its questions as pictures, never more than the pool has images, and never
- * the same image twice. Applied to retrieved bank questions, to what the generator is asked for, and to its
- * drafts before they're verified (so nothing is paid for a picture that couldn't be used).
+ * a set takes at most a quarter of its play order as pictures, rounded down (`pictureCap()` in shared), reserves
+ * included, never more than the pool has images, and never the same image twice. Applied to retrieved bank
+ * questions, to what the generator is asked for, to its drafts before they're verified (so nothing is paid for a
+ * picture that couldn't be used), and to the bank originals a fill falls back on.
  */
-import type { QuestionFormat } from "@contestly/shared";
-
-/** Share of a set that may be picture rounds, rounded up. */
-export const PICTURE_SHARE = 0.25;
+import { pictureCap, type QuestionFormat } from "@contestly/shared";
 
 interface Item {
   format: QuestionFormat | string;
   payload: unknown;
 }
 
-/** How many picture rounds a set of `size` may hold with a pool of `poolSize` images. */
-export const pictureLimit = (size: number, poolSize: number) => Math.max(0, Math.min(poolSize, Math.ceil(size * PICTURE_SHARE)));
+/** How many picture rounds a set whose play order is `playSize` may hold, reserves included, with a pool of `poolSize` images. */
+export const pictureLimit = (playSize: number, poolSize: number) => Math.max(0, Math.min(poolSize, pictureCap(playSize)));
 
 const imageOf = (payload: unknown) => String((payload as { imageUrl?: unknown })?.imageUrl ?? "");
 
