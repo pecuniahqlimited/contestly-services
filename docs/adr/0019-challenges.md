@@ -31,14 +31,16 @@ The one-tap challenge made a fixed party: free, private, the lanes you share, st
    - pending, with time left;
    - accepted, with the join countdown and who's in the lobby (real presence only);
    - live or finished;
-   - expired, declined or cancelled.
+   - expired, declined or cancelled;
+   - left, when the viewer accepted and then left.
+   Each invitee's answer is pending, accepted, declined, expired (the invite ran out, or they weren't in the lobby at the window's end) or left.
 6. **Answering:**
    - **Accepting** (`POST /challenges/:partyId/accept`) takes a seat through `takeSeat`, so an entry is charged here as for any join. The first accept opens the join window and moves `startsAt` to its end. `POST /parties/:id/join` refuses a challenge (`challenge_accept_required`), and so do extra invites.
    - **Declining** (`/decline`) writes "Not this time" on the invitee's card in the DM. Once nobody is left pending or accepted, the party is cancelled and refunded.
 7. **Starting:**
    - **Early start:** a challenge starts as soon as nobody is still pending and every seated player is in the lobby. The room queues a check on every join; a decline, and an invite expiring, queue one too.
-   - **At the window's end:** the usual `startOrCancel` runs. Acceptors who aren't in the lobby are refunded and unseated, and invites still pending expire. It goes ahead if at least two seated players are left, else it's cancelled with "Challenge expired."
-   - **The challenger** keeps their seat at the window's end even if they're not in the lobby. They made it, and cancelling is their way out.
+   - **At the window's end:** the usual `startOrCancel` runs, and invites still pending expire. It goes ahead only if at least two seated players are in the lobby; then every seated player who isn't is refunded and unseated ("<name> didn't make it", their answer expired). Otherwise it's cancelled with "Challenge expired." and everyone is refunded.
+   - **The challenger** counts like anyone (amended 10 Nov 2026): absent at the window's end, they're just another no-show, and the game goes on without them if two others are in.
    - **Expiry:** if nobody accepts before the invite expires, the expiry job cancels the party with "Challenge expired." The minute sweep is the backstop, because `startsAt` starts at expiry plus the window.
    Every cancel goes through `refundAndCancel()`, so every seat is refunded the way it was paid.
 8. **Nudges, through the engine and its rules:**
@@ -52,4 +54,4 @@ The one-tap challenge made a fixed party: free, private, the lanes you share, st
 
 - The app's Challenge button opens the builder with the preset, not a one-tap send, and the card reads `GET /challenges/:partyId`.
 - Presence decides an early start, so it relies on the room's `party:here` counts; a lost check is caught at the window's end.
-- An acceptor can still leave through `/leave` until the usual 2-minute lock, with their entry back.
+- An acceptor can still leave through `/leave` until the usual 2-minute lock, with their entry back. The card shows them as left, they can't accept again, and the start goes on without them (a leave queues the early-start check). If nobody else is still pending or accepted, it's cancelled at once with "Challenge expired."

@@ -4,15 +4,17 @@
  */
 import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import {
-  CANNOT_CHALLENGE, CATEGORIES, CHALLENGE_NOT_ALLOWED, CHALLENGE_OUT_OF_RANGE, CHALLENGE_PRESET_QUESTIONS, CHALLENGE_REFUSALS, TOO_MANY_CHALLENGES,
+  CANNOT_CHALLENGE, CATEGORIES, CHALLENGE_EXPIRED_MESSAGE, CHALLENGE_NOT_ALLOWED, CHALLENGE_OUT_OF_RANGE, CHALLENGE_PRESET_QUESTIONS, CHALLENGE_REFUSALS, TOO_MANY_CHALLENGES,
   challengeBrief, challengeRangeProblem, challengeState, lagosDay, partyHereKey,
-  type Category, type ChallengeCard, type ChallengeFields, type ChallengePreset, type ChallengeTopic, type CreatePartyInput,
+  type Category, type ChatMessage, type PartyCancelledEvent, type ChallengeCard, type ChallengeFields, type ChallengePreset, type ChallengeTopic, type CreatePartyInput,
 } from "@contestly/shared";
 import {
   challengeOf, db, dmPermissionBetween, getChallengeConfig, getPartyConfig, getSocialConfig, isBanned, liveUser, parties, partyPlayers, users,
   type Acting, type ChallengeInvitee, type PartyChallenge, type User,
 } from "@contestly/db";
+import { PARTY_EVENTS_CHANNEL, partyQueue } from "@contestly/queue";
 import { httpError } from "./httpError.js";
+import { publishLine } from "./chats.js";
 import { limit, valkey } from "./redis.js";
 import { toPerson } from "./people.js";
 
@@ -20,6 +22,18 @@ const DAY_SECONDS = 86_400;
 const TOPICS_PER_REASON = 3;
 /** Finished parties looked at for "last party's topic" and the invitees' recent categories. */
 const RECENT_PARTIES = 20;
+
+const partyJobs = partyQueue();
+
+/** A challenge ended unplayed in a request (the last decline, the last acceptor's leave): the room and the chat hear, as with any cancel. */
+export async function announceChallengeCancelled(partyId: string, line: ChatMessage) {
+  await publishLine(line);
+  const ev: PartyCancelledEvent = { partyId, status: "cancelled", by: "system", message: line.text ?? CHALLENGE_EXPIRED_MESSAGE };
+  await valkey().publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
+}
+
+/** Someone's answer or seat changed: the worker starts it if everyone left to come is in the lobby. */
+export const queueChallengeReady = (partyId: string) => partyJobs.add("challenge_ready", { kind: "challenge_ready", partyId });
 
 const isCategory = (s: string | null | undefined): s is Category => !!s && (CATEGORIES as readonly string[]).includes(s);
 

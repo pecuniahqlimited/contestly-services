@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { assertBrandCan, db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach, assertNotChallenge, challengeOf } from "@contestly/db";
+import { assertBrandCan, db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach, assertNotChallenge, challengeAfterLeave, challengeOf } from "@contestly/db";
 import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, partyLimitsResponseSchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits, postsToCorner } from "@contestly/shared";
 import { notifyQueue, PARTY_EVENTS_CHANNEL } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
@@ -11,7 +11,7 @@ import { potKobo } from "../places.js";
 import { publishLine } from "../chats.js";
 import { valkey } from "../redis.js";
 import { createParty } from "../partyCreate.js";
-import { rematchChallenge } from "../challenges.js";
+import { announceChallengeCancelled, queueChallengeReady, rematchChallenge } from "../challenges.js";
 import { withTemplate } from "../partyTemplates.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 import { followedCornerIds, hostCornerOf } from "../corners.js";
@@ -186,16 +186,21 @@ export async function partiesRoutes(app: FastifyInstance) {
     const result = await db.transaction(async (tx) => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
       if (!p) return null;
-      return { p, out: await leaveSeat(tx, p, me) };
+      const out = await leaveSeat(tx, p, me);
+      // A challenge's acceptor gone: if nobody else is still asked or coming, it ends now (ADR 0019).
+      const challenge = out.ok && !out.replayed ? await challengeAfterLeave(tx, p) : null;
+      return { p, out, challenge };
     });
     if (!result) return reply.code(404).send({ error: "not_found" });
-    const { p, out } = result;
+    const { p, out, challenge } = result;
     req.log.info({ partyId: id, userId: me.id, outcome: out.ok ? (out.replayed ? "replayed" : "left") : out.error }, "party leave");
     if (!out.ok) return reply.code(out.status).send({ error: out.error });
     const seats = { taken: out.taken, max: p.maxPlayers };
     if (!out.replayed) {
       if (out.line) await publishLine(out.line);
       await publishPartyEvent({ partyId: id, status: "player_left", userId: me.id, seats } satisfies SeatsChangedEvent);
+      if (challenge?.cancelled) await announceChallengeCancelled(id, challenge.cancelled);
+      else if (challenge) await queueChallengeReady(id);
     }
     const body: LeavePartyResponse = { left: true, replayed: out.replayed, refund: out.refund, potKobo: potKobo(p, out.taken), seats };
     return body;

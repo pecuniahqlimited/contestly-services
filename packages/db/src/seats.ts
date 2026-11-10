@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { and, count, desc, eq } from "drizzle-orm";
 import { BRAND_TEAM_MEMBER, HOST_MUST_CANCEL, NOT_IN_PARTY, PARTY_CLOSED, PARTY_LOCKED, WALLET_FROZEN, leaveWindow, type ChatMessage } from "@contestly/shared";
 import type { Tx } from "./client.js";
-import { chatMembers, partyLeaves, partyPlayers, users, type Party } from "./schema.js";
+import { chatMembers, partyChallengeInvitees, partyLeaves, partyPlayers, users, type Party } from "./schema.js";
 import { isWalletFrozen } from "./payable.js";
 import { isHostTeam } from "./host.js";
 import { brandTeamBarredFrom } from "./brands/team.js";
@@ -65,16 +65,25 @@ export async function leaveSeat(tx: Tx, p: Party, user: { id: string; displayNam
   const window = leaveWindow(p, now);
   if (window === "closed") return { ok: false, status: 409, error: PARTY_CLOSED };
   if (window === "locked") return { ok: false, status: 409, error: PARTY_LOCKED };
-  return freeSeat(tx, p, seat, user, now);
+  return freeSeat(tx, p, seat, user, now, left(user));
 }
 
-/** The seat goes: its entry refunded as paid (keyed by the seat), the leave recorded, the party chat left, a line written. */
-async function freeSeat(tx: Tx, p: Party, seat: typeof partyPlayers.$inferSelect, user: { id: string; displayName: string }, now: Date): Promise<LeaveOutcome & { ok: true }> {
+/** How a seat ended: the line the party chat gets, and the answer a challenge's card shows for them (ADR 0019). */
+interface SeatEnd { line: string; challengeAnswer: "left" | "expired" }
+const left = (user: { displayName: string }): SeatEnd => ({ line: `${user.displayName} left`, challengeAnswer: "left" });
+
+/**
+ * The seat goes: its entry refunded as paid (keyed by the seat), the leave recorded, the party chat left, a line
+ * written; in a challenge, the player's accepted answer becomes how it ended.
+ */
+async function freeSeat(tx: Tx, p: Party, seat: typeof partyPlayers.$inferSelect, user: { id: string; displayName: string }, now: Date, end: SeatEnd): Promise<LeaveOutcome & { ok: true }> {
   const { toBonus, toCash } = await ledger.refund(tx, { chargeKey: entryChargeKey(seat), type: "party_leave_refund", refType: "party", refId: p.id, idempotencyKey: `party_leave_refund:${seat.id}` });
   await tx.delete(partyPlayers).where(eq(partyPlayers.id, seat.id));
   await tx.insert(partyLeaves).values({ entryId: seat.id, partyId: p.id, userId: user.id, joinedAt: seat.joinedAt, refundedBonusKobo: toBonus, refundedCashKobo: toCash, leftAt: now });
   await tx.delete(chatMembers).where(and(eq(chatMembers.threadId, await partyThreadId(tx, p.id)), eq(chatMembers.userId, user.id)));
-  const line = await systemLine(tx, p.id, `${user.displayName} left`);
+  await tx.update(partyChallengeInvitees).set({ answer: end.challengeAnswer, answeredAt: now })
+    .where(and(eq(partyChallengeInvitees.partyId, p.id), eq(partyChallengeInvitees.userId, user.id), eq(partyChallengeInvitees.answer, "accepted")));
+  const line = await systemLine(tx, p.id, end.line);
   return { ok: true, replayed: false, refund: { toBonusKobo: toBonus, toCashKobo: toCash }, taken: await seatsTaken(tx, p.id), line };
 }
 
@@ -87,5 +96,14 @@ async function freeSeat(tx: Tx, p: Party, seat: typeof partyPlayers.$inferSelect
 export async function removeSeat(tx: Tx, p: Party, user: { id: string; displayName: string }, now = new Date()) {
   if (p.status !== "open" || (!p.brandId && (await isHostTeam(p, user.id, tx)))) return null;
   const [seat] = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, user.id)));
-  return seat ? freeSeat(tx, p, seat, user, now) : null;
+  return seat ? freeSeat(tx, p, seat, user, now, left(user)) : null;
+}
+
+/**
+ * A challenge's no-show at the join window's end (ADR 0019), the challenger as much as anyone: the seat freed and
+ * refunded as paid, "<name> didn't make it", their answer expired. Null when there's no seat. Caller holds the party row lock.
+ */
+export async function dropNoShow(tx: Tx, p: Party, user: { id: string; displayName: string }, now = new Date()) {
+  const [seat] = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, user.id)));
+  return seat ? freeSeat(tx, p, seat, user, now, { line: `${user.displayName} didn't make it`, challengeAnswer: "expired" }) : null;
 }

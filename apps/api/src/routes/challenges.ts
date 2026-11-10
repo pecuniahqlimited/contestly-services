@@ -6,23 +6,16 @@ import type { FastifyInstance } from "fastify";
 import { acceptChallenge, declineChallenge, getChallengeConfig, recordAdminAction, db, setChallengeConfig } from "@contestly/db";
 import { PARTY_EVENTS_CHANNEL, partyQueue } from "@contestly/queue";
 import {
-  adminChallengeConfigUpdateSchema, challengePresetQuerySchema, challengeReplySchema, challengeConfigSchema, CHALLENGE_EXPIRED_MESSAGE,
-  type ChatMessage, type PartyCancelledEvent, type SeatsChangedEvent,
+  adminChallengeConfigUpdateSchema, challengePresetQuerySchema, challengeReplySchema, challengeConfigSchema, type SeatsChangedEvent,
 } from "@contestly/shared";
 import { requireAdmin, requireUser, uuidParam } from "../auth.js";
 import { publishLine } from "../chats.js";
 import { valkey } from "../redis.js";
-import { challengeCard, challengePreset } from "../challenges.js";
+import { announceChallengeCancelled, challengeCard, challengePreset, queueChallengeReady } from "../challenges.js";
 
 const partyJobs = partyQueue();
-const publishPartyEvent = (ev: SeatsChangedEvent | PartyCancelledEvent) => valkey().publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
+const publishPartyEvent = (ev: SeatsChangedEvent) => valkey().publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 const delayUntil = (at: Date) => Math.max(0, at.getTime() - Date.now());
-
-/** A challenge ended unplayed in a request (the last decline): the room and the chat hear, as with any cancel. */
-async function announceCancelled(partyId: string, line: ChatMessage) {
-  await publishLine(line);
-  await publishPartyEvent({ partyId, status: "cancelled", by: "system", message: line.text ?? CHALLENGE_EXPIRED_MESSAGE });
-}
 
 export async function challengesRoutes(app: FastifyInstance) {
   /** The builder's defaults for challenging these people (?userIds=a,b): topics, quick length, free, the ranges. Creates nothing. */
@@ -56,8 +49,8 @@ export async function challengesRoutes(app: FastifyInstance) {
     const partyId = uuidParam(req, "partyId");
     const out = await declineChallenge(partyId, me);
     if (out.cardLine) await publishLine(out.cardLine);
-    if (out.cancelled) await announceCancelled(partyId, out.cancelled);
-    else if (!out.replayed) await partyJobs.add("challenge_ready", { kind: "challenge_ready", partyId });
+    if (out.cancelled) await announceChallengeCancelled(partyId, out.cancelled);
+    else if (!out.replayed) await queueChallengeReady(partyId);
     return challengeReplySchema.parse({ answer: "declined", replayed: out.replayed, card: await challengeCard(partyId, me) });
   });
 

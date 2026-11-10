@@ -1,7 +1,7 @@
 /**
  * Challenges (ADR 0019): the challenge rows a party is made with, the invitees' answers, and what the worker
  * decides at the invite's expiry, at the window's halfway point and at its end. Seats and refunds are the usual
- * ones (takeSeat, removeSeat, refundAndCancel); every money move happens with the party row locked.
+ * ones (takeSeat, dropNoShow, refundAndCancel); every money move happens with the party row locked.
  */
 import { and, eq, inArray } from "drizzle-orm";
 import {
@@ -13,7 +13,7 @@ import { parties, partyChallengeInvitees, partyChallenges, partyInvites, partyPl
 import { joinPartyThread, openDmIn, partyCardLine, systemLine, type ChatSender } from "./chat.js";
 import { nudge } from "./nudges/record.js";
 import { refundAndCancel } from "./partyLifecycle.js";
-import { removeSeat, takeSeat } from "./seats.js";
+import { dropNoShow, takeSeat } from "./seats.js";
 
 type Conn = Tx | typeof db;
 
@@ -177,22 +177,35 @@ export async function expireChallenge(partyId: string, now = new Date()): Promis
 }
 
 /**
- * At start (startOrCancel, the party row locked): who plays a challenge. Invites still pending expire; an acceptor
- * not in the lobby is unseated and refunded (the challenger keeps their seat: cancelling is theirs to do). Fewer than
- * two left, or nobody ever accepted: cancelled and refunded. Null for an ordinary party; else the cancel's line, if any.
+ * At start (startOrCancel, the party row locked): who plays a challenge. Invites still pending expire. Fewer than two
+ * seated players in the lobby, the challenger counted like anyone (ADR 0019), or nobody ever accepted: cancelled and
+ * everyone refunded. Otherwise every seated player not in the lobby is unseated and refunded, the challenger included.
+ * Null for an ordinary party; else the cancel's line, if any.
  */
 export async function settleChallengeRoster(tx: Tx, p: Party, inLobby: ReadonlySet<string>, now = new Date()): Promise<{ cancelled: ChatMessage | null } | null> {
   const rows = await challengeOf(tx, p.id);
   if (!rows) return null;
   await expirePending(tx, rows, now);
   if (!rows.challenge.windowOpensAt) return { cancelled: await cancelExpired(tx, p) };
-  const absent = rows.invitees.filter((i) => i.answer === "accepted" && !inLobby.has(i.userId)).map((i) => i.userId);
+  const seated = (await tx.select({ userId: partyPlayers.userId }).from(partyPlayers).where(eq(partyPlayers.partyId, p.id))).map((s) => s.userId);
+  const absent = seated.filter((id) => !inLobby.has(id));
+  if (seated.length - absent.length < CHALLENGE_MIN_PLAYERS) return { cancelled: await cancelExpired(tx, p) };
   if (absent.length) {
-    for (const u of await tx.select().from(users).where(inArray(users.id, absent))) await removeSeat(tx, p, u, now);
+    for (const u of await tx.select().from(users).where(inArray(users.id, absent))) await dropNoShow(tx, p, u, now);
   }
-  const seated = await tx.select({ userId: partyPlayers.userId }).from(partyPlayers).where(eq(partyPlayers.partyId, p.id));
-  if (seated.length < CHALLENGE_MIN_PLAYERS) return { cancelled: await cancelExpired(tx, p) };
   return { cancelled: null };
+}
+
+/**
+ * After an acceptor's leave (POST /parties/:id/leave, in its transaction; their answer is already "left"): with nobody
+ * still asked or accepted, nobody is coming, so it's cancelled now ("Challenge expired."). Null for an ordinary party;
+ * else the cancel's line, if any (none means the start may now be ready).
+ */
+export async function challengeAfterLeave(tx: Tx, p: Party): Promise<{ cancelled: ChatMessage | null } | null> {
+  const rows = await challengeOf(tx, p.id);
+  if (!rows) return null;
+  if (p.status !== "open" || rows.invitees.some((i) => i.answer === "pending" || i.answer === "accepted")) return { cancelled: null };
+  return { cancelled: await cancelExpired(tx, p) };
 }
 
 /** Everyone has answered, at least two are seated, and every seated player is in the lobby: start now. */

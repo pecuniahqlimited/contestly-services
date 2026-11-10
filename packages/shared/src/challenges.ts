@@ -113,7 +113,8 @@ export type ChallengePreset = z.infer<typeof challengePresetSchema>;
 
 // ---- the card --------------------------------------------------------------------------
 
-export const CHALLENGE_ANSWERS = ["pending", "accepted", "declined", "expired"] as const;
+/** An invitee's answer. Expired: the invite ran out, or they accepted and weren't in the lobby at the window's end; left: accepted, then left. */
+export const CHALLENGE_ANSWERS = ["pending", "accepted", "declined", "expired", "left"] as const;
 export type ChallengeAnswer = (typeof CHALLENGE_ANSWERS)[number];
 /** How a challenge ended without being played, kept on it: nobody (enough) came, or everyone said no. */
 export const CHALLENGE_ENDINGS = ["expired", "declined"] as const;
@@ -122,9 +123,10 @@ export type ChallengeEnding = (typeof CHALLENGE_ENDINGS)[number];
 /**
  * The card, from the viewer's side: pending (time left to answer), accepted (the join countdown and who's in),
  * live, finished, expired (nobody answered in time, too few came, or the viewer's own invite ran out), declined
- * (everyone said no, or the viewer did), cancelled (the challenger called it off).
+ * (everyone said no, or the viewer did), cancelled (the challenger called it off), left (the viewer accepted, then
+ * left before the start).
  */
-export const CHALLENGE_STATES = ["pending", "accepted", "live", "finished", "expired", "declined", "cancelled"] as const;
+export const CHALLENGE_STATES = ["pending", "accepted", "live", "finished", "expired", "declined", "cancelled", "left"] as const;
 export type ChallengeState = (typeof CHALLENGE_STATES)[number];
 
 export interface ChallengeStateInput {
@@ -139,6 +141,7 @@ export interface ChallengeStateInput {
 /** The one place the card's state is decided. */
 export function challengeState(c: ChallengeStateInput): ChallengeState {
   if (c.myAnswer === "declined") return "declined";
+  if (c.myAnswer === "left") return "left";
   if (c.partyStatus === "live") return c.myAnswer === "expired" ? "expired" : "live";
   if (c.partyStatus === "finished") return c.myAnswer === "expired" ? "expired" : "finished";
   if (c.partyStatus === "cancelled") return c.ending ?? "cancelled";

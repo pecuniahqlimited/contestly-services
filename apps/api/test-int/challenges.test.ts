@@ -1,7 +1,7 @@
 /**
  * Challenges (ADR 0019) against the real database: the preset; creating one within and outside the admin's ranges;
  * who can't be challenged; accepting (the lobby and its window); the early start once everyone is in; a partial
- * start with several invitees; expiry before an answer; a join window that runs out; declining; an entry charged and
+ * start with several invitees, the challenger counted like anyone; leaving after accepting; expiry before an answer; a join window that runs out; declining; an entry charged and
  * refunded; each nudge; a rematch; and the admin config.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -200,8 +200,10 @@ describe("answering", () => {
     expect(await startOrCancel(worker([ada, a]).deps, id)).toBe("live");
     expect(await seated(id)).toEqual([ada.id, a.id].sort());
     expect((await db.select().from(partyChallengeInvitees).where(eq(partyChallengeInvitees.partyId, id))).map((i) => [i.userId, i.answer]).sort())
-      .toEqual([[a.id, "accepted"], [b.id, "declined"], [c.id, "expired"], [d.id, "accepted"]].sort());
+      .toEqual([[a.id, "accepted"], [b.id, "declined"], [c.id, "expired"], [d.id, "expired"]].sort());
+    expect(await partyLines(id)).toContain(`${d.displayName} didn't make it`);
     expect((await card(c, id)).state).toBe("expired");
+    expect((await card(d, id)).state).toBe("expired");
     expect((await card(b, id)).state).toBe("declined");
     expect((await card(ada, id)).state).toBe("live");
     expect((await accept(c, id)).json().error).toBe("challenge_expired");
@@ -235,6 +237,67 @@ describe("answering", () => {
     expect(await startOrCancel(worker([ada]).deps, id)).toBe("cancelled");
     expect((await partyOf(id)).status).toBe("cancelled");
     expect(await partyLines(id)).toContain("Challenge expired.");
+    expect((await card(ada, id)).state).toBe("expired");
+  });
+
+  it("the challenger is just another player at the window's end: absent with two others in, it starts without them, refunded", async () => {
+    const ada = await person("ada");
+    const [a, b] = [await person("a"), await person("b")];
+    for (const u of [ada, a, b]) await fund(u, ENTRY);
+    const id = await challenge(ada, [a, b], { entryKobo: ENTRY, maxPlayers: 3 });
+    await accept(a, id);
+    await accept(b, id);
+    await closeWindow(id);
+    expect(await startOrCancel(worker([a, b]).deps, id)).toBe("live");
+    expect(await seated(id)).toEqual([a.id, b.id].sort());
+    expect(await cash(ada)).toBe(ENTRY);
+    expect(await partyLines(id)).toContain(`${ada.displayName} didn't make it`);
+  });
+
+  it("fewer than two in the lobby at the window's end, the challenger counted: cancelled and everyone refunded", async () => {
+    const ada = await person("ada");
+    const [a, b] = [await person("a"), await person("b")];
+    for (const u of [ada, a, b]) await fund(u, ENTRY);
+    const id = await challenge(ada, [a, b], { entryKobo: ENTRY, maxPlayers: 3 });
+    await accept(a, id);
+    await accept(b, id);
+    await closeWindow(id);
+    // Two seated players present is the bar; only one is (the challenger's seat doesn't count while they're away).
+    expect(await startOrCancel(worker([a]).deps, id)).toBe("cancelled");
+    expect(await partyOf(id)).toMatchObject({ status: "cancelled", cancelledBy: "system" });
+    expect(await partyLines(id)).toContain("Challenge expired.");
+    for (const u of [ada, a, b]) expect(await cash(u)).toBe(ENTRY);
+    expect((await card(a, id)).state).toBe("expired");
+  });
+
+  it("leaving after accepting: the card shows them as left, refunded, and the start goes on without them", async () => {
+    const ada = await person("ada");
+    const [a, b] = [await person("a"), await person("b")];
+    for (const u of [ada, a, b]) await fund(u, ENTRY);
+    const id = await challenge(ada, [a, b], { entryKobo: ENTRY, maxPlayers: 3 });
+    await accept(a, id);
+    await accept(b, id);
+    expect((await call(a, "POST", `/parties/${id}/leave`)).statusCode).toBe(200);
+    expect(await cash(a)).toBe(ENTRY);
+    expect(await card(a, id)).toMatchObject({ state: "left", you: { answer: "left", canAnswer: false } });
+    expect((await card(ada, id)).invitees.find((i: { person: { id: string } }) => i.person.id === a.id).answer).toBe("left");
+    expect((await accept(a, id)).json().error).toBe("challenge_answered");
+    // Everyone left to come is in: it starts now.
+    expect(await runChallengeJob(worker([ada, b]).deps, "challenge_ready", id)).toBe("live");
+    expect(await seated(id)).toEqual([ada.id, b.id].sort());
+  });
+
+  it("the last acceptor leaving with nobody else asked: cancelled now, everyone refunded", async () => {
+    const ada = await person("ada");
+    const kemi = await person("kemi");
+    for (const u of [ada, kemi]) await fund(u, ENTRY);
+    const id = await challenge(ada, [kemi], { entryKobo: ENTRY });
+    await accept(kemi, id);
+    expect((await call(kemi, "POST", `/parties/${id}/leave`)).statusCode).toBe(200);
+    expect(await partyOf(id)).toMatchObject({ status: "cancelled", cancelledBy: "system" });
+    expect(await partyLines(id)).toContain("Challenge expired.");
+    for (const u of [ada, kemi]) expect(await cash(u)).toBe(ENTRY);
+    expect((await card(kemi, id)).state).toBe("left");
     expect((await card(ada, id)).state).toBe("expired");
   });
 

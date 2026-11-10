@@ -35,8 +35,10 @@ describe("the card's state", () => {
     expect(challengeState({ ...base, partyStatus: "cancelled", ending: "expired" })).toBe("expired");
     expect(challengeState({ ...base, partyStatus: "cancelled" })).toBe("cancelled");
   });
-  it("the viewer's own decline or expired invite wins, whatever the others did", () => {
+  it("the viewer's own decline, leave or expired invite wins, whatever the others did", () => {
     expect(challengeState({ ...base, windowOpen: true, myAnswer: "declined" })).toBe("declined");
     expect(challengeState({ ...base, partyStatus: "live", myAnswer: "expired" })).toBe("expired");
+    expect(challengeState({ ...base, windowOpen: true, myAnswer: "left" })).toBe("left");
+    expect(challengeState({ ...base, partyStatus: "cancelled", ending: "expired", myAnswer: "left" })).toBe("left");
   });
 });
