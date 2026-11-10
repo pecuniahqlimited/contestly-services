@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql as dsql } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, becomeMember, nudges, contactMatches, cornerNewPlayers, cornerParties, cornerPartyPlayers, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
+  adminActions, adminAlerts, becomeMember, nudges, contactMatches, cornerConfigs, cornerNewPlayers, cornerParties, cornerPartyPlayers, cornerPostReactions, cornerPostReplies, cornerPosts, corners, cornerShown, crewMembers, crews, db, dmPermissionBetween, feedEvents,
   follows, getChatConfig, moderationItems, reports, parties, partyAnswers, partyDays, partyPlayers, partyQuestions, playedWith, recordCornerProgress, recordPartyProgress, recordSignals, saveCornerConfig,
   setChatConfig, setSocialConfig, sql, users, yourPeople, type Party, type User,
 } from "@contestly/db";
@@ -110,6 +110,11 @@ describe("counting a party (R)", () => {
 // ---- each threshold ---------------------------------------------------------------------
 
 describe("thresholds", () => {
+  it("version 1, the first production config (migration 0038), is ADR 0012's P 5, R 4, D 20, N 5, the same as the default", async () => {
+    const [v1] = await db.select().from(cornerConfigs).where(eq(cornerConfigs.version, 1));
+    expect(v1.config).toEqual({ partiesHosted: 5, realPlayersPerParty: 4, distinctPlayers: 20, newPlayers: 5 });
+    expect(v1.config).toEqual(DEFAULT_CORNER_UNLOCK);
+  });
   it("P short: one counted party isn't enough, whatever else is met", async () => {
     const host = await person("phost");
     await finish(host, [await person("pa"), await person("pb"), await person("pc"), await person("pd")]);

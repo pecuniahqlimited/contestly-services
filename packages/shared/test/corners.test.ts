@@ -6,6 +6,11 @@ import {
 const cfg = DEFAULT_CORNER_UNLOCK; // P 5, R 4, D 20, N 5
 const met = { partiesHosted: 5, distinctPlayers: 20, newPlayers: 5 };
 
+describe("the default thresholds", () => {
+  // ADR 0012's values: what the seed counts against and what migration 0038 writes as version 1 (test-int/corners.test.ts reads that row).
+  it("are P 5, R 4, D 20, N 5", () => expect(DEFAULT_CORNER_UNLOCK).toEqual({ partiesHosted: 5, realPlayersPerParty: 4, distinctPlayers: 20, newPlayers: 5 }));
+});
+
 describe("unlockProgress", () => {
   it("unlocks only when all of P, D and N are met, each at exactly its threshold", () => {
     expect(unlockProgress(met, cfg).allMet).toBe(true);
