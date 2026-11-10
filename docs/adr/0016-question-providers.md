@@ -3,7 +3,8 @@
 Status: accepted (7 Nov 2026), amended twice the same day: verification and the safety check moved to Claude
 ("Same-vendor verification"), then nothing in dev or testing pays at all: three profiles, mock by default,
 a free Gemini-only profile, and the Claude setup as the paid profile, off unless a paid cap is set
-("Profiles"). Closes open question
+("Profiles"); amended 9 Nov 2026 to cut the free profile's calls per set ("Free-tier call volume", agreed,
+not built). Closes open question
 2's provider half. Model ids and prices checked against the providers' own docs and model lists on 7 Nov 2026.
 
 ## Context
@@ -175,6 +176,53 @@ Dev and testing now use the free or mock profile instead (above), so this is the
 it's revisited. **Revisit before launch (row 12):** with Gemini billing on, switch
 verify and safety to the Gemini models in the console and compare `npm run questions:eval` reports from both
 setups; keep same-vendor verification only if the eval shows it catches as much.
+
+## Free-tier call volume (amendment, 9 Nov 2026; agreed, not built: roadmap row 0a)
+
+Staging on the free profile hits Gemini 429s. Counted from the code (`pipeline/fill.ts`, `pipeline/judge.ts`,
+`providers/drafting/generator.ts`): the spec is plain code; a fill embeds the spec (1 request), asks the
+generator for the gap plus `QUALITY_BUFFER` (6) drafts in calls of at most `MAX_PER_CALL` (8) per format,
+verifies **every valid draft with its own call** (4 at a time), sends the survivors to safety in one call,
+embeds every draft, and runs a second round if it's still short (`MAX_DRAFT_ROUNDS`, 2). A set that comes up
+short is retried by BullMQ (the questions queue: 3 attempts).
+
+A 10-question, one-format set with the default 2 reserves needs 12 and asks for 18 drafts:
+
+| | Generate | Verify | Safety | Model calls | Embed requests |
+|---|---|---|---|---|---|
+| Round 1 | 3 (8 + 8 + 2) | 18 | 1 | 22 | 19 |
+| Round 2 (if about 6 passed) | 2 | 12 | 1 | 15 | 12 |
+
+So 22–37 model calls a set, about 80% of them verification, all on `gemini-3.6-flash`: the free model with
+the smallest allowance we hold ourselves to (8 a minute, 200 a day). **Verification, not embeddings, is the
+free profile's binding limit:** one set's checks take over two minutes at 8 a minute, and the day covers about
+5–10 generated sets. This replaces the free-profile estimate in the first two Consequences bullets. A 429 whose
+retry wait is longer than the default retry policy waits (8 s; a spent daily quota says hours) marks the
+verifier unavailable for the rest of the fill, the remaining drafts fail closed, and after its three attempts
+the set is marked failed ("We couldn't make your questions just now"); a party whose set failed is cancelled
+and refunded at start.
+
+**Decision, free profile only.** The paid profile keeps one verification call per question, for the reasons
+under Alternatives.
+
+1. **Verify in batches.** The free verifier checks up to 8 drafts per call (the generator's batch size) and
+   returns one verdict per question, in order, matched by index. A missing, extra or malformed verdict makes
+   that question `unverifiable` (fail closed); a whole malformed answer fails the batch closed. It is still
+   never the generator's call or model. The cache stays per question: look each draft up before the batch,
+   send only the misses, store each definite verdict after. About 18 calls a round become 3.
+2. **A smaller quality buffer.** `QUALITY_BUFFER` becomes a per-profile value: 2 on free, 6 on paid.
+3. **A verify model with more room.** Revisit `FREE_PROFILE_MODELS.verify`: still a different model from the
+   generator and at least as strong, but with a larger free daily allowance. Confirm the real limits from AI
+   Studio and the 429s, and update `FREE_TIER_LIMITS` to match.
+
+With all three, the same set asks for 14 drafts: 2 generate + 2 verify + 1 safety = 5 model calls and about
+15 embed requests a round. Embeddings (1,000 a day) become the binding limit again, at roughly 60 sets a day.
+
+**Trade-off.** Batch verification was declined under Alternatives because one bad question can colour the
+others' verdicts and sources stop being per question. On the free profile the verdicts carry no sources
+anyway, and its gate is for the dev bank only, so the trade is acceptable there. Check it before merging:
+`npm run questions:eval -- --free --small` before and after; the rejection rate and the share of
+`incorrect`/`ambiguous` verdicts shouldn't move by more than noise.
 
 ## Alternatives considered
 
