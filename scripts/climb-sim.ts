@@ -11,6 +11,16 @@ import { climbQueue, closeQueues } from "@contestly/queue";
 import { lagosDay } from "@contestly/shared";
 import { api, call, failureCount, makeContacts, nextClimbRound, ok, putBack, putBackLater, rightClimbAnswer, sleep, waitFor, wrongClimbAnswer } from "./sim-lib.js";
 
+/** The earliest Monday from 2001 to 2019 that no week row, prize pin, result or award uses yet (sim and test weeks live there, far from real ones). */
+async function unusedPastWeek(): Promise<string> {
+  const [row] = await sql<{ week: string }[]>`
+    select to_char(d, 'YYYY-MM-DD') as week from generate_series('2001-01-01'::date, '2019-12-30'::date, interval '7 days') d
+    where to_char(d, 'YYYY-MM-DD') not in (select week from climb_weeks union select week from climb_week_prizes union select week from climb_week_results union select week from climb_awards)
+    order by d limit 1`;
+  if (!row) throw new Error("no unused past week left for the sim (2001–2019 all used)");
+  return row.week;
+}
+
 const tag = Date.now().toString(36);
 const ADMIN = `climb.admin.${tag}`;
 const ADA = `climb.ada.${tag}`, KEMI = `climb.kemi.${tag}`, SEGUN = `climb.segun.${tag}`, ZEE = `climb.zee.${tag}`;
@@ -196,13 +206,10 @@ try {
   ok(everyone.ahead !== null && everyone.ahead.gap > 0, "everyone: the gap to the row above me");
 
   console.log("\n==== week close and weekly prizes ====");
-  // A closed week in the past for two sim players, as the API would have written it.
-  const week = new Date(Date.UTC(2001, 0, 1) + Math.floor(Math.random() * 1000) * 7 * 86_400_000).toISOString().slice(0, 10);
+  // A closed week in the past for two sim players, as the API would have written it. The database outlives each run,
+  // so it's a week no earlier run used (a random pick of ~1,000 Mondays collided with one: climb_week_prizes_pkey).
+  const week = await unusedPastWeek();
   const [ada, kemi] = [await userId(ADA), await userId(KEMI)];
-  await db.insert(climbWeeks).values([
-    { userId: ada, week, points: 300, reachedAt: new Date(Date.UTC(2001, 0, 2)) },
-    { userId: kemi, week, points: 300, reachedAt: new Date(Date.UTC(2001, 0, 1)) },
-  ]);
   // Prizes are versioned: the week closes with the version it was pinned to, not one saved afterwards.
   const badPrizes = await call(ADMIN, "PUT", "/admin/climb/prizes", { prizes: { winners: 2, prizeKobo: [700_000, 400_000, 100_000] } });
   ok(badPrizes.status === 400, "prizes need exactly one amount per winner");
@@ -210,6 +217,11 @@ try {
   ok(started.current.totalKobo === 1_100_000 && started.current.prizes.winners === 2, "saving prizes makes a version with its weekly total");
   ok(started.thisWeek.version !== started.current.version || prizesBefore.current === null, "the week being played keeps the version it began with");
   await db.insert(climbWeekPrizes).values({ week, prizeVersion: started.current.version }); // as the worker pins it when the week begins
+  // Its scores only now, so a week_close running meanwhile can't find the week and pin it first.
+  await db.insert(climbWeeks).values([
+    { userId: ada, week, points: 300, reachedAt: new Date(Date.UTC(2001, 0, 2)) },
+    { userId: kemi, week, points: 300, reachedAt: new Date(Date.UTC(2001, 0, 1)) },
+  ]);
   const later = await api(ADMIN, "PUT", "/admin/climb/prizes", { prizes: { winners: 1, prizeKobo: [100_000] } });
   ok(later.current.version > started.current.version, "a later save is a newer version");
   const jobs = climbQueue();
