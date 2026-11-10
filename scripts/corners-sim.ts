@@ -19,8 +19,8 @@
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { Client, type Room } from "colyseus.js";
-import { and, eq } from "drizzle-orm";
-import { adminAlerts, db, partyQuestions, users } from "@contestly/db";
+import { and, eq, like } from "drizzle-orm";
+import { adminAlerts, corners, db, partyQuestions, users } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { INSTALL_ID_HEADER, MSG, PARTY_ROOM } from "@contestly/shared";
 import type { QuestionFormat } from "@contestly/game";
@@ -78,8 +78,10 @@ async function play(partyId: string, players: string[]) {
   return waitForProgress(partyId);
 }
 
-const [HOST, OTHER_HOST, P1, P2, UNVERIFIED, SAME_DEVICE, BROUGHT, Q2, FAN, MUTED] =
-  ["host", "otherhost", "p1", "p2", "unverified", "samedevice", "brought", "q2", "fan", "muted"].map(h);
+const [HOST, OTHER_HOST, P1, P2, UNVERIFIED, SAME_DEVICE, BROUGHT, Q2, FAN, MUTED, LANE_FAN] =
+  ["host", "otherhost", "p1", "p2", "unverified", "samedevice", "brought", "q2", "fan", "muted", "lanefan"].map(h);
+/** The lane the host's corner takes; LANE_FAN picked it, so the corner is theirs to be suggested first. */
+const CORNER_LANE = "Geography";
 
 const originalConfig = await api(ADMIN, "GET", "/admin/corners/config");
 try {
@@ -96,6 +98,12 @@ try {
     await api(ADMIN, "PUT", "/admin/corners/config", { config: found, reason: `sim:corners ${tag}: put back version ${originalConfig.version}` });
   });
   await api(ADMIN, "PUT", "/admin/corners/config", { config: { partiesHosted: 2, realPlayersPerParty: 2, distinctPlayers: 3, newPlayers: 2 }, reason: `sim:corners ${tag}` });
+  // The corners this run unlocks are revoked when it ends, so they don't pile up in later runs' suggestions.
+  putBackLater("this run's corners, revoked", async () => {
+    const mine = await db.select({ id: corners.id }).from(corners).innerJoin(users, eq(users.id, corners.ownerUserId))
+      .where(and(like(users.handle, `cs${tag}\\_%`), eq(corners.status, "unlocked")));
+    for (const c of mine) await api(ADMIN, "POST", `/admin/corners/${c.id}/revoke`, { reason: `sim:corners ${tag}: clean up` });
+  });
 
   // ---- 1 and 2. playing until the host unlocks ----------------------------------------------
 
@@ -136,10 +144,13 @@ try {
   // ---- 3. follows ---------------------------------------------------------------------------
 
   console.log("\n3. Follows");
-  const setUp = await api(HOST, "PATCH", "/me/corner", { name: `Corner ${tag}`, bio: "Quiz night, every night.", lane: "Geography", color: "#7C3AED" });
-  ok(setUp.lane === "Geography" && setUp.laneChosen && setUp.color === "#7C3AED", "the owner sets a lane and a colour from the palette");
-  const suggestedToFan = await api(FAN, "GET", "/corners/suggested?limit=30");
-  ok(suggestedToFan.corners.some((x: any) => x.corner.id === cornerId && !x.following), "it's suggested to someone who doesn't follow it yet");
+  const setUp = await api(HOST, "PATCH", "/me/corner", { name: `Corner ${tag}`, bio: "Quiz night, every night.", lane: CORNER_LANE, color: "#7C3AED" });
+  ok(setUp.lane === CORNER_LANE && setUp.laneChosen && setUp.color === "#7C3AED", "the owner sets a lane and a colour from the palette");
+  // A fresh viewer in the corner's lane: it leads with lane corners, so the new corner (no followers yet) is
+  // suggested whatever other corners the database holds.
+  await api(LANE_FAN, "POST", "/me", { displayName: "Lane fan", handle: LANE_FAN, interests: [CORNER_LANE] });
+  const suggested = await api(LANE_FAN, "GET", "/corners/suggested?limit=30");
+  ok(suggested.corners.some((x: any) => x.corner.id === cornerId && x.reason === "your_lane" && !x.following), "it's suggested, for their lane, to someone who doesn't follow it yet");
   ok((await api(null, "GET", "/config")).social?.cornerPostMaxChars > 0, "the app can read the post cap before posting");
   const f = await api(FAN, "POST", `/corners/${cornerId}/follow`);
   ok(f.following && f.notify && f.followerCount === 1, "following a corner: alerts on by default, count on the corner");
