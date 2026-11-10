@@ -231,6 +231,10 @@ describe("logo uploads", () => {
     expect(await storage().head(second)).toBeNull();
     expect(await queued()).toBeUndefined();
     expect((await decide("reject", second, "again")).json().error).toBe("no_pending_logo");
+    // The owner and admins hear, with the note (hosts and viewers don't).
+    const logoNudges = async (u: User) => (await nudgesOf(u.id, "verification_update")).map((x) => x.data as { outcome: string; note?: string }).filter((d) => d.outcome.startsWith("logo_"));
+    for (const u of [t.owner, t.admin]) expect(await logoNudges(u)).toEqual([expect.objectContaining({ outcome: "logo_rejected", note: "The logo is a different brand's" })]);
+    for (const u of [t.host, t.viewer]) expect(await logoNudges(u)).toEqual([]);
 
     // Sent again (the note clears), then approved: it goes live and the old one is deleted.
     const third = await uploadLogo(t.owner, t.brand, bytes(4));
@@ -239,6 +243,7 @@ describe("logo uploads", () => {
     expect(await settings()).toMatchObject({ logoKey: third, pendingLogo: null, logoRejection: null });
     expect(await served()).toEqual(bytes(4));
     expect(await storage().head(live)).toBeNull();
+    for (const u of [t.owner, t.admin]) expect((await logoNudges(u)).map((d) => d.outcome).sort()).toEqual(["logo_approved", "logo_rejected"]);
 
     // Sending the live logo again withdraws the one waiting.
     const fourth = await uploadLogo(t.owner, t.brand, bytes(5));

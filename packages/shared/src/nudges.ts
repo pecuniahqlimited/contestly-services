@@ -160,7 +160,8 @@ export type NudgeData = {
   guest_follow_up: { partyId: string; title: string };
   win_back: { personName: string; personHandle: string; what: string };
   /** A brand's review (ADR 0017), to its owner and admins. */
-  verification_update: { brandId: string; brandName: string; outcome: "approved" | "changes_needed" };
+  /** The brand's review, or a verified brand's new logo (with the admin's note when it's rejected): to its owner and admins. */
+  verification_update: { brandId: string; brandName: string; outcome: "approved" | "changes_needed" | "logo_approved" | "logo_rejected"; note?: string };
   /** A goods prize the brand arranged: to the winner (`for: "winner"`) and the brand's hosts. */
   prize_ready: { fulfilmentId: string; partyId: string; title: string; brandName: string; for: "winner" | "brand" };
   /** Day 3 and 7 after a goods prize was awarded, while it isn't delivered: to both sides. */
@@ -251,9 +252,7 @@ const kinds: { [K in NudgeKind]: NudgeKindDef<K> } = {
   },
   verification_update: {
     category: "account", inActivity: true,
-    render: (d) => d.outcome === "approved"
-      ? { title: `${d.brandName} is verified`, body: "Your corner is open and every kind of party is unlocked.", deepLink: DEEP_LINKS.brand(d.brandId), reason: "Your brand's review" }
-      : { title: `${d.brandName} needs a few changes`, body: "See the reviewer's note and send it again.", deepLink: DEEP_LINKS.brand(d.brandId), reason: "Your brand's review" },
+    render: (d) => ({ ...VERIFICATION_COPY[d.outcome](d), deepLink: DEEP_LINKS.brand(d.brandId), reason: "Your brand's review" }),
   },
   prize_ready: {
     category: "account", inActivity: true,
@@ -282,6 +281,18 @@ export function renderNudge<K extends NudgeKind>(kind: K, data: NudgeData[K], ac
   assertNoMoney(content);
   return content;
 }
+
+/** The longest admin note a verification_update carries in its body. */
+const NOTE_IN_BODY_CHARS = 140;
+/** The admin's note as the body, when it fits the no-money rule (else the push would be skipped); otherwise `fallback`. */
+const noteOr = (note: string | undefined, fallback: string) =>
+  note && !mentionsMoney(note) ? (note.length > NOTE_IN_BODY_CHARS ? `${note.slice(0, NOTE_IN_BODY_CHARS - 1)}…` : note) : fallback;
+const VERIFICATION_COPY: Record<NudgeData["verification_update"]["outcome"], (d: NudgeData["verification_update"]) => { title: string; body: string }> = {
+  approved: (d) => ({ title: `${d.brandName} is verified`, body: "Your corner is open and every kind of party is unlocked." }),
+  changes_needed: (d) => ({ title: `${d.brandName} needs a few changes`, body: "See the reviewer's note and send it again." }),
+  logo_approved: (d) => ({ title: `${d.brandName}'s new logo is live`, body: "It's on your brand, your corner and your parties now." }),
+  logo_rejected: (d) => ({ title: `${d.brandName}'s new logo wasn't approved`, body: noteOr(d.note, "See the reviewer's note in settings and send another.") }),
+};
 
 // ---- outcomes --------------------------------------------------------------------------
 

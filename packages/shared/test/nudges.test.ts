@@ -46,11 +46,19 @@ describe("the no-money guard", () => {
     }
     expect(renderNudge("party_starting", { ...SAMPLE.party_starting, minutes: 1 }).title).toBe("Friday Night Quiz starts in a minute");
     expect(renderNudge("rival", { by: "climb", rivalHandle: "kemz", rivalName: "Kemi", stage: 4 }).title).toBe("Kemi climbed past your best");
-    for (const outcome of ["approved", "changes_needed"] as const) renderNudge("verification_update", { ...SAMPLE.verification_update, outcome });
+    for (const outcome of ["approved", "changes_needed", "logo_approved", "logo_rejected"] as const) renderNudge("verification_update", { ...SAMPLE.verification_update, outcome });
     for (const side of ["winner", "brand"] as const) {
       renderNudge("prize_ready", { ...SAMPLE.prize_ready, for: side });
       renderNudge("prize_delivery_due", { ...SAMPLE.prize_delivery_due, for: side, day: 7 });
     }
+  });
+
+  it("a rejected logo carries the admin's note, unless the note would break the no-money rule", () => {
+    const rejected = (note?: string) => renderNudge("verification_update", { ...SAMPLE.verification_update, outcome: "logo_rejected", note }).body;
+    expect(rejected("The logo is another brand's")).toBe("The logo is another brand's");
+    expect(rejected("x".repeat(300))).toHaveLength(140);
+    expect(rejected("Looks like a ₦5,000 voucher")).toBe("See the reviewer's note in settings and send another.");
+    expect(rejected()).toBe("See the reviewer's note in settings and send another.");
   });
 
   it("the host's cancel never says refund, in the title or anywhere", () => {
