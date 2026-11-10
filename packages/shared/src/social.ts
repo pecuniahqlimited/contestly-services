@@ -21,7 +21,7 @@ export const socialConfigSchema = z.object({
   partyPointsMinPlayers: z.number().int().min(2),
   /** Parties a day that earn points, per player (Lagos day). */
   partyPointsDailyCap: z.number().int().min(1),
-  /** One-tap challenges a person may send a day. */
+  /** Challenges a person may send a day (ADR 0019). */
   challengesPerDay: z.number().int().min(1),
   /** Streak lengths that show up in the feed. */
   streakMilestones: z.array(z.number().int().min(2)),
@@ -125,8 +125,6 @@ export const profileSocialSchema = z.object({
   mutedByYou: z.boolean(),
 });
 
-/** POST /users/:id/challenge → 201: the party made for the two of you; they're invited and it's in your DM. */
-export const challengeResponseSchema = z.object({ partyId: z.string().uuid(), threadId: z.string().uuid() });
 /** POST /parties/:id/rematch → the rematch everyone from that party lands in (`created`: this call made it). Joining is a separate POST /parties/:id/join. */
 export const rematchResponseSchema = z.object({ partyId: z.string().uuid(), created: z.boolean() });
 
@@ -212,7 +210,7 @@ export function nextCreator<T extends { userId: string; role: CrewRole; joinedAt
   return byTenure.find((m) => m.role === "admin") ?? byTenure[0] ?? null;
 }
 
-/** The brief a one-tap challenge starts from: the lanes you share, else yours, else general knowledge. */
+/** A challenge preset's brief (ADR 0019): the lanes you share, else yours, else general knowledge. */
 export function challengeBrief(mine: readonly string[], theirs: readonly string[]): { brief: string; lanes: string[] } {
   const shared = mine.filter((l) => theirs.includes(l));
   const lanes = (shared.length ? shared : mine).slice(0, 3);

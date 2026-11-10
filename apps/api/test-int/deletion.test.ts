@@ -174,7 +174,7 @@ describe("a deleted account", () => {
     expect((await app.inject({ method: "GET", url: `/corners/${goneCornerId}` })).statusCode).toBe(404);
     expect((await db.select().from(corners).where(eq(corners.id, goneCornerId)))[0].archivedAt).toBeInstanceOf(Date);
     expect((await app.inject({ method: "POST", url: `/dm/${gone.id}`, headers: as(friend) })).statusCode).toBe(404);
-    expect((await app.inject({ method: "POST", url: `/users/${gone.id}/challenge`, headers: as(friend) })).statusCode).toBe(404);
+    expect((await app.inject({ method: "POST", url: "/parties", headers: as(friend), payload: { title: "A challenge", brief: "general knowledge", entryKobo: 0, maxPlayers: 2, funding: "pooled", split: "winner", challenge: { invitees: [gone.id], inviteExpiresInMinutes: 60, joinWindowMinutes: 10 } } })).json().error).toBe("cannot_challenge");
     expect(await db.select().from(follows).where(inArray(follows.followerId, [gone.id]))).toEqual([]);
     expect(await db.select().from(follows).where(eq(follows.cornerId, goneCornerId))).toEqual([]);
     expect(await db.select().from(crewInvites).where(eq(crewInvites.inviteeId, gone.id))).toEqual([]);

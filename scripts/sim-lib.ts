@@ -268,6 +268,19 @@ export async function mailedCode(to: string): Promise<string> {
   return code;
 }
 
+/**
+ * Send a challenge (ADR 0019) the way the app does: the preset for these people, then POST /parties with it and
+ * `challenge`. `party` and `challenge` change the preset's party body and its expiry, window and message.
+ */
+export async function sendChallenge(from: string, inviteeIds: string[], opts: { party?: Record<string, unknown>; challenge?: Record<string, unknown> } = {}) {
+  const preset = await call(from, "GET", `/challenges/preset?userIds=${inviteeIds.join(",")}`);
+  if (preset.status !== 200) return preset;
+  return call(from, "POST", "/parties", {
+    ...preset.body.party, questionCount: 3, secondsPerQuestion: 5, ...opts.party,
+    challenge: { invitees: inviteeIds, ...preset.body.challenge, ...opts.challenge },
+  });
+}
+
 /** The PNG signature and a few bytes: what a logo upload's attach check reads. */
 export const SIM_PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...new Array(56).fill(7)]);
 

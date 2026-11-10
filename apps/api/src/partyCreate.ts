@@ -1,5 +1,5 @@
 /**
- * Making a party: the one path for the builder (POST /parties), a one-tap Challenge, a Rematch and a crew
+ * Making a party: the one path for the builder (POST /parties), a Challenge (ADR 0019), a Rematch and a crew
  * party. Stakes are checked against the current limits, a host's cash prize is held, a sealed host is
  * seated, the party's chat opens, invites go out, and the set starts building (ADR 0002). A party made from a
  * template keeps a copy of it; one with host-written questions is curate and never free; every curate party with
@@ -7,8 +7,8 @@
  */
 import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { takeSeat, cleanName,
-  canOfferNonCashPrize, curateHostType, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles, partyInvites,
-  partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, type Acting, type Party, type Tx, type User,
+  canOfferNonCashPrize, curateHostType, crewMembers, crews, db, getPartyConfig, joinPartyThread, ledger, parties, partyCardLine, partyFiles,
+  partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, latestStart, inviteExpiry, writeChallenge, type Acting, type Party, type Tx, type User,
 } from "@contestly/db";
 import { notifyQueue, partyQueue } from "@contestly/queue";
 import { BRAND_NOT_VERIFIED, BRAND_ROLE_FORBIDDEN, SPLITS, checkStakes, isFreeParty, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput, type PartyTemplateCopy } from "@contestly/shared";
@@ -17,13 +17,12 @@ import { inviteToParty } from "./invites.js";
 import { enqueueSealedSet } from "./questionSet.js";
 import { assertHostQuestionsSafe, assertHostWrittenStakes, queueHostChecks, writeHostQuestions } from "./hostQuestions.js";
 import { currentHostRules } from "./partyTemplates.js";
+import { challengeSeats, checkChallenge } from "./challenges.js";
 
 const notify = notifyQueue();
 const partyJobs = partyQueue();
 
 export interface CreateOptions {
-  /** A one-tap challenge's opponent: invited without the connection check (the DM rule was checked instead). */
-  challenged?: string;
   /** This party is the rematch of that one: its source files come along. */
   rematchOf?: string;
   /** More people to invite (the connection rule applies), beyond the builder's own short list: a rematch's players. */
@@ -59,8 +58,15 @@ async function copySources(tx: Tx, fromPartyId: string, toPartyId: string, uploa
 }
 
 export async function createParty(me: User, input: CreatePartyInput, opts: CreateOptions = {}): Promise<Created> {
-  const body = { ...input, title: await cleanName("partyTitle", input.title) };
-  const startsAt = startsAtFor(body);
+  const now = new Date();
+  // A challenge (ADR 0019): checked first; always private, a seat for each person asked, and it starts when they're
+  // ready, so startsAt is the latest it could (the expiry plus the window) until someone accepts.
+  const challengees = input.challenge ? await checkChallenge(me, input, opts.brand) : null;
+  const body = {
+    ...input, title: await cleanName("partyTitle", input.title),
+    ...(input.challenge ? { visibility: "private" as const, maxPlayers: await challengeSeats(input.challenge.invitees.length) } : {}),
+  };
+  const startsAt = body.challenge ? latestStart(body.challenge, now) : startsAtFor(body);
   // The server decides: the current limits, and whether this host may offer goods (canOfferNonCashPrize, the one place that says).
   const brandId = opts.brand?.account.id ?? null;
   const [cfg, host, hostRules] = await Promise.all([getPartyConfig(), prospectiveHost(me.id, brandId), currentHostRules()]);
@@ -111,10 +117,8 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
     }
     // Same guards as inviting later; a refused invite refuses the whole party, so nothing is half made.
     const invited = await inviteToParty(tx, p, me, [...body.inviteUserIds, ...crewmates, ...(opts.alsoInvite ?? [])]);
-    if (opts.challenged) {
-      await tx.insert(partyInvites).values({ partyId: p.id, inviteeId: opts.challenged, inviterId: me.id }).onConflictDoNothing();
-      invited.push(opts.challenged);
-    }
+    // A challenge's people are asked in their DMs instead (the DM rule was checked, not the connection rule).
+    if (body.challenge) lines.push(...await writeChallenge(tx, p, me, body.challenge, challengees!, now));
     return { party: { ...p, hostQuestionCount: body.hostQuestions.length }, invited, hostChecks };
   });
   // The model safety check on the host's own words, once they've committed (ADR 0015).
@@ -126,5 +130,9 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   // With files on the way, the questions service builds it once they're read (sealWhenFilesRead).
   if (mode === "sealed" && !body.awaitFiles) await enqueueSealedSet(party.id, "create");
   await partyJobs.add("start", { kind: "start", partyId: party.id }, { delay: Math.max(0, startsAt.getTime() - Date.now()), jobId: `start-${party.id}` });
+  if (body.challenge) {
+    const expiresAt = inviteExpiry(body.challenge, now);
+    await partyJobs.add("challenge_expire", { kind: "challenge_expire", partyId: party.id }, { delay: Math.max(0, expiresAt.getTime() - Date.now()), jobId: `challenge-expire-${party.id}` });
+  }
   return { party, lines };
 }

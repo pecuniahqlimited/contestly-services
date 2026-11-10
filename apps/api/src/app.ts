@@ -42,6 +42,7 @@ import { brandsRoutes } from "./routes/brands.js";
 import { imagesRoutes } from "./routes/images.js";
 import { adminBrandsRoutes } from "./routes/adminBrands.js";
 import { socialRoutes } from "./routes/social.js";
+import { challengesRoutes } from "./routes/challenges.js";
 import { adminPaymentsRoutes } from "./routes/adminPayments.js";
 import { mockCheckoutRoutes, paymentWebhookRoutes } from "./routes/paymentWebhooks.js";
 import { assertPaymentsEnv } from "@contestly/payments";
@@ -155,6 +156,7 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(adminModerationRoutes);
   await app.register(crewsRoutes);
   await app.register(socialRoutes);
+  await app.register(challengesRoutes);
   await app.register(cornersRoutes);
   await app.register(adminCornersRoutes);
   await app.register(brandsRoutes);

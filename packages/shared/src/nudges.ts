@@ -159,6 +159,12 @@ export type NudgeData = {
   host_cancelled: { partyId: string; title: string; entryBack: boolean };
   guest_follow_up: { partyId: string; title: string };
   win_back: { personName: string; personHandle: string; what: string };
+  /** A challenge in your DMs (ADR 0019); the card is already in the thread, so this is a push only. */
+  challenge_received: { partyId: string; title: string; challengerName: string; challengerHandle: string; message?: string };
+  /** To the challenger: someone accepted, the lobby is waiting. */
+  challenge_accepted: { partyId: string; title: string; byName: string };
+  /** Halfway through the join window, to anyone seated or still asked who isn't in the lobby. */
+  challenge_join_reminder: { partyId: string; title: string; minutesLeft: number; accepted: boolean };
   /** A brand's review (ADR 0017), to its owner and admins. */
   /** The brand's review, or a verified brand's new logo (with the admin's note when it's rejected): to its owner and admins. */
   verification_update: { brandId: string; brandName: string; outcome: "approved" | "changes_needed" | "logo_approved" | "logo_rejected"; note?: string };
@@ -189,6 +195,18 @@ export interface NudgeKindDef<K extends NudgeKind> {
   staleAfterSeconds?: number;
   render(data: NudgeData[K], actors: readonly NudgeActor[]): NudgeContent;
 }
+
+/** The longest typed note (an admin's, a challenger's message) a nudge carries in its body. */
+const NOTE_IN_BODY_CHARS = 140;
+/** The note as the body, when it fits the no-money rule (else the push would be skipped); otherwise `fallback`. */
+const noteOr = (note: string | undefined, fallback: string) =>
+  note && !mentionsMoney(note) ? (note.length > NOTE_IN_BODY_CHARS ? `${note.slice(0, NOTE_IN_BODY_CHARS - 1)}…` : note) : fallback;
+const VERIFICATION_COPY: Record<NudgeData["verification_update"]["outcome"], (d: NudgeData["verification_update"]) => { title: string; body: string }> = {
+  approved: (d) => ({ title: `${d.brandName} is verified`, body: "Your corner is open and every kind of party is unlocked." }),
+  changes_needed: (d) => ({ title: `${d.brandName} needs a few changes`, body: "See the reviewer's note and send it again." }),
+  logo_approved: (d) => ({ title: `${d.brandName}'s new logo is live`, body: "It's on your brand, your corner and your parties now." }),
+  logo_rejected: (d) => ({ title: `${d.brandName}'s new logo wasn't approved`, body: noteOr(d.note, "See the reviewer's note in settings and send another.") }),
+};
 
 const kinds: { [K in NudgeKind]: NudgeKindDef<K> } = {
   party_starting: {
@@ -250,6 +268,25 @@ const kinds: { [K in NudgeKind]: NudgeKindDef<K> } = {
     category: "account",
     render: (d) => ({ title: "Keep your score next time", body: `You played ${d.title} as a guest. Sign up to save your scores and play with friends.`, deepLink: DEEP_LINKS.signUp(), reason: "You played as a guest" }),
   },
+  challenge_received: {
+    category: "people", pushOnly: true,
+    render: (d) => ({
+      title: `${d.challengerName} challenged you`, body: noteOr(d.message, `${d.title}. Tap to answer.`),
+      deepLink: DEEP_LINKS.thread({ kind: "dm", handle: d.challengerHandle }), reason: "A challenge for you",
+    }),
+  },
+  challenge_accepted: {
+    category: "parties", livePartyEvent: true, staleAfterSeconds: 600,
+    render: (d) => ({ title: `${d.byName} accepted your challenge`, body: "Join the lobby. It starts once everyone's in.", deepLink: DEEP_LINKS.partyRoom(d.partyId), reason: "Your challenge" }),
+  },
+  challenge_join_reminder: {
+    category: "parties", livePartyEvent: true, staleAfterSeconds: 120,
+    render: (d) => ({
+      title: `${d.title}: the lobby closes in ${d.minutesLeft} ${d.minutesLeft === 1 ? "minute" : "minutes"}`,
+      body: d.accepted ? "Everyone's waiting for you. Jump in." : "Accept now to play.",
+      deepLink: d.accepted ? DEEP_LINKS.partyRoom(d.partyId) : DEEP_LINKS.party(d.partyId), reason: "You were challenged",
+    }),
+  },
   verification_update: {
     category: "account", inActivity: true,
     render: (d) => ({ ...VERIFICATION_COPY[d.outcome](d), deepLink: DEEP_LINKS.brand(d.brandId), reason: "Your brand's review" }),
@@ -281,18 +318,6 @@ export function renderNudge<K extends NudgeKind>(kind: K, data: NudgeData[K], ac
   assertNoMoney(content);
   return content;
 }
-
-/** The longest admin note a verification_update carries in its body. */
-const NOTE_IN_BODY_CHARS = 140;
-/** The admin's note as the body, when it fits the no-money rule (else the push would be skipped); otherwise `fallback`. */
-const noteOr = (note: string | undefined, fallback: string) =>
-  note && !mentionsMoney(note) ? (note.length > NOTE_IN_BODY_CHARS ? `${note.slice(0, NOTE_IN_BODY_CHARS - 1)}…` : note) : fallback;
-const VERIFICATION_COPY: Record<NudgeData["verification_update"]["outcome"], (d: NudgeData["verification_update"]) => { title: string; body: string }> = {
-  approved: (d) => ({ title: `${d.brandName} is verified`, body: "Your corner is open and every kind of party is unlocked." }),
-  changes_needed: (d) => ({ title: `${d.brandName} needs a few changes`, body: "See the reviewer's note and send it again." }),
-  logo_approved: (d) => ({ title: `${d.brandName}'s new logo is live`, body: "It's on your brand, your corner and your parties now." }),
-  logo_rejected: (d) => ({ title: `${d.brandName}'s new logo wasn't approved`, body: noteOr(d.note, "See the reviewer's note in settings and send another.") }),
-};
 
 // ---- outcomes --------------------------------------------------------------------------
 

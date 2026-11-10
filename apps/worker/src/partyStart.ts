@@ -4,7 +4,7 @@
  * what it tells the outside world (room events, chat lines, follow-up jobs) is passed in.
  */
 import { and, asc, count, eq, lte } from "drizzle-orm";
-import { db, getPartyConfig, getQuestionsConfig, parties, partyAnswers, partyLifecycleLine, partyLineByKey, partyPlayers, partyQuestions, refundAndCancel, seenInSet, type Party, type Tx } from "@contestly/db";
+import { db, getPartyConfig, getQuestionsConfig, parties, partyAnswers, partyLifecycleLine, partyLineByKey, partyPlayers, partyQuestions, refundAndCancel, seenInSet, settleChallengeRoster, type Party, type Tx } from "@contestly/db";
 import { stallThresholdSeconds, type ChatMessage } from "@contestly/shared";
 import { standingsFromRecords } from "@contestly/game";
 
@@ -22,6 +22,8 @@ export interface StartDeps {
   queueQuestions(kind: "reseal_for_roster" | "generate_set", partyId: string, jobId: string): Promise<unknown>;
   /** Queue the first watchdog check of a live party. */
   queueWatchdog(partyId: string, jobId: string): Promise<unknown>;
+  /** Who's connected to the party's room right now (partyHereKey): who of a challenge's players is in the lobby. */
+  inLobby(partyId: string): Promise<Set<string>>;
 }
 
 /** The fixed job ids of what a start queues (BullMQ ignores an add whose id it already holds). */
@@ -120,7 +122,7 @@ type StartDecision =
  * before it ever went live) sends it all again: the event, the chat line, and the follow-up jobs.
  */
 export async function startOrCancel(deps: StartDeps, partyId: string): Promise<StartOutcome> {
-  const cfg = await getPartyConfig();
+  const [cfg, inLobby] = await Promise.all([getPartyConfig(), deps.inLobby(partyId)]);
   const cancel = async (tx: Tx, p: Party, message: string, why: string): Promise<StartDecision> => {
     const out = await refundAndCancel(tx, p, message);
     console.log(`[party] ${p.title}: ${why}, cancelled and ${out.players} refunded`);
@@ -138,8 +140,14 @@ export async function startOrCancel(deps: StartDeps, partyId: string): Promise<S
       return { outcome: "replayed", status: "cancelled", line: await partyLineByKey(tx, partyId, "cancelled") };
     }
     if (p.status !== "open") return { outcome: "skipped" };
+    // A challenge plays with whoever accepted and is in the lobby, at least two, or ends as expired (ADR 0019).
+    const roster = await settleChallengeRoster(tx, p, inLobby);
+    if (roster?.cancelled) {
+      console.log(`[party] ${p.title}: challenge expired, cancelled and refunded`);
+      return { outcome: "cancelled", status: "cancelled", line: roster.cancelled };
+    }
     const [{ n }] = await tx.select({ n: count() }).from(partyPlayers).where(eq(partyPlayers.partyId, partyId));
-    if (Number(n) < cfg.minPlayers) return cancel(tx, p, "Not enough players joined. Everyone has been refunded.", `${n} player(s), fewer than ${cfg.minPlayers}`);
+    if (!roster && Number(n) < cfg.minPlayers) return cancel(tx, p, "Not enough players joined. Everyone has been refunded.", `${n} player(s), fewer than ${cfg.minPlayers}`);
     if (p.mode === "curate" && !(await curateSetApproved(tx, p))) return cancel(tx, p, "The host didn't finish reviewing the questions. Everyone has been refunded.", "curate set not approved at start");
     if (p.mode === "sealed" && p.questionsStatus === "failed") return cancel(tx, p, GENERATION_FAILED_MESSAGE, "question set still failed at start");
     const followUp = await sealedFollowUp(p);

@@ -10,6 +10,7 @@ import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
 import { allQuestionsPlayed, announceCancelled, cancelFailedGeneration, refundInterrupted, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
+import { runChallengeJob } from "./challenges.js";
 import { selectTranscriber } from "./transcribe/index.js";
 import { sendersFromEnv } from "@contestly/email";
 import { ALERT_DELIVERY_EVERY_MS, alertChannelsFromEnv, alertDeliveryConfigFromEnv, deliverAlerts } from "./alertDelivery.js";
@@ -139,6 +140,7 @@ const startDeps: StartDeps = {
   emit, publishLine,
   queueQuestions: (kind, partyId, jobId) => questionJobs.add(kind, { kind, partyId }, { jobId }),
   queueWatchdog: (partyId, jobId) => partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: WATCHDOG_FIRST_MS, jobId }),
+  inLobby: async (partyId) => new Set(Object.entries(await pub.hgetall(partyHereKey(partyId))).filter(([, n]) => Number(n) > 0).map(([id]) => id)),
 };
 const settleDeps: SettleDeps = {
   emit, publishLine,
@@ -167,6 +169,11 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
   if (d.kind === "start" || d.kind === "cancel_if_empty") {
     const out = await startOrCancel(startDeps, d.partyId);
     // Seated players who aren't in the room hear it's live (the minute sweep is the backstop).
+    if (out === "live" || out === "replayed") await emitPartyLive(d.partyId);
+    return out;
+  }
+  if (d.kind === "challenge_expire" || d.kind === "challenge_remind" || d.kind === "challenge_ready") {
+    const out = await runChallengeJob(startDeps, d.kind, d.partyId);
     if (out === "live" || out === "replayed") await emitPartyLive(d.partyId);
     return out;
   }

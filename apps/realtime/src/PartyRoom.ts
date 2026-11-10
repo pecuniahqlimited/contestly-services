@@ -12,7 +12,7 @@ import { SafeRoom } from "./SafeRoom.js";
 import { firstSighting, parsePublished, sendLine } from "./chat.js";
 import type { ChatMessage } from "@contestly/shared";
 import { and, asc, eq, notInArray } from "drizzle-orm";
-import { db, isHostTeam, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
+import { db, isChallenge, isHostTeam, markRoundProgress, parties, partyPlayers, partyQuestions, partyAnswers, partyQuestionEvents, getPartyConfig, getQuestionsConfig, joinThread, partyThreadId, threadById, type ChatSender, type ChatThread, type Party } from "@contestly/db";
 import { assertNotBanned, refuseNewGuests, resolveUser } from "@contestly/auth";
 import { PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue } from "@contestly/queue";
 import { HOST_CANCELLED_CLOSE_CODE, LEFT_PARTY, MSG, PARTY_LEFT_CLOSE_CODE, type PartyCancelledEvent, type SeatsChangedEvent, chatSendSchema, chatThreadChannel, flagSchema, partyChatOpenIn, partyRoomKey, partyHereKey, questionDisclosure, type PartyConfig, type QuestionsConfig } from "@contestly/shared";
@@ -34,12 +34,14 @@ const LOBBY_START_CHECK_MS = 5_000;
 
 type Phase = "lobby" | "generating" | "question" | "reveal" | "standings" | "finished" | "cancelled";
 
-const settleQueue = partyQueue();
+const partyJobs = partyQueue();
 const questionJobs = questionsQueue();
 
 export class PartyRoom extends SafeRoom {
   private partyId!: string;
   private party!: Party;
+  /** A challenge (ADR 0019) starts as soon as everyone who'll play is in the lobby: each join asks the worker to check. */
+  private challenge = false;
   private thread!: ChatThread;
   private cfg!: PartyConfig;
   private qcfg!: QuestionsConfig;
@@ -82,6 +84,7 @@ export class PartyRoom extends SafeRoom {
     this.qcfg = await getQuestionsConfig();
     this.maxClients = party.maxPlayers + 1; // + the curate host, who watches without a seat
     this.thread = (await threadById(await partyThreadId(db, partyId)))!;
+    this.challenge = await isChallenge(db, partyId);
 
     // Every change of selection arrives here; the last one before the clock ends is graded. No lock-in.
     this.handle(MSG.answer, (client, data) => {
@@ -208,7 +211,9 @@ export class PartyRoom extends SafeRoom {
     const me = client.auth as Member;
     this.removed.delete(me.id); // seated again after leaving (a banned or deleted user never gets past onAuth)
     this.members.set(client.sessionId, me);
-    this.markHere(me.id, 1);
+    // A player in a challenge's lobby: once presence has them, the worker checks whether everyone's in.
+    this.markHere(me.id, 1, me.plays && this.challenge && this.phase === "lobby"
+      ? () => partyJobs.add("challenge_ready", { kind: "challenge_ready", partyId: this.partyId }) : undefined);
     if (me.plays) this.match?.addPlayer(me.id);
     this.broadcastPresence();
     this.sendSnapshot(client);
@@ -230,8 +235,11 @@ export class PartyRoom extends SafeRoom {
   }
 
   /** Who's connected, for the worker's "not in the room" (party nudges): connections per user in partyHereKey. */
-  private markHere(userId: string, delta: 1 | -1) {
-    this.run("presence: here", () => this.presence.hincrby(partyHereKey(this.partyId), userId, delta));
+  private markHere(userId: string, delta: 1 | -1, then?: () => Promise<unknown>) {
+    this.run("presence: here", async () => {
+      await this.presence.hincrby(partyHereKey(this.partyId), userId, delta);
+      await then?.();
+    });
   }
 
   onDispose() {
@@ -398,7 +406,7 @@ export class PartyRoom extends SafeRoom {
       }
     });
     // Money and the status flip to `finished` happen in the worker (settle job), never here.
-    await settleQueue.add("settle", { kind: "settle", partyId: this.partyId }, { jobId: `settle-${this.partyId}` });
+    await partyJobs.add("settle", { kind: "settle", partyId: this.partyId }, { jobId: `settle-${this.partyId}` });
     this.remember(MSG.finalStandings, { rows: final });
     this.broadcast(MSG.finalStandings, { rows: final });
   }

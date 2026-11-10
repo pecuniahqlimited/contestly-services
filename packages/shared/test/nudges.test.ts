@@ -21,6 +21,9 @@ const SAMPLE: { [K in NudgeKind]: NudgeData[K] } = {
   host_cancelled: { partyId: id, title: "Friday Night Quiz", entryBack: true },
   guest_follow_up: { partyId: id, title: "Friday Night Quiz" },
   win_back: { personName: "Kemi", personHandle: "kemz", what: "hosted 2 parties" },
+  challenge_received: { partyId: id, title: "Ada vs Kemi", challengerName: "Ada", challengerHandle: "ada", message: "Bet you can't beat me" },
+  challenge_accepted: { partyId: id, title: "Ada vs Kemi", byName: "Kemi" },
+  challenge_join_reminder: { partyId: id, title: "Ada vs Kemi", minutesLeft: 5, accepted: true },
   verification_update: { brandId: id, brandName: "Indomie", outcome: "approved" },
   prize_ready: { fulfilmentId: id, partyId: id, title: "Friday Night Quiz", brandName: "Indomie", for: "winner" },
   prize_delivery_due: { fulfilmentId: id, partyId: id, title: "Friday Night Quiz", brandName: "Indomie", day: 3, for: "brand" },
@@ -61,15 +64,23 @@ describe("the no-money guard", () => {
     expect(rejected()).toBe("See the reviewer's note in settings and send another.");
   });
 
+  it("challenge copy: the challenger's message as the body unless it mentions money; the reminder's link by answer", () => {
+    expect(renderNudge("challenge_received", SAMPLE.challenge_received).body).toBe("Bet you can't beat me");
+    expect(renderNudge("challenge_received", { ...SAMPLE.challenge_received, message: "Loser pays ₦2,000" }).body).toBe("Ada vs Kemi. Tap to answer.");
+    expect(renderNudge("challenge_received", SAMPLE.challenge_received).deepLink).toBe("contestly://chats/dm/ada");
+    expect(renderNudge("challenge_join_reminder", { ...SAMPLE.challenge_join_reminder, minutesLeft: 1 }).title).toBe("Ada vs Kemi: the lobby closes in 1 minute");
+    expect(renderNudge("challenge_join_reminder", { ...SAMPLE.challenge_join_reminder, accepted: false }).deepLink).toBe(`contestly://party/${id}`);
+  });
+
   it("the host's cancel never says refund, in the title or anywhere", () => {
     const c = renderNudge("host_cancelled", SAMPLE.host_cancelled);
     expect(c.title).toBe("The host cancelled Friday Night Quiz");
     expect(`${c.title} ${c.body}`).not.toMatch(/refund/i);
   });
 
-  it("every kind has a category, and only party start and live are live-party events", () => {
+  it("every kind has a category, and only a party about to start or running is a live-party event", () => {
     const live = NUDGE_KIND_NAMES.filter((k) => NUDGE_KINDS[k].livePartyEvent);
-    expect(live.sort()).toEqual(["party_live", "party_starting"]);
+    expect(live.sort()).toEqual(["challenge_accepted", "challenge_join_reminder", "party_live", "party_starting"]);
   });
 });
 

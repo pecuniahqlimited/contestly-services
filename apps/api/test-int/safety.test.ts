@@ -114,7 +114,7 @@ describe("a block", () => {
     expect((await app.inject({ method: "POST", url: `/parties/${p.id}/invites`, headers: as(kemi), payload: { userIds: [ada.id] } })).json().error).toBe("cannot_invite");
     const crew = (await app.inject({ method: "POST", url: "/crews", headers: as(kemi), payload: { name: "Quiz crew", inviteUserIds: [ada.id] } })).json();
     expect(crew.error).toBe("cannot_invite");
-    expect((await app.inject({ method: "POST", url: `/users/${ada.id}/challenge`, headers: as(kemi), payload: {} })).json().error).toBe("cannot_challenge");
+    expect((await app.inject({ method: "POST", url: "/parties", headers: as(kemi), payload: { title: "A challenge", brief: "general knowledge", entryKobo: 0, maxPlayers: 2, funding: "pooled", split: "winner", challenge: { invitees: [ada.id], inviteExpiresInMinutes: 60, joinWindowMinutes: 10 } } })).json().error).toBe("cannot_challenge");
     await block(zee, ada);
     const [inv] = await db.select().from(partyInvites).where(and(eq(partyInvites.partyId, pending.id), eq(partyInvites.inviteeId, zee.id)));
     expect(inv.status).toBe("dismissed");

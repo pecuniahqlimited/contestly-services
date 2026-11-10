@@ -17,6 +17,7 @@ const deps: StartDeps = {
   publishLine: async () => undefined,
   queueQuestions: async () => undefined,
   queueWatchdog: async (id) => watchdogs.push(id),
+  inLobby: async () => new Set(),
 };
 const now = new Date();
 const ENTRY = kobo(100);

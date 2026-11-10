@@ -100,18 +100,21 @@ export const requestStateFor = (mine: { state: string }, theirs: { state: string
 export async function openDm(sender: ChatSender, recipient: User) {
   const permission = await dmPermissionBetween(db, sender, recipient);
   if (permission === "refused") throw chatError(sender.id === recipient.id ? "cannot_message_self" : "cannot_message");
-  return db.transaction(async (tx) => {
-    const key = dmKey(sender.id, recipient.id);
-    await tx.insert(chatThreads).values({ kind: "dm", dmKey: key }).onConflictDoNothing({ target: chatThreads.dmKey });
-    const [thread] = await tx.select().from(chatThreads).where(eq(chatThreads.dmKey, key));
-    await tx.insert(chatMembers).values([
-      { threadId: thread.id, userId: sender.id },
-      { threadId: thread.id, userId: recipient.id, state: permission === "direct" ? "active" : "request" },
-    ]).onConflictDoNothing();
-    if (permission === "direct") await tx.update(chatMembers).set({ state: "active" }).where(and(eq(chatMembers.threadId, thread.id), eq(chatMembers.userId, recipient.id)));
-    const [mine, theirs] = await Promise.all([memberOf(tx, thread.id, sender.id), memberOf(tx, thread.id, recipient.id)]);
-    return { threadId: thread.id, permission, request: requestStateFor(mine, theirs, thread.lastMessageAt !== null) };
-  });
+  return db.transaction((tx) => openDmIn(tx, sender, recipient, permission));
+}
+
+/** openDm's writes, in the caller's transaction, for a permission the caller has already checked isn't refused. */
+export async function openDmIn(tx: Tx, sender: ChatSender, recipient: Pick<User, "id">, permission: Exclude<DmPermission, "refused">) {
+  const key = dmKey(sender.id, recipient.id);
+  await tx.insert(chatThreads).values({ kind: "dm", dmKey: key }).onConflictDoNothing({ target: chatThreads.dmKey });
+  const [thread] = await tx.select().from(chatThreads).where(eq(chatThreads.dmKey, key));
+  await tx.insert(chatMembers).values([
+    { threadId: thread.id, userId: sender.id },
+    { threadId: thread.id, userId: recipient.id, state: permission === "direct" ? "active" : "request" },
+  ]).onConflictDoNothing();
+  if (permission === "direct") await tx.update(chatMembers).set({ state: "active" }).where(and(eq(chatMembers.threadId, thread.id), eq(chatMembers.userId, recipient.id)));
+  const [mine, theirs] = await Promise.all([memberOf(tx, thread.id, sender.id), memberOf(tx, thread.id, recipient.id)]);
+  return { threadId: thread.id, permission, request: requestStateFor(mine, theirs, thread.lastMessageAt !== null) };
 }
 
 /** The recipient answers a message request. Replying accepts it too (postMessage). */

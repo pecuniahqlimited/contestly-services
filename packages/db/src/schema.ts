@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig, BRAND_ROLES, BRAND_VERIFICATION_STATUSES, BRAND_INVITE_STATUSES, BRAND_EVENT_KINDS, type BrandEventKind } from "@contestly/shared";
+import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig, BRAND_ROLES, BRAND_VERIFICATION_STATUSES, BRAND_INVITE_STATUSES, BRAND_EVENT_KINDS, type BrandEventKind, CHALLENGE_ANSWERS, CHALLENGE_ENDINGS, type ChallengeAnswer, type ChallengeEnding } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -397,6 +397,35 @@ export const partyInvites = pgTable("party_invites", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   respondedAt: timestamp("responded_at", { withTimezone: true }),
 }, (t) => [primaryKey({ columns: [t.partyId, t.inviteeId] }), index("party_invites_invitee_idx").on(t.inviteeId, t.status)]);
+
+/**
+ * A challenge (ADR 0019): a party made with `challenge`, to people asked in their DMs. It waits for answers until
+ * invite_expires_at; the first accept opens the join window (window_closes_at, also the party's startsAt). `ending`
+ * is how it ended without being played (expired, declined); a host cancel leaves it null.
+ */
+export const partyChallenges = pgTable("party_challenges", {
+  partyId: uuid("party_id").primaryKey().references(() => parties.id, { onDelete: "cascade" }),
+  challengerUserId: uuid("challenger_user_id").notNull().references(() => users.id),
+  /** The challenger's words on the card, profanity masked. */
+  message: text("message"),
+  inviteExpiresAt: timestamp("invite_expires_at", { withTimezone: true }).notNull(),
+  joinWindowMinutes: integer("join_window_minutes").notNull(),
+  windowOpensAt: timestamp("window_opens_at", { withTimezone: true }),
+  windowClosesAt: timestamp("window_closes_at", { withTimezone: true }),
+  ending: text("ending", { enum: CHALLENGE_ENDINGS }).$type<ChallengeEnding>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type PartyChallenge = typeof partyChallenges.$inferSelect;
+
+/** Who a challenge asked, their answer, and the DM thread their card is in. */
+export const partyChallengeInvitees = pgTable("party_challenge_invitees", {
+  partyId: uuid("party_id").notNull().references(() => partyChallenges.partyId, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  answer: text("answer", { enum: CHALLENGE_ANSWERS }).notNull().default("pending").$type<ChallengeAnswer>(),
+  answeredAt: timestamp("answered_at", { withTimezone: true }),
+  threadId: uuid("thread_id").notNull().references(() => chatThreads.id),
+}, (t) => [primaryKey({ columns: [t.partyId, t.userId] }), index("party_challenge_invitees_user_idx").on(t.userId, t.answer)]);
+export type PartyChallengeInvitee = typeof partyChallengeInvitees.$inferSelect;
 
 /**
  * The set attached to a party when it goes live. `payload` is the full server payload, correct

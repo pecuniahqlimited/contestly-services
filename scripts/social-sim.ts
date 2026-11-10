@@ -4,7 +4,8 @@
  * 1. A bragging-rights party played to the end: party points for everyone, finishes in the feed, profiles
  *    with real stats, head-to-head and the DM rule opened by playing together.
  * 2. The friends board (Climb + party points) from your people (ADR 0012).
- * 3. Rematch: one party for everyone who taps it. Challenge: a private party for two, posted in your DM.
+ * 3. Rematch: one party for everyone who taps it. Challenge: from the preset, the card in their DM, accepted
+ *    (sim:challenges plays one through).
  * 4. A crew: create, invite, accept, crew chat live in the inbox, the crew board, a crew party that invites
  *    the crew, a Climb run that sets a crew record, roles, and the creator leaving.
  * 5. Week close: last week's crew champion wears the crown.
@@ -18,7 +19,7 @@ import { and, eq } from "drizzle-orm";
 import { climbWeekResults, crews, db, partyDays } from "@contestly/db";
 import { climbQueue, partyQueue } from "@contestly/queue";
 import { INBOX_ROOM, MSG, PARTY_ROOM, addDays, lagosDay, weekOf } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, nextClimbRound, ok, rightClimbAnswer, sleep, waitFor, waitForProgress, wrongClimbAnswer } from "./sim-lib.js";
+import { RT, api, call, failureCount, inMinutes, nextClimbRound, ok, rightClimbAnswer, sendChallenge, sleep, waitFor, waitForProgress, wrongClimbAnswer } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const [A, B, C] = ["ada", "bayo", "chi"].map((n) => `ss${tag}_${n}`);
@@ -95,11 +96,17 @@ ok(aParties.invited.some((p: any) => p.id === rematch.partyId), "the other playe
 const oldChat = await api(A, "GET", `/parties/${party.id}`);
 ok(oldChat.chat.some((m: any) => m.kind === "party_card" && m.partyId === rematch.partyId), "the old party's chat points at it");
 
-const challenge = await api(C, "POST", `/users/${id(A)}/challenge`);
+const preset = await api(C, "GET", `/challenges/preset?userIds=${id(A)}`);
+ok(preset.party.title === "chi vs ada" && preset.party.questionCount === 5 && preset.party.entryKobo === 0 && preset.invitees[0]?.canChallenge, "the challenge preset: quick, free, for the two of you");
+const sent = await sendChallenge(C, [id(A)], { challenge: { message: "Rematch me, ada" } });
+ok(sent.status === 201 && sent.body.visibility === "private", "chi sends it from the preset: a private party");
+const challengeId = sent.body.id;
 const dms = await api(A, "GET", "/chats");
-ok(dms.some((t: any) => t.id === challenge.threadId && t.lastMessage?.kind === "party_card"), "a challenge lands in the DM as a party card");
-const challenged = await api(A, "GET", `/parties/${challenge.partyId}`);
-ok(challenged.title === `chi vs ada` && challenged.visibility === "private" && challenged.entryKobo === 0, "it's a private, free party for the two of you");
+ok(dms.some((t: any) => t.lastMessage?.kind === "party_card" && t.lastMessage?.text === "Rematch me, ada"), "it lands in ada's DM as a party card, with the message");
+ok((await api(A, "GET", `/challenges/${challengeId}`)).state === "pending", "the card is pending, with time left");
+const accepted = await api(A, "POST", `/challenges/${challengeId}/accept`);
+ok(accepted.card.state === "accepted" && !!accepted.card.joinClosesAt, "ada accepts: the lobby opens and the join window starts");
+await api(C, "POST", `/parties/${challengeId}/cancel`, {});
 
 // ---- 4. a crew -----------------------------------------------------------------------------
 

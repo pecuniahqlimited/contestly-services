@@ -167,23 +167,6 @@ describe("the feed", () => {
   });
 });
 
-describe("challenge", () => {
-  it("makes a private free party, invites them and posts it in your DM", async () => {
-    const res = await app.inject({ method: "POST", url: `/users/${kemi.id}/challenge`, headers: as(ada) });
-    expect(res.statusCode).toBe(201);
-    const [p] = await db.select().from(parties).where(eq(parties.id, res.json().partyId));
-    expect(p).toMatchObject({ visibility: "private", entryKobo: 0, category: "Afrobeats" });
-    expect(p.title).toBe(`${ada.displayName} vs ${kemi.displayName}`);
-    expect((await db.select().from(partyInvites).where(and(eq(partyInvites.partyId, p.id), eq(partyInvites.inviteeId, kemi.id)))).length).toBe(1);
-    const thread = (await app.inject({ url: `/chats/${res.json().threadId}/messages`, headers: as(kemi) })).json();
-    expect(thread.messages.at(-1)).toMatchObject({ kind: "party_card", partyId: p.id });
-  });
-
-  it("is refused for guests", async () => {
-    expect((await app.inject({ method: "POST", url: `/users/${guest.id}/challenge`, headers: as(ada) })).statusCode).toBe(404);
-  });
-});
-
 describe("rematch", () => {
   it("is one party everyone lands in, open only to who played", async () => {
     const p = await finishedParty(ada, [[ada, 1], [kemi, 2], [tunde, 3]], { title: "Friday night" });

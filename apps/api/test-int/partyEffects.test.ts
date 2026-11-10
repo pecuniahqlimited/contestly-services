@@ -38,6 +38,7 @@ function recorder(failOnce?: "emit" | "publishLine") {
     publishLine: async (l) => { maybeFail("publishLine"); lines.push(l); },
     queueQuestions: async (_kind, _id, jobId) => jobs.push(jobId),
     queueWatchdog: async (_id, jobId) => jobs.push(jobId),
+    inLobby: async () => new Set(),
     queueRecordPlay: async (_id, jobId) => jobs.push(jobId),
     queueRecordProgress: async (_id, jobId) => jobs.push(jobId),
   };

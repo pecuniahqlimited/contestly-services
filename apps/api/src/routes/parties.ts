@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, inArray, asc, count } from "drizzle-orm";
-import { assertBrandCan, db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach } from "@contestly/db";
+import { assertBrandCan, db, users, parties, partyPlayers, partyPrizes, publicHostId, ledger, getPartyConfig, hostCancelParty, leaveSeat, takeSeat, isHostTeam, joinPartyThread, messagesPage, partyCardLine, partyThreadId, prospectiveHost, canOfferNonCashPrize, systemLine, crewMembers, simVisibleTo, cornerReach, assertNotChallenge, challengeOf } from "@contestly/db";
 import { type ChatMessage, type LeavePartyResponse, type PartyCancelledEvent, type SeatsChangedEvent, hostCancelMessage, hostCancelSchema, partiesTabOrder, MAX_INVITES_PER_PARTY, SIGN_UP_REQUIRED, SPLIT_IDS, SPLITS, isStaked, createPartySchema, partyLimitsResponseSchema, inviteToPartySchema, isGoods, questionDisclosure, visibleLimits, postsToCorner } from "@contestly/shared";
 import { notifyQueue, PARTY_EVENTS_CHANNEL } from "@contestly/queue";
 import { requireSession, requireUser, uuidParam } from "../auth.js";
@@ -11,6 +11,7 @@ import { potKobo } from "../places.js";
 import { publishLine } from "../chats.js";
 import { valkey } from "../redis.js";
 import { createParty } from "../partyCreate.js";
+import { rematchChallenge } from "../challenges.js";
 import { withTemplate } from "../partyTemplates.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 import { followedCornerIds, hostCornerOf } from "../corners.js";
@@ -74,7 +75,8 @@ export async function partiesRoutes(app: FastifyInstance) {
    * Rematch from a finished party, for anyone who played it (or its host's team). One per party: the first tap
    * makes it and everyone after lands in the same one; joining is the usual POST /parties/:id/join. Same brief,
    * sources, format and seats; a host's prize (cash or goods) carries over only when the original host starts it,
-   * otherwise it's a pooled party at the same entry.
+   * otherwise it's a pooled party at the same entry. A challenge's rematch is a new challenge with the same settings,
+   * from whoever taps it to the other players who can still be challenged (ADR 0019).
    */
   app.post("/parties/:id/rematch", async (req, reply) => {
     const me = requireUser(req);
@@ -94,17 +96,20 @@ export async function partiesRoutes(app: FastifyInstance) {
     const brand = sameHost && p.brandId ? await assertBrandCan(db, p.brandId, me, "parties.host") : null;
     const goods = sameHost && isGoods(p.prizeKind) ? await db.select().from(partyPrizes).where(eq(partyPrizes.partyId, id)).orderBy(asc(partyPrizes.place)) : [];
     const split = SPLIT_IDS.find((sid) => SPLITS[sid].shares.join() === p.split.join()) ?? SPLIT_IDS[0];
+    const source = await challengeOf(db, id);
+    const challenge = source ? await rematchChallenge(me, source.challenge, seats.map((s) => s.userId)) : undefined;
     const inCrew = p.crewId ? (await db.select().from(crewMembers).where(and(eq(crewMembers.crewId, p.crewId), eq(crewMembers.userId, me.id)))).length > 0 : false;
     const body = createPartySchema.parse({
       title: (p.title.startsWith(REMATCH_PREFIX) ? p.title : `${REMATCH_PREFIX}${p.title}`).slice(0, 60), brief: p.brief, category: p.category, difficulty: p.difficulty,
       formats: p.formats, mode: "sealed", questionCount: p.questionCount, secondsPerQuestion: p.questionSeconds, maxPlayers: p.maxPlayers, entryKobo: p.entryKobo,
       funding: sameHost ? p.funding : "pooled", hostPoolKobo: sameHost ? p.hostPoolKobo : 0, prizeKind: sameHost ? p.prizeKind : "cash",
       places: goods.map((g) => ({ text: g.text, valueKobo: g.valueKobo ?? undefined })), split,
-      visibility: p.visibility, coverColor: p.coverColor, coverEmoji: p.coverEmoji, crewId: inCrew ? p.crewId : undefined,
+      visibility: p.visibility, coverColor: p.coverColor, coverEmoji: p.coverEmoji, crewId: inCrew ? p.crewId : undefined, challenge,
     });
     let party;
     try {
-      ({ party } = await createParty(me, body, { rematchOf: id, brand, alsoInvite: seats.map((s) => s.userId).slice(0, MAX_INVITES_PER_PARTY - 1) }));
+      const alsoInvite = challenge ? [] : seats.map((s) => s.userId).slice(0, MAX_INVITES_PER_PARTY - 1);
+      ({ party } = await createParty(me, body, { rematchOf: id, brand, alsoInvite }));
     } catch (e) {
       const lost = (e as { code?: string }).code === "23505" ? await existing() : undefined; // someone else's tap made it first
       if (lost) return { partyId: lost.id, created: false };
@@ -120,6 +125,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const me = requireUser(req);
     const id = uuidParam(req);
     const { userIds } = inviteToPartySchema.parse(req.body);
+    await assertNotChallenge(db, id); // who a challenge asks is fixed when it's made
     const invited = await db.transaction(async (tx) => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
       if (!p) throw Object.assign(new Error("not_found"), { statusCode: 404 });
@@ -142,6 +148,7 @@ export async function partiesRoutes(app: FastifyInstance) {
     const id = uuidParam(req);
     let line: ChatMessage | undefined;
     let seats: SeatsChangedEvent["seats"] | undefined;
+    await assertNotChallenge(db, id); // a challenge is joined by accepting it (ADR 0019)
     const result = await db.transaction(async (tx) => {
       const [p] = await tx.select().from(parties).where(eq(parties.id, id)).for("update");
       if (!p) return { status: 404, body: { error: "not_found" } };

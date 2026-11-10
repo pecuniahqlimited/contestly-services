@@ -24,6 +24,7 @@ export * from "./hostQuestion.js";
 export * from "./templates.js";
 export * from "./brands.js";
 export * from "./images.js";
+export * from "./challenges.js";
 export * from "./questionKinds.js";
 import { CANCELLED_BY } from "./partyLeave.js";
 import { profileSocialSchema } from "./social.js";
@@ -35,6 +36,7 @@ import { owedSchema } from "./payments.js";
 import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX, handleSchema } from "./accounts.js";
 import { DEFAULT_PROVIDERS_CONFIG, providersConfigSchema } from "./providers.js";
 import { MAX_HOST_QUESTIONS, hostQuestionSchema, templateRefSchema } from "./hostQuestion.js";
+import { challengeFieldsSchema } from "./challenges.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
 const KOBO_PER_NAIRA = 100;
@@ -275,6 +277,11 @@ export const createPartySchema = z.object({
   template: templateRefSchema.optional(),
   /** Questions only the host can answer (pick-one). Any at all makes it a curate party (the host doesn't play), never free. */
   hostQuestions: z.array(hostQuestionSchema).max(MAX_HOST_QUESTIONS).default([]),
+  /**
+   * A challenge (ADR 0019): these people are asked in their DMs; the party waits for answers, then for the lobby,
+   * and starts once everyone who accepted is in. Sealed, private, free or an equal pooled entry.
+   */
+  challenge: challengeFieldsSchema.optional(),
 }).refine((p) => p.funding === "pooled" ? p.prizeKind === "cash" && p.hostPoolKobo === 0 : p.entryKobo === 0, { message: "pooled parties pay cash from the entries; host-funded parties are free to enter" })
   .refine((p) => p.prizeKind === "cash" ? p.places.length === 0 : p.hostPoolKobo === 0, { message: "a cash prize has no goods places, and goods carry no cash prize" })
   .refine((p) => p.startsAt === undefined || startWindowHolds(new Date(p.startsAt)), { message: `a party starts between ${MIN_START_LEAD_MINUTES} minute and ${MAX_START_LEAD_DAYS} days from now`, path: ["startsAt"] });
@@ -386,6 +393,11 @@ export type PartyJob =
   | { kind: "start" | "cancel_if_empty" | "settle" | "watchdog" | "cancel_generation_failed"; partyId: string }
   /** After a settle commits: who played whom and the host's corner progress (ADR 0012). Never part of settlement. */
   | { kind: "record_progress"; partyId: string }
+  /**
+   * Challenges (ADR 0019): the invite's expiry (cancel if nobody accepted), the join window's halfway reminder, and
+   * a check whether everyone is in the lobby (queued by the room on a join, and by a decline or an expiry).
+   */
+  | { kind: "challenge_expire" | "challenge_remind" | "challenge_ready"; partyId: string }
   /** An admin cancelled the party: refund and cancel through the same path as every other cancel. */
   | { kind: "admin_cancel"; partyId: string; reason: string }
   /**

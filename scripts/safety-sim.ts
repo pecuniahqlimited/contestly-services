@@ -17,7 +17,7 @@ import { Client, type Room } from "colyseus.js";
 import { eq } from "drizzle-orm";
 import { db, users } from "@contestly/db";
 import { DEFAULT_SAFETY_CONFIG, MSG, PARTY_ROOM, kobo } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, makeContacts, ok, sleep, waitFor, walletTotal } from "./sim-lib.js";
+import { RT, api, call, failureCount, inMinutes, makeContacts, ok, sendChallenge, sleep, waitFor, walletTotal } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const handle = (n: string) => `ss${tag}_${n}`;
@@ -39,7 +39,7 @@ ok((await call(B, "POST", `/users/${id(A)}/block`)).body.blocked === true, "bayo
 ok((await call(A, "GET", "/me/blocks")).body.blocks.length === 0, "ada isn't told (her block list is empty)");
 ok((await call(A, "POST", `/dm/${id(B)}`)).body.error === "cannot_message", "ada can't message bayo, contacts or not");
 ok((await call(B, "POST", `/dm/${id(A)}`)).body.error === "cannot_message", "and bayo can't message ada");
-ok((await call(A, "POST", `/users/${id(B)}/challenge`, {})).body.error === "cannot_challenge", "no Challenge either");
+ok((await sendChallenge(A, [id(B)])).body.error === "cannot_challenge", "no Challenge either");
 ok((await call(B, "GET", `/users/${A}`)).body.blockedByYou === true, "bayo's view of ada's profile says blocked");
 
 const created = await freeParty(HOST, `Safety sim ${tag}`);
