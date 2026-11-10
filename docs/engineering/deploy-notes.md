@@ -71,3 +71,32 @@ then. `--force` grants anyway; the `admin_actions` row and the alert both record
   touches every signal row once; 0051 and 0055 rename columns on `held_prizes`, a table nothing older reads.
   0056 restates every stored rule set (template configs and parties' copies) in the caps-by-host shape with
   every rule explicit, and gives parties without a copy the current one: run it before the new code reads them.
+
+## Load testing: late round timers and the watchdog
+
+**Requirement (10 Nov 2026, no code change yet):** a round timer that fires late must never make the watchdog
+refund a game that is still progressing. Late is expected under load (a busy event loop, GC pauses, a throttled
+or briefly suspended machine); a refund is for a room that's gone or stuck, not a slow one. Check this in the
+load test before setting real concurrency numbers (open question 3).
+
+**Seen in dev (10 Nov, sim:social and sim:corners):** with the machine stalling, round timers in the realtime
+process fired minutes late and the parties were cancelled with "The round was interrupted. Everyone has been
+refunded." That line is the heartbeat watchdog's (`refundInterrupted`), not the stall sweep's: the room's
+heartbeat key expired while the process wasn't running, and the next watchdog link refunded at once.
+
+**Today's thresholds:**
+
+| What | Where | Value |
+|---|---|---|
+| Room heartbeat (`party:room:<id>`) | `PartyRoom.startHeartbeat` | written every 10 s with a 30 s TTL |
+| Heartbeat watchdog | `apps/worker/src/index.ts` (`watchdog`) | first look 45 s after the start, then every 30 s; a missing key with questions unplayed refunds at once (no second look, no re-kick); a missing key after the last question settles from the recorded scores |
+| Stall sweep | `sweepStalled` in `apps/worker/src/partyStart.ts`, every 60 s | no question opened (`round_progress_at`) for one cycle plus the grace, `stallThresholdSeconds()`: question seconds + reveal 6 + standings 7 + `stallGraceSeconds` 30 (a 20 s question: 63 s); then one re-kick, then cancelled and refunded a threshold later |
+| Generation | the same watchdog | a live party with no ready set after `generationTimeoutSeconds` (questions config) |
+
+**What the load test should show, and the likely change:** the stall sweep already gives a slow room a re-kick
+and a second threshold, and a finished set is never refunded. The heartbeat path doesn't: one missed TTL
+refunds. A heartbeat is written on a 10 s timer, so a process paused for over 30 s loses it even if its
+round would carry on when it resumes. Before load testing, decide whether the watchdog should also require no
+round progress (`round_progress_at` older than the stall threshold) before refunding, or look twice, so that
+only a room that's both silent and not moving is refunded.
+
