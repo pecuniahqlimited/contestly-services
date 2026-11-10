@@ -3,14 +3,15 @@
  * admin. Approval sets the account's is_verified (what canOfferNonCashPrize and curateHostType read), opens its
  * corner (createBrandCorner) and nudges the owner and admins, all in one transaction with the admin log.
  */
-import { and, eq, isNull, sql } from "drizzle-orm";
-import { CAC_NUMBER_RE, type BrandChecklist } from "@contestly/shared";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { CAC_NUMBER_RE, NO_PENDING_LOGO, PENDING_LOGO_CHANGED, type BrandChecklist } from "@contestly/shared";
 import { db, type Tx } from "../client.js";
 import { brands, payoutAccounts, users, type Brand, type User } from "../schema.js";
 import { recordAdminAction } from "../admin.js";
 import { createBrandCorner } from "../corners.js";
 import { nudge } from "../nudges/record.js";
-import { assertBrandCan, brandError, liveBrand, recordBrandEvent, roleIn, teamWith } from "./team.js";
+import { liveUser } from "../accounts.js";
+import { assertBrandCan, brandError, liveBrand, lockBrandRows, recordBrandEvent, roleIn, teamWith } from "./team.js";
 
 type Conn = Tx | typeof db;
 
@@ -77,9 +78,7 @@ async function assertNoInterest(tx: Tx, adminUserId: string, brandId: string) {
 }
 
 async function lockForDecision(tx: Tx, brandId: string) {
-  // Lock order: the account's users row, then the brand row (ADR 0013 style; an approval changes is_verified).
-  const [account] = await tx.select().from(users).where(eq(users.id, brandId)).for("no key update");
-  const [brand] = await tx.select().from(brands).where(eq(brands.id, brandId)).for("update");
+  const { account, brand } = await lockBrandRows(tx, brandId);
   if (!account || !brand || account.deletedAt) throw brandError(404, "not_found");
   return { account, brand };
 }
@@ -137,3 +136,51 @@ export async function isVerifiedBrand(conn: Conn, brandId: string): Promise<bool
 
 /** For the admin queue: brands waiting longest first. */
 export const reviewQueueOrder = sql`${brands.submittedAt} asc nulls last`;
+
+// ---- a verified brand's new logo (ADR 0017 §1) -------------------------------------------
+
+/** The logo review queue: live brands with a logo waiting, longest waiting first. */
+export async function pendingLogos(limit: number): Promise<{ account: User; brand: Brand }[]> {
+  return db.select({ account: users, brand: brands }).from(brands).innerJoin(users, eq(users.id, brands.id))
+    .where(and(isNotNull(brands.pendingLogoKey), liveUser)).orderBy(asc(brands.pendingLogoAt), asc(brands.id)).limit(limit);
+}
+
+/** Lock the brand and check the logo waiting is the one the admin looked at (404 no_pending_logo, 409 pending_logo_changed). */
+async function lockPendingLogo(tx: Tx, adminUserId: string, brandId: string, key: string) {
+  await assertNoInterest(tx, adminUserId, brandId);
+  const { brand } = await lockForDecision(tx, brandId);
+  if (!brand.pendingLogoKey) throw brandError(404, NO_PENDING_LOGO);
+  if (brand.pendingLogoKey !== key) throw brandError(409, PENDING_LOGO_CHANGED, { pendingKey: brand.pendingLogoKey });
+  return brand;
+}
+
+const NOTHING_PENDING = { pendingLogoKey: null, pendingLogoAt: null, pendingLogoByUserId: null } as const;
+
+/** The logo decisions answer with what's live after them and the objects nothing points at any more (the caller deletes them once committed). */
+export interface LogoDecision { status: "approved" | "rejected"; logoKey: string | null; removed: string[] }
+
+/** An admin approves the logo waiting: it goes live, the old one is replaced. Logged with the reason. */
+export async function approveBrandLogo(adminUserId: string, brandId: string, key: string, reason: string): Promise<LogoDecision> {
+  return db.transaction(async (tx) => {
+    const brand = await lockPendingLogo(tx, adminUserId, brandId, key);
+    await tx.update(brands).set({ logoKey: key, ...NOTHING_PENDING, logoRejectedNote: null, logoRejectedAt: null }).where(eq(brands.id, brandId));
+    await recordBrandEvent(tx, { brandId, kind: "logo_approved", actorUserId: adminUserId, detail: { key, replaced: brand.logoKey, reason } });
+    await recordAdminAction(tx, {
+      adminUserId, action: "brand.logo_approve", targetType: "brand", targetId: brandId, reason, before: { logoKey: brand.logoKey, pendingLogoKey: key }, after: { logoKey: key, pendingLogoKey: null },
+    });
+    return { status: "approved", logoKey: key, removed: brand.logoKey ? [brand.logoKey] : [] };
+  });
+}
+
+/** An admin rejects the logo waiting: the live one stays, and the team sees the reason as the note. Logged. */
+export async function rejectBrandLogo(adminUserId: string, brandId: string, key: string, note: string, now = new Date()): Promise<LogoDecision> {
+  return db.transaction(async (tx) => {
+    const brand = await lockPendingLogo(tx, adminUserId, brandId, key);
+    await tx.update(brands).set({ ...NOTHING_PENDING, logoRejectedNote: note, logoRejectedAt: now }).where(eq(brands.id, brandId));
+    await recordBrandEvent(tx, { brandId, kind: "logo_rejected", actorUserId: adminUserId, detail: { key, note } });
+    await recordAdminAction(tx, {
+      adminUserId, action: "brand.logo_reject", targetType: "brand", targetId: brandId, reason: note, before: { logoKey: brand.logoKey, pendingLogoKey: key }, after: { logoKey: brand.logoKey, pendingLogoKey: null },
+    });
+    return { status: "rejected", logoKey: brand.logoKey, removed: [key] };
+  });
+}

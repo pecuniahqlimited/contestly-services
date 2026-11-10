@@ -428,6 +428,13 @@
       "when": 1794232720756,
       "tag": "0060_brand_logo_key",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1794306061094,
+      "tag": "0061_brand_logo_review",
+      "breakpoints": true
     }
   ]
 }

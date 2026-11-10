@@ -112,11 +112,47 @@ export async function createBrand(person: User, input: CreateBrandInput): Promis
   }
 }
 
+/**
+ * Lock a brand for a change that must see its row as it is: the account's users row, then the brand row (the order
+ * every brand write takes, ADR 0013 style, so settings and an admin's decision never deadlock).
+ */
+export async function lockBrandRows(tx: Tx, brandId: string): Promise<{ account: User | undefined; brand: Brand | undefined }> {
+  const [account] = await tx.select().from(users).where(eq(users.id, brandId)).for("no key update");
+  const [brand] = await tx.select().from(brands).where(eq(brands.id, brandId)).for("update");
+  return { account, brand };
+}
+
+type LogoFields = Pick<Partial<typeof brands.$inferInsert>, "logoKey" | "pendingLogoKey" | "pendingLogoAt" | "pendingLogoByUserId" | "logoRejectedNote" | "logoRejectedAt">;
+
+/**
+ * A new logo (ADR 0017 §1). A verified brand's waits for an admin while the live one stays (replacing one already
+ * waiting); anyone else's goes live. Null, or the live logo sent again, withdraws what's waiting (null also takes
+ * the live one down). Returns the columns to set and the objects nothing points at any more.
+ */
+function logoChange(brand: Brand, person: User, key: string | null, now: Date): { set: LogoFields; removed: string[]; submitted: boolean } {
+  const removed = (...keys: (string | null)[]) => keys.filter((k): k is string => !!k && k !== key);
+  if (key && key === brand.pendingLogoKey) return { set: {}, removed: [], submitted: false };
+  if (key && brand.verificationStatus === "verified" && key !== brand.logoKey) {
+    return {
+      set: { pendingLogoKey: key, pendingLogoAt: now, pendingLogoByUserId: person.id, logoRejectedNote: null, logoRejectedAt: null },
+      removed: removed(brand.pendingLogoKey), submitted: true,
+    };
+  }
+  return {
+    set: { logoKey: key, pendingLogoKey: null, pendingLogoAt: null, pendingLogoByUserId: null, logoRejectedNote: null, logoRejectedAt: null },
+    removed: removed(brand.logoKey, brand.pendingLogoKey), submitted: false,
+  };
+}
+
 /** Fields a verified brand can't change without a new review. */
 const LOCKED_WHEN_VERIFIED = ["registrationNumber"] as const;
 
-/** Settings (settings capability): profile fields on the account, the rest on the brand row. Logged as settings_changed. */
-export async function updateBrand(brandId: string, person: User, input: UpdateBrandInput): Promise<void> {
+/**
+ * Settings (settings capability): profile fields on the account, the rest on the brand row. Logged as settings_changed
+ * (and logo_submitted when a verified brand's new logo goes to review). Returns the logo objects to delete once this
+ * has committed (a replaced or withdrawn logo).
+ */
+export async function updateBrand(brandId: string, person: User, input: UpdateBrandInput, now = new Date()): Promise<{ removed: string[] }> {
   const { brand } = await assertBrandCan(db, brandId, person, "settings");
   if (brand.verificationStatus === "verified" && LOCKED_WHEN_VERIFIED.some((k) => input[k] !== undefined && normaliseCac(input[k] ?? "") !== (brand[k] ?? ""))) {
     throw brandError(409, "brand_field_locked", { fields: [...LOCKED_WHEN_VERIFIED] });
@@ -127,20 +163,24 @@ export async function updateBrand(brandId: string, person: User, input: UpdateBr
   if (input.bio !== undefined) account.bio = await cleanOptionalName("bio", input.bio);
   if (input.lane !== undefined) account.interests = input.lane ? [input.lane] : [];
   const row: Partial<typeof brands.$inferInsert> = {};
-  if (input.logoKey !== undefined) row.logoKey = input.logoKey;
   if (input.lane !== undefined) row.lane = input.lane;
   if (input.siteUrl !== undefined) row.siteUrl = input.siteUrl;
   if (input.socials !== undefined) row.socials = input.socials;
   if (input.registrationNumber !== undefined) row.registrationNumber = input.registrationNumber ? normaliseCac(input.registrationNumber) : null;
   if (input.cashPrizes !== undefined) row.cashPrizes = input.cashPrizes;
   if (input.hostSpendLimitKobo !== undefined) row.hostSpendLimitKobo = input.hostSpendLimitKobo;
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
+    const locked = (await lockBrandRows(tx, brandId)).brand!;
+    const logo = input.logoKey !== undefined ? logoChange(locked, person, input.logoKey, now) : null;
+    if (logo) Object.assign(row, logo.set);
     if (Object.keys(account).length) await tx.update(users).set(account).where(eq(users.id, brandId));
     if (Object.keys(row).length) await tx.update(brands).set(row).where(eq(brands.id, brandId));
+    if (logo?.submitted) await recordBrandEvent(tx, { brandId, kind: "logo_submitted", actorUserId: person.id, detail: { key: input.logoKey, replaced: locked.pendingLogoKey } });
     // A change to the host spending limit is logged with what it was and what it became.
-    const limit = input.hostSpendLimitKobo !== undefined && input.hostSpendLimitKobo !== brand.hostSpendLimitKobo
-      ? { hostSpendLimitKobo: { from: brand.hostSpendLimitKobo, to: input.hostSpendLimitKobo } } : {};
+    const limit = input.hostSpendLimitKobo !== undefined && input.hostSpendLimitKobo !== locked.hostSpendLimitKobo
+      ? { hostSpendLimitKobo: { from: locked.hostSpendLimitKobo, to: input.hostSpendLimitKobo } } : {};
     await recordBrandEvent(tx, { brandId, kind: "settings_changed", actorUserId: person.id, detail: { fields: Object.keys(input), ...limit } });
+    return { removed: logo?.removed ?? [] };
   });
 }
 

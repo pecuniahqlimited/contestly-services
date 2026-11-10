@@ -31,6 +31,10 @@ export const BRAND_NOT_VERIFIED = "brand_not_verified";
  * goods); its free parties are fine. Settlement checks it again, so joining the team after taking a seat wins nothing.
  */
 export const BRAND_TEAM_MEMBER = "brand_team_member";
+/** 404: no logo is waiting for review for this brand. */
+export const NO_PENDING_LOGO = "no_pending_logo";
+/** 409: the logo waiting isn't the one the decision names (the team sent another since). details: { pendingKey }. */
+export const PENDING_LOGO_CHANGED = "pending_logo_changed";
 /** A party with something to win: an entry (a pot), a host's cash prize, or goods. A free party has none. */
 export const partyHasPrize = (p: { entryKobo: number; funding: string; prizeKind: string; hostPoolKobo: number }) =>
   p.entryKobo > 0 || (p.funding === "host" && (p.prizeKind !== "cash" || p.hostPoolKobo > 0));
@@ -171,6 +175,9 @@ export const brandVerificationSchema = z.object({
   decidedAt: z.string().datetime().nullable(),
 });
 
+/** A logo waiting for review: its key, a read URL (IMAGE_READ_URL_SECONDS) and when it was sent. */
+export const pendingLogoSchema = z.object({ key: z.string(), url: z.string(), submittedAt: z.string().datetime() });
+
 /** GET /brands/:id/settings (view and up): the brand, its private fields, the checklist and your role. */
 export const brandSettingsSchema = publicBrandSchema.extend({
   role: z.enum(BRAND_ROLES),
@@ -181,6 +188,10 @@ export const brandSettingsSchema = publicBrandSchema.extend({
   hostSpendLimitKobo: z.number().int(),
   /** The logo's key, as attached (logoUrl reads it). */
   logoKey: z.string().nullable(),
+  /** A verified brand's new logo, waiting for an admin; logoUrl stays the live one until it's approved. */
+  pendingLogo: pendingLogoSchema.nullable(),
+  /** The last logo an admin rejected, with their note; cleared when another is sent or one is approved. */
+  logoRejection: z.object({ note: z.string(), rejectedAt: z.string().datetime() }).nullable(),
   verification: brandVerificationSchema,
   checklist: brandChecklistSchema,
 });
@@ -241,6 +252,7 @@ export const brandEmailVerifySchema = brandEmailStartSchema.extend({ code: z.str
 export const BRAND_EVENT_KINDS = [
   "created", "invited", "invite_revoked", "invite_accepted", "invite_declined", "role_changed", "removed", "left", "handed_over",
   "settings_changed", "business_email_verified", "submitted", "approved", "changes_requested", "deleted",
+  "logo_submitted", "logo_approved", "logo_rejected",
 ] as const;
 export type BrandEventKind = (typeof BRAND_EVENT_KINDS)[number];
 
@@ -329,3 +341,22 @@ export type AdminBrandApproveResponse = z.infer<typeof adminBrandApproveResponse
 /** POST /admin/brands/:id/request-changes: sent back, with the note the brand's team sees. */
 export const adminBrandChangesResponseSchema = z.object({ status: z.literal("changes_needed"), note: z.string() });
 export type AdminBrandChangesResponse = z.infer<typeof adminBrandChangesResponseSchema>;
+
+/**
+ * GET /admin/brands/logos: verified brands' new logos waiting for review, longest waiting first, each beside the live
+ * one (null: the brand had removed it).
+ */
+export const adminBrandLogoSchema = z.object({
+  brand: personSchema,
+  liveLogoUrl: z.string().nullable(),
+  pending: pendingLogoSchema.extend({ submittedBy: personSchema.nullable() }),
+});
+export const adminBrandLogosResponseSchema = z.object({ logos: z.array(adminBrandLogoSchema) });
+export const adminBrandLogosQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) });
+/**
+ * POST /admin/brands/:id/logo/approve · /logo/reject { key, reason }: the key is the pending logo the admin looked at
+ * (409 pending_logo_changed if the team has sent another since). A rejection's reason is the note the team sees.
+ */
+export const adminBrandLogoDecisionSchema = z.object({ key: z.string().min(1).max(300), reason: reasonSchema });
+export const adminBrandLogoDecisionResponseSchema = z.object({ status: z.enum(["approved", "rejected"]), logoKey: z.string().nullable() });
+export type AdminBrandLogoDecisionResponse = z.infer<typeof adminBrandLogoDecisionResponseSchema>;

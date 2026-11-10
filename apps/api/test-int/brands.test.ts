@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { InjectOptions } from "fastify";
 import { and, eq } from "drizzle-orm";
 import {
-  adminActions, adminAlerts, newMember, brandEvents, brandMembers, chatMessages, corners, db, getChatConfig, ledger, nudges, parties, partyPlayers, postMessage,
+  adminActions, adminAlerts, newMember, brandEvents, brandMembers, brands as brandsTable, chatMessages, corners, db, getChatConfig, ledger, nudges, parties, partyPlayers, postMessage,
   prizeFulfilments, recordDeliveryNudges, sql, threadById, users, type User,
 } from "@contestly/db";
 import { IMAGE_MAX_BYTES, imageKey, kobo, type NudgeKind } from "@contestly/shared";
@@ -192,7 +192,64 @@ describe("logo uploads", () => {
     const next = await uploadLogo(t.owner, t.brand);
     expect((await patch({ logoKey: next })).json().logoKey).toBe(next);
     expect(await storage().head(key)).toBeNull();
-    expect((await patch({ logoKey: null })).json()).toMatchObject({ logoKey: null, logoUrl: null, checklist: { logo: false } });
+    expect((await patch({ logoKey: null })).json()).toMatchObject({ logoKey: null, logoUrl: null, pendingLogo: null, checklist: { logo: false } });
+  });
+
+  it("a verified brand's new logo waits for an admin with the old one live; approve or reject with a note, logged", async () => {
+    const t = await team({ verified: true });
+    const id = t.brand.id;
+    const bytes = (b: number) => Uint8Array.from([...PNG.slice(0, 8), ...new Array(56).fill(b)]);
+    const live = await uploadLogo(t.owner, t.brand, bytes(1));
+    await db.update(brandsTable).set({ logoKey: live }).where(eq(brandsTable.id, id));
+    const patch = (payload: object) => call({ method: "PATCH", url: `/brands/${id}`, headers: as(t.admin), payload });
+    const settings = async () => (await call({ method: "GET", url: `/brands/${id}/settings`, headers: as(t.viewer) })).json();
+    const served = async () => new Uint8Array(await (await fetch((await call({ method: "GET", url: `/brands/${id}` })).json().logoUrl)).arrayBuffer());
+    const queued = async () => (await call({ method: "GET", url: "/admin/brands/logos?limit=100", headers: as(admin) })).json().logos.find((l: { brand: { id: string } }) => l.brand.id === id);
+    const decide = (decision: "approve" | "reject", key: string, reason: string, who: User = admin) =>
+      call({ method: "POST", url: `/admin/brands/${id}/logo/${decision}`, headers: as(who), payload: { key, reason } });
+
+    // Sent: it waits; the live logo is still the one shown. Another replaces it in the queue (the first is deleted).
+    const first = await uploadLogo(t.owner, t.brand, bytes(2));
+    expect((await patch({ logoKey: first })).json()).toMatchObject({ logoKey: live, pendingLogo: { key: first }, checklist: { logo: true } });
+    expect(await served()).toEqual(bytes(1));
+    const second = await uploadLogo(t.owner, t.brand, bytes(3));
+    expect((await patch({ logoKey: second })).json().pendingLogo.key).toBe(second);
+    expect(await storage().head(first)).toBeNull();
+    const row = await queued();
+    expect(row).toMatchObject({ liveLogoUrl: expect.any(String), pending: { key: second, submittedBy: { id: t.admin.id } } });
+    expect(new Uint8Array(await (await fetch(row.pending.url)).arrayBuffer())).toEqual(bytes(3));
+
+    // The decision names the logo the admin looked at; an admin on the team can't decide it.
+    expect((await decide("approve", first, "fine")).json()).toMatchObject({ error: "pending_logo_changed", details: { pendingKey: second } });
+    await db.update(users).set({ isAdmin: true }).where(eq(users.id, t.viewer.id));
+    expect((await decide("approve", second, "fine", await reload(t.viewer))).json().error).toBe("own_brand");
+    await db.update(users).set({ isAdmin: false }).where(eq(users.id, t.viewer.id));
+
+    // Rejected: the live logo stays, the team sees the note, the rejected one is deleted.
+    expect((await decide("reject", second, "The logo is a different brand's")).json()).toEqual({ status: "rejected", logoKey: live });
+    expect(await settings()).toMatchObject({ logoKey: live, pendingLogo: null, logoRejection: { note: "The logo is a different brand's" } });
+    expect(await storage().head(second)).toBeNull();
+    expect(await queued()).toBeUndefined();
+    expect((await decide("reject", second, "again")).json().error).toBe("no_pending_logo");
+
+    // Sent again (the note clears), then approved: it goes live and the old one is deleted.
+    const third = await uploadLogo(t.owner, t.brand, bytes(4));
+    expect((await patch({ logoKey: third })).json()).toMatchObject({ pendingLogo: { key: third }, logoRejection: null });
+    expect((await decide("approve", third, "Matches the CAC record")).json()).toEqual({ status: "approved", logoKey: third });
+    expect(await settings()).toMatchObject({ logoKey: third, pendingLogo: null, logoRejection: null });
+    expect(await served()).toEqual(bytes(4));
+    expect(await storage().head(live)).toBeNull();
+
+    // Sending the live logo again withdraws the one waiting.
+    const fourth = await uploadLogo(t.owner, t.brand, bytes(5));
+    await patch({ logoKey: fourth });
+    expect((await patch({ logoKey: third })).json()).toMatchObject({ logoKey: third, pendingLogo: null });
+    expect(await storage().head(fourth)).toBeNull();
+
+    const logged = await db.select().from(adminActions).where(and(eq(adminActions.targetType, "brand"), eq(adminActions.targetId, id)));
+    expect(logged.map((a) => [a.action, a.reason])).toEqual(expect.arrayContaining([["brand.logo_reject", "The logo is a different brand's"], ["brand.logo_approve", "Matches the CAC record"]]));
+    const kinds = (await db.select().from(brandEvents).where(eq(brandEvents.brandId, id))).map((e) => e.kind);
+    expect(kinds.filter((k) => k.startsWith("logo_")).sort()).toEqual(["logo_approved", "logo_rejected", "logo_submitted", "logo_submitted", "logo_submitted", "logo_submitted"]);
   });
 });
 

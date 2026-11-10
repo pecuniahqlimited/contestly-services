@@ -1792,6 +1792,16 @@ export const brands = pgTable("brands", {
   id: uuid("id").primaryKey().references(() => users.id),
   /** The uploaded logo's object key (images/brand_logo/<brand id>/…), read through a presigned URL. */
   logoKey: text("logo_key"),
+  /**
+   * A verified brand's new logo, waiting for an admin (the live logo stays until it's approved; ADR 0017 §1). One at
+   * a time: another upload replaces it. Who sent it and when, for the queue.
+   */
+  pendingLogoKey: text("pending_logo_key"),
+  pendingLogoAt: timestamp("pending_logo_at", { withTimezone: true }),
+  pendingLogoByUserId: uuid("pending_logo_by_user_id").references(() => users.id),
+  /** The last rejected logo's note, shown to the team until a new one is sent or one is approved. */
+  logoRejectedNote: text("logo_rejected_note"),
+  logoRejectedAt: timestamp("logo_rejected_at", { withTimezone: true }),
   lane: text("lane").$type<Category>(),
   siteUrl: text("site_url"),
   socials: jsonb("socials").$type<Record<string, string>>().notNull().default({}),
@@ -1811,7 +1821,10 @@ export const brands = pgTable("brands", {
   decidedByUserId: uuid("decided_by_user_id").references(() => users.id),
   createdByUserId: uuid("created_by_user_id").notNull().references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [index("brands_status_idx").on(t.verificationStatus, t.submittedAt)]);
+}, (t) => [
+  index("brands_status_idx").on(t.verificationStatus, t.submittedAt),
+  index("brands_pending_logo_idx").on(t.pendingLogoAt).where(sql`pending_logo_key is not null`),
+]);
 export type Brand = typeof brands.$inferSelect;
 
 /** Who's on a brand's team, and their role. Exactly one owner per live brand: at most one by the index, at least one by every write (ADR 0017 §4). */

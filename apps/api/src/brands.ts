@@ -24,13 +24,19 @@ export async function publicBrandView(account: User, brand: Brand, cornerId: str
   };
 }
 
+/** A verified brand's logo waiting for review, with a read URL. */
+export async function pendingLogoView(brand: Brand) {
+  return brand.pendingLogoKey ? { key: brand.pendingLogoKey, url: (await imageUrl(brand.pendingLogoKey))!, submittedAt: iso(brand.pendingLogoAt)! } : null;
+}
+
 export const verificationView = (b: Brand) => ({ status: b.verificationStatus, note: b.verificationNote, submittedAt: iso(b.submittedAt), decidedAt: iso(b.decidedAt) });
 
 /** What the team sees in settings: the public brand, its private fields, the checklist and their role. */
 export async function settingsView(account: User, brand: Brand, role: BrandRole, checklist?: BrandChecklist) {
   const cornerId = (await cornerIdsOf([account.id])).get(account.id) ?? null;
   return {
-    ...(await publicBrandView(account, brand, cornerId)), role, logoKey: brand.logoKey, registrationNumber: brand.registrationNumber, businessEmail: brand.businessEmail,
+    ...(await publicBrandView(account, brand, cornerId)), role, logoKey: brand.logoKey, pendingLogo: await pendingLogoView(brand),
+    logoRejection: brand.logoRejectedNote ? { note: brand.logoRejectedNote, rejectedAt: iso(brand.logoRejectedAt)! } : null, registrationNumber: brand.registrationNumber, businessEmail: brand.businessEmail,
     businessEmailVerifiedAt: iso(brand.businessEmailVerifiedAt), cashPrizes: brand.cashPrizes, hostSpendLimitKobo: brand.hostSpendLimitKobo, verification: verificationView(brand), checklist: checklist ?? (await checklistFor(db, brand)),
   };
 }

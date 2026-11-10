@@ -51,6 +51,14 @@ export async function checkUploadedImage(key: string, purpose: ImagePurpose, own
   }
 }
 
+/**
+ * Delete images nothing points at any more, after the change that let go of them has committed. A failure only
+ * leaves an orphan in storage, so it's logged, not thrown: the request it follows has already saved.
+ */
+export async function removeImages(keys: string[], log: FastifyRequest["log"]): Promise<void> {
+  await Promise.all(keys.map((key) => storage().remove(key).catch((err) => log.warn({ err, key }, "replaced image not deleted"))));
+}
+
 /** A view's read URL for an attached image, or null without one. */
 export async function imageUrl(key: string | null): Promise<string | null> {
   return key ? (await storage().presignGet({ key, expiresSeconds: IMAGE_READ_URL_SECONDS })).url : null;

@@ -16,8 +16,7 @@ import {
 } from "@contestly/shared";
 import { optionalSession, requireUser, uuidParam } from "../auth.js";
 import { httpError } from "../httpError.js";
-import { checkUploadedImage } from "../images.js";
-import { storage } from "../objectStore.js";
+import { checkUploadedImage, removeImages } from "../images.js";
 import { cornerIdsOf, inviteView, memberView, personView, publicBrandView, settingsView } from "../brands.js";
 import { checkEmailCode, startEmailCode, watchCodeSends } from "../signin/emailCode.js";
 import { sendBrandInvite, sendBusinessEmailCode } from "../email.js";
@@ -66,17 +65,20 @@ export async function brandsRoutes(app: FastifyInstance) {
     return brandSettingsSchema.parse(await settingsView(account, brand, role));
   });
 
-  /** Settings. A new logo is the key of an upload made for this brand (POST /images/uploads); the old one is deleted. */
+  /**
+   * Settings. A new logo is the key of an upload made for this brand (POST /images/uploads). An unverified brand's
+   * goes live; a verified brand's waits for an admin with the live one kept (settings: pendingLogo). A logo nothing
+   * points at any more is deleted.
+   */
   app.patch("/brands/:id", async (req) => {
     const me = requireUser(req);
     const id = uuidParam(req);
     const input = updateBrandSchema.parse(req.body);
-    const before = await assertBrandCan(db, id, me, "settings");
+    await assertBrandCan(db, id, me, "settings");
     if (input.logoKey) await checkUploadedImage(input.logoKey, "brand_logo", id);
-    await updateBrand(id, me, input);
+    const { removed } = await updateBrand(id, me, input);
+    await removeImages(removed, req.log);
     const { account, brand, role } = await assertBrandCan(db, id, me, "view");
-    const replaced = before.brand.logoKey;
-    if (replaced && replaced !== brand.logoKey) await storage().remove(replaced).catch((err) => req.log.warn({ err, key: replaced }, "old brand logo not deleted"));
     return brandSettingsSchema.parse(await settingsView(account, brand, role));
   });
 
