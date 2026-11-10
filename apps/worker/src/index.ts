@@ -1,14 +1,15 @@
 import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import {
-  db, parties, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
-  emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, getQuestionsConfig, purgeEmailSends, adminCancelParty, clearExpiredArchives, cornersAfterStandingChange, liftExpiredSuspensions, getAccountsConfig, currentEmailConfig, recordDeliveryNudges } from "@contestly/db";
+  db, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
+  emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, purgeEmailSends, adminCancelParty, clearExpiredArchives, cornersAfterStandingChange, liftExpiredSuspensions, getAccountsConfig, currentEmailConfig, recordDeliveryNudges } from "@contestly/db";
 import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyHereKey, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
-import { allQuestionsPlayed, announceCancelled, cancelFailedGeneration, refundInterrupted, settleFromRecords, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
+import { announceCancelled, cancelFailedGeneration, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
+import { watchdogLink, type WatchdogDeps } from "./watchdog.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { runChallengeJob } from "./challenges.js";
 import { selectTranscriber } from "./transcribe/index.js";
@@ -95,44 +96,28 @@ async function adminCancel(partyId: string) {
 const WATCHDOG_FIRST_MS = 45_000;
 const WATCHDOG_EVERY_MS = 30_000;
 const WATCHDOG_ONE_CHAIN_MS = 20_000;
+/** A run of missed looks is forgotten after this long without a link (a lost chain restarts its count). */
+const WATCHDOG_MEMORY_MS = 10 * 60_000;
+const watchStateKey = (partyId: string) => `party:watchdog:state:${partyId}`;
 
-/**
- * A live round whose room heartbeat disappeared (process crash, deploy) is cancelled and refunded.
- * Also the belt-and-braces for generation: a live party still waiting for its question set past
- * the generation timeout is cancelled the same way (a dead questions process never fails its job).
- */
+const watchdogDeps: WatchdogDeps = {
+  emit, publishLine, settle: (partyId) => settle(partyId),
+  roomAlive: async (partyId) => !!(await pub.get(partyRoomKey(partyId))),
+  next: (partyId) => partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: WATCHDOG_EVERY_MS }),
+  memory: {
+    get: async (partyId) => { const s = await pub.get(watchStateKey(partyId)); return s ? JSON.parse(s) : null; },
+    set: (partyId, state) => pub.set(watchStateKey(partyId), JSON.stringify(state), "PX", WATCHDOG_MEMORY_MS),
+    clear: (partyId) => pub.del(watchStateKey(partyId)),
+  },
+};
+
+/** One link of a live party's watchdog (watchdog.ts): a missed heartbeat is looked at again and re-kicked before any refund. */
 async function watchdog(partyId: string, jobId: string | undefined) {
   // One chain per party: a link runs only if no other link ran in the last WATCHDOG_ONE_CHAIN_MS (its own
   // retry is let through), so a start that queued the first link twice can't leave two chains running.
   const key = `party:watchdog:${partyId}`;
   if (!(await pub.set(key, jobId ?? "", "PX", WATCHDOG_ONE_CHAIN_MS, "NX")) && (await pub.get(key)) !== jobId) return;
-  const [p] = await db.select().from(parties).where(eq(parties.id, partyId));
-  if (!p) return;
-  if (p.status !== "live") {
-    // Finished or cancelled: the watchdog retires. A refund of its own that failed after the commit is announced again.
-    if (p.status === "cancelled") await refundInterrupted(startDeps, partyId, false);
-    return;
-  }
-  const qcfg = await getQuestionsConfig();
-  const generationStalled =
-    p.liveAt !== null &&
-    Date.now() - p.liveAt.getTime() > qcfg.generationTimeoutSeconds * 1000 &&
-    p.questionsStatus !== "ready";
-  if (!generationStalled) {
-    const alive = await pub.get(partyRoomKey(partyId));
-    if (alive) {
-      await partyJobs.add("watchdog", { kind: "watchdog", partyId }, { delay: WATCHDOG_EVERY_MS });
-      return;
-    }
-  }
-  // The room is gone (or its heartbeat stopped when the match finished) after every question was played:
-  // settle by the recorded scores, never refund a finished party.
-  if (!generationStalled && (await allQuestionsPlayed(partyId))) {
-    const out = await settleFromRecords({ emit, publishLine, settle }, partyId);
-    console.log(`[party] ${p.title}: room gone after the last question → ${out ?? "already ended"} from the recorded scores`);
-    return;
-  }
-  await refundInterrupted(startDeps, partyId, generationStalled);
+  return watchdogLink(watchdogDeps, partyId, jobId ?? null);
 }
 
 /** Starts, cancels and the sweep (partyStart.ts) reach the rest of the system through these. */

@@ -301,8 +301,8 @@ async function stillStalled(tx: Tx, partyId: string) {
   return p && p.status === "live" ? p : null;
 }
 
-/** Republish the start once: a room that missed it (or the set's readiness) picks the round up. */
-async function rekick(deps: Pick<StallDeps, "emit">, partyId: string, now: Date): Promise<"rekicked" | null> {
+/** Republish the start once: a room that missed it (or the set's readiness) picks the round up. The heartbeat watchdog's recovery too. */
+export async function rekick(deps: Pick<StallDeps, "emit">, partyId: string, now: Date): Promise<"rekicked" | null> {
   const marked = await db.transaction(async (tx) => {
     const p = await stillStalled(tx, partyId);
     if (!p) return false;
