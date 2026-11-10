@@ -8,6 +8,7 @@ import { handleSchema } from "./accounts.js";
 import { personSchema } from "./person.js";
 import { reasonSchema } from "./admin.js";
 import { imageKeySchema } from "./images.js";
+import { BRAND_ROLES, type BrandRole } from "./brandRoles.js";
 
 // ---- acting as a brand -----------------------------------------------------------------
 
@@ -43,8 +44,7 @@ export const OWNER_MUST_HAND_OVER = "owner_must_hand_over";
 
 // ---- roles -----------------------------------------------------------------------------
 
-export const BRAND_ROLES = ["owner", "admin", "host", "viewer"] as const;
-export type BrandRole = (typeof BRAND_ROLES)[number];
+export { BRAND_ROLES, type BrandRole } from "./brandRoles.js";
 /** What an invite or a role change can give: ownership moves only by hand-over. */
 export const ASSIGNABLE_BRAND_ROLES = ["admin", "host", "viewer"] as const;
 export type AssignableBrandRole = (typeof ASSIGNABLE_BRAND_ROLES)[number];

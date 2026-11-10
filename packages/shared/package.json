@@ -29,6 +29,11 @@
       "types": "./dist/brands.d.ts",
       "import": "./dist/brands.js",
       "default": "./dist/brands.js"
+    },
+    "./images": {
+      "types": "./dist/images.d.ts",
+      "import": "./dist/images.js",
+      "default": "./dist/images.js"
     }
   },
   "scripts": {

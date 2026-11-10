@@ -35,4 +35,21 @@ describe("package exports", () => {
       expect(Object.keys(root)).toContain(name);
     }
   });
+
+  it("@contestly/shared/images resolves by its subpath to the images contract on the root", async () => {
+    const images = await import("@contestly/shared/images");
+    for (const name of ["IMAGE_CONTENT_TYPES", "IMAGE_PURPOSES", "imageKeySchema", "imageUploadRequestSchema", "imageUploadResponseSchema", "parseImageKey"]) {
+      expect(images[name as keyof typeof images], name).toBeDefined();
+      expect(Object.keys(root)).toContain(name);
+    }
+  });
+
+  // The root names a corner viewer's brand role; it takes BRAND_ROLES from brandRoles.ts, so a tree-shaking app
+  // leaves brands.ts, and images.ts (only brands.ts imports it), out of its startup.
+  it("the root takes nothing from brands.ts or images.ts itself, only re-exports them", () => {
+    const index = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+    expect(index.match(/from "\.\/brands\.js"/g)).toEqual(['from "./brands.js"']);
+    expect(index.match(/from "\.\/images\.js"/g)).toEqual(['from "./images.js"']);
+    expect(index).toContain('export * from "./brandRoles.js"');
+  });
 });
