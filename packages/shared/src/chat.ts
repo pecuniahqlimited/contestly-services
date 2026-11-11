@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { personSchema } from "./person.js";
 import { PROFANITY } from "./safety.js";
+import { partyChallengeFlagSchema } from "./challenges.js";
 
 export const CHAT_THREAD_KINDS = ["party", "dm", "crew"] as const;
 export type ChatThreadKind = (typeof CHAT_THREAD_KINDS)[number];
@@ -94,6 +95,11 @@ export const chatMessageSchema = z.object({
   voice: chatVoiceSchema.nullable(),
   /** A party card (a challenge, a crew party): the party to open. */
   partyId: z.string().uuid().nullable(),
+  /**
+   * A challenge's card (ADR 0019): its state from the viewer's side and its card's path, so a DM card needn't
+   * probe GET /challenges/:id. Null on every other line, a crew party's card included.
+   */
+  challenge: partyChallengeFlagSchema.nullable(),
   /** The sender's id for this line; a retried send gets the same line back. Null on system lines. */
   clientMsgId: z.string().uuid().nullable(),
   createdAt: z.string().datetime(),

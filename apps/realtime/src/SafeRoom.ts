@@ -11,6 +11,7 @@ import { ADMIN_EVENTS_CHANNEL, SAFETY_EVENTS_CHANNEL } from "@contestly/queue";
 import { ACCOUNT_BANNED, ACCOUNT_GONE, MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESSAGES, type AdminEvent, type ChatMessage, type SafetyEvent } from "@contestly/shared";
 import { MessageCap, messageCapFromEnv, type MessageCapConfig } from "./messageCap.js";
 import { hiddenAuthors, type HiddenAuthors } from "./hiddenAuthors.js";
+import { asSeenBy, type LineForViewer } from "./cardFlags.js";
 const { Room } = colyseus;
 
 /** What a client is told when its message failed on the server. Never the error itself. */
@@ -67,13 +68,21 @@ export abstract class SafeRoom extends Room {
     if (this.onSafety) this.presence.unsubscribe(SAFETY_EVENTS_CHANNEL, this.onSafety);
   }
 
-  /** A chat line to each of these clients who may see it: never one by someone blocked either way with them or muted by them. */
+  /**
+   * A chat line to each of these clients who may see it: never one by someone blocked either way with them or muted
+   * by them. A challenge's card carries its state from each one's side.
+   */
   protected async deliverLine(clients: Iterable<Client>, line: ChatMessage) {
-    for (const c of [...clients]) if (await this.hidden.sees(this.userIdOf(c), line.author?.id)) c.send(MSG.chatMessage, line);
+    for (const c of [...clients]) {
+      const viewerId = this.userIdOf(c);
+      if (await this.hidden.sees(viewerId, line.author?.id)) c.send(MSG.chatMessage, await this.asSeenBy(line, viewerId));
+    }
   }
 
   /** Whose lines each person doesn't see (the process's cache; a test room passes its own). */
   protected readonly hidden: HiddenAuthors = hiddenAuthors;
+  /** A line as one viewer gets it (a challenge card's flag); a test room passes its own. */
+  protected readonly asSeenBy: LineForViewer = asSeenBy;
 
   /** Users removed from this room (banned or deleted): never let back in by reconnection. */
   protected readonly removed = new Set<string>();

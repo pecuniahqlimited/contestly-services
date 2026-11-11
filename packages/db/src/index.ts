@@ -30,3 +30,4 @@ export * from "./peopleSearch.js";
 export * from "./templates/index.js";
 export * from "./brands/index.js";
 export * from "./challenges.js";
+export * from "./challengeFlags.js";

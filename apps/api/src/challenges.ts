@@ -5,11 +5,11 @@
 import { and, desc, eq, inArray, isNotNull, ne } from "drizzle-orm";
 import {
   CANNOT_CHALLENGE, CATEGORIES, CHALLENGE_EXPIRED_MESSAGE, CHALLENGE_NOT_ALLOWED, CHALLENGE_OUT_OF_RANGE, CHALLENGE_PRESET_QUESTIONS, CHALLENGE_REFUSALS, TOO_MANY_CHALLENGES,
-  challengeBrief, challengeCardPath, challengeRangeProblem, challengeState, lagosDay, partyHereKey,
-  type Category, type ChatMessage, type PartyCancelledEvent, type ChallengeCard, type ChallengeFields, type ChallengeState, type PartyChallengeFlag, type ChallengePreset, type ChallengeTopic, type CreatePartyInput,
+  challengeBrief, challengeRangeProblem, lagosDay, partyHereKey,
+  type Category, type ChatMessage, type PartyCancelledEvent, type ChallengeCard, type ChallengeFields, type PartyChallengeFlag, type ChallengePreset, type ChallengeTopic, type CreatePartyInput,
 } from "@contestly/shared";
 import {
-  challengeOf, db, dmPermissionBetween, getChallengeConfig, getPartyConfig, getSocialConfig, isBanned, liveUser, parties, partyPlayers, users,
+  challengeFlags, challengeOf, challengeStateFor, db, dmPermissionBetween, getChallengeConfig, getPartyConfig, getSocialConfig, isBanned, liveUser, parties, partyPlayers, users,
   type Acting, type ChallengeInvitee, type ChallengeRows, type Party, type PartyChallenge, type User,
 } from "@contestly/db";
 import { PARTY_EVENTS_CHANNEL, partyQueue } from "@contestly/queue";
@@ -151,18 +151,9 @@ export async function inLobby(partyId: string): Promise<string[]> {
   return Object.entries(await valkey().hgetall(partyHereKey(partyId))).filter(([, n]) => Number(n) > 0).map(([id]) => id);
 }
 
-/** The card's state from the viewer's side (their own answer when they were asked). */
-function stateFor(p: Party, { challenge, invitees }: ChallengeRows, viewerId: string | undefined, now: Date): ChallengeState {
-  return challengeState({
-    partyStatus: p.status as "open" | "live" | "finished" | "cancelled", ending: challenge.ending ?? null, windowOpen: !!challenge.windowOpensAt,
-    inviteExpiresAt: challenge.inviteExpiresAt, myAnswer: invitees.find((i) => i.userId === viewerId)?.answer ?? null, now,
-  });
-}
-
 /** The party's challenge flag (party detail, the lobby, the result), or null for an ordinary party. */
 export async function challengeFlag(p: Party, viewerId: string | undefined, now = new Date()): Promise<PartyChallengeFlag | null> {
-  const rows = await challengeOf(db, p.id);
-  return rows ? { state: stateFor(p, rows, viewerId, now), cardUrl: challengeCardPath(p.id) } : null;
+  return (await challengeFlags(db, [p.id], viewerId, now)).get(p.id) ?? null;
 }
 
 /** The card from the viewer's side (GET /challenges/:partyId): the challenger and everyone asked; 404 for anyone else. */
@@ -175,7 +166,7 @@ export async function challengeCard(partyId: string, viewer: User, now = new Dat
   if (!mine && challenge.challengerUserId !== viewer.id) throw httpError(404, "not_found");
   const people = new Map((await db.select().from(users).where(inArray(users.id, [challenge.challengerUserId, ...invitees.map((i) => i.userId)]))).map((u) => [u.id, toPerson(u)]));
   const lobby = challenge.windowOpensAt && p.status === "open" ? await inLobby(partyId) : [];
-  const state = stateFor(p, rows, viewer.id, now);
+  const state = challengeStateFor(p, rows, viewer.id, now);
   const iso = (d: Date | null) => d?.toISOString() ?? null;
   return {
     partyId, title: p.title, message: challenge.message, challenger: people.get(challenge.challengerUserId)!, entryKobo: p.entryKobo, state, now: now.toISOString(),

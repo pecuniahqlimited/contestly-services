@@ -34,7 +34,7 @@ export class InboxRoom extends SafeRoom {
   /** A DM or crew line for this user's inbox, unless its author is hidden from them (ADR 0014). */
   private onInbox = (raw: unknown) => this.run("inbox update", async () => {
     const update = parsePublished<InboxUpdate>(raw);
-    if (await this.hidden.sees(this.userId, update.message.author?.id)) this.broadcast(MSG.inbox, update);
+    if (await this.hidden.sees(this.userId, update.message.author?.id)) this.broadcast(MSG.inbox, { ...update, message: await this.asSeenBy(update.message, this.userId) });
   });
   private onNudge = (raw: unknown) => this.run("nudge", () => this.broadcast(MSG.nudge, parsePublished(raw)));
 

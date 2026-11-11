@@ -7,7 +7,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
-  adminActions, chatMessages, db, getChallengeConfig, ledger, nudges, parties, partyChallengeInvitees, partyChallenges, partyPlayers, partyThreadId, sql, type User,
+  adminActions, chatMessages, db, getChallengeConfig, ledger, nudges, parties, partyChallengeInvitees, partyCardLine, partyChallenges, partyPlayers, partyThreadId, sql, type User,
 } from "@contestly/db";
 import { DEFAULT_CHALLENGE_CONFIG, kobo, lagosDay, partyHereKey, type NudgeKind } from "@contestly/shared";
 import { valkey } from "../src/redis.js";
@@ -127,6 +127,28 @@ describe("creating a challenge", () => {
     const ordinary = await call(ada, "POST", "/parties", { title: "Quiz night", brief: "General knowledge", entryKobo: 0, maxPlayers: 4, funding: "pooled", split: "winner", questionCount: 5, visibility: "private" });
     expect(ordinary.statusCode, ordinary.body).toBe(201);
     expect((await detail(ada, ordinary.json().id)).challenge).toBeNull();
+  });
+
+  it("the card line in a DM carries the flag from each side; a crew party's card and other lines carry null", async () => {
+    const ada = await person("ada");
+    const kemi = await person("kemi");
+    const id = await challenge(ada, [kemi]);
+    const [invite] = await db.select().from(partyChallengeInvitees).where(eq(partyChallengeInvitees.partyId, id));
+    const history = async (u: User) => (await call(u, "GET", `/chats/${invite.threadId}/messages`)).json().messages as { kind: string; partyId: string | null; challenge: unknown }[];
+    const cardOf = async (u: User) => (await history(u)).find((l) => l.kind === "party_card" && l.partyId === id);
+    expect((await cardOf(kemi))?.challenge).toEqual({ state: "pending", cardUrl: `/challenges/${id}` });
+    expect((await cardOf(ada))?.challenge).toEqual({ state: "pending", cardUrl: `/challenges/${id}` });
+    await decline(kemi, id);
+    // Both cards (the challenge, then "Not this time") say where it stands now, from each side.
+    for (const l of (await history(kemi)).filter((l) => l.partyId === id)) expect(l.challenge).toEqual({ state: "declined", cardUrl: `/challenges/${id}` });
+    expect((await cardOf(ada))?.challenge).toMatchObject({ state: "declined" });
+    // A party card that isn't a challenge (as a rematch or crew party posts) and every other line: null.
+    const ordinary = await call(ada, "POST", "/parties", { title: "Quiz night", brief: "General knowledge", entryKobo: 0, maxPlayers: 4, funding: "pooled", split: "winner", questionCount: 5, visibility: "private" });
+    const thread = await partyThreadId(db, ordinary.json().id);
+    await partyCardLine(db, thread, ordinary.json().id, ada.id, "a card");
+    const lines = (await call(ada, "GET", `/chats/${thread}/messages`)).json().messages as { kind: string; challenge: unknown }[];
+    expect(lines.some((l) => l.kind === "party_card")).toBe(true);
+    for (const l of lines) expect(l.challenge).toBeNull();
   });
 
   it("outside the ranges, or what a challenge can't be, is refused; so is the day's limit", async () => {

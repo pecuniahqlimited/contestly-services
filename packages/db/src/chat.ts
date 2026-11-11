@@ -11,6 +11,7 @@ import { chatMembers, chatMessages, chatThreads, crewMembers, crews, parties, pa
 import { areContacts, playedTogether as finishedAPartyTogether } from "./social.js";
 import { publiclyHostedBy } from "./host.js";
 import { resolveMentions } from "./mentions.js";
+import { withChallengeFlags } from "./challengeFlags.js";
 import { blockedEitherWay, visibleAuthorTo } from "./safety/people.js";
 import { assertCanChat } from "./safety/standing.js";
 
@@ -144,6 +145,7 @@ const toWire = (r: MessageRow): ChatMessage => ({
   mentions: r.m.mentions,
   voice: r.voice?.id ? { id: r.voice.id, durationMs: r.voice.durationMs, expired: r.voice.status === "expired" } : null,
   partyId: r.m.cardPartyId,
+  challenge: null,
   clientMsgId: r.m.clientMsgId,
   createdAt: r.m.createdAt.toISOString(),
 });
@@ -171,7 +173,7 @@ export async function messagesPage(threadId: string, opts: { before?: string; li
   const rows = await selectMessages(db).where(and(eq(chatMessages.threadId, threadId), cursor, isNull(chatMessages.hiddenAt), opts.viewerId ? visibleAuthorTo(opts.viewerId, chatMessages.userId) : undefined))
     .orderBy(desc(chatMessages.createdAt), desc(chatMessages.id)).limit(opts.limit + 1);
   const more = rows.length > opts.limit;
-  const page = rows.slice(0, opts.limit).reverse().map((r) => toWire(r as MessageRow));
+  const page = await withChallengeFlags(db, rows.slice(0, opts.limit).reverse().map((r) => toWire(r as MessageRow)), opts.viewerId);
   return { messages: page, before: more ? page[0].id : null };
 }
 
