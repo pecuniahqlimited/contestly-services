@@ -333,8 +333,9 @@ describe("answering", () => {
     const res = await decline(kemi, id);
     expect(res.json()).toMatchObject({ answer: "declined", replayed: false, card: { state: "declined" } });
     const [invite] = await db.select().from(partyChallengeInvitees).where(eq(partyChallengeInvitees.partyId, id));
-    const lines = await db.select().from(chatMessages).where(eq(chatMessages.threadId, invite.threadId));
-    expect(lines.at(-1)).toMatchObject({ kind: "party_card", userId: kemi.id, text: "Not this time" });
+    // The card and the decline are both in the thread; read without an order, so find the decline by its author.
+    const lines = await db.select().from(chatMessages).where(and(eq(chatMessages.threadId, invite.threadId), eq(chatMessages.userId, kemi.id)));
+    expect(lines).toEqual([expect.objectContaining({ kind: "party_card", userId: kemi.id, text: "Not this time" })]);
     expect((await partyOf(id)).status).toBe("cancelled");
     expect(await cash(ada)).toBe(ENTRY);
     expect((await card(ada, id)).state).toBe("declined");
