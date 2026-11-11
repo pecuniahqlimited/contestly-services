@@ -9,6 +9,7 @@ import { CLIMB_TIME_ZONE, QUEUES, lagosDay, type PaymentsJob } from "@contestly/
 import {
   assertPaymentsEnv, checkPayout, configuredProviderNames, confirmTopup, processWebhookEvent, reconcileDay, runInvariants, submitPayout, sweepDue, type PaymentsDeps,
 } from "@contestly/payments";
+import { schedule } from "./liveness.js";
 
 assertPaymentsEnv();
 
@@ -36,10 +37,11 @@ async function run(job: PaymentsJob) {
   }
 }
 
-const worker = new Worker<PaymentsJob>(QUEUES.payments, (job) => run(job.data), { connection: makeRedis(), prefix: QUEUE_PREFIX });
-worker.on("failed", (job, err) => console.error(`[payments] job ${job?.name} ${job?.id} failed:`, err.message));
+export const paymentsWorker = new Worker<PaymentsJob>(QUEUES.payments, (job) => run(job.data), { connection: makeRedis(), prefix: QUEUE_PREFIX });
+paymentsWorker.on("failed", (job, err) => console.error(`[payments] job ${job?.name} ${job?.id} failed:`, err.message));
 
 /** Every minute; hourly at :05; nightly at 02:30 Lagos for the day before. */
-await jobs.upsertJobScheduler("sweep", { every: 60_000 }, { name: "sweep", data: { kind: "sweep" } });
-await jobs.upsertJobScheduler("invariants", { pattern: "5 * * * *", tz: CLIMB_TIME_ZONE }, { name: "invariants", data: { kind: "invariants" } });
-await jobs.upsertJobScheduler("reconcile", { pattern: "30 2 * * *", tz: CLIMB_TIME_ZONE }, { name: "reconcile", data: { kind: "reconcile" } });
+const SWEEP_EVERY_MS = 60_000;
+await schedule(jobs, "sweep", { every: SWEEP_EVERY_MS }, { kind: "sweep" }, SWEEP_EVERY_MS);
+await schedule(jobs, "invariants", { pattern: "5 * * * *", tz: CLIMB_TIME_ZONE }, { kind: "invariants" }, 3600_000);
+await schedule(jobs, "reconcile", { pattern: "30 2 * * *", tz: CLIMB_TIME_ZONE }, { kind: "reconcile" }, DAY_MS);

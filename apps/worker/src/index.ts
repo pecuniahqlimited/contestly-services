@@ -1,22 +1,24 @@
 import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import {
-  db, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
+  db, parties, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
   emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, purgeEmailSends, adminCancelParty, clearExpiredArchives, cornersAfterStandingChange, liftExpiredSuspensions, getAccountsConfig, currentEmailConfig, recordDeliveryNudges } from "@contestly/db";
-import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
+import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, nudgeClockQueue, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyHereKey, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
 import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
 import { announceCancelled, cancelFailedGeneration, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
 import { watchdogLink, type WatchdogDeps } from "./watchdog.js";
+import { nudgeClockWorker } from "./nudgeClock.js";
+import { LIVENESS_CHECK_EVERY_MS, lastCompletions, livenessCheck, missedIntervalsFromEnv, raiseStalled, recordCompletion, schedule, scheduledJobs, watchCompletions, type WatchedJob } from "./liveness.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { runChallengeJob } from "./challenges.js";
 import { selectTranscriber } from "./transcribe/index.js";
 import { sendersFromEnv } from "@contestly/email";
 import { ALERT_DELIVERY_EVERY_MS, alertChannelsFromEnv, alertDeliveryConfigFromEnv, deliverAlerts } from "./alertDelivery.js";
 import { selectPushSender } from "./push/index.js";
-import "./payments.js";
+import { paymentsWorker } from "./payments.js";
 import { applyBanEffects, type BanEffectDeps } from "./banEffects.js";
 
 const connection = makeRedis();
@@ -47,16 +49,7 @@ const nudgeDeps: DeliveryDeps = {
 
 const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   const d = job.data;
-  if (d.kind === "deliver_nudges") {
-    const out = await deliverDueNudges(nudgeDeps);
-    if (out.length) console.log(`[nudges] ${out.map((o) => `${o.kind}→${o.status}${o.channel ? `:${o.channel}` : ""}${o.skipReason ? `(${o.skipReason})` : ""}`).join(", ")}`);
-  } else if (d.kind === "nudge_minute") {
-    const [starting, live, filling] = [await emitPartyStarting(), await emitRecentlyLive(), await emitFillingUp()];
-    if (starting + live + filling) console.log(`[nudges] recorded: ${starting} starting, ${live} live, ${filling} filling up`);
-  } else if (d.kind === "nudge_hourly") {
-    const [streaks, guests, winBacks, prizes] = [await emitStreakRisk(), await emitGuestFollowUps(), await emitWinBack(), await recordDeliveryNudges()];
-    if (streaks + guests + winBacks + prizes) console.log(`[nudges] recorded: ${streaks} streak, ${guests} guest follow-up, ${winBacks} win-back, ${prizes} prize delivery`);
-  } else if (d.kind === "party_created") {
+  if (d.kind === "party_created") {
     await emitCornerParty(d.partyId, d.hostId);
   } else if (d.kind === "party_joined") {
     await emitPeopleJoined(d.partyId, d.userId);
@@ -74,13 +67,36 @@ const notifyWorker = new Worker<NotifyJob>(QUEUES.notify, async (job) => {
   }
 }, { connection, prefix: QUEUE_PREFIX });
 const notifyJobs = notifyQueue();
+// The clock moved to its own queue (nudgeClock.ts); the schedulers it had on this one go (a no-op once gone).
+for (const name of ["deliver_nudges", "nudge_minute", "nudge_hourly"]) await notifyJobs.removeJobScheduler(name);
+
+const nudgeClockWorker_ = nudgeClockWorker({
+  connection, prefix: QUEUE_PREFIX,
+  run: {
+    deliver_nudges: async () => {
+      const out = await deliverDueNudges(nudgeDeps);
+      if (out.length) console.log(`[nudges] ${out.map((o) => `${o.kind}→${o.status}${o.channel ? `:${o.channel}` : ""}${o.skipReason ? `(${o.skipReason})` : ""}`).join(", ")}`);
+    },
+    nudge_minute: async () => {
+      const [starting, live, filling] = [await emitPartyStarting(), await emitRecentlyLive(), await emitFillingUp()];
+      if (starting + live + filling) console.log(`[nudges] recorded: ${starting} starting, ${live} live, ${filling} filling up`);
+    },
+    nudge_hourly: async () => {
+      const [streaks, guests, winBacks, prizes] = [await emitStreakRisk(), await emitGuestFollowUps(), await emitWinBack(), await recordDeliveryNudges()];
+      if (streaks + guests + winBacks + prizes) console.log(`[nudges] recorded: ${streaks} streak, ${guests} guest follow-up, ${winBacks} win-back, ${prizes} prize delivery`);
+    },
+  },
+});
+const nudgeClockJobs = nudgeClockQueue();
 /** How often due nudges go out; batched kinds wait their own gaps on top. */
 const DELIVER_NUDGES_EVERY_MS = 5_000;
 const NUDGE_MINUTE_EVERY_MS = 60_000;
-await notifyJobs.upsertJobScheduler("deliver_nudges", { every: DELIVER_NUDGES_EVERY_MS }, { name: "deliver_nudges", data: { kind: "deliver_nudges" }, opts: { attempts: 1 } });
-await notifyJobs.upsertJobScheduler("nudge_minute", { every: NUDGE_MINUTE_EVERY_MS }, { name: "nudge_minute", data: { kind: "nudge_minute" } });
+const HOUR_MS = 3600_000;
+const DAY_MS = 24 * HOUR_MS;
+await schedule(nudgeClockJobs, "deliver_nudges", { every: DELIVER_NUDGES_EVERY_MS }, { kind: "deliver_nudges" }, DELIVER_NUDGES_EVERY_MS);
+await schedule(nudgeClockJobs, "nudge_minute", { every: NUDGE_MINUTE_EVERY_MS }, { kind: "nudge_minute" }, NUDGE_MINUTE_EVERY_MS);
 /** On the hour: each person's local hour is what the streak, guest and win-back nudges look at. */
-await notifyJobs.upsertJobScheduler("nudge_hourly", { pattern: "0 * * * *", tz: "UTC" }, { name: "nudge_hourly", data: { kind: "nudge_hourly" } });
+await schedule(nudgeClockJobs, "nudge_hourly", { pattern: "0 * * * *", tz: "UTC" }, { kind: "nudge_hourly" }, HOUR_MS);
 
 /** An admin cancelled a scheduled or live party. Idempotent: a party already over is left alone. */
 async function adminCancel(partyId: string) {
@@ -117,7 +133,19 @@ async function watchdog(partyId: string, jobId: string | undefined) {
   // retry is let through), so a start that queued the first link twice can't leave two chains running.
   const key = `party:watchdog:${partyId}`;
   if (!(await pub.set(key, jobId ?? "", "PX", WATCHDOG_ONE_CHAIN_MS, "NX")) && (await pub.get(key)) !== jobId) return;
-  return watchdogLink(watchdogDeps, partyId, jobId ?? null);
+  const outcome = await watchdogLink(watchdogDeps, partyId, jobId ?? null);
+  // The liveness check expects a link every WATCHDOG_EVERY_MS while the chain goes on.
+  const chainGoesOn = outcome === "alive" || outcome === "missed" || outcome === "rekicked" || outcome === "progressing";
+  await (chainGoesOn ? recordCompletion(pub, watchdogChainKey(partyId), Date.now(), WATCHDOG_LIVENESS_TTL_MS) : pub.del(`liveness:${watchdogChainKey(partyId)}`));
+  return outcome;
+}
+
+const watchdogChainKey = (partyId: string) => `watchdog:${partyId}`;
+const WATCHDOG_LIVENESS_TTL_MS = 3600_000;
+/** Each live party's watchdog chain, from its first look on. */
+async function watchdogChains(): Promise<WatchedJob[]> {
+  const live = await db.select({ id: parties.id, title: parties.title, liveAt: parties.liveAt }).from(parties).where(eq(parties.status, "live"));
+  return live.map((p) => ({ key: watchdogChainKey(p.id), label: `the watchdog for "${p.title}" (${p.id})`, everyMs: WATCHDOG_EVERY_MS, notBefore: (p.liveAt?.getTime() ?? Date.now()) + WATCHDOG_FIRST_MS }));
 }
 
 /** Starts, cancels and the sweep (partyStart.ts) reach the rest of the system through these. */
@@ -173,7 +201,7 @@ const partyWorker = new Worker<PartyJob>(QUEUES.party, async (job) => {
     return out;
   }
 }, { connection, prefix: QUEUE_PREFIX });
-await partyJobs.upsertJobScheduler("sweep", { every: SWEEP_EVERY_MS }, { name: "sweep", data: { kind: "sweep" } });
+await schedule(partyJobs, "sweep", { every: SWEEP_EVERY_MS }, { kind: "sweep" }, SWEEP_EVERY_MS);
 
 const climbJobs = climbQueue();
 const climbWorker = new Worker<ClimbJob>(QUEUES.climb, async (job) => {
@@ -186,8 +214,8 @@ const climbWorker = new Worker<ClimbJob>(QUEUES.climb, async (job) => {
 /** Each Lagos day at 00:00, and each Monday at 00:15: a run can't outlast its ladder's clock, so by then last week is final (ADR 0005). */
 const CLIMB_DAY_START = "0 0 * * *";
 const CLIMB_WEEK_CLOSE = "15 0 * * 1";
-await climbJobs.upsertJobScheduler("day_start", { pattern: CLIMB_DAY_START, tz: CLIMB_TIME_ZONE }, { name: "day_start", data: { kind: "day_start" } });
-await climbJobs.upsertJobScheduler("week_close", { pattern: CLIMB_WEEK_CLOSE, tz: CLIMB_TIME_ZONE }, { name: "week_close", data: { kind: "week_close" } });
+await schedule(climbJobs, "day_start", { pattern: CLIMB_DAY_START, tz: CLIMB_TIME_ZONE }, { kind: "day_start" }, DAY_MS);
+await schedule(climbJobs, "week_close", { pattern: CLIMB_WEEK_CLOSE, tz: CLIMB_TIME_ZONE }, { kind: "week_close" }, 7 * DAY_MS);
 
 const store = objectStoreFromEnv();
 const transcriber = selectTranscriber();
@@ -195,7 +223,6 @@ const chatWorker = new Worker<ChatJob>(QUEUES.chat, async (job) => {
   if (job.data.kind === "transcribe_voice") return transcribeVoice(store, transcriber, job.data.voiceNoteId);
 }, { connection, prefix: QUEUE_PREFIX });
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const alertChannels = alertChannelsFromEnv(process.env, { senders: sendersFromEnv(process.env), primary: async () => (await currentEmailConfig()).primary });
 const alertConfig = alertDeliveryConfigFromEnv();
 if (!alertChannels.length) console.warn("[alerts] no delivery channel configured (ADMIN_ALERT_EMAILS, ADMIN_ALERT_WEBHOOK_URL): admin alerts show only in the console");
@@ -221,24 +248,36 @@ const housekeepingWorker = new Worker<HousekeepingJob>(QUEUES.housekeeping, asyn
     if (n) console.log(`[housekeeping] cleared the archive of ${n} account(s) deleted more than ${days} days ago`);
   }
 }, { connection, prefix: QUEUE_PREFIX });
-await housekeepingJobs.upsertJobScheduler("deliver_alerts", { every: ALERT_DELIVERY_EVERY_MS }, { name: "deliver_alerts", data: { kind: "deliver_alerts" } });
+await schedule(housekeepingJobs, "deliver_alerts", { every: ALERT_DELIVERY_EVERY_MS }, { kind: "deliver_alerts" }, ALERT_DELIVERY_EVERY_MS);
 /** Suspensions are lifted within a minute of running out (they stop counting as a ban at once; ADR 0014). */
 const LIFT_EXPIRED_EVERY_MS = 60_000;
-await housekeepingJobs.upsertJobScheduler("lift_expired", { every: LIFT_EXPIRED_EVERY_MS }, { name: "lift_expired", data: { kind: "lift_expired" } });
+await schedule(housekeepingJobs, "lift_expired", { every: LIFT_EXPIRED_EVERY_MS }, { kind: "lift_expired" }, LIFT_EXPIRED_EVERY_MS);
 
 /** Every day at 03:00 Lagos, when nobody's playing. */
 const PURGE_EMAIL_SENDS = "0 3 * * *";
-await housekeepingJobs.upsertJobScheduler("purge_email_sends", { pattern: PURGE_EMAIL_SENDS, tz: CLIMB_TIME_ZONE }, { name: "purge_email_sends", data: { kind: "purge_email_sends" } });
+await schedule(housekeepingJobs, "purge_email_sends", { pattern: PURGE_EMAIL_SENDS, tz: CLIMB_TIME_ZONE }, { kind: "purge_email_sends" }, DAY_MS);
 
 /** Every day at 03:30 Lagos. */
 const PURGE_VOICE_NOTES = "30 3 * * *";
-await housekeepingJobs.upsertJobScheduler("purge_voice_notes", { pattern: PURGE_VOICE_NOTES, tz: CLIMB_TIME_ZONE }, { name: "purge_voice_notes", data: { kind: "purge_voice_notes" } });
+await schedule(housekeepingJobs, "purge_voice_notes", { pattern: PURGE_VOICE_NOTES, tz: CLIMB_TIME_ZONE }, { kind: "purge_voice_notes" }, DAY_MS);
 
 /** Every day at 04:00 Lagos. */
 const PURGE_DELETED_ARCHIVES = "0 4 * * *";
-await housekeepingJobs.upsertJobScheduler("purge_deleted_archives", { pattern: PURGE_DELETED_ARCHIVES, tz: CLIMB_TIME_ZONE }, { name: "purge_deleted_archives", data: { kind: "purge_deleted_archives" } });
+await schedule(housekeepingJobs, "purge_deleted_archives", { pattern: PURGE_DELETED_ARCHIVES, tz: CLIMB_TIME_ZONE }, { kind: "purge_deleted_archives" }, DAY_MS);
 
-for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker, chatWorker]) {
+for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker, chatWorker, nudgeClockWorker_]) {
   w.on("failed", (job, err) => console.error(`[${w.name}] job ${job?.id} failed:`, err.message));
 }
+// A scheduler's run completing is what the liveness check looks for.
+for (const w of [notifyWorker, partyWorker, climbWorker, housekeepingWorker, chatWorker, nudgeClockWorker_, paymentsWorker]) watchCompletions(w, pub);
+
+/** Repeatable jobs that stop completing raise a critical alert (liveness.ts); a timer, so a stuck queue can't silence it. */
+const checkLiveness = livenessCheck({
+  jobs: async () => [...scheduledJobs(), ...(await watchdogChains())],
+  lastCompleted: (keys) => lastCompletions(pub, keys),
+  stalled: raiseStalled,
+}, { missedIntervals: missedIntervalsFromEnv() });
+setInterval(() => {
+  checkLiveness().catch((err) => console.error("[liveness] check failed", err));
+}, LIVENESS_CHECK_EVERY_MS);
 console.log("worker running: queues", Object.values(QUEUES).join(", "));

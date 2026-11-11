@@ -1,7 +1,7 @@
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import type { WindowCounter } from "@contestly/shared";
-import { ADMIN_EVENTS_CHANNEL as ADMIN_EVENTS, PARTY_EVENTS_CHANNEL as PARTY_EVENTS, SAFETY_EVENTS_CHANNEL as SAFETY_EVENTS, QUEUES, nudgeUserChannel, type ChatJob, type ClimbJob, type DistractorsJob, type HousekeepingJob, type NotifyJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
+import { ADMIN_EVENTS_CHANNEL as ADMIN_EVENTS, PARTY_EVENTS_CHANNEL as PARTY_EVENTS, SAFETY_EVENTS_CHANNEL as SAFETY_EVENTS, QUEUES, nudgeUserChannel, type ChatJob, type ClimbJob, type DistractorsJob, type HousekeepingJob, type NotifyJob, type NudgeClockJob, type PartyJob, type PaymentsJob, type QuestionsJob } from "@contestly/shared";
 
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 /** BullMQ's key prefix. Every Queue and Worker passes it, so two stacks on one Valkey never share jobs. */
@@ -27,6 +27,8 @@ let connection: Redis | undefined;
 const conn = () => (connection ??= makeRedis());
 
 export const notifyQueue = () => new Queue<NotifyJob>(QUEUES.notify, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 2000 }, removeOnComplete: 500, removeOnFail: 1000 } });
+/** The nudge clock (deliver_nudges, nudge_minute, nudge_hourly): repeatable, never retried (the next tick is the retry). */
+export const nudgeClockQueue = () => new Queue<NudgeClockJob>(QUEUES.nudgeClock, { connection: conn(), prefix: QUEUE_PREFIX, defaultJobOptions: { attempts: 1, removeOnComplete: 100, removeOnFail: 500 } });
 /**
  * Party jobs (start, settle, cancels and their refunds, the watchdog) move money; each is idempotent (party row
  * locked, keyed ledger posts), so a failure (a deadlock Postgres broke, say) is retried with exponential backoff.

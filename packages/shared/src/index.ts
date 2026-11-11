@@ -334,7 +334,7 @@ export const partyRoomKey = (partyId: string) => `party:room:${partyId}`;
 export const PARTY_EVENTS_CHANNEL = "party:events";
 
 /** BullMQ queue names and job payloads. */
-export const QUEUES = { notify: "notify", party: "party", questions: "questions", distractors: "distractors", climb: "climb", housekeeping: "housekeeping", chat: "chat", payments: "payments" } as const;
+export const QUEUES = { notify: "notify", nudgeClock: "nudge_clock", party: "party", questions: "questions", distractors: "distractors", climb: "climb", housekeeping: "housekeeping", chat: "chat", payments: "payments" } as const;
 /**
  * Payments (ADR 0013). `webhook`: process a stored, authenticated provider event. `topup_check` /
  * `payout_submit` / `payout_check`: one top-up or withdrawal, through the same locked transitions as every
@@ -377,12 +377,13 @@ export type NotifyPartyJoinedJob = { kind: "party_joined"; partyId: string; user
 /** A (not muted) reply to a corner post: the host hears it, and anyone @mentioned in it. */
 export type NotifyCornerReplyJob = { kind: "corner_reply"; postId: string; replyId: string; fromUserId: string };
 /**
- * The nudge engine's clock (row 9), repeatable: `deliver_nudges` every few seconds sends what's due;
+ * The nudge engine's clock (row 9), repeatable, on its own queue (`nudge_clock`) so event jobs never wait ahead of it:
+ * `deliver_nudges` every few seconds sends what's due;
  * `nudge_minute` records the time-based party nudges (starts in 5 / in a minute, is live, filling up);
  * `nudge_hourly` streaks at risk, guest follow-ups and win-backs, each at its local hour.
  */
 export type NudgeClockJob = { kind: "deliver_nudges" } | { kind: "nudge_minute" } | { kind: "nudge_hourly" };
-export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob | NotifyMentionJob | NotifyPartyCancelledJob | NotifyPartyJoinedJob | NotifyCornerReplyJob | NudgeClockJob;
+export type NotifyJob = NotifyFollowersJob | NotifyInviteJob | NotifyQuestionsFailedJob | NotifyMentionJob | NotifyPartyCancelledJob | NotifyPartyJoinedJob | NotifyCornerReplyJob;
 /** Chat jobs in the worker: transcribe a voice note into the moderation queue. */
 export type ChatJob = { kind: "transcribe_voice"; voiceNoteId: string };
 /**

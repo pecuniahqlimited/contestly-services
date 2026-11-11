@@ -77,6 +77,39 @@ then. `--force` grants anyway; the `admin_actions` row and the alert both record
   Code from before it still writes `expired`, so in a rolling deploy run 0063's two UPDATEs once more after the
   last old process has stopped (they're idempotent).
 
+- **The nudge clock's own queue (11 Nov 2026).** `deliver_nudges`, `nudge_minute` and `nudge_hourly` move from
+  the `notify` queue to `nudge_clock`. The new worker removes the three schedulers from `notify` at start and
+  upserts them on `nudge_clock`. In a rolling deploy an old worker still running would put them back on `notify`
+  when it restarts, which only means ticks on both queues for a while (safe: a tick claims its rows with SKIP
+  LOCKED, the emitters record under dedupe keys); once no old worker is left, restart one new worker so it removes
+  them again. Set `ALERT_JOB_MISSED_INTERVALS` (default 3) if 3 is wrong for production.
+
+## Repeatable jobs: what stops them, and the liveness alert
+
+**What happened (10 Nov 2026, dev):** nudges went undelivered for about 7 minutes during sim:nudges, twice. Not a
+stray process with old code (the idle Wednesday sim, PID 60747, only ever added jobs, and no other worker was
+consuming), and not a slow tick: the Mac went into maintenance sleep (20:31:46 for 999 s, 20:56:33 for 419 s;
+`pmset -g log`), and everything slept with it, the Docker VM included (Postgres's checkpoint took 497 s instead of
+about 270, Valkey's 5-minute save came 4.5 minutes late, and Docker's own clock poll shows 30 s of monotonic time
+over 7.5 minutes of wall time). On wake, the sim's party had passed its starts-in-5 window. A machine that stays
+awake (the third run, and every server) never shows this.
+
+**What was weak anyway, and is fixed:** the tick shared the `notify` queue and its single slot with every event
+job, so a burst of joins or mentions queued ahead of it, and one run that never returned (a push call hanging)
+would have held that slot and stopped delivery for good, with nothing to say so. Now the clock has its own queue
+with 3 slots (BullMQ queues a scheduler's next run as soon as the current one is picked up, so a slow run doesn't
+delay the next), and each run has a deadline (30 s for a delivery tick, 2 min for the minute's emitters, 10 min for
+the hourly ones); past it the job fails and its slot is free.
+
+**The liveness alert:** every repeatable job registered with `schedule()` (the nudge clock, the party and payments
+sweeps, the invariants and reconciliation, the Climb's day start and week close, alert delivery, lifting
+suspensions, the purges) and each live party's watchdog chain is watched. A worker records each completion in
+Valkey (`liveness:<queue>:<scheduler>`, `liveness:watchdog:<partyId>`); a 30-second timer in the worker raises a
+critical `jobs.stalled` alert for any that hasn't completed in `ALERT_JOB_MISSED_INTERVALS` times its interval,
+never under a minute (one per job, deduped for an hour). A gap between checks of more than 90 s means the process
+was suspended: it counts again from the wake rather than paging on everything. It can't see a worker that is
+entirely down (the timer goes with it); that's the deploy's health check.
+
 ## Load testing: late round timers and the watchdog
 
 **Requirement (10 Nov 2026):** a round timer that fires late must never make the watchdog refund a game that is
