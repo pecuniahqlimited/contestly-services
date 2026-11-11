@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import {
   db, parties, cornerPostReplies, recordPartyProgress, lineDeliveries, deliverDueNudges, emitCornerParty, emitCornerReply, emitFillingUp, emitHostCancelled,
   emitMentions, emitPartyLive, emitPartyStarting, emitPeopleJoined, emitRecentlyLive, emitStreakRisk, emitGuestFollowUps, emitWinBack, type DeliveryDeps, purgeEmailSends, adminCancelParty, clearExpiredArchives, cornersAfterStandingChange, liftExpiredSuspensions, getAccountsConfig, currentEmailConfig, recordDeliveryNudges } from "@contestly/db";
-import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, nudgeClockQueue, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
+import { climbQueue, housekeepingQueue, makeRedis, nudgeChannel, nudgeClockQueue, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX, startHeartbeat } from "@contestly/queue";
 import { objectStoreFromEnv } from "@contestly/storage";
 import { CLIMB_TIME_ZONE, type ChatMessage, EMAIL_SEND_RETENTION_DAYS, QUEUES, partyHereKey, partyRoomKey, type ChatJob, type ClimbJob, type HousekeepingJob, type NotifyJob, type PartyJob } from "@contestly/shared";
 import { closeCrewWeeks, closeWeeks, startDay } from "./climb.js";
@@ -280,4 +280,6 @@ const checkLiveness = livenessCheck({
 setInterval(() => {
   checkLiveness().catch((err) => console.error("[liveness] check failed", err));
 }, LIVENESS_CHECK_EVERY_MS);
+// GET /health/deep: this process is up (a timer, like the liveness check; whether jobs complete is that check's job).
+startHeartbeat(pub, QUEUE_PREFIX, "worker");
 console.log("worker running: queues", Object.values(QUEUES).join(", "));

@@ -8,7 +8,7 @@
 import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { db, parties } from "@contestly/db";
-import { makeRedis, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX } from "@contestly/queue";
+import { makeRedis, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX, startHeartbeat } from "@contestly/queue";
 import { QUEUES, type QuestionsJob } from "@contestly/shared";
 import { ProviderUnavailable, withCallContext } from "@contestly/ai";
 import { providerNames, selectProviders } from "./providers/index.js";
@@ -146,6 +146,9 @@ await questionJobs.upsertJobScheduler("source-sweep", { pattern: SOURCE_SWEEP_CR
 
 // Rows embedded by another model aren't compared with this one's; move them over in the background.
 await startReembed();
+
+// GET /health/deep reads it: this process is up.
+startHeartbeat(pub, QUEUE_PREFIX, "questions");
 
 const names = providerNames();
 console.log(`questions running: queues ${QUEUES.questions} and ${QUEUES.distractors}, AI profile ${names.profile}: generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);

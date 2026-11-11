@@ -450,6 +450,25 @@ export type QuestionsJob =
 
 /** Response shapes. The UI's api-client parses every response with these. */
 export const healthResponseSchema = z.object({ ok: z.boolean(), service: z.string(), time: z.string() });
+
+/** The processes that write a heartbeat to Valkey; GET /health/deep reports each. */
+export const HEALTH_PROCESSES = ["api", "worker", "realtime", "questions"] as const;
+export type HealthProcess = (typeof HEALTH_PROCESSES)[number];
+/** A heartbeat older than this means the process is down (or every instance of it is). */
+export const HEARTBEAT_FRESH_SECONDS = 60;
+const healthCheckSchema = z.object({ ok: z.boolean(), latencyMs: z.number().int().nullable() });
+/**
+ * GET /health/deep (no auth): what an external uptime monitor hits every minute. 503 unless everything is ok. Says
+ * only up or down and how long ago: no hosts, versions, counts or errors.
+ */
+export const deepHealthSchema = z.object({
+  ok: z.boolean(),
+  checkedAt: z.string().datetime(),
+  postgres: healthCheckSchema,
+  valkey: healthCheckSchema,
+  processes: z.record(z.enum(HEALTH_PROCESSES), z.object({ ok: z.boolean(), lastBeatAt: z.string().datetime().nullable(), ageSeconds: z.number().int().nullable() })),
+});
+export type DeepHealth = z.infer<typeof deepHealthSchema>;
 export const walletSchema = z.object({ cashKobo: z.number().int(), bonusKobo: z.number().int() });
 export const publicUserSchema = z.object({
   id: z.string().uuid(),

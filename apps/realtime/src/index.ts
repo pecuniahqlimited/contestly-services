@@ -10,6 +10,7 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 const { Server } = colyseus;
 import { INBOX_ROOM, PARTY_ROOM } from "@contestly/shared";
 import { assertAuthConfig } from "@contestly/auth";
+import { QUEUE_PREFIX, makeRedis, startHeartbeat } from "@contestly/queue";
 import { PartyRoom } from "./PartyRoom.js";
 import { InboxRoom } from "./InboxRoom.js";
 
@@ -41,3 +42,5 @@ gameServer.define(INBOX_ROOM, InboxRoom).filterBy(["userId"]);
 const port = Number(process.env.REALTIME_PORT ?? 4001);
 await gameServer.listen(port);
 console.log(`realtime (colyseus) listening on :${port}`);
+// GET /health/deep reads it: this process is serving.
+startHeartbeat(makeRedis(), QUEUE_PREFIX, "realtime");

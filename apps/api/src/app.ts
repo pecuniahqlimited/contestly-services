@@ -4,7 +4,7 @@ import rateLimit from "@fastify/rate-limit";
 import multipart from "@fastify/multipart";
 import { INVALID_JSON, MAX_UPLOAD_BYTES, RATE_LIMITED } from "@contestly/shared";
 import { ZodError } from "zod";
-import { InsufficientFunds } from "@contestly/db";
+import { InsufficientFunds, sql } from "@contestly/db";
 import { Unauthorized } from "@contestly/auth";
 import { authPlugin, type SessionResolver } from "./auth.js";
 import { actingPlugin } from "./acting.js";
@@ -15,6 +15,8 @@ import { publicConfigFromEnv } from "./publicConfig.js";
 import { configRoutes } from "./routes/config.js";
 import type { PublicEnvConfig } from "@contestly/shared";
 import { rateLimited, valkey } from "./redis.js";
+import { deepHealth } from "./health.js";
+import { QUEUE_PREFIX, lastHeartbeats } from "@contestly/queue";
 import { meRoutes } from "./routes/me.js";
 import { notificationsRoutes } from "./routes/notifications.js";
 import { usersRoutes } from "./routes/users.js";
@@ -132,6 +134,15 @@ export async function buildApp(opts: AppOptions = {}) {
   });
 
   app.get("/health", async () => ({ ok: true, service: "api", time: new Date().toISOString() }));
+  /**
+   * For the external uptime monitor: no auth, nothing secret; 503 unless every process and both stores are up.
+   * Outside the HTTP limit, whose counts live in Valkey: with Valkey down it would hang there instead of saying so.
+   * Three tiny reads, each with a timeout, so it's cheap to answer anyone.
+   */
+  app.get("/health/deep", { config: { rateLimit: false } }, async (_req, reply) => {
+    const report = await deepHealth({ pingPostgres: () => sql`select 1`, pingValkey: () => valkey().ping(), heartbeats: () => lastHeartbeats(valkey(), QUEUE_PREFIX) });
+    return reply.code(report.ok ? 200 : 503).send(report);
+  });
   await app.register(meRoutes);
   await app.register(notificationsRoutes);
   await app.register(usersRoutes);

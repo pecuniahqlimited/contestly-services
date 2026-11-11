@@ -8,6 +8,10 @@ API="${API_URL:-http://localhost:${API_PORT:-4000}}"
 H=(-s -H "x-dev-user: tunde" -H "content-type: application/json")
 j() { python3 -c "import sys,json;d=json.load(sys.stdin);print($1)"; }
 echo "health:   $(curl -s $API/health)"
+# Every process beating and both stores up (what the external uptime monitor checks); anything else stops here.
+DEEP=$(curl -s -o /dev/null -w '%{http_code}' $API/health/deep)
+[ "$DEEP" = 200 ] || { echo "deep health: $DEEP"; curl -s $API/health/deep; echo; exit 1; }
+echo "deep:     200 (api, worker, realtime, questions, postgres, valkey)"
 # Top up the paying users so repeat runs don't drain the seed balances (brokeuser stays broke on purpose).
 for u in tunde zee; do
   echo "topup $u: $(curl -s -H "x-dev-user: $u" -H 'content-type: application/json' -X POST $API/wallet/dev-topup -d '{"nairaAmount":1000}')"

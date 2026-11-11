@@ -68,3 +68,5 @@ export function valkeyCounter(redis: Redis): WindowCounter {
     },
   };
 }
+
+export * from "./heartbeat.js";

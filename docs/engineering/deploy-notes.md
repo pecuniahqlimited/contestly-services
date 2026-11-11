@@ -113,7 +113,27 @@ way, so it's watched by when it was due instead: late once it hasn't completed `
 ever scheduled (`liveness:since:<queue>:<scheduler>`, kept across restarts), so a fresh install or a newly added job
 doesn't owe a run from before it existed. Hourly jobs (the invariants, the hourly nudges) keep N intervals. A gap between checks of more than 90 s means the process
 was suspended: it counts again from the wake rather than paging on everything. It can't see a worker that is
-entirely down (the timer goes with it); that's the deploy's health check.
+entirely down (the timer goes with it); that's `/health/deep`, below.
+
+## Deep health and the external uptime monitor (required before launch)
+
+`GET /health/deep` on the API (no auth; outside the HTTP rate limit) answers 200 only when all of these hold, else
+503 with the same body:
+
+- each process (`api`, `worker`, `realtime`, `questions`) has written its heartbeat to Valkey in the last 60 s
+  (`<BULLMQ_PREFIX>:health:heartbeat:<process>`, every 15 s on a plain timer; any one instance keeps it fresh);
+- Postgres answers `select 1` and Valkey answers `PING`, each within 2 s.
+
+The body says only up or down, each heartbeat's age and each store's latency: no hosts, versions, counts or error
+text. Every probe has a timeout, so a hung store is a quick 503, not a hung request.
+
+**An external uptime monitor must hit it every minute** (from outside DigitalOcean: e.g. Better Stack, UptimeRobot
+or Cloudflare health checks), treating anything but a 200 within 10 s as down, and **alert by email or SMS**,
+not through our own admin alerts. It is the only thing that catches a whole process, or the whole server, being
+down: the liveness alert and every other admin alert run inside the worker and are delivered by it, so they go
+silent exactly when the worker or the droplet does. Point it at the public URL through Cloudflare and Caddy, so
+DNS, TLS and the proxy are covered too. It doesn't tell one instance of a scaled process from another (a second
+realtime instance dying while the first beats goes unseen); that's the container platform's own restart check.
 
 ## Load testing: late round timers and the watchdog
 
