@@ -11,7 +11,7 @@ import { takeSeat, cleanName,
   partyPlayers, partyPrizes, prospectiveHost, systemLine, crewThreadId, latestStart, inviteExpiry, writeChallenge, type Acting, type Party, type Tx, type User,
 } from "@contestly/db";
 import { notifyQueue, partyQueue } from "@contestly/queue";
-import { BRAND_NOT_VERIFIED, BRAND_ROLE_FORBIDDEN, SPLITS, checkStakes, isFreeParty, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput, type PartyTemplateCopy } from "@contestly/shared";
+import { BRAND_NOT_VERIFIED, BRAND_ROLE_FORBIDDEN, SPLITS, challengeOpeningLine, checkStakes, isFreeParty, inferCategory, isGoods, postsToCorner, startsAtFor, type ChatMessage, type CreatePartyInput, type PartyTemplateCopy } from "@contestly/shared";
 import { httpError } from "./httpError.js";
 import { inviteToParty } from "./invites.js";
 import { enqueueSealedSet } from "./questionSet.js";
@@ -108,7 +108,8 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
     if (opts.rematchOf) await copySources(tx, opts.rematchOf, p.id, me.id);
     // The host's team is in the party's chat whether or not they play.
     await joinPartyThread(tx, p.id, me.id);
-    await systemLine(tx, p.id, body.visibility === "public" ? "Party is open." : "Private party. Share the link to fill seats.");
+    await systemLine(tx, p.id, body.challenge ? challengeOpeningLine(me.displayName, challengees!.map((c) => c.user.displayName))
+      : body.visibility === "public" ? "Party is open." : "Private party. Share the link to fill seats.");
     if (opts.rematchOf) await systemLine(tx, p.id, "Rematch! Same people, new questions.");
     // A crew party asks the whole crew (crewmates count as connected) and lands in the crew's chat.
     const crewmates = crew ? (await tx.select({ id: crewMembers.userId }).from(crewMembers).where(and(eq(crewMembers.crewId, crew.id), ne(crewMembers.userId, me.id)))).map((m) => m.id) : [];

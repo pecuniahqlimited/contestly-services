@@ -111,6 +111,8 @@ describe("creating a challenge", () => {
     expect(await card(kemi, id)).toMatchObject({ state: "pending", message: "Bet you can't beat me", joinClosesAt: null, you: { role: "invitee", answer: "pending", canAnswer: true } });
     expect(await card(ada, id)).toMatchObject({ state: "pending", you: { role: "challenger", canAnswer: false } });
     expect((await call(await person("x"), "GET", `/challenges/${id}`)).statusCode).toBe(404);
+    // The party chat opens with who challenged whom, not the private party's share line.
+    expect(await partyLines(id)).toEqual([`${ada.displayName} challenged ${kemi.displayName}`]);
   });
 
   it("party detail (what the lobby and the result read) carries the challenge flag; an ordinary party carries null", async () => {

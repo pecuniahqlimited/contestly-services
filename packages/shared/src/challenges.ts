@@ -65,6 +65,12 @@ export const CHALLENGE_DECLINED_LINE = "Not this time";
 
 // ---- creating ---------------------------------------------------------------------------
 
+/** A challenge's party chat opens with who challenged whom ("Ada challenged Kemi, Tolu and Zee"), not the private party's share line. */
+export function challengeOpeningLine(challengerName: string, inviteeNames: readonly string[]): string {
+  const names = inviteeNames.length > 1 ? `${inviteeNames.slice(0, -1).join(", ")} and ${inviteeNames.at(-1)}` : (inviteeNames[0] ?? "");
+  return `${challengerName} challenged ${names}`;
+}
+
 /** POST /parties `challenge`: who, how long the invite waits, how long the lobby waits once someone accepts. */
 export const challengeFieldsSchema = z.object({
   invitees: z.array(z.string().uuid()).min(1).max(CHALLENGE_MAX_INVITEES).refine((ids) => new Set(ids).size === ids.length, { message: "each invitee once" }),

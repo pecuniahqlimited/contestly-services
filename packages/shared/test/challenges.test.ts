@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CHALLENGE_CONFIG, challengeConfigSchema, challengeFieldsSchema, challengeRangeProblem, challengeState, createPartySchema, type ChallengeStateInput } from "../src/index.js";
+import { DEFAULT_CHALLENGE_CONFIG, challengeConfigSchema, challengeOpeningLine, challengeFieldsSchema, challengeRangeProblem, challengeState, createPartySchema, type ChallengeStateInput } from "../src/index.js";
 
 const id = "00000000-0000-4000-8000-000000000001";
 const now = new Date("2026-11-10T12:00:00Z");
@@ -40,5 +40,13 @@ describe("the card's state", () => {
     expect(challengeState({ ...base, partyStatus: "live", myAnswer: "expired" })).toBe("expired");
     expect(challengeState({ ...base, windowOpen: true, myAnswer: "left" })).toBe("left");
     expect(challengeState({ ...base, partyStatus: "cancelled", ending: "expired", myAnswer: "left" })).toBe("left");
+  });
+});
+
+describe("challengeOpeningLine", () => {
+  it("names one, two or several people asked", () => {
+    expect(challengeOpeningLine("Ada", ["Kemi"])).toBe("Ada challenged Kemi");
+    expect(challengeOpeningLine("Ada", ["Kemi", "Tolu"])).toBe("Ada challenged Kemi and Tolu");
+    expect(challengeOpeningLine("Ada", ["Kemi", "Tolu", "Zee"])).toBe("Ada challenged Kemi, Tolu and Zee");
   });
 });

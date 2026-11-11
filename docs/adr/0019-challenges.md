@@ -27,7 +27,7 @@ The one-tap challenge made a fixed party: free, private, the lanes you share, st
    - invite expiry 60–2,880 minutes, default 1,440;
    - join window 5–60 minutes, default 10.
    A value outside them is `challenge_out_of_range`. Sends are limited per Lagos day by the existing `challengesPerDay`.
-5. **The card.** Each invitee's DM thread gets a party card carrying the message, profanity masked. A stranger gets it as a message request, as before. `GET /challenges/:partyId` gives the card's state from the viewer's side:
+5. **The card.** Each invitee's DM thread gets a party card carrying the message, profanity masked. The party's own chat opens with who challenged whom ("Ada challenged Kemi and Tolu", `challengeOpeningLine()`), not the private party's share line. A stranger gets it as a message request, as before. `GET /challenges/:partyId` gives the card's state from the viewer's side:
    - pending, with time left;
    - accepted, with the join countdown and who's in the lobby (real presence only);
    - live or finished;
