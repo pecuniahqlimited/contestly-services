@@ -69,7 +69,7 @@ export async function leaveSeat(tx: Tx, p: Party, user: { id: string; displayNam
 }
 
 /** How a seat ended: the line the party chat gets, and the answer a challenge's card shows for them (ADR 0019). */
-interface SeatEnd { line: string; challengeAnswer: "left" | "expired" }
+interface SeatEnd { line: string; challengeAnswer: "left" | "no_show" }
 const left = (user: { displayName: string }): SeatEnd => ({ line: `${user.displayName} left`, challengeAnswer: "left" });
 
 /**
@@ -105,5 +105,5 @@ export async function removeSeat(tx: Tx, p: Party, user: { id: string; displayNa
  */
 export async function dropNoShow(tx: Tx, p: Party, user: { id: string; displayName: string }, now = new Date()) {
   const [seat] = await tx.select().from(partyPlayers).where(and(eq(partyPlayers.partyId, p.id), eq(partyPlayers.userId, user.id)));
-  return seat ? freeSeat(tx, p, seat, user, now, { line: `${user.displayName} didn't make it`, challengeAnswer: "expired" }) : null;
+  return seat ? freeSeat(tx, p, seat, user, now, { line: `${user.displayName} didn't make it`, challengeAnswer: "no_show" }) : null;
 }

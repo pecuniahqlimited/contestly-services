@@ -442,6 +442,13 @@
       "when": 1794307872426,
       "tag": "0062_challenges",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1794383318654,
+      "tag": "0063_challenge_answers_split",
+      "breakpoints": true
     }
   ]
 }

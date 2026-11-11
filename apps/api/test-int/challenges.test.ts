@@ -221,10 +221,10 @@ describe("answering", () => {
     expect(await startOrCancel(worker([ada, a]).deps, id)).toBe("live");
     expect(await seated(id)).toEqual([ada.id, a.id].sort());
     expect((await db.select().from(partyChallengeInvitees).where(eq(partyChallengeInvitees.partyId, id))).map((i) => [i.userId, i.answer]).sort())
-      .toEqual([[a.id, "accepted"], [b.id, "declined"], [c.id, "expired"], [d.id, "expired"]].sort());
+      .toEqual([[a.id, "accepted"], [b.id, "declined"], [c.id, "no_answer"], [d.id, "no_show"]].sort());
     expect(await partyLines(id)).toContain(`${d.displayName} didn't make it`);
-    expect((await card(c, id)).state).toBe("expired");
-    expect((await card(d, id)).state).toBe("expired");
+    expect((await card(c, id)).state).toBe("no_answer");
+    expect((await card(d, id)).state).toBe("no_show");
     expect((await card(b, id)).state).toBe("declined");
     expect((await card(ada, id)).state).toBe("live");
     expect((await accept(c, id)).json().error).toBe("challenge_expired");
@@ -245,7 +245,8 @@ describe("answering", () => {
     expect(emitted).toContainEqual({ partyId: id, status: "cancelled" });
     expect(await partyLines(id)).toContain("Challenge expired.");
     expect(await cash(ada)).toBe(ENTRY);
-    expect(await card(kemi, id)).toMatchObject({ state: "expired", you: { canAnswer: false } });
+    expect(await card(kemi, id)).toMatchObject({ state: "no_answer", you: { answer: "no_answer", canAnswer: false } });
+    expect((await card(ada, id)).state).toBe("expired");
     expect((await accept(kemi, id)).json().error).toBe("challenge_expired");
   });
 
@@ -259,6 +260,7 @@ describe("answering", () => {
     expect((await partyOf(id)).status).toBe("cancelled");
     expect(await partyLines(id)).toContain("Challenge expired.");
     expect((await card(ada, id)).state).toBe("expired");
+    expect(await card(kemi, id)).toMatchObject({ state: "no_show", you: { answer: "no_show" } });
   });
 
   it("the challenger is just another player at the window's end: absent with two others in, it starts without them, refunded", async () => {
@@ -289,6 +291,7 @@ describe("answering", () => {
     expect(await partyLines(id)).toContain("Challenge expired.");
     for (const u of [ada, a, b]) expect(await cash(u)).toBe(ENTRY);
     expect((await card(a, id)).state).toBe("expired");
+    expect((await card(b, id)).state).toBe("no_show");
   });
 
   it("leaving after accepting: the card shows them as left, refunded, and the start goes on without them", async () => {

@@ -72,6 +72,11 @@ then. `--force` grants anyway; the `admin_actions` row and the alert both record
   0056 restates every stored rule set (template configs and parties' copies) in the caps-by-host shape with
   every rule explicit, and gives parties without a copy the current one: run it before the new code reads them.
 
+- **Challenge answers split (0063, 11 Nov 2026).** A data-only migration: invitees' `expired` answers become
+  `no_show` (a `party_leaves` row at the same moment: they accepted and weren't in the lobby) or `no_answer`.
+  Code from before it still writes `expired`, so in a rolling deploy run 0063's two UPDATEs once more after the
+  last old process has stopped (they're idempotent).
+
 ## Load testing: late round timers and the watchdog
 
 **Requirement (10 Nov 2026):** a round timer that fires late must never make the watchdog refund a game that is

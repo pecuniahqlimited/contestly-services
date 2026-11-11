@@ -84,6 +84,9 @@ function myInvite(rows: ChallengeRows, userId: string) {
   return mine;
 }
 
+/** The invite ran out on them: they never answered in time, or accepted and weren't there when the window closed. */
+const ranOutFor = (i: PartyChallengeInvitee) => i.answer === "no_answer" || i.answer === "no_show";
+
 /** Can this invite still be accepted? Before its expiry, and once the window's open, before it closes. */
 const stillOpen = (p: Party, c: PartyChallenge, now: Date) =>
   p.status === "open" && now < c.inviteExpiresAt && (!c.windowClosesAt || now < c.windowClosesAt);
@@ -106,7 +109,7 @@ export async function acceptChallenge(partyId: string, me: User, now = new Date(
     const { p, challenge } = rows;
     const mine = myInvite(rows, me.id);
     if (mine.answer === "accepted") return { replayed: true, opened: null, line: null, seats: null };
-    if (mine.answer !== "pending") throw challengeError(409, mine.answer === "expired" ? CHALLENGE_EXPIRED : CHALLENGE_ANSWERED, { answer: mine.answer });
+    if (mine.answer !== "pending") throw challengeError(409, ranOutFor(mine) ? CHALLENGE_EXPIRED : CHALLENGE_ANSWERED, { answer: mine.answer });
     if (!stillOpen(p, challenge, now)) throw challengeError(409, CHALLENGE_EXPIRED);
     await takeSeat(tx, p, me.id, p.entryKobo);
     await tx.update(partyChallengeInvitees).set({ answer: "accepted", answeredAt: now }).where(and(eq(partyChallengeInvitees.partyId, partyId), eq(partyChallengeInvitees.userId, me.id)));
@@ -143,7 +146,7 @@ export async function declineChallenge(partyId: string, me: User, now = new Date
     const { p } = rows;
     const mine = myInvite(rows, me.id);
     if (mine.answer === "declined") return { replayed: true, cardLine: null, cancelled: null };
-    if (mine.answer !== "pending") throw challengeError(409, mine.answer === "expired" ? CHALLENGE_EXPIRED : CHALLENGE_ANSWERED, { answer: mine.answer });
+    if (mine.answer !== "pending") throw challengeError(409, ranOutFor(mine) ? CHALLENGE_EXPIRED : CHALLENGE_ANSWERED, { answer: mine.answer });
     await tx.update(partyChallengeInvitees).set({ answer: "declined", answeredAt: now }).where(and(eq(partyChallengeInvitees.partyId, partyId), eq(partyChallengeInvitees.userId, me.id)));
     await tx.update(partyInvites).set({ status: "dismissed", respondedAt: now }).where(and(eq(partyInvites.partyId, partyId), eq(partyInvites.inviteeId, me.id)));
     const cardLine = await partyCardLine(tx, mine.threadId, partyId, me.id, CHALLENGE_DECLINED_LINE);
@@ -159,8 +162,8 @@ export async function declineChallenge(partyId: string, me: User, now = new Date
 async function expirePending(tx: Tx, rows: ChallengeRows, now: Date) {
   const pending = rows.invitees.filter((i) => i.answer === "pending").map((i) => i.userId);
   if (!pending.length) return;
-  await tx.update(partyChallengeInvitees).set({ answer: "expired", answeredAt: now }).where(and(eq(partyChallengeInvitees.partyId, rows.challenge.partyId), inArray(partyChallengeInvitees.userId, pending)));
-  for (const i of rows.invitees) if (i.answer === "pending") i.answer = "expired";
+  await tx.update(partyChallengeInvitees).set({ answer: "no_answer", answeredAt: now }).where(and(eq(partyChallengeInvitees.partyId, rows.challenge.partyId), inArray(partyChallengeInvitees.userId, pending)));
+  for (const i of rows.invitees) if (i.answer === "pending") i.answer = "no_answer";
 }
 
 async function cancelExpired(tx: Tx, p: Party): Promise<ChatMessage> {
@@ -185,9 +188,10 @@ export async function expireChallenge(partyId: string, now = new Date()): Promis
 }
 
 /**
- * At start (startOrCancel, the party row locked): who plays a challenge. Invites still pending expire. Fewer than two
- * seated players in the lobby, the challenger counted like anyone (ADR 0019), or nobody ever accepted: cancelled and
- * everyone refunded. Otherwise every seated player not in the lobby is unseated and refunded, the challenger included.
+ * At start (startOrCancel, the party row locked): who plays a challenge. Invites still pending become no_answer. Fewer
+ * than two seated players in the lobby, the challenger counted like anyone (ADR 0019), or nobody ever accepted:
+ * cancelled and everyone refunded, absent acceptors marked no_show. Otherwise every seated player not in the lobby
+ * is unseated and refunded (no_show), the challenger included.
  * Null for an ordinary party; else the cancel's line, if any.
  */
 export async function settleChallengeRoster(tx: Tx, p: Party, inLobby: ReadonlySet<string>, now = new Date()): Promise<{ cancelled: ChatMessage | null } | null> {
@@ -197,7 +201,14 @@ export async function settleChallengeRoster(tx: Tx, p: Party, inLobby: ReadonlyS
   if (!rows.challenge.windowOpensAt) return { cancelled: await cancelExpired(tx, p) };
   const seated = (await tx.select({ userId: partyPlayers.userId }).from(partyPlayers).where(eq(partyPlayers.partyId, p.id))).map((s) => s.userId);
   const absent = seated.filter((id) => !inLobby.has(id));
-  if (seated.length - absent.length < CHALLENGE_MIN_PLAYERS) return { cancelled: await cancelExpired(tx, p) };
+  if (seated.length - absent.length < CHALLENGE_MIN_PLAYERS) {
+    // Everyone is refunded by the cancel; whoever accepted and wasn't there is still a no-show on the card.
+    if (absent.length) {
+      await tx.update(partyChallengeInvitees).set({ answer: "no_show", answeredAt: now })
+        .where(and(eq(partyChallengeInvitees.partyId, p.id), inArray(partyChallengeInvitees.userId, absent), eq(partyChallengeInvitees.answer, "accepted")));
+    }
+    return { cancelled: await cancelExpired(tx, p) };
+  }
   if (absent.length) {
     for (const u of await tx.select().from(users).where(inArray(users.id, absent))) await dropNoShow(tx, p, u, now);
   }

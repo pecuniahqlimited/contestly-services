@@ -31,16 +31,16 @@ The one-tap challenge made a fixed party: free, private, the lanes you share, st
    - pending, with time left;
    - accepted, with the join countdown and who's in the lobby (real presence only);
    - live or finished;
-   - expired, declined or cancelled;
-   - left, when the viewer accepted and then left.
-   Each invitee's answer is pending, accepted, declined, expired (the invite ran out, or they weren't in the lobby at the window's end) or left.
+   - expired (it ended unplayed), declined or cancelled;
+   - the viewer's own end: no_answer (they never answered in time), no_show (they accepted but weren't in the lobby when the window closed) or left (they accepted and then left).
+   Each invitee's answer is pending, accepted, declined, no_answer, no_show or left (amended 11 Nov 2026: `expired` split into no_answer and no_show; migration 0063 rewrote earlier rows).
    `GET /parties/:id` (which the lobby and the result read too) carries `challenge: { state, cardUrl }` with the same state from the viewer's side and the card's API path, or null for an ordinary party, so the app never probes the card (amended 11 Nov 2026).
 6. **Answering:**
    - **Accepting** (`POST /challenges/:partyId/accept`) takes a seat through `takeSeat`, so an entry is charged here as for any join. The first accept opens the join window and moves `startsAt` to its end. Until then a challenge has no start time: every party row carries `startsWhen`, `on_accept` for an open challenge nobody has accepted (its `startsAt` is only the latest it could start), `scheduled` otherwise (amended 11 Nov 2026; a marker rather than a null `startsAt`, so no party card in the app has to handle a missing time). `POST /parties/:id/join` refuses a challenge (`challenge_accept_required`), and so do extra invites.
    - **Declining** (`/decline`) writes "Not this time" on the invitee's card in the DM. Once nobody is left pending or accepted, the party is cancelled and refunded.
 7. **Starting:**
    - **Early start:** a challenge starts as soon as nobody is still pending and every seated player is in the lobby. The room queues a check on every join; a decline, and an invite expiring, queue one too.
-   - **At the window's end:** the usual `startOrCancel` runs, and invites still pending expire. It goes ahead only if at least two seated players are in the lobby; then every seated player who isn't is refunded and unseated ("<name> didn't make it", their answer expired). Otherwise it's cancelled with "Challenge expired." and everyone is refunded.
+   - **At the window's end:** the usual `startOrCancel` runs, and invites still pending expire. It goes ahead only if at least two seated players are in the lobby; then every seated player who isn't is refunded and unseated ("<name> didn't make it", their answer no_show). Otherwise it's cancelled with "Challenge expired." and everyone is refunded, with absent acceptors' answers no_show.
    - **The challenger** counts like anyone (amended 10 Nov 2026): absent at the window's end, they're just another no-show, and the game goes on without them if two others are in.
    - **Expiry:** if nobody accepts before the invite expires, the expiry job cancels the party with "Challenge expired." The minute sweep is the backstop, because `startsAt` starts at expiry plus the window.
    Every cancel goes through `refundAndCancel()`, so every seat is refunded the way it was paid.

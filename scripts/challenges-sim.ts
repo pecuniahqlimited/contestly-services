@@ -95,7 +95,8 @@ await db.update(partyChallenges).set({ inviteExpiresAt: new Date(Date.now() - 10
 await promote(`challenge-expire-${staked}`);
 ok(!!(await waitFor(async () => (await statusOf(ADA, staked)) === "cancelled")), "the invite expires: cancelled");
 ok((await walletTotal(ADA)) === before, "and the entry is back");
-ok((await card(TOLU, staked)).state === "expired" && (await api(ADA, "GET", `/parties/${staked}`)).chat.some((m: any) => m.text === "Challenge expired."), "the card and the chat say \"Challenge expired.\"");
+ok((await card(ADA, staked)).state === "expired" && (await api(ADA, "GET", `/parties/${staked}`)).chat.some((m: any) => m.text === "Challenge expired."), "the card and the chat say \"Challenge expired.\"");
+ok((await card(TOLU, staked)).state === "no_answer", "Tolu's card: they didn't answer in time");
 
 // ---- 3. coins, a join window that runs out --------------------------------------------------
 
@@ -110,7 +111,7 @@ ok(!!(await waitFor(async () => (await nudged(KEMI, "challenge_join_reminder", w
 await promote(`challenge-start-${windowed}`);
 ok(!!(await waitFor(async () => (await statusOf(ADA, windowed)) === "cancelled")), "nobody came: cancelled at the window's end");
 ok((await walletTotal(ADA)) === adaBefore && (await walletTotal(KEMI)) === kemiBefore, "both entries are back");
-ok((await card(KEMI, windowed)).state === "expired", "the card says it expired");
+ok((await card(KEMI, windowed)).state === "no_show" && (await card(ADA, windowed)).state === "expired", "Kemi's card says no-show; Ada's, that it expired");
 
 // ---- 4. the ranges ---------------------------------------------------------------------------
 

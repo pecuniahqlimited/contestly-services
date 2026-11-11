@@ -23,10 +23,14 @@ describe("challenge ranges", () => {
 });
 
 describe("the card's state", () => {
-  it("pending until the invite runs out, then expired; accepted once the window opens", () => {
+  it("pending until the invite runs out: then no_answer for the invitee, expired for the challenger; accepted once the window opens", () => {
+    const later = new Date(now.getTime() + 61_000);
     expect(challengeState(base)).toBe("pending");
-    expect(challengeState({ ...base, now: new Date(now.getTime() + 61_000) })).toBe("expired");
+    expect(challengeState({ ...base, now: later })).toBe("no_answer");
+    expect(challengeState({ ...base, now: later, myAnswer: null })).toBe("expired");
     expect(challengeState({ ...base, windowOpen: true, myAnswer: "accepted" })).toBe("accepted");
+    // Still asked when the window's open, but their own invite ran out.
+    expect(challengeState({ ...base, windowOpen: true, now: later })).toBe("no_answer");
   });
   it("live and finished; cancelled by its ending, else by the challenger", () => {
     expect(challengeState({ ...base, partyStatus: "live", myAnswer: "accepted" })).toBe("live");
@@ -35,9 +39,12 @@ describe("the card's state", () => {
     expect(challengeState({ ...base, partyStatus: "cancelled", ending: "expired" })).toBe("expired");
     expect(challengeState({ ...base, partyStatus: "cancelled" })).toBe("cancelled");
   });
-  it("the viewer's own decline, leave or expired invite wins, whatever the others did", () => {
+  it("the viewer's own decline, leave, no answer or no-show wins, whatever the others did", () => {
     expect(challengeState({ ...base, windowOpen: true, myAnswer: "declined" })).toBe("declined");
-    expect(challengeState({ ...base, partyStatus: "live", myAnswer: "expired" })).toBe("expired");
+    expect(challengeState({ ...base, partyStatus: "live", myAnswer: "no_answer" })).toBe("no_answer");
+    expect(challengeState({ ...base, partyStatus: "live", myAnswer: "no_show" })).toBe("no_show");
+    expect(challengeState({ ...base, partyStatus: "cancelled", ending: "expired", myAnswer: "no_show" })).toBe("no_show");
+    expect(challengeState({ ...base, partyStatus: "finished", myAnswer: "no_answer" })).toBe("no_answer");
     expect(challengeState({ ...base, windowOpen: true, myAnswer: "left" })).toBe("left");
     expect(challengeState({ ...base, partyStatus: "cancelled", ending: "expired", myAnswer: "left" })).toBe("left");
   });
