@@ -30,6 +30,7 @@ import { geminiVerifier } from "./gemini/verifier.js";
 import { geminiSafety } from "./gemini/safety.js";
 import { geminiEmbedder } from "./gemini/embedder.js";
 import { cachedVerifier, dbVerificationCache, type VerificationCache } from "./cachedVerifier.js";
+import { batchedVerifier } from "./batchedVerifier.js";
 import type { Providers, SafetyReviewer, Verifier } from "./types.js";
 
 /** Per attempt. Generation thinks and writes a batch; verification searches; the rest are quick. */
@@ -52,6 +53,11 @@ export function dbCallDeps(breakers = new Breakers(DEFAULT_BREAKER), limiters = 
 }
 
 const modelFor = (step: "generate" | "verify" | "safety") => async () => (await getQuestionsConfig()).providers.models[step];
+/** Questions per verification call, read per call so an admin change applies to the next set. */
+export const verifyBatchSize = async () => (await getQuestionsConfig()).providers.verifyBatchSize;
+
+/** Every verifier is the same stack: the cache first (a question verified before is never sent again), then batches. */
+const verifierStack = (v: Verifier, model: () => Promise<string>, cache: VerificationCache, batchSize = verifyBatchSize) => cachedVerifier(batchedVerifier(v, batchSize), model, cache);
 const fixed = (model: PricedModel) => async () => model;
 
 export function pricedModel(name: string, envVar: string): PricedModel {
@@ -62,14 +68,15 @@ export function pricedModel(name: string, envVar: string): PricedModel {
 const key = (envVar: string) => process.env[envVar] ?? "";
 type Deps = (step: ProviderStep) => CallDeps;
 
-export const mockProviders = (): Providers => ({ generator: mockGenerator, verifier: mockVerifier, embedder: mockEmbedder, safety: mockSafety });
+/** The mocks, batched like the others (no cache: nothing to save). */
+export const mockProviders = (batchSize = verifyBatchSize): Providers => ({ generator: mockGenerator, verifier: batchedVerifier(mockVerifier, batchSize), embedder: mockEmbedder, safety: mockSafety });
 
 /** Gemini's free tier only (the client is injectable for tests). */
-export function freeProviders(deps: Deps, client = geminiClient({ apiKey: key("GEMINI_API_KEY") }), cache: VerificationCache = dbVerificationCache): Providers {
+export function freeProviders(deps: Deps, client = geminiClient({ apiKey: key("GEMINI_API_KEY") }), cache: VerificationCache = dbVerificationCache, batchSize = verifyBatchSize): Providers {
   const m = FREE_PROFILE_MODELS;
   return {
     generator: geminiGenerator({ client, call: deps("generate"), model: fixed(m.generate), tier: "free" }),
-    verifier: cachedVerifier(geminiVerifier({ client, call: deps("verify"), model: fixed(m.verify), mode: "unsourced", tier: "free" }), fixed(m.verify), cache),
+    verifier: verifierStack(geminiVerifier({ client, call: deps("verify"), model: fixed(m.verify), mode: "unsourced", tier: "free" }), fixed(m.verify), cache, batchSize),
     embedder: geminiEmbedder({ client, call: deps("embed"), model: m.embed, tier: "free" }),
     safety: geminiSafety({ client, call: deps("safety"), model: fixed(m.safety), tier: "free" }),
     allowUnsourced: true,
@@ -112,12 +119,12 @@ function routed<T>(step: "verify" | "safety", model: () => Promise<PricedModel>,
 }
 
 /** The paid profile's verifier: the admin's model picks the vendor per call. Model and clients injectable for tests. */
-export function liveVerifier(deps: Deps, model = modelFor("verify"), c = clients(), cache: VerificationCache = dbVerificationCache): Verifier {
+export function liveVerifier(deps: Deps, model = modelFor("verify"), c = clients(), cache: VerificationCache = dbVerificationCache, batchSize = verifyBatchSize): Verifier {
   const pick = routed<Verifier>("verify", model, {
-    ...(c.anthropic ? { anthropic: cachedVerifier(claudeVerifier({ client: c.anthropic, call: deps("verify"), model }), model, cache) } : {}),
-    ...(c.gemini ? { gemini: cachedVerifier(geminiVerifier({ client: c.gemini, call: deps("verify"), model, mode: "grounded", tier: "paid" }), model, cache) } : {}),
+    ...(c.anthropic ? { anthropic: verifierStack(claudeVerifier({ client: c.anthropic, call: deps("verify"), model }), model, cache, batchSize) } : {}),
+    ...(c.gemini ? { gemini: verifierStack(geminiVerifier({ client: c.gemini, call: deps("verify"), model, mode: "grounded", tier: "paid" }), model, cache, batchSize) } : {}),
   });
-  return { name: "live", verify: async (q) => (await pick()).verify(q) };
+  return { name: "live", verifyBatch: async (qs) => (await pick()).verifyBatch(qs) };
 }
 
 export function liveSafety(deps: Deps, model = modelFor("safety"), c = clients()): SafetyReviewer {
@@ -128,7 +135,7 @@ export function liveSafety(deps: Deps, model = modelFor("safety"), c = clients()
   return { name: "live", review: async (brief, items) => (items.length ? (await pick()).review(brief, items) : []) };
 }
 
-const profiles: Record<AiProfile, (deps: Deps) => Providers> = { mock: mockProviders, free: (d) => freeProviders(d), paid: paidProviders };
+const profiles: Record<AiProfile, (deps: Deps) => Providers> = { mock: () => mockProviders(), free: (d) => freeProviders(d), paid: paidProviders };
 
 export function selectProviders(deps = dbCallDeps(), profile = aiProfile()): Providers {
   return profiles[profile](deps);

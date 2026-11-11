@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questions eval 2026-11-11</title>
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--ink:#1b1d21;--muted:#5d6470;--line:#e2e3e0;--good:#11724a;--goodbg:#e6f5ee;--bad:#b3261e;--badbg:#fbeceb;--warn:#8a5a00;--warnbg:#fdf3dc;--accent:#2f5bd3}
+@media (prefers-color-scheme:dark){:root{--bg:#121316;--card:#1b1d22;--ink:#ecedef;--muted:#a1a7b3;--line:#2c2f36;--good:#5fd39b;--goodbg:#13281f;--bad:#ff8a80;--badbg:#2e1716;--warn:#f1c35c;--warnbg:#2c2410;--accent:#8fb0ff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 64px}h1{font-size:24px;margin:0 0 4px}h2{font-size:18px;margin:32px 0 12px;padding-top:8px;border-top:1px solid var(--line)}h3{font-size:15px;margin:20px 0 8px}
+.meta{color:var(--muted);font-size:13px}.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}.kpi b{display:block;font-size:22px}.kpi span{color:var(--muted);font-size:12px}
+.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);border-radius:8px;font-size:13px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:600}
+.q{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:10px 0}
+.q header{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px}.tag{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--bg);color:var(--muted);border:1px solid var(--line)}
+.out{font-weight:600}.good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.tag.good{background:var(--goodbg);border-color:transparent}.tag.bad{background:var(--badbg);border-color:transparent}.tag.warn{background:var(--warnbg);border-color:transparent}
+.qt{font-size:16px;font-weight:600;margin:4px 0 8px}ul.opts{margin:0 0 8px;padding-left:20px}ul.opts li.right{color:var(--good);font-weight:600}
+.img{font-size:13px;color:var(--muted);margin-bottom:6px}.kv{display:grid;grid-template-columns:110px 1fr;gap:2px 10px;font-size:13px}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}
+a{color:var(--accent)}
+</style></head><body><main>
+<h1>Question engine eval</h1>
+<p class="meta">2026-11-11 20:30 UTC · 0.3 min · profile free · generate gemini gemini-3.5-flash-lite · verify gemini gemini-3.6-flash, no sources · safety gemini gemini-3.1-flash-lite · embed gemini-embedding-2 · cost $0 (free tier; correct verdicts are checked without sources)</p>
+<div class="kpis">
+<div class="kpi"><b>0 / 44</b><span>accepted / drafted (0%)</span></div>
+<div class="kpi"><b>0%</b><span>verification pass</span></div>
+<div class="kpi"><b>–</b><span>dedupe pass</span></div>
+<div class="kpi"><b>–</b><span>safety pass</span></div>
+<div class="kpi"><b>$0.00</b><span>total cost (10/15 calls ok)</span></div>
+<div class="kpi"><b>$0.000</b><span>per accepted question ($0.000 per draft)</span></div>
+<div class="kpi"><b>3.0</b><span>provider calls per set</span></div>
+<div class="kpi"><b>$0.000</b><span>per accepted question on the paid profile (estimated from tokens, 2 searches a question)</span></div>
+</div>
+<p class="meta">Pass rates follow the gate's order: shape valid → verified correct → not a duplicate → safe → accepted. Verdicts: unverifiable 44.</p>
+<h3>Steps</h3><div class="scroll"><table><thead><tr><th>Step</th><th>Model</th><th>Calls</th><th>Failed</th><th>p50</th><th>p95</th><th>Tokens in / out</th><th>Searches</th><th>Cost</th></tr></thead><tbody><tr><td>generate</td><td>gemini-3.5-flash-lite</td><td>5</td><td>0</td><td>10.5 s</td><td>13.9 s</td><td>6,334 / 16,065</td><td>–</td><td>$0.000</td></tr><tr><td>verify</td><td>gemini-3.6-flash</td><td>5</td><td><span class="bad">rate_limited ×5</span></td><td>0.0 s</td><td>0.0 s</td><td>0 / 0</td><td>–</td><td>$0.000</td></tr><tr><td>embed</td><td>gemini-embedding-2</td><td>5</td><td>0</td><td>0.4 s</td><td>0.5 s</td><td>1,963 / 0</td><td>–</td><td>$0.000</td></tr></tbody></table></div>
+<div class="scroll"><h3>By lane</h3><table><thead><tr><th></th><th>Drafted</th><th>Valid</th><th>Verified</th><th>Unique</th><th>Safe</th><th>Accepted</th></tr></thead><tbody><tr><td>Afrobeats</td><td>9</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>Nollywood</td><td>9</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>Naija football</td><td>9</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>General knowledge</td><td>8</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>From a file</td><td>9</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr></tbody></table></div>
+<div class="scroll"><h3>By difficulty</h3><table><thead><tr><th></th><th>Drafted</th><th>Valid</th><th>Verified</th><th>Unique</th><th>Safe</th><th>Accepted</th></tr></thead><tbody><tr><td>mixed</td><td>44</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr></tbody></table></div>
+<div class="scroll"><h3>By format</h3><table><thead><tr><th></th><th>Drafted</th><th>Valid</th><th>Verified</th><th>Unique</th><th>Safe</th><th>Accepted</th></tr></thead><tbody><tr><td>pick_one</td><td>11</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>pick_all</td><td>9</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>order</td><td>10</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>match</td><td>10</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr><tr><td>picture</td><td>4</td><td>100%</td><td>0%</td><td>–</td><td>–</td><td><b>0</b> (0%)</td></tr></tbody></table></div>
+<h3>Sets</h3><div class="scroll"><table><thead><tr><th>Set</th><th>Accepted</th><th>Drafted</th><th>Time</th><th>Unavailable</th></tr></thead><tbody><tr><td>Afrobeats · mixed</td><td>0/3</td><td>9</td><td>9 s</td><td><span class="bad">verify</span></td></tr><tr><td>Nollywood · mixed</td><td>0/3</td><td>9</td><td>15 s</td><td><span class="bad">verify</span></td></tr><tr><td>Naija football · mixed</td><td>0/3</td><td>9</td><td>5 s</td><td><span class="bad">verify</span></td></tr><tr><td>General knowledge · mixed</td><td>0/3</td><td>8</td><td>11 s</td><td><span class="bad">verify</span></td></tr><tr><td>Sample PDF · mixed</td><td>0/3</td><td>9</td><td>14 s</td><td><span class="bad">verify</span></td></tr></tbody></table></div>
+<section><h2>Afrobeats · mixed</h2><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Which Nigerian artist released the globally acclaimed 2019 album &#39;African Giant&#39;?</div>
+<ul class="opts"><li class="">Olamide</li><li class="">Davido</li><li class="">Wizkid</li><li class="right">Burna Boy ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>African Giant cemented Burna Boy&#39;s international status and earned a Grammy nomination.</dd>
+<dt>Claim</dt><dd>Burna Boy released the album African Giant in 2019.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.917 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Which Wizkid hit song received a major international boost when Canadian rapper Drake remixed it in 2015?</div>
+<ul class="opts"><li class="right">Ojuelegba ✓</li><li class="">Holla At Your Boy</li><li class="">Tease Me</li><li class="">Pakurumo</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The international remix of Ojuelegba introduced many global listeners to modern Afrobeats.</dd>
+<dt>Claim</dt><dd>Drake remixed Wizkid&#39;s hit song Ojuelegba in 2015.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.883 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these are Nigerian musicians known for major global Afrobeats hits? (Pick all that apply)</div>
+<ul class="opts"><li class="">Sauti Sol</li><li class="right">Asake ✓</li><li class="right">Tiwa Savage ✓</li><li class="right">Yemi Alade ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These artists have all played significant roles in pushing Nigerian music onto the global stage.</dd>
+<dt>Claim</dt><dd>Tiwa Savage, Yemi Alade, and Asake are prominent Nigerian Afrobeats musicians.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.874 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these albums won or were nominated for the Grammy Award for Best Global Music Album? (Pick all that apply)</div>
+<ul class="opts"><li class="right">Twice As Tall ✓</li><li class="right">Made in Lagos ✓</li><li class="">Omo Baba Olowo</li><li class="right">African Giant ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Burna Boy and Wizkid brought massive Grammy recognition to the Afrobeats genre with these landmark projects.</dd>
+<dt>Claim</dt><dd>Twice As Tall, African Giant, and Made in Lagos received Grammy nominations or wins for Best Global Music Album.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.865 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these milestone Afrobeats album release years in order, starting with the earliest first.</div>
+<p class="meta">Shown: Superstar by Wizkid (2011) · The Entertainer by Dbanj (2008) · Omo Baba Olowo by Davido (2012) · African Giant by Burna Boy (2019)</p><ul class="opts"><li class="right">The Entertainer by Dbanj (2008)</li><li class="right">Superstar by Wizkid (2011)</li><li class="right">Omo Baba Olowo by Davido (2012)</li><li class="right">African Giant by Burna Boy (2019)</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These albums trace the steady global rise of Nigerian pop music from the late 2000s onwards.</dd>
+<dt>Claim</dt><dd>Dbanj released The Entertainer in 2008, Wizkid released Superstar in 2011, Davido released Omo Baba Olowo in 2012, and Burna Boy released African Giant in 2019.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.860 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these international Afrobeats chart-topping songs in order of their release year, earliest first.</div>
+<p class="meta">Shown: Calm Down (2022) · Fall (2017) · Ojuelegba (2014) · Oliver Twist (2012)</p><ul class="opts"><li class="right">Oliver Twist (2012)</li><li class="right">Ojuelegba (2014)</li><li class="right">Fall (2017)</li><li class="right">Calm Down (2022)</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These tracks marked successive waves of global crossover success for Nigerian music over the decades.</dd>
+<dt>Claim</dt><dd>Oliver Twist was released in 2012, Ojuelegba in 2014, Fall in 2017, and Calm Down in 2022.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.860 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Afrobeats artist to their breakthrough or signature hit album.</div>
+<ul class="opts"><li class="right">Wizkid → Superstar</li><li class="right">Davido → Omo Baba Olowo</li><li class="right">Asake → Mr. Money With The Vibe</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Each of these albums became a definitive milestone for the respective artist&#39;s career.</dd>
+<dt>Claim</dt><dd>Artists are matched with their defining albums.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.920 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Nigerian music star to their popular record label or imprint.</div>
+<ul class="opts"><li class="right">Olamide → YBNL Nation</li><li class="right">Don Jazzy → Mavin Records</li><li class="right">Davido → DMW</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Record labels have served as powerful launchpads for Nigerian artists taking their sound worldwide.</dd>
+<dt>Claim</dt><dd>Artists are linked to the labels or imprints they founded or are famously associated with.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.887 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">picture</span><span class="tag">mixed</span></header>
+<div class="qt">Located in Iganmu, Lagos, this iconic cultural landmark has hosted major music and arts events that shaped Nigerian entertainment history. What is it?</div><div class="img">Picture: A large round building with a sloping roof shaped like a military cap <span class="meta">(pool/national-theatre.jpg)</span></div>
+<ul class="opts"><li class="">Tafawa Balewa Square</li><li class="">National Stadium</li><li class="">City Hall Lagos</li><li class="right">National Theatre ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The National Theatre is a historic hub for Nigerian arts, culture, and musical performances.</dd>
+<dt>Claim</dt><dd>The National Theatre in Iganmu, Lagos is a major Nigerian cultural landmark.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.896 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article></section><section><h2>Nollywood · mixed</h2><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Which 1992 home-video release is widely credited with launching the modern Nollywood boom?</div>
+<ul class="opts"><li class="">Igodo</li><li class="right">Living in Bondage ✓</li><li class="">Omo Ghetto</li><li class="">Rattlesnake</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Directed by Chris Obi Rapu, this classic movie set the stage for Nigeria&#39;s booming film industry.</dd>
+<dt>Claim</dt><dd>Living in Bondage was released in 1992 and is widely credited with launching the modern Nollywood home-video era.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.830 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Who directed the acclaimed 2009 award-winning movie The Figurine?</div>
+<ul class="opts"><li class="right">Kunle Afolayan ✓</li><li class="">Amaka Igwe</li><li class="">Kemi Adetiba</li><li class="">Tunde Kelani</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The Figurine won multiple Africa Movie Academy Awards and brought high production value to cinemas.</dd>
+<dt>Claim</dt><dd>Kunle Afolayan directed the 2009 award-winning film The Figurine.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.821 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these films were released during the 1990s era of Nollywood? (Select all that apply)</div>
+<ul class="opts"><li class="right">Glamour Girls ✓</li><li class="right">Living in Bondage ✓</li><li class="">The Wedding Party</li><li class="right">Rattlesnake ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These titles defined the early boom of the home-video market before the modern cinema revival.</dd>
+<dt>Claim</dt><dd>Living in Bondage, Rattlesnake, and Glamour Girls were all prominent Nigerian home-video films released in the 1990s.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.809 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these well-known Nollywood personalities are primarily recognized as actors rather than major film directors? (Select all that apply)</div>
+<ul class="opts"><li class="">Kemi Adetiba</li><li class="">Kunle Afolayan</li><li class="right">Jim Iyke ✓</li><li class="right">Richard Mofe-Damijo ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>While many actors occasionally direct, RMD and Jim Iyke are most famous for their acting careers.</dd>
+<dt>Claim</dt><dd>Richard Mofe-Damijo and Jim Iyke are primarily known as veteran Nollywood actors.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.816 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these milestone Nollywood films in order of their original release, earliest first.</div>
+<p class="meta">Shown: Rattlesnake · The Wedding Party · Living in Bondage · The Figurine</p><ul class="opts"><li class="right">Living in Bondage</li><li class="right">Rattlesnake</li><li class="right">The Figurine</li><li class="right">The Wedding Party</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Tracing Nollywood history shows a clear timeline from early home-videos to modern box-office smashes.</dd>
+<dt>Claim</dt><dd>Living in Bondage was released in 1992, Rattlesnake in 1995, The Figurine in 2009, and The Wedding Party in 2016.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.826 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these prominent Nigerian actors in order of their birth year, earliest first.</div>
+<p class="meta">Shown: Richard Mofe-Damijo · Ramsey Nouah · Pete Edochie · Olu Jacobs</p><ul class="opts"><li class="right">Olu Jacobs</li><li class="right">Pete Edochie</li><li class="right">Richard Mofe-Damijo</li><li class="right">Ramsey Nouah</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These veteran actors span multiple generations of iconic Nollywood storytelling.</dd>
+<dt>Claim</dt><dd>Olu Jacobs was born in 1942, Pete Edochie in 1947, Richard Mofe-Damijo in 1961, and Ramsey Nouah in 1970.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.865 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Nollywood actor to the iconic movie they starred in.</div>
+<ul class="opts"><li class="right">Richard Mofe-Damijo → Out of Bounds</li><li class="right">Ramsey Nouah → Dangerous Twins</li><li class="right">Nkem Owoh → Osuofia in London</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These classic films highlighted the exceptional talent of these leading men.</dd>
+<dt>Claim</dt><dd>Richard Mofe-Damijo starred in Out of Bounds, Ramsey Nouah in Dangerous Twins, and Nkem Owoh in Osuofia in London.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.829 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Nollywood film to its notable director.</div>
+<ul class="opts"><li class="right">The Figurine → Kunle Afolayan</li><li class="right">King of Boys → Kemi Adetiba</li><li class="right">Living in Bondage → Chris Obi Rapu</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Brilliant direction is at the heart of these unforgettable Nigerian films.</dd>
+<dt>Claim</dt><dd>The Figurine was directed by Kunle Afolayan, King of Boys by Kemi Adetiba, and Living in Bondage by Chris Obi Rapu.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.847 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">picture</span><span class="tag">mixed</span></header>
+<div class="qt">This iconic Lagos landmark, shaped like a military cap, has hosted major cultural events and Nollywood premieres. What is it?</div><div class="img">Picture: A large round building with a sloping roof shaped like a military cap <span class="meta">(pool/national-theatre.jpg)</span></div>
+<ul class="opts"><li class="">National Stadium</li><li class="">City Hall</li><li class="">Tafawa Balewa Square</li><li class="right">National Theatre ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Built in 1976 for the FESTAC festival, it remains an important symbol of Nigerian creative heritage.</dd>
+<dt>Claim</dt><dd>The National Theatre located in Iganmu, Lagos, is a famous landmark often associated with Nigerian arts and culture.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.910 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article></section><section><h2>Naija football · mixed</h2><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Which Nigerian player won the African Women&#39;s Footballer of the Year award a record eleven times?</div>
+<ul class="opts"><li class="">Florence Omagbemi</li><li class="">Perpetua Nkwocha</li><li class="right">Asisat Oshoala ✓</li><li class="">Desire Oparanozie</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Asisat Oshoala is widely celebrated as one of Africa&#39;s greatest female footballers ever.</dd>
+<dt>Claim</dt><dd>Asisat Oshoala won the African Women&#39;s Footballer of the Year award a record eleven times.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.849 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">In which year did the Super Eagles win their third Africa Cup of Nations title in South Africa?</div>
+<ul class="opts"><li class="">2006</li><li class="">2010</li><li class="right">2013 ✓</li><li class="">2015</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Sunday Mba scored the memorable winning goal in the final against Burkina Faso.</dd>
+<dt>Claim</dt><dd>Nigeria won the 2013 Africa Cup of Nations tournament hosted in South Africa.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.942 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these Nigerian players have won the prestigious CAF African Footballer of the Year award for men?</div>
+<ul class="opts"><li class="right">Rashidi Yekini ✓</li><li class="right">Nwankwo Kanu ✓</li><li class="right">Victor Osimhen ✓</li><li class="">Jay-Jay Okocha</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These legendary strikers and midfielders brought immense glory to Nigerian football.</dd>
+<dt>Claim</dt><dd>Nwankwo Kanu, Victor Osimhen, and Rashidi Yekini won the CAF African Footballer of the Year award.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.866 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these cities have hosted matches for the Nigeria Premier Football League (NPFL)?</div>
+<ul class="opts"><li class="right">Enugu ✓</li><li class="">London</li><li class="right">Kano ✓</li><li class="right">Aba ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Enyimba, Rangers, and Kano Pillars play their home games in these vibrant football cities.</dd>
+<dt>Claim</dt><dd>Aba, Enugu, and Kano have hosted NPFL matches.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.871 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these Nigerian men&#39;s national team AFCON tournament victory years in chronological order, earliest first.</div>
+<p class="meta">Shown: 2023 · 1980 · 2013 · 1994</p><ul class="opts"><li class="right">1980</li><li class="right">1994</li><li class="right">2013</li><li class="right">2023</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Nigeria&#39;s continental triumphs span across decades of fantastic football history.</dd>
+<dt>Claim</dt><dd>Nigeria won AFCON titles in 1980, 1994, and 2013 in that chronological order.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.926 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Order these Nigerian football achievements by when they happened, earliest first.</div>
+<p class="meta">Shown: 1994 · 1996 · 2014 · 1985</p><ul class="opts"><li class="right">1985</li><li class="right">1994</li><li class="right">1996</li><li class="right">2014</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Nigeria&#39;s golden generation achieved historic milestones on the global stage.</dd>
+<dt>Claim</dt><dd>Nigeria won the U-17 World Cup in 1985, won Olympic gold in 1996, and reached the World Cup Round of 16 in 1994.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.902 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Nigerian football icon to the famous club they played for in Europe.</div>
+<ul class="opts"><li class="right">Nwankwo Kanu → Arsenal</li><li class="right">Jay-Jay Okocha → Bolton Wanderers</li><li class="right">John Mikel Obi → Chelsea</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These Super Eagles stars enjoyed legendary careers in top European leagues.</dd>
+<dt>Claim</dt><dd>Nwankwo Kanu played for Arsenal, Jay-Jay Okocha played for Bolton Wanderers, and John Mikel Obi played for Chelsea.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.845 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Super Falcons star to the position they were known for playing.</div>
+<ul class="opts"><li class="right">Asisat Oshoala → Forward</li><li class="right">Rita Nwadike → Midfielder</li><li class="right">Onome Ebi → Defender</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The Super Falcons dominated African women&#39;s football through exceptional teamwork across all positions.</dd>
+<dt>Claim</dt><dd>Ngozi Ezeamaisi, Perpetua Nkwocha, and Florence Omagbemi played specific roles for the Super Falcons.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.855 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">picture</span><span class="tag">mixed</span></header>
+<div class="qt">This famous outline map represents Nigeria, a nation passionately devoted to football. What is the capital city located within this country?</div><div class="img">Picture: The borders of a West African country, roughly square with a southern coastline <span class="meta">(pool/nigeria-outline.jpg)</span></div>
+<ul class="opts"><li class="">Port Harcourt</li><li class="">Kano</li><li class="right">Abuja ✓</li><li class="">Lagos</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Abuja serves as the political capital and home to the headquarters of the Nigeria Football Federation.</dd>
+<dt>Claim</dt><dd>Abuja is the capital city of Nigeria.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.901 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article></section><section><h2>General knowledge · mixed</h2><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Which Nigerian city is famously known as the Garden City?</div>
+<ul class="opts"><li class="right">Port Harcourt ✓</li><li class="">Calabar</li><li class="">Ibadan</li><li class="">Enugu</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Port Harcourt earned this name due to its many green spaces and palm trees.</dd>
+<dt>Claim</dt><dd>Port Harcourt is famously known as the Garden City of Nigeria.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.911 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">What is the primary traditional fabric used to make Aso Oke?</div>
+<ul class="opts"><li class="">Imported silk</li><li class="right">Hand-woven cloth ✓</li><li class="">Printed cotton</li><li class="">Synthetic lace</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>It is traditionally worn for major celebrations like weddings and coronations.</dd>
+<dt>Claim</dt><dd>Aso Oke is a hand-woven cloth made by the Yoruba people.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.840 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these languages are among the major native languages widely spoken in Nigeria? (Pick all that apply)</div>
+<ul class="opts"><li class="right">Yoruba ✓</li><li class="">Swahili</li><li class="right">Hausa ✓</li><li class="right">Igbo ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Swahili is spoken in East and Central Africa, not natively in Nigeria.</dd>
+<dt>Claim</dt><dd>Yoruba, Igbo, and Hausa are the three major native languages widely spoken in Nigeria.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.922 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these major milestones in Nigerian history in order, earliest first:</div>
+<p class="meta">Shown: Creation of 36 states (1996) · Creation of 12 states (1967) · Amalgamation of Nigeria (1914) · Nigeria gained independence (1960)</p><ul class="opts"><li class="right">Amalgamation of Nigeria (1914)</li><li class="right">Nigeria gained independence (1960)</li><li class="right">Creation of 12 states (1967)</li><li class="right">Creation of 36 states (1996)</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Nigerian history progressed from colonial amalgamation through independence to the gradual creation of more states.</dd>
+<dt>Claim</dt><dd>The amalgamation took place in 1914, independence in 1960, 12 states in 1967, and 36 states in 1996.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.922 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these Nigerian rivers in order of their approximate length, longest first:</div>
+<p class="meta">Shown: River Benue · River Niger · River Ogun · River Kaduna</p><ul class="opts"><li class="right">River Niger</li><li class="right">River Benue</li><li class="right">River Kaduna</li><li class="right">River Ogun</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The Niger and Benue are Nigeria&#39;s two massive main river systems, with major tributaries like the Kaduna.</dd>
+<dt>Claim</dt><dd>The River Niger is the longest, followed by the Benue, Kaduna, and Ogun rivers.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.917 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Nigerian landmark to the state or territory where it is located:</div>
+<ul class="opts"><li class="right">Zuma Rock → Niger State</li><li class="right">Olumo Rock → Ogun State</li><li class="right">Aso Rock → Abuja (FCT)</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Each of these famous geological formations is situated in its respective location.</dd>
+<dt>Claim</dt><dd>Zuma Rock is in Niger State, Olumo Rock is in Ogun State, and Aso Rock is in the FCT.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.972 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the traditional Nigerian soup to its main base ingredient:</div>
+<ul class="opts"><li class="right">Egusi soup → Melon seeds</li><li class="right">Efo Riro → Spinach or leafy greens</li><li class="right">Banga soup → Palm fruit</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These distinct bases give each classic Nigerian soup its unique flavor and texture.</dd>
+<dt>Claim</dt><dd>Egusi soup uses melon seeds, Efo Riro uses leafy greens, and Banga soup uses palm fruit extract.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.927 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">picture</span><span class="tag">mixed</span></header>
+<div class="qt">Which famous Nigerian landmark is shown in this image?</div><div class="img">Picture: A huge single dome-shaped rock rising out of flat green countryside <span class="meta">(pool/zuma-rock.jpg)</span></div>
+<ul class="opts"><li class="">Olumo Rock</li><li class="">Idanre Hills</li><li class="">Aso Rock</li><li class="right">Zuma Rock ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>It features a natural human-like face contour on its side and is a prominent national symbol.</dd>
+<dt>Claim</dt><dd>Zuma Rock is a large monolith located in Niger State just outside Abuja.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>0.976 similarity</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite</dd>
+</dl></article></section><section><h2>Sample PDF · mixed</h2><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Which year did the Third Mainland Bridge open?</div>
+<ul class="opts"><li class="">1901</li><li class="right">1990 ✓</li><li class="">2013</li><li class="">1975</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The Third Mainland Bridge opened in 1990 and connects Oworonshoki to Lagos Island.</dd>
+<dt>Claim</dt><dd>The Third Mainland Bridge was opened in 1990.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Who was the first Carter Bridge named after?</div>
+<ul class="opts"><li class="right">Sir Gilbert Carter ✓</li><li class="">Sir Adeniji Adele</li><li class="">Sir Oworonshoki</li><li class="">Sir Julius Berger</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>It was named after Sir Gilbert Carter, governor of the Lagos Colony in the 1890s.</dd>
+<dt>Claim</dt><dd>The first Carter Bridge was named after Sir Gilbert Carter, who was governor of the Lagos Colony in the 1890s.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick one</span><span class="tag">mixed</span></header>
+<div class="qt">Which company built the Third Mainland Bridge?</div>
+<ul class="opts"><li class="right">Julius Berger ✓</li><li class="">Berger Construction</li><li class="">Julius Bridge</li><li class="">German Lagos Company</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The German firm Julius Berger built the bridge, which was for many years the longest in Africa.</dd>
+<dt>Claim</dt><dd>The Third Mainland Bridge was built by the German firm Julius Berger.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these are true about the Third Mainland Bridge?</div>
+<ul class="opts"><li class="">It charges a toll for cars</li><li class="">It is the first cable-stayed bridge in Nigeria</li><li class="right">It was built by the German firm Julius Berger ✓</li><li class="right">It was opened in 1990 ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The Third Mainland Bridge opened in 1990 and was built by Julius Berger, unlike the Lekki-Ikoyi bridge which is cable-stayed and tolled.</dd>
+<dt>Claim</dt><dd>The Third Mainland Bridge opened in 1990 and was built by Julius Berger.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">pick all</span><span class="tag">mixed</span></header>
+<div class="qt">Which of these locations are connected by bridges mentioned in the text?</div>
+<ul class="opts"><li class="right">Ebute Metta ✓</li><li class="right">Lagos Island ✓</li><li class="">Badore</li><li class="right">Ikoyi ✓</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Lagos Island, Ikoyi, and Ebute Metta are all linked by bridges like Carter, Eko, Third Mainland, and Lekki-Ikoyi.</dd>
+<dt>Claim</dt><dd>Bridges in the text connect Lagos Island, Ebute Metta, Ikoyi, and other locations.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these Lagos bridges in order of their opening or completion year, earliest first.</div>
+<p class="meta">Shown: Third Mainland Bridge · First Carter Bridge · Lekki-Ikoyi Link Bridge · Eko Bridge</p><ul class="opts"><li class="right">First Carter Bridge</li><li class="right">Eko Bridge</li><li class="right">Third Mainland Bridge</li><li class="right">Lekki-Ikoyi Link Bridge</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>The Carter Bridge was the earliest (1901), followed by Eko (1975), Third Mainland (1990), and Lekki-Ikoyi (2013).</dd>
+<dt>Claim</dt><dd>The Carter Bridge opened in 1901, Eko Bridge in 1975, Third Mainland Bridge in 1990, and Lekki-Ikoyi Link Bridge in 2013.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">order</span><span class="tag">mixed</span></header>
+<div class="qt">Put these historical events in Lagos bridge history in order, earliest first.</div>
+<p class="meta">Shown: Eko Bridge was completed · Sir Gilbert Carter served as governor of the Lagos Colony · The first Carter Bridge was opened · The Third Mainland Bridge was opened</p><ul class="opts"><li class="right">Sir Gilbert Carter served as governor of the Lagos Colony</li><li class="right">The first Carter Bridge was opened</li><li class="right">Eko Bridge was completed</li><li class="right">The Third Mainland Bridge was opened</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These historical milestones occurred from the 1890s through 1990.</dd>
+<dt>Claim</dt><dd>Sir Gilbert Carter served in the 1890s, the first Carter Bridge opened in 1901, Eko Bridge in 1975, and Third Mainland Bridge in 1990.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Lagos bridge to its opening or completion year.</div>
+<ul class="opts"><li class="right">First Carter Bridge → 1901</li><li class="right">Eko Bridge → 1975</li><li class="right">Third Mainland Bridge → 1990</li><li class="right">Lekki-Ikoyi Link Bridge → 2013</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>Each bridge opened in a different year as recorded in Lagos history.</dd>
+<dt>Claim</dt><dd>First Carter Bridge opened in 1901, Eko Bridge in 1975, Third Mainland Bridge in 1990, and Lekki-Ikoyi Link Bridge in 2013.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article><article class="q"><header><span class="tag bad out">Failed verification</span><span class="tag">match</span><span class="tag">mixed</span></header>
+<div class="qt">Match the Lagos bridge to its description.</div>
+<ul class="opts"><li class="right">Lekki-Ikoyi Link Bridge → First cable-stayed bridge in Nigeria</li><li class="right">Third Mainland Bridge → Built by the German firm Julius Berger</li><li class="right">Eko Bridge → Served the port at Apapa</li><li class="right">First Carter Bridge → Named after a colonial governor</li></ul>
+<dl class="kv">
+<dt>Explanation</dt><dd>These key facts define each of the major Lagos bridges.</dd>
+<dt>Claim</dt><dd>Each bridge has unique features, such as Lekki-Ikoyi being a cable-stayed bridge and Third Mainland built by Julius Berger.</dd>
+<dt>Verdict</dt><dd class="warn">unverifiable — verifier unavailable (rate_limited)</dd>
+<dt>Sources</dt><dd>–</dd>
+<dt>Safety</dt><dd class="good">passed <span class="meta">(terms)</span></dd>
+<dt>Nearest</dt><dd>–</dd>
+<dt>Written by</dt><dd>gemini gemini-3.5-flash-lite · cites sample-chunk-0</dd>
+</dl></article></section>
+</main></body></html>

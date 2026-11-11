@@ -16,7 +16,8 @@ type Conn = Tx | typeof db;
  * layered over the defaults, so a key added to a schema later takes its default until an admin
  * sets it, and existing admin edits survive.
  */
-function configEntry<T extends object>(key: string, schema: z.ZodType<T>, fallback: T) {
+// The schema's input may differ from T (a field with a default is optional going in); T is what reads return.
+function configEntry<T extends object>(key: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>, fallback: T) {
   return {
     /** Pass a transaction to read (or write) as part of it, e.g. with the admin log entry for the change. */
     async get(conn: Conn = db): Promise<T> {

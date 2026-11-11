@@ -1,5 +1,5 @@
 /**
- * The Gemini embedder (ADR 0016): EMBEDDING_DIM-wide vectors, one call per batch of texts, unit-normalised
+ * The Gemini embedder (ADR 0016): EMBEDDING_DIM-wide vectors, one call per batch of texts (a set's drafts), unit-normalised
  * here too so the dot product is the cosine whatever the model returns. gemini-embedding-2 takes its task as a
  * prompt prefix; every text gets the same one, so a question, a spec and a chunk land in one comparable space.
  */
@@ -7,8 +7,11 @@ import { geminiEmbed, providerCall, type CallDeps, type GeminiClient } from "@co
 import { EMBEDDING_DIM, type CallTier, type PricedModel } from "@contestly/shared";
 import type { Embedder } from "../types.js";
 
-/** Texts per call (each is its own request underneath; this bounds how many go at once). */
-export const EMBED_BATCH = 16;
+/**
+ * Texts per call: a set's drafts, or a re-embed batch, are one call (one provider_calls row). Underneath, each text
+ * is its own embedContent request, since the model's batch endpoint is async-only; this bounds how many go at once.
+ */
+export const EMBED_BATCH = 64;
 const TASK_PREFIX = "task: clustering | query: ";
 
 export interface GeminiEmbedderDeps {

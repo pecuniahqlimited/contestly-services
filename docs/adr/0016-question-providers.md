@@ -4,7 +4,8 @@ Status: accepted (7 Nov 2026), amended twice the same day: verification and the 
 ("Same-vendor verification"), then nothing in dev or testing pays at all: three profiles, mock by default,
 a free Gemini-only profile, and the Claude setup as the paid profile, off unless a paid cap is set
 ("Profiles"); amended 9 Nov 2026 to cut the free profile's calls per set ("Free-tier call volume", agreed,
-not built). Closes open question
+not built), and 11 Nov 2026 to cut every profile's calls per set instead ("Calls per set", built; it replaces
+the 9 Nov amendment and roadmap row 0a). Closes open question
 2's provider half. Model ids and prices checked against the providers' own docs and model lists on 7 Nov 2026.
 
 ## Context
@@ -84,7 +85,7 @@ price lives; the admin's model pickers can only choose priced models, so every c
 is per process and per provider+step: five consecutive failures open it for 60 s, then one trial call.
 Keys go in headers, never URLs, and never into logs or errors.
 
-**Generation.** One structured-output call per batch of questions of one format, each format with its own
+**Generation.** (Since 11 Nov: one call per set, every format in it; see "Calls per set".) One structured-output call per batch of questions of one format, each format with its own
 template (pick one, pick all, order, match, picture): the instructions, a JSON schema, and a mapper to the
 game payload. The model gives the answer and the distractors separately and we place the answer and shuffle
 (seeded by the question text), so position bias can't leak. The prompt carries every rule from CLAUDE.md's
@@ -103,7 +104,7 @@ generator is asked for no more pictures than the room left, and its pictures ove
 image are dropped before verification, so none is paid for. The `Generator` interface stays general: the client underneath is a plain
 "structured call" so the templates branch's `distract()` is a template and a method, not a new client.
 
-**Verification.** A separate call per question, never the generator's call and never the generator's model
+**Verification.** (Since 11 Nov: one call per batch of questions, matched by id; see "Calls per set".) A separate call per question, never the generator's call and never the generator's model
 (the config refuses `verify` equal to `generate`), with nothing from generation but the question: one user
 turn holding the answer key, the claim and the explanation. Verdict
 `correct | incorrect | ambiguous | unverifiable`, the answer as found, and the sources (URL and title) stored
@@ -181,7 +182,7 @@ it's revisited. **Revisit before launch (row 12):** with Gemini billing on, swit
 verify and safety to the Gemini models in the console and compare `npm run questions:eval` reports from both
 setups; keep same-vendor verification only if the eval shows it catches as much.
 
-## Free-tier call volume (amendment, 9 Nov 2026; agreed, not built: roadmap row 0a)
+## Free-tier call volume (amendment, 9 Nov 2026; replaced on 11 Nov by "Calls per set", below)
 
 Staging on the free profile hits Gemini 429s. Counted from the code (`pipeline/fill.ts`, `pipeline/judge.ts`,
 `providers/drafting/generator.ts`): the spec is plain code; a fill embeds the spec (1 request), asks the
@@ -228,6 +229,59 @@ anyway, and its gate is for the dev bank only, so the trade is acceptable there.
 `npm run questions:eval -- --free --small` before and after; the rejection rate and the share of
 `incorrect`/`ambiguous` verdicts shouldn't move by more than noise.
 
+## Calls per set (amendment, 11 Nov 2026; built; replaces "Free-tier call volume" and roadmap row 0a)
+
+The 9 Nov amendment batched verification on the free profile only. Every profile now makes the same few calls
+per set, because the saving matters on paid too (each per-question call repeats the system prompt and the
+instructions, and each format had its own generation call) and one code path is easier to trust than two.
+
+**Decision, every profile (mock, free, paid):**
+
+1. **Generation: one call per set.** All the set's formats in one structured-output call: `questions` holds a
+   list per format, each item that format's own schema, the count spread across formats as before
+   (`planShares`, the picture cap included). The first round asks for the gap plus `QUALITY_BUFFER` (6, every
+   profile); a second round, if any, asks only for the gap left. A failed call leaves the generator
+   unavailable for the round, so the set falls back to the bank (before: a failed format's batch was skipped).
+2. **Verification: one call per batch** of up to `questions.providers.verifyBatchSize` questions (admin config,
+   default 10, at most 20), from a different model than the generator: with web search on paid, from the
+   model's knowledge on free. Inside a batch the order is shuffled (seeded by the claims, so a replay is the
+   same) and each question carries an id; the reply is one verdict per id: the verdict, the answer found, a
+   note, and on paid the sources behind it. A missing, repeated, malformed or unsourced verdict fails only that
+   question closed (`unverifiable`); a reply with no verdict list, or that the call path calls malformed or
+   refused, fails only its batch closed; an id that isn't in the batch is ignored. Any other unavailability
+   (budget, quota, a circuit open) still stops verification for the fill. Sources stay per question: Claude
+   names each verdict's URLs and only results it was shown count; Gemini's grounding supports are mapped to
+   the part of the reply each verdict occupies. The cache stays per question, in front of the batching, so a
+   question already verified is never sent again. Claude gets 3 searches per open question in the batch.
+3. **Safety: one call per set** (as before).
+4. **Embeddings: one call per set**, and one per re-embed batch (`EMBED_BATCH` 64). Underneath, each text is
+   still its own `embedContent` request (gemini-embedding-2's batch endpoint is async-only), so the free
+   tier's per-request quota is counted the same.
+5. **Budgets and logging.** The per-party and daily caps are unchanged. Each questions job logs its calls,
+   tokens and cost in one line (`[questions] generate_set <party>: AI 4 calls (generate 1, verify 1, safety 1,
+   embed 1), … tokens, $…`; a tally in the call context), next to the per-call `provider_calls` rows. The eval
+   reports calls per set and what the run would cost on the paid profile, from its tokens.
+
+**Calls per set.** A 10-question party with 2 reserves wants 12 and drafts 18: 1 generate + 2 verify + 1
+safety + 1 embed = 5 calls a round (before: 3–5 generate, 18 verify, 1 safety, 2 embed: about 25). The eval's
+small set (3 wanted, 9 drafts) is 4 a round.
+
+**Evidence (11 Nov 2026, `npm run questions:eval -- --free --small`, the same five set definitions both sides;
+Gemini takes no seed here, so drafts differ run to run).** Before: 62 calls for 5 sets (12.4 a set: 24
+generate, 28 verify, 5 safety, 5 embed); 11 of 44 drafts accepted; the verifier answered 18 and rejected 7
+(39%); 26 were never checked, because gemini-3.6-flash hit Google's free daily quota after about 20 requests
+(its `rpd` in `FREE_TIER_LIMITS` was a guess of 200; now 20). After: 5 generate calls for the same 44 drafts
+(19.9k → 6.3k input and 34.5k → 16.1k output tokens; priced as the paid profile's Sonnet 5.5, $0.38 → $0.17),
+and every verify call refused by the spent quota, so **the rejection-rate comparison is still to run** once the
+quota resets (midnight Pacific). Reports: `docs/engineering/eval/questions-eval-2026-11-11-free-small-before-
+batching.*` and `…-free-small.*`.
+
+**Trade-off.** Under Alternatives, batch verification was declined because one bad question can colour the
+others' verdicts and sources stop being per question. Shuffling and ids keep position from meaning anything,
+sources are required and kept per verdict on paid, every defect fails only its own question, and the eval is
+the check that rejections don't rise; if they do on paid, `verifyBatchSize: 1` restores one call per question
+from the console, with no deploy.
+
 ## Alternatives considered
 
 - **Claude for everything.** One vendor, one bill, but the verifier would share the generator's blind spots.
@@ -239,8 +293,9 @@ anyway, and its gate is for the dev bank only, so the trade is acceptable there.
   is the wrong direction for the one independent check. Either is a console switch if cost matters more.
 - **Opus 5.5 to generate.** Better on paper; twice the price on the step that's re-checked anyway. Kept as a
   config switch.
-- **One verification call per batch.** Cheaper, but one bad question can colour the others' verdicts and the
-  sources stop being per question. Per question, cached.
+- **One verification call per batch.** Declined on 7 Nov (one bad question can colour the others' verdicts,
+  and sources stop being per question); adopted on 11 Nov with shuffled ids, per-verdict sources and
+  per-question fail-closed ("Calls per set"), the batch size an admin setting.
 - **gemini-embedding-001 / 3072 dimensions.** 001 needs manual normalisation below 3072; 3072 can't use HNSW.
 - **Vendor SDKs everywhere.** Anthropic's TypeScript SDK is used (typed errors, structured output); Gemini is
   plain `fetch` against the REST API, which keeps the adapter small and lets the tests mock HTTP directly.

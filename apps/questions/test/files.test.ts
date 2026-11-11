@@ -1,3 +1,4 @@
+import { verifyOne } from "../src/providers/types.js";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_QUESTIONS_CONFIG, QUESTION_FORMATS } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
@@ -42,8 +43,8 @@ describe("file-sourced mock generation", () => {
   it("verifies against the cited chunk, not open knowledge", async () => {
     const [d] = draftsFromFile(sources, 1, new Set());
     const chunk = sources.find((s) => s.id === d.sourceChunkId)!;
-    expect((await mockVerifier.verify({ ...d, sourceText: chunk.text })).verdict).toBe("correct");
-    expect((await mockVerifier.verify({ ...d, sourceText: "a different chunk entirely" })).verdict).toBe("unverifiable");
+    expect((await verifyOne(mockVerifier, { ...d, sourceText: chunk.text })).verdict).toBe("correct");
+    expect((await verifyOne(mockVerifier, { ...d, sourceText: "a different chunk entirely" })).verdict).toBe("unverifiable");
   });
 
   it("marks the spec as file-scoped in the summary", () => {

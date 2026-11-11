@@ -122,6 +122,15 @@ export async function providerCall<T>(spec: CallSpec, deps: CallDeps, fn: (signa
       latencyMs: now() - started, costMicros: outcome === "ok" && tier === "paid" ? estimateCostMicros(spec.model, usage) : 0, attempts, outcome, error,
     };
     (deps.log ?? console.log)(logLine(record));
+    if (ctx.tally) {
+      const t = ctx.tally;
+      t.calls++;
+      if (outcome !== "ok") t.failed++;
+      t.byStep[spec.step] = (t.byStep[spec.step] ?? 0) + 1;
+      t.inputTokens += record.inputTokens;
+      t.outputTokens += record.outputTokens;
+      t.costMicros += record.costMicros;
+    }
     try {
       await deps.sink.record(record);
     } catch (err) {

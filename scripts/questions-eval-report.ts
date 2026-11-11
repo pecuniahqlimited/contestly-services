@@ -3,8 +3,35 @@
  * question as a card (answer, distractors, verdict, sources, safety, dedupe). One self-contained HTML page
  * that follows the reader's light or dark setting, plus a plain-text summary for the terminal.
  */
-import type { QuestionFormat } from "@contestly/shared";
+import { DEFAULT_PROVIDERS_CONFIG, estimateCostMicros, SEARCH_USD_PER_QUERY, MICRO_USD_PER_USD, type PricedModel, type ProviderStep, type QuestionFormat } from "@contestly/shared";
+import type { CallRecord } from "@contestly/ai";
 import type { EvalQuestion, EvalResult } from "./questions-eval.js";
+
+/** The paid profile's model per step (its defaults), to price a free or mock run's tokens as if paid. */
+const PAID_MODEL: Partial<Record<ProviderStep, PricedModel>> = { ...DEFAULT_PROVIDERS_CONFIG.models, embed: "gemini-embedding-2" };
+/** Searches a paid check runs per question, for runs that made none (free, mock): an assumption, the same both sides of a comparison. */
+export const ASSUMED_SEARCHES_PER_QUESTION = 2;
+
+/**
+ * What the run would have cost on the paid profile: each call's tokens at the paid model for its step, plus web
+ * searches (the run's own if it searched, else ASSUMED_SEARCHES_PER_QUESTION per question checked). Search
+ * results' own tokens aren't in a run without search, so this is a floor.
+ */
+export function paidEstimateMicros(calls: CallRecord[], questionsChecked: number): { tokens: number; searches: number } {
+  let tokens = 0;
+  let ranSearches = 0;
+  for (const c of calls) {
+    if (c.outcome !== "ok") continue;
+    const model = PAID_MODEL[c.step];
+    if (model) tokens += estimateCostMicros(model, { inputTokens: c.inputTokens, outputTokens: c.outputTokens, cachedInputTokens: c.cachedInputTokens });
+    ranSearches += c.searchQueries;
+  }
+  const queries = ranSearches || questionsChecked * ASSUMED_SEARCHES_PER_QUESTION;
+  return { tokens, searches: Math.round(queries * SEARCH_USD_PER_QUERY.anthropic * MICRO_USD_PER_USD) };
+}
+
+/** A verdict that came from the verifier, not from it being unavailable (rate limited, over budget, down). */
+export const checkedByVerifier = (q: EvalQuestion) => !!q.verify && !/verifier unavailable/.test(q.verify.note ?? "");
 
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const pct = (n: number, d: number) => (d ? `${Math.round((n / d) * 100)}%` : "–");
@@ -43,6 +70,12 @@ export function renderReport(r: EvalResult): { html: string; summary: string } {
     };
   });
   const verdicts = [...groupBy(r.questions.filter((q) => q.verify), (q) => q.verify!.verdict)].map(([k, v]) => `${k} ${v.length}`).join(" · ");
+  const checked = r.questions.filter(checkedByVerifier);
+  const notChecked = r.questions.filter((q) => q.verify && !checkedByVerifier(q)).length;
+  const checkedRejected = checked.filter((q) => q.outcome !== "accepted").length;
+  const callsPerSet = r.sets.length ? r.calls.length / r.sets.length : 0;
+  const paid = paidEstimateMicros(r.calls, checked.length);
+  const paidTotal = paid.tokens + paid.searches;
   const wallMs = Date.parse(r.finishedAt) - Date.parse(r.startedAt);
 
   const summary = [
@@ -50,6 +83,8 @@ export function renderReport(r: EvalResult): { html: string; summary: string } {
     `  shape valid ${pct(f.valid, f.drafted)} · verification ${pct(f.verified, f.valid)} (${verdicts}) · dedupe ${pct(f.unique, f.verified)} · safety ${pct(f.safe, f.unique)}`,
     ...steps.map((s) => `  ${s.step.padEnd(10)} ${String(s.calls).padStart(4)} calls ${s.failed ? `(${s.failures}) ` : ""}p50 ${(s.p50 / 1000).toFixed(1)}s p95 ${(s.p95 / 1000).toFixed(1)}s ${usd(s.costMicros, 3)}`),
     `  cost ${usd(totalMicros, 2)} total · ${usd(f.drafted ? totalMicros / f.drafted : 0)} per draft · ${usd(f.accepted ? totalMicros / f.accepted : 0)} per accepted question · ${(wallMs / 60000).toFixed(1)} min`,
+    `  ${callsPerSet.toFixed(1)} calls per set · rejected ${f.drafted - f.accepted} of ${f.drafted} (${pct(f.drafted - f.accepted, f.drafted)}); of the ${checked.length} the verifier answered, ${checkedRejected} rejected (${pct(checkedRejected, checked.length)}); ${notChecked} never checked (verifier unavailable)`,
+    `  on the paid profile (estimate from these tokens): ${usd(paidTotal, 3)} (${usd(paid.tokens, 3)} tokens + ${usd(paid.searches, 3)} searches) · ${usd(f.accepted ? paidTotal / f.accepted : 0)} per accepted question · ${usd(f.accepted ? paid.tokens / f.accepted : 0)} without searches`,
   ].join("\n");
 
   const breakdown = (title: string, key: (q: EvalQuestion) => string) => {
@@ -91,6 +126,8 @@ a{color:var(--accent)}
 <div class="kpi"><b>${pct(f.safe, f.unique)}</b><span>safety pass</span></div>
 <div class="kpi"><b>${usd(totalMicros, 2)}</b><span>total cost (${ok.length}/${r.calls.length} calls ok)</span></div>
 <div class="kpi"><b>${usd(f.accepted ? totalMicros / f.accepted : 0, 3)}</b><span>per accepted question (${usd(f.drafted ? totalMicros / f.drafted : 0, 3)} per draft)</span></div>
+<div class="kpi"><b>${callsPerSet.toFixed(1)}</b><span>provider calls per set</span></div>
+<div class="kpi"><b>${usd(f.accepted ? paidTotal / f.accepted : 0, 3)}</b><span>per accepted question on the paid profile (estimated from tokens, ${ASSUMED_SEARCHES_PER_QUESTION} searches a question)</span></div>
 </div>
 <p class="meta">Pass rates follow the gate's order: shape valid → verified correct → not a duplicate → safe → accepted. Verdicts: ${esc(verdicts)}.</p>
 <h3>Steps</h3><div class="scroll"><table><thead><tr><th>Step</th><th>Model</th><th>Calls</th><th>Failed</th><th>p50</th><th>p95</th><th>Tokens in / out</th><th>Searches</th><th>Cost</th></tr></thead><tbody>${stepRows}</tbody></table></div>

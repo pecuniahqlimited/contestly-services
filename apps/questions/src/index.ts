@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { db, parties } from "@contestly/db";
 import { makeRedis, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX, startHeartbeat } from "@contestly/queue";
 import { QUEUES, type QuestionsJob } from "@contestly/shared";
-import { ProviderUnavailable, withCallContext } from "@contestly/ai";
+import { ProviderUnavailable, describeTally, tallied, withCallContext } from "@contestly/ai";
 import { providerNames, selectProviders } from "./providers/index.js";
 import { generateSet } from "./pipeline/generateSet.js";
 import { resealForRoster } from "./pipeline/reseal.js";
@@ -80,8 +80,12 @@ async function reembed(waits: number) {
 
 const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
   const d = job.data;
-  // Every provider call this job makes is recorded against its party (budgets, the usage view) and its kind.
-  return withCallContext({ partyId: "partyId" in d ? d.partyId : null, job: d.kind }, () => run(d));
+  // Every provider call this job makes is recorded against its party (budgets, the usage view) and its kind, and
+  // counted, so each set's calls, tokens and cost are one log line.
+  const partyId = "partyId" in d ? d.partyId : null;
+  const { value, tally } = await withCallContext({ partyId, job: d.kind }, () => tallied(() => run(d)));
+  if (tally.calls) console.log(`[questions] ${d.kind}${partyId ? ` ${partyId}` : ""}: AI ${describeTally(tally)}`);
+  return value;
 }, { connection, prefix: QUEUE_PREFIX });
 
 async function run(d: QuestionsJob) {

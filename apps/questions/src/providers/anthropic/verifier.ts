@@ -1,26 +1,24 @@
 /**
- * The Claude verifier (ADR 0016; the default for dev and testing): one call per question, on a different model
- * from the generator and with nothing from the generation call but the question itself. Open-knowledge
- * questions are checked with Anthropic's web search tool; file-scoped ones against their cited chunk only,
- * with no search. Sources are the search results Claude says support its verdict, kept only if Claude was
- * actually shown them, so a remembered or invented URL never counts.
+ * The Claude verifier (ADR 0016; the default for dev and testing): one call per batch of questions, on a different
+ * model from the generator and with nothing from the generation call but the questions themselves. Open-knowledge
+ * questions are checked with Anthropic's web search tool; file-scoped ones against their cited chunk only, with no
+ * search. Each verdict's sources are the search results Claude says support it, kept only if Claude was actually
+ * shown them, so a remembered or invented URL never counts; a "correct" with none left fails closed.
  */
-import { claudeJson, providerCall, ProviderError, type CallDeps, type ClaudeClient, type SearchResultSeen } from "@contestly/ai";
-import { VERIFY_VERDICTS, type PricedModel, type VerifyVerdictKind } from "@contestly/shared";
+import { claudeJson, providerCall, type CallDeps, type ClaudeClient, type SearchResultSeen } from "@contestly/ai";
+import type { PricedModel } from "@contestly/shared";
 import type { Verifier } from "../types.js";
-import { chunkCitation, isVerdict, requireSources, VERIFY_FIELDS, VERIFY_OPEN, VERIFY_SYSTEM, verifyPrompt } from "../checks/verifyPrompt.js";
+import { chunkCitation, requireSources, VERIFY_FIELDS, VERIFY_OPEN, VERIFY_SYSTEM, verifyPrompt } from "../checks/verifyPrompt.js";
+import { matchVerdicts, shuffledBatch, verdictsSchema } from "../checks/verifyBatch.js";
 
-/** One fact rarely needs more; failed searches count too. */
-export const VERIFY_MAX_SEARCHES = 3;
-const MAX_TOKENS = 4_000;
+/** Searches a question rarely needs more than (failed searches count too); a batch gets this many per question. */
+export const VERIFY_SEARCHES_PER_QUESTION = 3;
+/** Output per question (a verdict and a few URLs), on top of a fixed allowance for thinking. */
+const TOKENS_PER_QUESTION = 400;
+const BASE_TOKENS = 4_000;
 
-const SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: { ...VERIFY_FIELDS, sourceUrls: { type: "array", items: { type: "string" } } },
-  required: ["verdict", "foundAnswer", "note", "sourceUrls"],
-};
-const SOURCES_RULE = "sourceUrls: the URLs of the search results that support your verdict, copied exactly; empty if none do.";
+const SCHEMA = verdictsSchema({ ...VERIFY_FIELDS, sourceUrls: { type: "array", items: { type: "string" } } }, ["id", "verdict", "foundAnswer", "note", "sourceUrls"]);
+const SOURCES_RULE = "sourceUrls: for each verdict, the URLs of the search results that support it, copied exactly; empty if none do.";
 
 export interface ClaudeVerifierDeps {
   client: ClaudeClient;
@@ -31,28 +29,21 @@ export interface ClaudeVerifierDeps {
 export function claudeVerifier(deps: ClaudeVerifierDeps): Verifier {
   return {
     name: "anthropic",
-    async verify(q) {
+    async verifyBatch(qs) {
+      if (!qs.length) return [];
       const model = await deps.model();
-      const fileScoped = q.sourceText !== undefined;
-      const answer = await providerCall({ provider: "anthropic", model, step: "verify" }, deps.call, async (signal) => {
-        const res = await claudeJson(deps.client, {
-          model, system: `${VERIFY_SYSTEM}\n${SOURCES_RULE}`, user: verifyPrompt(q, VERIFY_OPEN), schema: SCHEMA, maxTokens: MAX_TOKENS, effort: "low",
-          ...(fileScoped ? {} : { webSearch: { maxUses: VERIFY_MAX_SEARCHES } }),
-        }, signal);
-        const verdict = (res.value.json as { verdict?: string })?.verdict;
-        if (!isVerdict(verdict)) throw new ProviderError("malformed", `verdict "${verdict}" is not one of ${VERIFY_VERDICTS.join(", ")}`);
-        return res;
-      });
-      const out = answer.json as { verdict: VerifyVerdictKind; foundAnswer?: string; note?: string; sourceUrls?: string[] };
-      const citations = fileScoped ? [chunkCitation(q)] : citedResults(out.sourceUrls ?? [], answer.results);
-      return requireSources({
-        verdict: out.verdict,
-        foundAnswer: out.foundAnswer || undefined,
-        note: out.note || undefined,
-        sources: citations.map((c) => c.url),
-        citations,
-        verifiedBy: { provider: "anthropic", model },
-      });
+      const items = shuffledBatch(qs);
+      const open = items.filter((i) => i.q.sourceText === undefined).length;
+      const answer = await providerCall({ provider: "anthropic", model, step: "verify" }, deps.call, (signal) => claudeJson(deps.client, {
+        model, system: `${VERIFY_SYSTEM}\n${SOURCES_RULE}`, user: verifyPrompt(items, VERIFY_OPEN), schema: SCHEMA,
+        maxTokens: BASE_TOKENS + TOKENS_PER_QUESTION * items.length, effort: "low",
+        ...(open ? { webSearch: { maxUses: VERIFY_SEARCHES_PER_QUESTION * open } } : {}),
+      }, signal));
+      const verifiedBy = { provider: "anthropic", model };
+      return matchVerdicts(items, answer.json, (v, { q }) => {
+        const citations = q.sourceText !== undefined ? [chunkCitation(q)] : citedResults(v.sourceUrls ?? [], answer.results);
+        return requireSources({ verdict: v.verdict, foundAnswer: v.foundAnswer, note: v.note, sources: citations.map((c) => c.url), citations, verifiedBy });
+      }, verifiedBy);
     },
   };
 }

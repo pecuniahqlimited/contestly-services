@@ -1,0 +1,2543 @@
+{
+  "startedAt": "2026-11-11T20:30:48.108Z",
+  "finishedAt": "2026-11-11T20:31:07.413Z",
+  "providers": {
+    "profile": "free",
+    "generator": "gemini gemini-3.5-flash-lite",
+    "verifier": "gemini gemini-3.6-flash, no sources",
+    "embedder": "gemini gemini-embedding-2",
+    "safety": "gemini gemini-3.1-flash-lite",
+    "embedModel": "gemini-embedding-2"
+  },
+  "models": {
+    "generate": "gemini-3.5-flash-lite",
+    "verify": "gemini-3.6-flash",
+    "safety": "gemini-3.1-flash-lite"
+  },
+  "maxUsd": 15,
+  "sets": [
+    {
+      "id": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficulty": "mixed",
+      "fileScoped": false,
+      "wanted": 3,
+      "accepted": 0,
+      "drafted": 9,
+      "ms": 9459,
+      "unavailable": [
+        "verify"
+      ]
+    },
+    {
+      "id": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficulty": "mixed",
+      "fileScoped": false,
+      "wanted": 3,
+      "accepted": 0,
+      "drafted": 9,
+      "ms": 14579,
+      "unavailable": [
+        "verify"
+      ]
+    },
+    {
+      "id": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficulty": "mixed",
+      "fileScoped": false,
+      "wanted": 3,
+      "accepted": 0,
+      "drafted": 9,
+      "ms": 5413,
+      "unavailable": [
+        "verify"
+      ]
+    },
+    {
+      "id": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficulty": "mixed",
+      "fileScoped": false,
+      "wanted": 3,
+      "accepted": 0,
+      "drafted": 8,
+      "ms": 11163,
+      "unavailable": [
+        "verify"
+      ]
+    },
+    {
+      "id": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficulty": "mixed",
+      "fileScoped": true,
+      "wanted": 3,
+      "accepted": 0,
+      "drafted": 9,
+      "ms": 13697,
+      "unavailable": [
+        "verify"
+      ]
+    }
+  ],
+  "questions": [
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Which Nigerian artist released the globally acclaimed 2019 album 'African Giant'?",
+          "options": [
+            "Olamide",
+            "Davido",
+            "Wizkid",
+            "Burna Boy"
+          ],
+          "correctIndex": 3
+        },
+        "claim": "Burna Boy released the album African Giant in 2019.",
+        "explanation": "African Giant cemented Burna Boy's international status and earned a Grammy nomination.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "e59991a5-9ac2-4b1d-9be4-3bf356a5ce62",
+        "similarity": 0.9170943100227571
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "e6b68ecb-d236-4d3c-b671-fc7150b427fe",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which Nigerian artist released the globally acclaimed 2019 album 'African Giant'?\nOptions: Olamide | Davido | Wizkid | Burna Boy\nStated correct answer: Burna Boy"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Which Wizkid hit song received a major international boost when Canadian rapper Drake remixed it in 2015?",
+          "options": [
+            "Ojuelegba",
+            "Holla At Your Boy",
+            "Tease Me",
+            "Pakurumo"
+          ],
+          "correctIndex": 0
+        },
+        "claim": "Drake remixed Wizkid's hit song Ojuelegba in 2015.",
+        "explanation": "The international remix of Ojuelegba introduced many global listeners to modern Afrobeats.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "e59991a5-9ac2-4b1d-9be4-3bf356a5ce62",
+        "similarity": 0.883440203461649
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "29497f11-b5e4-492e-8dfc-78db30418fe0",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which Wizkid hit song received a major international boost when Canadian rapper Drake remixed it in 2015?\nOptions: Ojuelegba | Holla At Your Boy | Tease Me | Pakurumo\nStated correct answer: Ojuelegba"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these are Nigerian musicians known for major global Afrobeats hits? (Pick all that apply)",
+          "options": [
+            "Sauti Sol",
+            "Asake",
+            "Tiwa Savage",
+            "Yemi Alade"
+          ],
+          "correctIndexes": [
+            1,
+            2,
+            3
+          ]
+        },
+        "claim": "Tiwa Savage, Yemi Alade, and Asake are prominent Nigerian Afrobeats musicians.",
+        "explanation": "These artists have all played significant roles in pushing Nigerian music onto the global stage.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "efb81365-15f4-45aa-861e-3c761d392232",
+        "similarity": 0.8737873730152558
+      },
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "dd3b8550-cbaf-4113-8aca-ef481d1822ce",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these are Nigerian musicians known for major global Afrobeats hits? (Pick all that apply)\nOptions: Sauti Sol | Asake | Tiwa Savage | Yemi Alade\nStated correct options: Asake | Tiwa Savage | Yemi Alade\nStated wrong options: Sauti Sol"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these albums won or were nominated for the Grammy Award for Best Global Music Album? (Pick all that apply)",
+          "options": [
+            "Twice As Tall",
+            "Made in Lagos",
+            "Omo Baba Olowo",
+            "African Giant"
+          ],
+          "correctIndexes": [
+            0,
+            1,
+            3
+          ]
+        },
+        "claim": "Twice As Tall, African Giant, and Made in Lagos received Grammy nominations or wins for Best Global Music Album.",
+        "explanation": "Burna Boy and Wizkid brought massive Grammy recognition to the Afrobeats genre with these landmark projects.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "e59991a5-9ac2-4b1d-9be4-3bf356a5ce62",
+        "similarity": 0.8647666992455788
+      },
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "41184bcc-4953-4715-ae00-6ab5e5212787",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these albums won or were nominated for the Grammy Award for Best Global Music Album? (Pick all that apply)\nOptions: Twice As Tall | Made in Lagos | Omo Baba Olowo | African Giant\nStated correct options: Twice As Tall | Made in Lagos | African Giant\nStated wrong options: Omo Baba Olowo"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these milestone Afrobeats album release years in order, starting with the earliest first.",
+          "items": [
+            "Superstar by Wizkid (2011)",
+            "The Entertainer by Dbanj (2008)",
+            "Omo Baba Olowo by Davido (2012)",
+            "African Giant by Burna Boy (2019)"
+          ],
+          "correctOrder": [
+            1,
+            0,
+            2,
+            3
+          ]
+        },
+        "claim": "Dbanj released The Entertainer in 2008, Wizkid released Superstar in 2011, Davido released Omo Baba Olowo in 2012, and Burna Boy released African Giant in 2019.",
+        "explanation": "These albums trace the steady global rise of Nigerian pop music from the late 2000s onwards.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "e59991a5-9ac2-4b1d-9be4-3bf356a5ce62",
+        "similarity": 0.8602376150801702
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "1cf93678-19ae-416b-b6d0-fb5c0eeba493",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these milestone Afrobeats album release years in order, starting with the earliest first.\nItems: Superstar by Wizkid (2011) | The Entertainer by Dbanj (2008) | Omo Baba Olowo by Davido (2012) | African Giant by Burna Boy (2019)\nStated correct order: The Entertainer by Dbanj (2008) → Superstar by Wizkid (2011) → Omo Baba Olowo by Davido (2012) → African Giant by Burna Boy (2019)"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these international Afrobeats chart-topping songs in order of their release year, earliest first.",
+          "items": [
+            "Calm Down (2022)",
+            "Fall (2017)",
+            "Ojuelegba (2014)",
+            "Oliver Twist (2012)"
+          ],
+          "correctOrder": [
+            3,
+            2,
+            1,
+            0
+          ]
+        },
+        "claim": "Oliver Twist was released in 2012, Ojuelegba in 2014, Fall in 2017, and Calm Down in 2022.",
+        "explanation": "These tracks marked successive waves of global crossover success for Nigerian music over the decades.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c7235be5-cecc-483c-b97a-90d7c936dacb",
+        "similarity": 0.859589440773665
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "944ef2eb-21a8-4a95-addf-0a25b3621cb9",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these international Afrobeats chart-topping songs in order of their release year, earliest first.\nItems: Calm Down (2022) | Fall (2017) | Ojuelegba (2014) | Oliver Twist (2012)\nStated correct order: Oliver Twist (2012) → Ojuelegba (2014) → Fall (2017) → Calm Down (2022)"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Afrobeats artist to their breakthrough or signature hit album.",
+          "left": [
+            "Wizkid",
+            "Davido",
+            "Asake"
+          ],
+          "right": [
+            "Mr. Money With The Vibe",
+            "Superstar",
+            "Omo Baba Olowo"
+          ],
+          "pairs": [
+            1,
+            2,
+            0
+          ]
+        },
+        "claim": "Artists are matched with their defining albums.",
+        "explanation": "Each of these albums became a definitive milestone for the respective artist's career.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c7235be5-cecc-483c-b97a-90d7c936dacb",
+        "similarity": 0.9200470447540283
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "4c03c7ad-7b37-4b74-b56b-98921a0e2f54",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Afrobeats artist to their breakthrough or signature hit album.\nLeft: Wizkid | Davido | Asake\nRight: Mr. Money With The Vibe | Superstar | Omo Baba Olowo\nStated correct pairs: Wizkid → Superstar; Davido → Omo Baba Olowo; Asake → Mr. Money With The Vibe"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Nigerian music star to their popular record label or imprint.",
+          "left": [
+            "Olamide",
+            "Don Jazzy",
+            "Davido"
+          ],
+          "right": [
+            "YBNL Nation",
+            "DMW",
+            "Mavin Records"
+          ],
+          "pairs": [
+            0,
+            2,
+            1
+          ]
+        },
+        "claim": "Artists are linked to the labels or imprints they founded or are famously associated with.",
+        "explanation": "Record labels have served as powerful launchpads for Nigerian artists taking their sound worldwide.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c7235be5-cecc-483c-b97a-90d7c936dacb",
+        "similarity": 0.887074007144695
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "b5b37e88-4139-4fbc-a032-86b93b5bf3eb",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Nigerian music star to their popular record label or imprint.\nLeft: Olamide | Don Jazzy | Davido\nRight: YBNL Nation | DMW | Mavin Records\nStated correct pairs: Olamide → YBNL Nation; Don Jazzy → Mavin Records; Davido → DMW"
+    },
+    {
+      "draft": {
+        "format": "picture",
+        "payload": {
+          "question": "Located in Iganmu, Lagos, this iconic cultural landmark has hosted major music and arts events that shaped Nigerian entertainment history. What is it?",
+          "imageUrl": "pool/national-theatre.jpg",
+          "imageAlt": "A large round building with a sloping roof shaped like a military cap",
+          "options": [
+            "Tafawa Balewa Square",
+            "National Stadium",
+            "City Hall Lagos",
+            "National Theatre"
+          ],
+          "correctIndex": 3
+        },
+        "claim": "The National Theatre in Iganmu, Lagos is a major Nigerian cultural landmark.",
+        "explanation": "The National Theatre is a historic hub for Nigerian arts, culture, and musical performances.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "97acb56b-f5ea-4d60-8e89-ca887eeeffd3",
+        "similarity": 0.8960802555084229
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "70b0554d-cc19-4423-80a0-465c85d5beb3",
+      "set": "Afrobeats · mixed",
+      "lane": "Afrobeats",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Located in Iganmu, Lagos, this iconic cultural landmark has hosted major music and arts events that shaped Nigerian entertainment history. What is it?\nThe player sees a picture. Alt text: A large round building with a sloping roof shaped like a military cap\nOptions: Tafawa Balewa Square | National Stadium | City Hall Lagos | National Theatre\nStated correct answer: National Theatre"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Which 1992 home-video release is widely credited with launching the modern Nollywood boom?",
+          "options": [
+            "Igodo",
+            "Living in Bondage",
+            "Omo Ghetto",
+            "Rattlesnake"
+          ],
+          "correctIndex": 1
+        },
+        "claim": "Living in Bondage was released in 1992 and is widely credited with launching the modern Nollywood home-video era.",
+        "explanation": "Directed by Chris Obi Rapu, this classic movie set the stage for Nigeria's booming film industry.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "35ad2e36-31f7-456f-a9fe-07b1b9f634d7",
+        "similarity": 0.8301070085136028
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "847b55db-5495-4fcc-a13a-1e8018e32b58",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which 1992 home-video release is widely credited with launching the modern Nollywood boom?\nOptions: Igodo | Living in Bondage | Omo Ghetto | Rattlesnake\nStated correct answer: Living in Bondage"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Who directed the acclaimed 2009 award-winning movie The Figurine?",
+          "options": [
+            "Kunle Afolayan",
+            "Amaka Igwe",
+            "Kemi Adetiba",
+            "Tunde Kelani"
+          ],
+          "correctIndex": 0
+        },
+        "claim": "Kunle Afolayan directed the 2009 award-winning film The Figurine.",
+        "explanation": "The Figurine won multiple Africa Movie Academy Awards and brought high production value to cinemas.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "d22c5cd9-83a4-4415-a141-480ef31dd584",
+        "similarity": 0.82087617044903
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "65439431-a326-43a9-88ba-e8b46af7c726",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Who directed the acclaimed 2009 award-winning movie The Figurine?\nOptions: Kunle Afolayan | Amaka Igwe | Kemi Adetiba | Tunde Kelani\nStated correct answer: Kunle Afolayan"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these films were released during the 1990s era of Nollywood? (Select all that apply)",
+          "options": [
+            "Glamour Girls",
+            "Living in Bondage",
+            "The Wedding Party",
+            "Rattlesnake"
+          ],
+          "correctIndexes": [
+            0,
+            1,
+            3
+          ]
+        },
+        "claim": "Living in Bondage, Rattlesnake, and Glamour Girls were all prominent Nigerian home-video films released in the 1990s.",
+        "explanation": "These titles defined the early boom of the home-video market before the modern cinema revival.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "240e6e9c-4a8a-4935-bbb1-e2d246c768cd",
+        "similarity": 0.8088311553001404
+      },
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "c6e86d88-0190-4221-81ee-1975de8664b3",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these films were released during the 1990s era of Nollywood? (Select all that apply)\nOptions: Glamour Girls | Living in Bondage | The Wedding Party | Rattlesnake\nStated correct options: Glamour Girls | Living in Bondage | Rattlesnake\nStated wrong options: The Wedding Party"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these well-known Nollywood personalities are primarily recognized as actors rather than major film directors? (Select all that apply)",
+          "options": [
+            "Kemi Adetiba",
+            "Kunle Afolayan",
+            "Jim Iyke",
+            "Richard Mofe-Damijo"
+          ],
+          "correctIndexes": [
+            2,
+            3
+          ]
+        },
+        "claim": "Richard Mofe-Damijo and Jim Iyke are primarily known as veteran Nollywood actors.",
+        "explanation": "While many actors occasionally direct, RMD and Jim Iyke are most famous for their acting careers.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "d22c5cd9-83a4-4415-a141-480ef31dd584",
+        "similarity": 0.8157709240913449
+      },
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "3cb74614-810a-4c60-abd6-e19a7c46e62c",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these well-known Nollywood personalities are primarily recognized as actors rather than major film directors? (Select all that apply)\nOptions: Kemi Adetiba | Kunle Afolayan | Jim Iyke | Richard Mofe-Damijo\nStated correct options: Jim Iyke | Richard Mofe-Damijo\nStated wrong options: Kemi Adetiba | Kunle Afolayan"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these milestone Nollywood films in order of their original release, earliest first.",
+          "items": [
+            "Rattlesnake",
+            "The Wedding Party",
+            "Living in Bondage",
+            "The Figurine"
+          ],
+          "correctOrder": [
+            2,
+            0,
+            3,
+            1
+          ]
+        },
+        "claim": "Living in Bondage was released in 1992, Rattlesnake in 1995, The Figurine in 2009, and The Wedding Party in 2016.",
+        "explanation": "Tracing Nollywood history shows a clear timeline from early home-videos to modern box-office smashes.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "4240ce48-9a1c-4f72-99bf-a5d421765384",
+        "similarity": 0.8259366854466998
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "e2c9f83d-851f-4cee-94d1-84422c6b4afe",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these milestone Nollywood films in order of their original release, earliest first.\nItems: Rattlesnake | The Wedding Party | Living in Bondage | The Figurine\nStated correct order: Living in Bondage → Rattlesnake → The Figurine → The Wedding Party"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these prominent Nigerian actors in order of their birth year, earliest first.",
+          "items": [
+            "Richard Mofe-Damijo",
+            "Ramsey Nouah",
+            "Pete Edochie",
+            "Olu Jacobs"
+          ],
+          "correctOrder": [
+            3,
+            2,
+            0,
+            1
+          ]
+        },
+        "claim": "Olu Jacobs was born in 1942, Pete Edochie in 1947, Richard Mofe-Damijo in 1961, and Ramsey Nouah in 1970.",
+        "explanation": "These veteran actors span multiple generations of iconic Nollywood storytelling.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "4240ce48-9a1c-4f72-99bf-a5d421765384",
+        "similarity": 0.8650415024136617
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "da8c1c80-de31-41f8-9813-8554b2db49d6",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these prominent Nigerian actors in order of their birth year, earliest first.\nItems: Richard Mofe-Damijo | Ramsey Nouah | Pete Edochie | Olu Jacobs\nStated correct order: Olu Jacobs → Pete Edochie → Richard Mofe-Damijo → Ramsey Nouah"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Nollywood actor to the iconic movie they starred in.",
+          "left": [
+            "Richard Mofe-Damijo",
+            "Ramsey Nouah",
+            "Nkem Owoh"
+          ],
+          "right": [
+            "Osuofia in London",
+            "Dangerous Twins",
+            "Out of Bounds"
+          ],
+          "pairs": [
+            2,
+            1,
+            0
+          ]
+        },
+        "claim": "Richard Mofe-Damijo starred in Out of Bounds, Ramsey Nouah in Dangerous Twins, and Nkem Owoh in Osuofia in London.",
+        "explanation": "These classic films highlighted the exceptional talent of these leading men.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c7235be5-cecc-483c-b97a-90d7c936dacb",
+        "similarity": 0.8289775746451378
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "0914b4fd-3bcd-4344-b7f6-a196e7689cd2",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Nollywood actor to the iconic movie they starred in.\nLeft: Richard Mofe-Damijo | Ramsey Nouah | Nkem Owoh\nRight: Osuofia in London | Dangerous Twins | Out of Bounds\nStated correct pairs: Richard Mofe-Damijo → Out of Bounds; Ramsey Nouah → Dangerous Twins; Nkem Owoh → Osuofia in London"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Nollywood film to its notable director.",
+          "left": [
+            "The Figurine",
+            "King of Boys",
+            "Living in Bondage"
+          ],
+          "right": [
+            "Kemi Adetiba",
+            "Chris Obi Rapu",
+            "Kunle Afolayan"
+          ],
+          "pairs": [
+            2,
+            0,
+            1
+          ]
+        },
+        "claim": "The Figurine was directed by Kunle Afolayan, King of Boys by Kemi Adetiba, and Living in Bondage by Chris Obi Rapu.",
+        "explanation": "Brilliant direction is at the heart of these unforgettable Nigerian films.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "9c5c80af-fc73-401a-8b0b-c8a3939a507b",
+        "similarity": 0.8469222853962016
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "f974798d-3063-4570-b125-41806f799346",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Nollywood film to its notable director.\nLeft: The Figurine | King of Boys | Living in Bondage\nRight: Kemi Adetiba | Chris Obi Rapu | Kunle Afolayan\nStated correct pairs: The Figurine → Kunle Afolayan; King of Boys → Kemi Adetiba; Living in Bondage → Chris Obi Rapu"
+    },
+    {
+      "draft": {
+        "format": "picture",
+        "payload": {
+          "question": "This iconic Lagos landmark, shaped like a military cap, has hosted major cultural events and Nollywood premieres. What is it?",
+          "imageUrl": "pool/national-theatre.jpg",
+          "imageAlt": "A large round building with a sloping roof shaped like a military cap",
+          "options": [
+            "National Stadium",
+            "City Hall",
+            "Tafawa Balewa Square",
+            "National Theatre"
+          ],
+          "correctIndex": 3
+        },
+        "claim": "The National Theatre located in Iganmu, Lagos, is a famous landmark often associated with Nigerian arts and culture.",
+        "explanation": "Built in 1976 for the FESTAC festival, it remains an important symbol of Nigerian creative heritage.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "97acb56b-f5ea-4d60-8e89-ca887eeeffd3",
+        "similarity": 0.9095097238117638
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "1fb20e61-fd1c-4997-a842-8b0ff4514c80",
+      "set": "Nollywood · mixed",
+      "lane": "Nollywood",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: This iconic Lagos landmark, shaped like a military cap, has hosted major cultural events and Nollywood premieres. What is it?\nThe player sees a picture. Alt text: A large round building with a sloping roof shaped like a military cap\nOptions: National Stadium | City Hall | Tafawa Balewa Square | National Theatre\nStated correct answer: National Theatre"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Which Nigerian player won the African Women's Footballer of the Year award a record eleven times?",
+          "options": [
+            "Florence Omagbemi",
+            "Perpetua Nkwocha",
+            "Asisat Oshoala",
+            "Desire Oparanozie"
+          ],
+          "correctIndex": 2
+        },
+        "claim": "Asisat Oshoala won the African Women's Footballer of the Year award a record eleven times.",
+        "explanation": "Asisat Oshoala is widely celebrated as one of Africa's greatest female footballers ever.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c9aca74d-9d61-49dc-bb4f-051541aeecf9",
+        "similarity": 0.8488921252892256
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "773903b5-8861-4a79-9366-b6525420c2de",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which Nigerian player won the African Women's Footballer of the Year award a record eleven times?\nOptions: Florence Omagbemi | Perpetua Nkwocha | Asisat Oshoala | Desire Oparanozie\nStated correct answer: Asisat Oshoala"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "In which year did the Super Eagles win their third Africa Cup of Nations title in South Africa?",
+          "options": [
+            "2006",
+            "2010",
+            "2013",
+            "2015"
+          ],
+          "correctIndex": 2
+        },
+        "claim": "Nigeria won the 2013 Africa Cup of Nations tournament hosted in South Africa.",
+        "explanation": "Sunday Mba scored the memorable winning goal in the final against Burkina Faso.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "58966305-cf15-4994-b95f-7f6a971db787",
+        "similarity": 0.9422547782811407
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "d8b0e8fe-77af-4083-9945-6a2d463120aa",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: In which year did the Super Eagles win their third Africa Cup of Nations title in South Africa?\nOptions: 2006 | 2010 | 2013 | 2015\nStated correct answer: 2013"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these Nigerian players have won the prestigious CAF African Footballer of the Year award for men?",
+          "options": [
+            "Rashidi Yekini",
+            "Nwankwo Kanu",
+            "Victor Osimhen",
+            "Jay-Jay Okocha"
+          ],
+          "correctIndexes": [
+            0,
+            1,
+            2
+          ]
+        },
+        "claim": "Nwankwo Kanu, Victor Osimhen, and Rashidi Yekini won the CAF African Footballer of the Year award.",
+        "explanation": "These legendary strikers and midfielders brought immense glory to Nigerian football.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c9aca74d-9d61-49dc-bb4f-051541aeecf9",
+        "similarity": 0.8659251608670141
+      },
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "2f081af4-eb37-4fdf-a565-a47f1f2e1bfa",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these Nigerian players have won the prestigious CAF African Footballer of the Year award for men?\nOptions: Rashidi Yekini | Nwankwo Kanu | Victor Osimhen | Jay-Jay Okocha\nStated correct options: Rashidi Yekini | Nwankwo Kanu | Victor Osimhen\nStated wrong options: Jay-Jay Okocha"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these cities have hosted matches for the Nigeria Premier Football League (NPFL)?",
+          "options": [
+            "Enugu",
+            "London",
+            "Kano",
+            "Aba"
+          ],
+          "correctIndexes": [
+            0,
+            2,
+            3
+          ]
+        },
+        "claim": "Aba, Enugu, and Kano have hosted NPFL matches.",
+        "explanation": "Enyimba, Rangers, and Kano Pillars play their home games in these vibrant football cities.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "35ad2e36-31f7-456f-a9fe-07b1b9f634d7",
+        "similarity": 0.8709651308676538
+      },
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "2c827b77-b2f8-49eb-88dc-2842d95ac09c",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these cities have hosted matches for the Nigeria Premier Football League (NPFL)?\nOptions: Enugu | London | Kano | Aba\nStated correct options: Enugu | Kano | Aba\nStated wrong options: London"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these Nigerian men's national team AFCON tournament victory years in chronological order, earliest first.",
+          "items": [
+            "2023",
+            "1980",
+            "2013",
+            "1994"
+          ],
+          "correctOrder": [
+            1,
+            3,
+            2,
+            0
+          ]
+        },
+        "claim": "Nigeria won AFCON titles in 1980, 1994, and 2013 in that chronological order.",
+        "explanation": "Nigeria's continental triumphs span across decades of fantastic football history.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c9aca74d-9d61-49dc-bb4f-051541aeecf9",
+        "similarity": 0.9260445380899841
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "384ce96c-0e22-4d6c-b1fc-74a9a488ac38",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these Nigerian men's national team AFCON tournament victory years in chronological order, earliest first.\nItems: 2023 | 1980 | 2013 | 1994\nStated correct order: 1980 → 1994 → 2013 → 2023"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Order these Nigerian football achievements by when they happened, earliest first.",
+          "items": [
+            "1994",
+            "1996",
+            "2014",
+            "1985"
+          ],
+          "correctOrder": [
+            3,
+            0,
+            1,
+            2
+          ]
+        },
+        "claim": "Nigeria won the U-17 World Cup in 1985, won Olympic gold in 1996, and reached the World Cup Round of 16 in 1994.",
+        "explanation": "Nigeria's golden generation achieved historic milestones on the global stage.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c9aca74d-9d61-49dc-bb4f-051541aeecf9",
+        "similarity": 0.9024498462677258
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "d7dc38af-6a40-44f8-96ab-93c001e84ef6",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Order these Nigerian football achievements by when they happened, earliest first.\nItems: 1994 | 1996 | 2014 | 1985\nStated correct order: 1985 → 1994 → 1996 → 2014"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Nigerian football icon to the famous club they played for in Europe.",
+          "left": [
+            "Nwankwo Kanu",
+            "Jay-Jay Okocha",
+            "John Mikel Obi"
+          ],
+          "right": [
+            "Bolton Wanderers",
+            "Arsenal",
+            "Chelsea"
+          ],
+          "pairs": [
+            1,
+            0,
+            2
+          ]
+        },
+        "claim": "Nwankwo Kanu played for Arsenal, Jay-Jay Okocha played for Bolton Wanderers, and John Mikel Obi played for Chelsea.",
+        "explanation": "These Super Eagles stars enjoyed legendary careers in top European leagues.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "c9aca74d-9d61-49dc-bb4f-051541aeecf9",
+        "similarity": 0.8450983233896413
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "ea99ac48-3aa6-4aac-9ef2-7fd19a7141df",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Nigerian football icon to the famous club they played for in Europe.\nLeft: Nwankwo Kanu | Jay-Jay Okocha | John Mikel Obi\nRight: Bolton Wanderers | Arsenal | Chelsea\nStated correct pairs: Nwankwo Kanu → Arsenal; Jay-Jay Okocha → Bolton Wanderers; John Mikel Obi → Chelsea"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Super Falcons star to the position they were known for playing.",
+          "left": [
+            "Asisat Oshoala",
+            "Rita Nwadike",
+            "Onome Ebi"
+          ],
+          "right": [
+            "Defender",
+            "Midfielder",
+            "Forward"
+          ],
+          "pairs": [
+            2,
+            1,
+            0
+          ]
+        },
+        "claim": "Ngozi Ezeamaisi, Perpetua Nkwocha, and Florence Omagbemi played specific roles for the Super Falcons.",
+        "explanation": "The Super Falcons dominated African women's football through exceptional teamwork across all positions.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "58966305-cf15-4994-b95f-7f6a971db787",
+        "similarity": 0.8549515518517242
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "409d5d11-0544-4a75-a7e8-824d210d2478",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Super Falcons star to the position they were known for playing.\nLeft: Asisat Oshoala | Rita Nwadike | Onome Ebi\nRight: Defender | Midfielder | Forward\nStated correct pairs: Asisat Oshoala → Forward; Rita Nwadike → Midfielder; Onome Ebi → Defender"
+    },
+    {
+      "draft": {
+        "format": "picture",
+        "payload": {
+          "question": "This famous outline map represents Nigeria, a nation passionately devoted to football. What is the capital city located within this country?",
+          "imageUrl": "pool/nigeria-outline.jpg",
+          "imageAlt": "The borders of a West African country, roughly square with a southern coastline",
+          "options": [
+            "Port Harcourt",
+            "Kano",
+            "Abuja",
+            "Lagos"
+          ],
+          "correctIndex": 2
+        },
+        "claim": "Abuja is the capital city of Nigeria.",
+        "explanation": "Abuja serves as the political capital and home to the headquarters of the Nigeria Football Federation.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "2cc3648c-b21b-4406-a85c-22304c754ab3",
+        "similarity": 0.9010442495346069
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "e54928e2-dfb5-415a-957d-33ab28b1b6a3",
+      "set": "Naija football · mixed",
+      "lane": "Naija football",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: This famous outline map represents Nigeria, a nation passionately devoted to football. What is the capital city located within this country?\nThe player sees a picture. Alt text: The borders of a West African country, roughly square with a southern coastline\nOptions: Port Harcourt | Kano | Abuja | Lagos\nStated correct answer: Abuja"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Which Nigerian city is famously known as the Garden City?",
+          "options": [
+            "Port Harcourt",
+            "Calabar",
+            "Ibadan",
+            "Enugu"
+          ],
+          "correctIndex": 0
+        },
+        "claim": "Port Harcourt is famously known as the Garden City of Nigeria.",
+        "explanation": "Port Harcourt earned this name due to its many green spaces and palm trees.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "35ad2e36-31f7-456f-a9fe-07b1b9f634d7",
+        "similarity": 0.9114025235176151
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "bfd27521-0bd0-40b1-b0ca-4cae203d5a15",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which Nigerian city is famously known as the Garden City?\nOptions: Port Harcourt | Calabar | Ibadan | Enugu\nStated correct answer: Port Harcourt"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "What is the primary traditional fabric used to make Aso Oke?",
+          "options": [
+            "Imported silk",
+            "Hand-woven cloth",
+            "Printed cotton",
+            "Synthetic lace"
+          ],
+          "correctIndex": 1
+        },
+        "claim": "Aso Oke is a hand-woven cloth made by the Yoruba people.",
+        "explanation": "It is traditionally worn for major celebrations like weddings and coronations.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "3d28c0cf-8491-461e-ba70-59050046134b",
+        "similarity": 0.8395835566024311
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "038f5391-01a2-4c65-828a-712f4a6b378d",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: What is the primary traditional fabric used to make Aso Oke?\nOptions: Imported silk | Hand-woven cloth | Printed cotton | Synthetic lace\nStated correct answer: Hand-woven cloth"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these languages are among the major native languages widely spoken in Nigeria? (Pick all that apply)",
+          "options": [
+            "Yoruba",
+            "Swahili",
+            "Hausa",
+            "Igbo"
+          ],
+          "correctIndexes": [
+            0,
+            2,
+            3
+          ]
+        },
+        "claim": "Yoruba, Igbo, and Hausa are the three major native languages widely spoken in Nigeria.",
+        "explanation": "Swahili is spoken in East and Central Africa, not natively in Nigeria.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "3d28c0cf-8491-461e-ba70-59050046134b",
+        "similarity": 0.9220739784947108
+      },
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "8f28610a-8607-45a7-8f97-a149b2018b7f",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these languages are among the major native languages widely spoken in Nigeria? (Pick all that apply)\nOptions: Yoruba | Swahili | Hausa | Igbo\nStated correct options: Yoruba | Hausa | Igbo\nStated wrong options: Swahili"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these major milestones in Nigerian history in order, earliest first:",
+          "items": [
+            "Creation of 36 states (1996)",
+            "Creation of 12 states (1967)",
+            "Amalgamation of Nigeria (1914)",
+            "Nigeria gained independence (1960)"
+          ],
+          "correctOrder": [
+            2,
+            3,
+            1,
+            0
+          ]
+        },
+        "claim": "The amalgamation took place in 1914, independence in 1960, 12 states in 1967, and 36 states in 1996.",
+        "explanation": "Nigerian history progressed from colonial amalgamation through independence to the gradual creation of more states.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "ff1a2dec-08ff-47fc-9866-fdb9744f6d31",
+        "similarity": 0.9218842983245915
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "b404ccbe-3a39-40f4-ac9c-57fc94d94c89",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these major milestones in Nigerian history in order, earliest first:\nItems: Creation of 36 states (1996) | Creation of 12 states (1967) | Amalgamation of Nigeria (1914) | Nigeria gained independence (1960)\nStated correct order: Amalgamation of Nigeria (1914) → Nigeria gained independence (1960) → Creation of 12 states (1967) → Creation of 36 states (1996)"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these Nigerian rivers in order of their approximate length, longest first:",
+          "items": [
+            "River Benue",
+            "River Niger",
+            "River Ogun",
+            "River Kaduna"
+          ],
+          "correctOrder": [
+            1,
+            0,
+            3,
+            2
+          ]
+        },
+        "claim": "The River Niger is the longest, followed by the Benue, Kaduna, and Ogun rivers.",
+        "explanation": "The Niger and Benue are Nigeria's two massive main river systems, with major tributaries like the Kaduna.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "835fd739-1916-432e-a7b9-f46a3de6770a",
+        "similarity": 0.9172371352542337
+      },
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "6e7e9fc2-1c53-402b-a8a9-c4968e748b1d",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these Nigerian rivers in order of their approximate length, longest first:\nItems: River Benue | River Niger | River Ogun | River Kaduna\nStated correct order: River Niger → River Benue → River Kaduna → River Ogun"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Nigerian landmark to the state or territory where it is located:",
+          "left": [
+            "Zuma Rock",
+            "Olumo Rock",
+            "Aso Rock"
+          ],
+          "right": [
+            "Ogun State",
+            "Abuja (FCT)",
+            "Niger State"
+          ],
+          "pairs": [
+            2,
+            0,
+            1
+          ]
+        },
+        "claim": "Zuma Rock is in Niger State, Olumo Rock is in Ogun State, and Aso Rock is in the FCT.",
+        "explanation": "Each of these famous geological formations is situated in its respective location.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "81cf052b-982e-4367-bb4e-b002e38037aa",
+        "similarity": 0.9721851944923401
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "2c4fa4fe-abaf-44fb-b087-246260f2604b",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Nigerian landmark to the state or territory where it is located:\nLeft: Zuma Rock | Olumo Rock | Aso Rock\nRight: Ogun State | Abuja (FCT) | Niger State\nStated correct pairs: Zuma Rock → Niger State; Olumo Rock → Ogun State; Aso Rock → Abuja (FCT)"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the traditional Nigerian soup to its main base ingredient:",
+          "left": [
+            "Egusi soup",
+            "Efo Riro",
+            "Banga soup"
+          ],
+          "right": [
+            "Palm fruit",
+            "Spinach or leafy greens",
+            "Melon seeds"
+          ],
+          "pairs": [
+            2,
+            1,
+            0
+          ]
+        },
+        "claim": "Egusi soup uses melon seeds, Efo Riro uses leafy greens, and Banga soup uses palm fruit extract.",
+        "explanation": "These distinct bases give each classic Nigerian soup its unique flavor and texture.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "eeb4f39c-28e1-4298-bb26-cc1bee78790c",
+        "similarity": 0.9268353857647001
+      },
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "f79d8123-9ce1-4baa-9c9c-42a0db99bc01",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the traditional Nigerian soup to its main base ingredient:\nLeft: Egusi soup | Efo Riro | Banga soup\nRight: Palm fruit | Spinach or leafy greens | Melon seeds\nStated correct pairs: Egusi soup → Melon seeds; Efo Riro → Spinach or leafy greens; Banga soup → Palm fruit"
+    },
+    {
+      "draft": {
+        "format": "picture",
+        "payload": {
+          "question": "Which famous Nigerian landmark is shown in this image?",
+          "imageUrl": "pool/zuma-rock.jpg",
+          "imageAlt": "A huge single dome-shaped rock rising out of flat green countryside",
+          "options": [
+            "Olumo Rock",
+            "Idanre Hills",
+            "Aso Rock",
+            "Zuma Rock"
+          ],
+          "correctIndex": 3
+        },
+        "claim": "Zuma Rock is a large monolith located in Niger State just outside Abuja.",
+        "explanation": "It features a natural human-like face contour on its side and is a prominent national symbol.",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": {
+        "id": "43543efc-b226-4003-888c-26ce9eb8c3bb",
+        "similarity": 0.9762028455734322
+      },
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "6fa0c043-1f99-4ab9-b743-42f258ed02a6",
+      "set": "General knowledge · mixed",
+      "lane": "General knowledge",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which famous Nigerian landmark is shown in this image?\nThe player sees a picture. Alt text: A huge single dome-shaped rock rising out of flat green countryside\nOptions: Olumo Rock | Idanre Hills | Aso Rock | Zuma Rock\nStated correct answer: Zuma Rock"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Which year did the Third Mainland Bridge open?",
+          "options": [
+            "1901",
+            "1990",
+            "2013",
+            "1975"
+          ],
+          "correctIndex": 1
+        },
+        "claim": "The Third Mainland Bridge was opened in 1990.",
+        "explanation": "The Third Mainland Bridge opened in 1990 and connects Oworonshoki to Lagos Island.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "8a5b664c-7396-44b2-a075-5fd83b9bf30c",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which year did the Third Mainland Bridge open?\nOptions: 1901 | 1990 | 2013 | 1975\nStated correct answer: 1990"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Who was the first Carter Bridge named after?",
+          "options": [
+            "Sir Gilbert Carter",
+            "Sir Adeniji Adele",
+            "Sir Oworonshoki",
+            "Sir Julius Berger"
+          ],
+          "correctIndex": 0
+        },
+        "claim": "The first Carter Bridge was named after Sir Gilbert Carter, who was governor of the Lagos Colony in the 1890s.",
+        "explanation": "It was named after Sir Gilbert Carter, governor of the Lagos Colony in the 1890s.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "1834f0b7-a4a7-4d8d-918a-468465e52595",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Who was the first Carter Bridge named after?\nOptions: Sir Gilbert Carter | Sir Adeniji Adele | Sir Oworonshoki | Sir Julius Berger\nStated correct answer: Sir Gilbert Carter"
+    },
+    {
+      "draft": {
+        "format": "pick_one",
+        "payload": {
+          "question": "Which company built the Third Mainland Bridge?",
+          "options": [
+            "Julius Berger",
+            "Berger Construction",
+            "Julius Bridge",
+            "German Lagos Company"
+          ],
+          "correctIndex": 0
+        },
+        "claim": "The Third Mainland Bridge was built by the German firm Julius Berger.",
+        "explanation": "The German firm Julius Berger built the bridge, which was for many years the longest in Africa.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.5,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "5a1acb23-751e-468e-acad-a567c609b227",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which company built the Third Mainland Bridge?\nOptions: Julius Berger | Berger Construction | Julius Bridge | German Lagos Company\nStated correct answer: Julius Berger"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these are true about the Third Mainland Bridge?",
+          "options": [
+            "It charges a toll for cars",
+            "It is the first cable-stayed bridge in Nigeria",
+            "It was built by the German firm Julius Berger",
+            "It was opened in 1990"
+          ],
+          "correctIndexes": [
+            2,
+            3
+          ]
+        },
+        "claim": "The Third Mainland Bridge opened in 1990 and was built by Julius Berger.",
+        "explanation": "The Third Mainland Bridge opened in 1990 and was built by Julius Berger, unlike the Lekki-Ikoyi bridge which is cable-stayed and tolled.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "66aad953-1473-4ea5-ad9d-2376063bc243",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these are true about the Third Mainland Bridge?\nOptions: It charges a toll for cars | It is the first cable-stayed bridge in Nigeria | It was built by the German firm Julius Berger | It was opened in 1990\nStated correct options: It was built by the German firm Julius Berger | It was opened in 1990\nStated wrong options: It charges a toll for cars | It is the first cable-stayed bridge in Nigeria"
+    },
+    {
+      "draft": {
+        "format": "pick_all",
+        "payload": {
+          "question": "Which of these locations are connected by bridges mentioned in the text?",
+          "options": [
+            "Ebute Metta",
+            "Lagos Island",
+            "Badore",
+            "Ikoyi"
+          ],
+          "correctIndexes": [
+            0,
+            1,
+            3
+          ]
+        },
+        "claim": "Bridges in the text connect Lagos Island, Ebute Metta, Ikoyi, and other locations.",
+        "explanation": "Lagos Island, Ikoyi, and Ebute Metta are all linked by bridges like Carter, Eko, Third Mainland, and Lekki-Ikoyi.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.58,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "08317625-6bd7-411e-a3cc-04bc7ff5699a",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Which of these locations are connected by bridges mentioned in the text?\nOptions: Ebute Metta | Lagos Island | Badore | Ikoyi\nStated correct options: Ebute Metta | Lagos Island | Ikoyi\nStated wrong options: Badore"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these Lagos bridges in order of their opening or completion year, earliest first.",
+          "items": [
+            "Third Mainland Bridge",
+            "First Carter Bridge",
+            "Lekki-Ikoyi Link Bridge",
+            "Eko Bridge"
+          ],
+          "correctOrder": [
+            1,
+            3,
+            0,
+            2
+          ]
+        },
+        "claim": "The Carter Bridge opened in 1901, Eko Bridge in 1975, Third Mainland Bridge in 1990, and Lekki-Ikoyi Link Bridge in 2013.",
+        "explanation": "The Carter Bridge was the earliest (1901), followed by Eko (1975), Third Mainland (1990), and Lekki-Ikoyi (2013).",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "3f33cb9a-a63a-4068-8cb0-d52543415beb",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these Lagos bridges in order of their opening or completion year, earliest first.\nItems: Third Mainland Bridge | First Carter Bridge | Lekki-Ikoyi Link Bridge | Eko Bridge\nStated correct order: First Carter Bridge → Eko Bridge → Third Mainland Bridge → Lekki-Ikoyi Link Bridge"
+    },
+    {
+      "draft": {
+        "format": "order",
+        "payload": {
+          "question": "Put these historical events in Lagos bridge history in order, earliest first.",
+          "items": [
+            "Eko Bridge was completed",
+            "Sir Gilbert Carter served as governor of the Lagos Colony",
+            "The first Carter Bridge was opened",
+            "The Third Mainland Bridge was opened"
+          ],
+          "correctOrder": [
+            1,
+            2,
+            0,
+            3
+          ]
+        },
+        "claim": "Sir Gilbert Carter served in the 1890s, the first Carter Bridge opened in 1901, Eko Bridge in 1975, and Third Mainland Bridge in 1990.",
+        "explanation": "These historical milestones occurred from the 1890s through 1990.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.62,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "455dda16-d04c-4834-9c41-6a22316cfdb2",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Put these historical events in Lagos bridge history in order, earliest first.\nItems: Eko Bridge was completed | Sir Gilbert Carter served as governor of the Lagos Colony | The first Carter Bridge was opened | The Third Mainland Bridge was opened\nStated correct order: Sir Gilbert Carter served as governor of the Lagos Colony → The first Carter Bridge was opened → Eko Bridge was completed → The Third Mainland Bridge was opened"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Lagos bridge to its opening or completion year.",
+          "left": [
+            "First Carter Bridge",
+            "Eko Bridge",
+            "Third Mainland Bridge",
+            "Lekki-Ikoyi Link Bridge"
+          ],
+          "right": [
+            "1990",
+            "1901",
+            "2013",
+            "1975"
+          ],
+          "pairs": [
+            1,
+            3,
+            0,
+            2
+          ]
+        },
+        "claim": "First Carter Bridge opened in 1901, Eko Bridge in 1975, Third Mainland Bridge in 1990, and Lekki-Ikoyi Link Bridge in 2013.",
+        "explanation": "Each bridge opened in a different year as recorded in Lagos history.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "abe303ad-93c3-4775-b390-aafc426aa48b",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Lagos bridge to its opening or completion year.\nLeft: First Carter Bridge | Eko Bridge | Third Mainland Bridge | Lekki-Ikoyi Link Bridge\nRight: 1990 | 1901 | 2013 | 1975\nStated correct pairs: First Carter Bridge → 1901; Eko Bridge → 1975; Third Mainland Bridge → 1990; Lekki-Ikoyi Link Bridge → 2013"
+    },
+    {
+      "draft": {
+        "format": "match",
+        "payload": {
+          "question": "Match the Lagos bridge to its description.",
+          "left": [
+            "Lekki-Ikoyi Link Bridge",
+            "Third Mainland Bridge",
+            "Eko Bridge",
+            "First Carter Bridge"
+          ],
+          "right": [
+            "Named after a colonial governor",
+            "Served the port at Apapa",
+            "Built by the German firm Julius Berger",
+            "First cable-stayed bridge in Nigeria"
+          ],
+          "pairs": [
+            3,
+            2,
+            1,
+            0
+          ]
+        },
+        "claim": "Each bridge has unique features, such as Lekki-Ikoyi being a cable-stayed bridge and Third Mainland built by Julius Berger.",
+        "explanation": "These key facts define each of the major Lagos bridges.",
+        "sourceChunkId": "sample-chunk-0",
+        "generatedBy": {
+          "provider": "gemini",
+          "model": "gemini-3.5-flash-lite"
+        }
+      },
+      "embeddingModel": "gemini-embedding-2",
+      "verify": {
+        "verdict": "unverifiable",
+        "sources": [],
+        "note": "verifier unavailable (rate_limited)"
+      },
+      "nearest": null,
+      "difficulty": {
+        "value": 0.6,
+        "source": "model_estimate"
+      },
+      "safety": {
+        "passed": true,
+        "reasons": [],
+        "reviewedBy": "terms"
+      },
+      "outcome": "rejected_verify",
+      "bankId": "5b439c67-5b47-418f-8719-243ae12d4ee6",
+      "set": "Sample PDF · mixed",
+      "lane": "From a file",
+      "difficultyBand": "mixed",
+      "answerKey": "Question: Match the Lagos bridge to its description.\nLeft: Lekki-Ikoyi Link Bridge | Third Mainland Bridge | Eko Bridge | First Carter Bridge\nRight: Named after a colonial governor | Served the port at Apapa | Built by the German firm Julius Berger | First cable-stayed bridge in Nigeria\nStated correct pairs: Lekki-Ikoyi Link Bridge → First cable-stayed bridge in Nigeria; Third Mainland Bridge → Built by the German firm Julius Berger; Eko Bridge → Served the port at Apapa; First Carter Bridge → Named after a colonial governor"
+    }
+  ],
+  "calls": [
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "step": "generate",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 1236,
+      "outputTokens": 1292,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 4631,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "step": "verify",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 152,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "rate_limited",
+      "error": "HTTP 429 GenerateRequestsPerDayPerProjectPerModel-FreeTier: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, h"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-embedding-2",
+      "step": "embed",
+      "tier": "free",
+      "requests": 9,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 397,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 526,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "step": "generate",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 1231,
+      "outputTokens": 3219,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 8769,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "step": "verify",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 201,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "rate_limited",
+      "error": "HTTP 429 GenerateRequestsPerDayPerProjectPerModel-FreeTier: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, h"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-embedding-2",
+      "step": "embed",
+      "tier": "free",
+      "requests": 9,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 447,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 402,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "step": "generate",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 1228,
+      "outputTokens": 2442,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 10541,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "step": "verify",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 180,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "rate_limited",
+      "error": "HTTP 429 GenerateRequestsPerDayPerProjectPerModel-FreeTier: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, h"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-embedding-2",
+      "step": "embed",
+      "tier": "free",
+      "requests": 8,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 310,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 363,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "step": "generate",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 1233,
+      "outputTokens": 3868,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 13948,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "step": "verify",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 139,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "rate_limited",
+      "error": "HTTP 429 GenerateRequestsPerDayPerProjectPerModel-FreeTier: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, h"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-embedding-2",
+      "step": "embed",
+      "tier": "free",
+      "requests": 9,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 405,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 409,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "step": "generate",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 1406,
+      "outputTokens": 5244,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 12995,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-3.6-flash",
+      "step": "verify",
+      "tier": "free",
+      "requests": 1,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 220,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "rate_limited",
+      "error": "HTTP 429 GenerateRequestsPerDayPerProjectPerModel-FreeTier: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, h"
+    },
+    {
+      "provider": "gemini",
+      "model": "gemini-embedding-2",
+      "step": "embed",
+      "tier": "free",
+      "requests": 9,
+      "partyId": null,
+      "job": "eval",
+      "inputTokens": 404,
+      "outputTokens": 0,
+      "cachedInputTokens": 0,
+      "searchQueries": 0,
+      "latencyMs": 453,
+      "costMicros": 0,
+      "attempts": 1,
+      "outcome": "ok",
+      "error": null
+    }
+  ]
+}

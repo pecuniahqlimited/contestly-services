@@ -40,12 +40,21 @@ export interface GroundingSource {
   title?: string;
 }
 
+/** A stretch of the reply (character offsets into `text`) and the sources Google Search grounded it on. */
+export interface GroundingSupport {
+  start: number;
+  end: number;
+  sources: GroundingSource[];
+}
+
 export interface GeminiAnswer {
   text: string;
   /** The parsed reply when a schema was given. */
   json: unknown;
   queries: string[];
   sources: GroundingSource[];
+  /** Which part of the reply each source backs, so a batch's verdicts can each keep their own. */
+  supports: GroundingSupport[];
 }
 
 interface GenerateResponse {
@@ -53,7 +62,11 @@ interface GenerateResponse {
   candidates?: {
     content?: { parts?: { text?: string; thought?: boolean }[] };
     finishReason?: string;
-    groundingMetadata?: { webSearchQueries?: string[]; groundingChunks?: { web?: { uri?: string; title?: string } }[] };
+    groundingMetadata?: {
+      webSearchQueries?: string[];
+      groundingChunks?: { web?: { uri?: string; title?: string } }[];
+      groundingSupports?: { segment?: { partIndex?: number; startIndex?: number; endIndex?: number }; groundingChunkIndices?: number[] }[];
+    };
   }[];
   usageMetadata?: {
     promptTokenCount?: number;
@@ -95,14 +108,41 @@ export async function geminiGenerate(client: GeminiClient, req: GeminiGenerateRe
   if (!candidate) throw new ProviderError("malformed", "no candidate in the response");
   if (candidate.finishReason && BLOCKED_FINISH.has(candidate.finishReason)) throw new ProviderError("refused", `stopped: ${candidate.finishReason}`);
   if (candidate.finishReason === "MAX_TOKENS") throw new ProviderError("malformed", "output cut off at max tokens");
-  const text = (candidate.content?.parts ?? []).filter((p) => !p.thought && typeof p.text === "string").map((p) => p.text).join("");
+  const textParts = (candidate.content?.parts ?? []).map((p, i) => ({ i, text: !p.thought && typeof p.text === "string" ? p.text : null })).filter((p): p is { i: number; text: string } => p.text !== null);
+  const text = textParts.map((p) => p.text).join("");
   let json: unknown;
   if (req.schema) {
     json = parseJson(text);
     if (json === undefined) throw new ProviderError("malformed", `output is not JSON (${text.length} chars)`);
   }
-  const sources = (grounding?.groundingChunks ?? []).flatMap((c) => (c.web?.uri ? [{ url: c.web.uri, ...(c.web.title ? { title: c.web.title } : {}) }] : []));
-  return { value: { text, json, queries: grounding?.webSearchQueries ?? [], sources }, usage };
+  const chunks = (grounding?.groundingChunks ?? []).map((c) => (c.web?.uri ? { url: c.web.uri, ...(c.web.title ? { title: c.web.title } : {}) } : null));
+  const sources = chunks.filter((c): c is GroundingSource => c !== null);
+  const supports = supportsIn(textParts, grounding?.groundingSupports ?? [], chunks);
+  return { value: { text, json, queries: grounding?.webSearchQueries ?? [], sources, supports }, usage };
+}
+
+/**
+ * Google gives each support as UTF-8 byte offsets within one part of the reply; these are character offsets into
+ * the joined text. A support pointing at a thought part, or at no usable chunk, is left out.
+ */
+function supportsIn(
+  parts: { i: number; text: string }[],
+  raw: NonNullable<NonNullable<NonNullable<GenerateResponse["candidates"]>[number]["groundingMetadata"]>["groundingSupports"]>,
+  chunks: (GroundingSource | null)[],
+): GroundingSupport[] {
+  const startOf = new Map<number, { at: number; bytes: Buffer }>();
+  let at = 0;
+  for (const p of parts) {
+    startOf.set(p.i, { at, bytes: Buffer.from(p.text, "utf8") });
+    at += p.text.length;
+  }
+  const charAt = (bytes: Buffer, byte: number) => bytes.subarray(0, Math.max(0, byte)).toString("utf8").length;
+  return raw.flatMap((s) => {
+    const part = startOf.get(s.segment?.partIndex ?? parts[0]?.i ?? 0);
+    const sources = (s.groundingChunkIndices ?? []).map((k) => chunks[k]).filter((c): c is GroundingSource => !!c);
+    if (!part || !sources.length) return [];
+    return [{ start: part.at + charAt(part.bytes, s.segment?.startIndex ?? 0), end: part.at + charAt(part.bytes, s.segment?.endIndex ?? 0), sources }];
+  });
 }
 
 export interface GeminiEmbedRequest {

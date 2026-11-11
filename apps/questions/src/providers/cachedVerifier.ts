@@ -1,8 +1,9 @@
 /**
  * Verification results cached per question (ADR 0016): the same question, checked by the same verifier and
- * model against the same source, is paid for once. The key hashes everything the verdict depends on. Only
- * definite answers are cached: "unverifiable" may be a search that came up empty this time, and an
- * unavailable verifier throws, so neither is stored.
+ * model against the same source, is paid for once, and a batch only ever sends the questions the cache doesn't
+ * have. The key hashes everything the verdict depends on. Only definite answers are cached: "unverifiable" may
+ * be a search that came up empty this time (or a question the batch failed closed), and an unavailable verifier
+ * throws, so neither is stored.
  */
 import { createHash } from "node:crypto";
 import { cachedVerification, cacheVerification } from "@contestly/db";
@@ -28,14 +29,23 @@ export const verificationKey = (verifier: string, model: string, q: VerifyInput)
 export function cachedVerifier(inner: Verifier, model: () => Promise<string>, cache: VerificationCache = dbVerificationCache): Verifier {
   return {
     name: inner.name,
-    async verify(q) {
+    async verifyBatch(qs) {
       const m = await model();
-      const key = verificationKey(inner.name, m, q);
-      const hit = (await cache.get(key)) as VerifyVerdict | null;
-      if (hit) return { ...hit, verifiedBy: { provider: hit.verifiedBy?.provider ?? inner.name, model: hit.verifiedBy?.model ?? m, cached: true } };
-      const verdict = await inner.verify(q);
-      if (verdict.verdict !== "unverifiable") await cache.put(key, m, verdict);
-      return verdict;
+      const keys = qs.map((q) => verificationKey(inner.name, m, q));
+      const out = new Array<VerifyVerdict>(qs.length);
+      const misses: number[] = [];
+      for (const [i, key] of keys.entries()) {
+        const hit = (await cache.get(key)) as VerifyVerdict | null;
+        if (hit) out[i] = { ...hit, verifiedBy: { provider: hit.verifiedBy?.provider ?? inner.name, model: hit.verifiedBy?.model ?? m, cached: true } };
+        else misses.push(i);
+      }
+      if (!misses.length) return out;
+      const fresh = await inner.verifyBatch(misses.map((i) => qs[i]));
+      for (const [k, i] of misses.entries()) {
+        out[i] = fresh[k];
+        if (fresh[k].verdict !== "unverifiable") await cache.put(keys[i], m, fresh[k]);
+      }
+      return out;
     },
   };
 }

@@ -4,6 +4,7 @@
  * survives and the near-duplicate dies at the dedupe step. This is the sealed-mode review gate
  * in miniature; the sim proves the same end to end against the running stack.
  */
+import { verifyOne } from "../src/providers/types.js";
 import { describe, expect, it } from "vitest";
 import { QUESTION_FORMATS } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
@@ -26,7 +27,7 @@ describe("full chain with mock providers", () => {
     const outcomes: GateOutcome[] = [];
     for (const draft of drafts) {
       const payloadValid = payloadSchemas[draft.format].safeParse(draft.payload).success;
-      const verify = await mockVerifier.verify(draft);
+      const verify = await verifyOne(mockVerifier, draft);
       const [embedding] = await mockEmbedder.embed([embeddingText(draft.format, draft.payload)]);
       const near = nearest(embedding, accepted.map((a, i) => ({ id: `d${i}`, embedding: a.embedding })));
       const outcome = gateDraft({ payloadValid, verify, nearest: near, dedupeThreshold: 0.92, safety: checkSafety(spec, draft.payload, draft.explanation) });

@@ -98,8 +98,16 @@ export interface VerifyInput {
 export interface Verifier {
   /** A name for the cache key and logs ("mock", "anthropic", "gemini"). */
   readonly name: string;
-  verify(q: VerifyInput): Promise<VerifyVerdict>;
+  /**
+   * One verdict per question, in the order given (ADR 0016: a batch is one call). A question the call didn't
+   * answer properly (missing, repeated, malformed, unsourced where sources are required) comes back failed
+   * closed; only a verifier that can't answer at all throws ProviderUnavailable.
+   */
+  verifyBatch(qs: VerifyInput[]): Promise<VerifyVerdict[]>;
 }
+
+/** One question through a batch verifier (an admin's edit, a host's question). */
+export const verifyOne = async (v: Verifier, q: VerifyInput): Promise<VerifyVerdict> => (await v.verifyBatch([q]))[0];
 
 export interface Embedder {
   /** The model behind the vectors, stored with each one: vectors from different models are never compared. */

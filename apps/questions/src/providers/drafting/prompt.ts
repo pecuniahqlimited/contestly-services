@@ -43,8 +43,8 @@ const FILE_RULES = `Source scope: ONLY FROM THE FILE. Every question must be ans
 
 export interface PromptInput {
   spec: GenerationSpec;
-  count: number;
-  formatInstructions: string;
+  /** How many of each format, with the format's own rules. */
+  formats: { format: string; count: number; instructions: string }[];
   avoid: string[];
   sources?: SourceChunk[];
   images?: PoolImage[];
@@ -52,9 +52,10 @@ export interface PromptInput {
 
 export function userPrompt(p: PromptInput): string {
   const { spec } = p;
+  const total = p.formats.reduce((a, f) => a + f.count, 0);
   const lines = [
-    `Write ${p.count} question${p.count === 1 ? "" : "s"}.`,
-    p.formatInstructions,
+    `Write ${total} question${total === 1 ? "" : "s"}: ${p.formats.map((f) => `${f.count} under "${f.format}"`).join(", ")}. Each goes in the list for its format, and each list follows its own format's rules.`,
+    ...p.formats.map((f) => `- ${f.format}: ${f.instructions}`),
     "",
     "Spec:",
     `- Topic (the host's brief): ${quote(spec.topic)}`,

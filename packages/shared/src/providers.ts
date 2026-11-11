@@ -73,13 +73,14 @@ export const FREE_PROFILE_MODELS = {
 
 /**
  * Gemini free-tier limits we hold ourselves to, per model: requests a minute and a day (the day is Pacific
- * time, as Google's). Embeddings are as Google's 429 stated them on 7 Nov 2026; the rest aren't published,
- * so they're cautious guesses, and Google's own 429 still fails the call closed.
+ * time, as Google's). Embeddings are as Google's 429 stated them on 7 Nov 2026; gemini-3.6-flash's day is what
+ * its 429 (GenerateRequestsPerDayPerProjectPerModel-FreeTier) enforced on 11 Nov 2026, after about 20 requests;
+ * the rest aren't published, so they're cautious guesses, and Google's own 429 still fails the call closed.
  */
 export const FREE_TIER_LIMITS: Partial<Record<PricedModel, { rpm: number; rpd: number }>> = {
   "gemini-embedding-2": { rpm: 90, rpd: 1_000 },
   "gemini-3.5-flash-lite": { rpm: 10, rpd: 500 },
-  "gemini-3.6-flash": { rpm: 8, rpd: 200 },
+  "gemini-3.6-flash": { rpm: 8, rpd: 20 },
   "gemini-3.1-flash-lite": { rpm: 10, rpd: 500 },
   "gemini-3.5-transcribe": { rpm: 5, rpd: 100 },
 };
@@ -121,6 +122,9 @@ const chatModelOf = (provider: ProviderName) => chatModel.refine((m) => PROVIDER
 /** The vendor a priced model belongs to: verification and safety follow the model the admin picked. */
 export const providerOf = (model: PricedModel): ProviderName => PROVIDER_PRICES[model].provider;
 
+export const DEFAULT_VERIFY_BATCH = 10;
+export const MAX_VERIFY_BATCH = 20;
+
 /** The question engine's provider settings: admin config under questions.providers. */
 export const providersConfigSchema = z.object({
   /**
@@ -139,6 +143,8 @@ export const providersConfigSchema = z.object({
   dailyCents: z.number().int().min(1).max(10_000_000),
   /** The day's spend crossing this share of dailyCents raises a warning alert. */
   alertAtPct: z.number().int().min(1).max(100),
+  /** Questions per verification call (ADR 0016, 11 Nov 2026): a set's drafts go in batches of this many. */
+  verifyBatchSize: z.number().int().min(1).max(MAX_VERIFY_BATCH).default(DEFAULT_VERIFY_BATCH),
 });
 export type ProvidersConfig = z.infer<typeof providersConfigSchema>;
 
@@ -147,6 +153,7 @@ export const DEFAULT_PROVIDERS_CONFIG: ProvidersConfig = {
   perPartyCents: 500,
   dailyCents: 2_500,
   alertAtPct: 80,
+  verifyBatchSize: DEFAULT_VERIFY_BATCH,
 };
 
 /** Verification verdicts (ADR 0016). Only "correct" passes the gate. Records from before keep pass | fail | needs_source. */

@@ -6,7 +6,7 @@ import { VERIFY_VERDICTS, type VerifyVerdictKind } from "@contestly/shared";
 import type { VerifyInput, VerifyVerdict } from "../types.js";
 import { answerKeyText } from "../../pipeline/text.js";
 
-export const VERIFY_SYSTEM = `You are the independent fact-checker for a live trivia game played in Nigeria. You are given one quiz question with its stated answer key. Decide whether it is safe to play.
+export const VERIFY_SYSTEM = `You are the independent fact-checker for a live trivia game played in Nigeria. You are given quiz questions, each with an id and its stated answer key. Decide for each one, on its own, whether it is safe to play, and give exactly one verdict per id.
 
 Verdicts:
 - correct: the stated answer is right, it is the only defensible answer among the options, the question has one clear reading, and the fact won't change over time.
@@ -16,10 +16,11 @@ Verdicts:
 
 Be strict: when in doubt, it is not "correct". For pick-all, every option must be clearly in or out. For order and match, every position or pair must be right. foundAnswer is the answer the evidence supports, in a few words. note is one sentence on why.`;
 
-export const VERIFY_OPEN = "Check this question against reliable sources you find with web search. Base the verdict on what the sources say, not on memory: if your searches fail or find nothing that settles it, the verdict is unverifiable.";
-export const VERIFY_FILE = "Check this question ONLY against the source excerpt below. It is correct only if the excerpt itself supports the stated answer; outside knowledge doesn't count, and an answer the excerpt doesn't support is unverifiable.";
+export const VERIFY_OPEN = "Check each question against reliable sources you find with web search. Base each verdict on what the sources say, not on memory: if your searches fail or find nothing that settles it, the verdict is unverifiable.";
+export const VERIFY_FILE = "A question with an <excerpt> is checked ONLY against that excerpt. It is correct only if the excerpt itself supports the stated answer; outside knowledge doesn't count, and an answer the excerpt doesn't support is unverifiable.";
 
 export const VERIFY_FIELDS = {
+  id: { type: "string" },
   verdict: { type: "string", enum: [...VERIFY_VERDICTS] },
   foundAnswer: { type: "string" },
   note: { type: "string" },
@@ -27,11 +28,20 @@ export const VERIFY_FIELDS = {
 
 export const isVerdict = (v: unknown): v is VerifyVerdictKind => VERIFY_VERDICTS.includes(v as VerifyVerdictKind);
 
-export function verifyPrompt(q: VerifyInput, open: string): string {
-  const parts = [q.sourceText !== undefined ? VERIFY_FILE : open, "", answerKeyText(q.format, q.payload), `Claim it rests on: ${q.claim}`];
+/** One question of a batch, with the id its verdict must carry. */
+export function questionBlock(id: string, q: VerifyInput): string {
+  const parts = [`<question id="${id}">`, answerKeyText(q.format, q.payload), `Claim it rests on: ${q.claim}`];
   if (q.explanation) parts.push(`Explanation shown to players: ${q.explanation}`);
-  if (q.sourceText !== undefined) parts.push("", `<excerpt>\n${q.sourceText}\n</excerpt>`);
+  if (q.sourceText !== undefined) parts.push(`<excerpt>\n${q.sourceText}\n</excerpt>`);
+  parts.push("</question>");
   return parts.join("\n");
+}
+
+/** A batch's prompt: the rule for open questions (and file-scoped ones when any has an excerpt), then each question. */
+export function verifyPrompt(items: { id: string; q: VerifyInput }[], open: string): string {
+  const rules = [open];
+  if (items.some((i) => i.q.sourceText !== undefined)) rules.push(VERIFY_FILE);
+  return [...rules, `${items.length === 1 ? "One question" : `${items.length} questions`}. Answer with one verdict for each id, nothing else.`, "", ...items.map((i) => questionBlock(i.id, i.q))].join("\n");
 }
 
 /** The cited excerpt as the one source of a file-scoped verdict. */

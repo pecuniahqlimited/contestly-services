@@ -7,7 +7,7 @@ import { Breakers, claudeClient, geminiClient, MemorySink, noBudget, ProviderUna
 import { EMBEDDING_DIM, QUESTION_FORMATS, type QuestionFormat } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
 import { anthropicGenerator } from "../src/providers/anthropic/generator.js";
-import { planBatches } from "../src/providers/drafting/generator.js";
+import { planShares } from "../src/providers/drafting/generator.js";
 import { geminiGenerator } from "../src/providers/gemini/generator.js";
 import { geminiVerifier } from "../src/providers/gemini/verifier.js";
 import { geminiSafety } from "../src/providers/gemini/safety.js";
@@ -17,7 +17,7 @@ import { claudeSafety } from "../src/providers/anthropic/safety.js";
 import { freeProviders, liveSafety, liveVerifier } from "../src/providers/index.js";
 import { gateDraft } from "../src/pipeline/gate.js";
 import { cachedVerifier, verificationKey } from "../src/providers/cachedVerifier.js";
-import type { GenerationSpec, VerifyVerdict } from "../src/providers/types.js";
+import { verifyOne, type GenerationSpec, type VerifyVerdict } from "../src/providers/types.js";
 
 type Handler = (url: string, body: Record<string, unknown>) => Response | Promise<Response>;
 const fetchOf = (h: Handler) => (async (url: string | URL | Request, init?: RequestInit) => {
@@ -49,34 +49,34 @@ const ITEMS: Record<QuestionFormat, Record<string, unknown>> = {
   picture: { question: "Which landmark is this?", imageId: "zuma-rock", answer: "Zuma Rock", distractors: ["Olumo Rock", "Aso Rock", "Idanre Hill"], claim: "The pictured monolith is Zuma Rock.", explanation: "Near Abuja." },
 };
 
-const claudeReply = (format: QuestionFormat, items: unknown[] = [ITEMS[format]]) => json({
-  id: "m", type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify({ questions: items }) }],
+/** A set's reply: the questions keyed by format (one call for every format). */
+const claudeSet = (byFormat: Partial<Record<QuestionFormat, unknown[]>>) => json({
+  id: "m", type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: JSON.stringify({ questions: byFormat }) }],
   stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1200, output_tokens: 900 },
 });
+const claudeReply = (format: QuestionFormat, items: unknown[] = [ITEMS[format]]) => claudeSet({ [format]: items });
 
-/** Which format a request was for, from its prompt. */
-const formatAsked = (body: Record<string, unknown>): QuestionFormat => {
-  const user = String((body.messages as { content: string }[])[0].content);
-  if (user.includes("Format: pick all")) return "pick_all";
-  if (user.includes("Format: put in order")) return "order";
-  if (user.includes("Format: match")) return "match";
-  if (user.includes("Format: picture")) return "picture";
-  return "pick_one";
-};
+/** The formats a request asked for, from its output schema. */
+const formatsAsked = (body: Record<string, unknown>): string[] =>
+  Object.keys((body.output_config as { format: { schema: { properties: { questions: { properties: object } } } } }).format.schema.properties.questions.properties);
+
+const ITEMS_BY_FORMAT = Object.fromEntries(QUESTION_FORMATS.map((f) => [f, [ITEMS[f]]]));
 
 const generator = (h: Handler, deps = callDeps()) => ({ deps, gen: anthropicGenerator({ client: claudeClient({ apiKey: "test", fetch: fetchOf(h) }), call: deps, model: async () => "claude-sonnet-5-5" }) });
 
-describe("planBatches", () => {
-  it("spreads the count across formats and splits big shares", () => {
-    expect(planBatches(7, ["pick_one", "order"])).toEqual([{ format: "pick_one", count: 4 }, { format: "order", count: 3 }]);
-    expect(planBatches(20, ["pick_one"]).map((b) => b.count)).toEqual([8, 8, 4]);
-    expect(planBatches(0, ["pick_one"])).toEqual([]);
+describe("planShares", () => {
+  it("spreads the count across formats, a share each, however big", () => {
+    expect(planShares(7, ["pick_one", "order"])).toEqual([{ format: "pick_one", count: 4 }, { format: "order", count: 3 }]);
+    expect(planShares(20, ["pick_one"])).toEqual([{ format: "pick_one", count: 20 }]);
+    expect(planShares(2, ["pick_one", "order", "match"])).toEqual([{ format: "pick_one", count: 1 }, { format: "order", count: 1 }]);
+    expect(planShares(0, ["pick_one"])).toEqual([]);
   });
 });
 
 describe("Claude generator", () => {
-  it("writes every format as a valid payload, one call per format, recorded with model and cost", async () => {
-    const { gen, deps } = generator((_u, body) => claudeReply(formatAsked(body)));
+  it("writes every format as a valid payload in one call for the set, recorded with model and cost", async () => {
+    let user = "";
+    const { gen, deps } = generator((_u, body) => { user = String((body.messages as { content: string }[])[0].content); return claudeSet(ITEMS_BY_FORMAT); });
     const drafts = await gen.draft({ spec: spec({ formats: [...QUESTION_FORMATS] }), count: 5, avoid: [] });
     expect(drafts.map((d) => d.format).sort()).toEqual([...QUESTION_FORMATS].sort());
     for (const d of drafts) {
@@ -91,8 +91,9 @@ describe("Claude generator", () => {
     const match = drafts.find((d) => d.format === "match")!.payload as { left: string[]; right: string[]; pairs: number[] };
     expect(match.pairs.map((r) => match.right[r])).toEqual(["Jay-Jay", "Goalfather", "Papilo"]);
     expect(drafts.find((d) => d.format === "picture")!.payload).toMatchObject({ imageUrl: "pool/zuma-rock.jpg" });
-    expect(deps.sink.records).toHaveLength(5);
-    expect(deps.sink.records.every((r) => r.step === "generate" && r.outcome === "ok" && r.costMicros === 11_400)).toBe(true);
+    expect(deps.sink.records).toHaveLength(1);
+    expect(deps.sink.records[0]).toMatchObject({ step: "generate", outcome: "ok", costMicros: 11_400 });
+    expect(user).toContain('1 under "pick_one", 1 under "pick_all", 1 under "order", 1 under "match", 1 under "picture"');
   });
 
   it("puts the spec, the rules and the avoid list in the prompt, and nothing personal", async () => {
@@ -117,10 +118,10 @@ describe("Claude generator", () => {
   });
 
   it("skips picture rounds for a file-scoped set (a file has no images)", async () => {
-    const asked: QuestionFormat[] = [];
-    const { gen } = generator((_u, body) => { asked.push(formatAsked(body)); return claudeReply("pick_one", []); });
+    const asked: string[][] = [];
+    const { gen } = generator((_u, body) => { asked.push(formatsAsked(body)); return claudeReply("pick_one", []); });
     await gen.draft({ spec: spec({ formats: ["pick_one", "picture"], sourceScope: { kind: "file", fileIds: ["f"] } }), count: 2, avoid: [], sources: [{ id: "c", text: "t" }] });
-    expect(asked).toEqual(["pick_one"]);
+    expect(asked).toEqual([["pick_one"]]);
   });
 
   it("malformed output makes the generator unavailable (the pipeline falls back to the bank)", async () => {
@@ -137,8 +138,8 @@ describe("Claude generator", () => {
     await expect(r.gen.draft({ spec: spec(), count: 1, avoid: [] })).rejects.toMatchObject({ kind: "rate_limited" });
   });
 
-  it("keeps the formats that worked when one format's call fails", async () => {
-    const { gen } = generator((_u, body) => (formatAsked(body) === "order" ? json({ error: { message: "boom" } }, 500) : claudeReply(formatAsked(body))));
+  it("a format the reply leaves out has no drafts; the others still count", async () => {
+    const { gen } = generator(() => claudeSet({ pick_one: [ITEMS.pick_one] }));
     const drafts = await gen.draft({ spec: spec({ formats: ["pick_one", "order"] }), count: 2, avoid: [] });
     expect(drafts.map((d) => d.format)).toEqual(["pick_one"]);
   });
@@ -154,19 +155,29 @@ describe("Claude generator", () => {
 
 // ---------------------------------------------------------------- Gemini verifier
 
-const geminiReply = (out: unknown, extra: Record<string, unknown> = {}) => json({
-  candidates: [{ content: { parts: [{ text: JSON.stringify(out) }] }, finishReason: "STOP", ...extra }],
-  usageMetadata: { promptTokenCount: 400, candidatesTokenCount: 60 },
-});
-const grounded = { groundingMetadata: { webSearchQueries: ["2013 afcon coach nigeria"], groundingChunks: [{ web: { uri: "https://cafonline.test/2013", title: "cafonline.test" } }, { web: { uri: "https://bbc.test/keshi", title: "bbc.test" } }] } };
+const geminiReply = (out: unknown, extra: Record<string, unknown> | ((text: string) => Record<string, unknown>) = {}) => {
+  const text = JSON.stringify(out);
+  return json({
+    candidates: [{ content: { parts: [{ text }] }, finishReason: "STOP", ...(typeof extra === "function" ? extra(text) : extra) }],
+    usageMetadata: { promptTokenCount: 400, candidatesTokenCount: 60 },
+  });
+};
+/** A verdict list as the verifier's reply, the first one answering the batch's q1 unless it says otherwise. */
+const verdicts = (...vs: Record<string, unknown>[]) => ({ verdicts: vs.map((v, i) => ({ id: `q${i + 1}`, foundAnswer: "", note: "", ...v })) });
+/** Google Search grounding that backs the whole reply with both sources. */
+const grounded = (text: string) => ({ groundingMetadata: {
+  webSearchQueries: ["2013 afcon coach nigeria"],
+  groundingChunks: [{ web: { uri: "https://cafonline.test/2013", title: "cafonline.test" } }, { web: { uri: "https://bbc.test/keshi", title: "bbc.test" } }],
+  groundingSupports: [{ segment: { partIndex: 0, startIndex: 0, endIndex: Buffer.byteLength(text) }, groundingChunkIndices: [0, 1] }],
+} });
 const question = { format: "pick_one" as const, payload: { question: "Who coached Nigeria to the 2013 AFCON title?", options: ["Stephen Keshi", "Gernot Rohr", "Sunday Oliseh", "Clemens Westerhof"], correctIndex: 0 }, claim: "Stephen Keshi coached Nigeria to the 2013 AFCON title." };
 const verifier = (h: Handler, deps = callDeps()) => ({ deps, v: geminiVerifier({ client: geminiClient({ apiKey: "g", fetch: fetchOf(h) }), call: deps, model: async () => "gemini-3.8-flash", mode: "grounded", tier: "paid" }) });
 
 describe("Gemini verifier", () => {
   it("checks open-knowledge questions with Google Search and keeps the sources", async () => {
     let body: Record<string, unknown> = {};
-    const { v, deps } = verifier((_u, b) => { body = b; return geminiReply({ verdict: "correct", foundAnswer: "Stephen Keshi", note: "CAF records" }, grounded); });
-    const out = await v.verify(question);
+    const { v, deps } = verifier((_u, b) => { body = b; return geminiReply(verdicts({ verdict: "correct", foundAnswer: "Stephen Keshi", note: "CAF records" }), grounded); });
+    const out = await verifyOne(v, question);
     expect(body.tools).toEqual([{ googleSearch: {} }]);
     expect(JSON.stringify(body.contents)).toContain("Stated correct answer: Stephen Keshi");
     expect(out).toMatchObject({ verdict: "correct", foundAnswer: "Stephen Keshi", sources: ["https://cafonline.test/2013", "https://bbc.test/keshi"], verifiedBy: { provider: "gemini", model: "gemini-3.8-flash" } });
@@ -176,30 +187,30 @@ describe("Gemini verifier", () => {
   });
 
   it("a 'correct' with no sources behind it is unverifiable", async () => {
-    const { v } = verifier(() => geminiReply({ verdict: "correct", foundAnswer: "Keshi", note: "I recall" }));
-    expect((await v.verify(question)).verdict).toBe("unverifiable");
+    const { v } = verifier(() => geminiReply(verdicts({ verdict: "correct", foundAnswer: "Keshi", note: "I recall" })));
+    expect((await verifyOne(v, question)).verdict).toBe("unverifiable");
   });
 
   it("checks a file-scoped question against its chunk, with no search", async () => {
     let body: Record<string, unknown> = {};
-    const { v } = verifier((_u, b) => { body = b; return geminiReply({ verdict: "correct", foundAnswer: "1990", note: "stated in the excerpt" }); });
-    const out = await v.verify({ ...question, sourceText: "The bridge opened in 1990.", sourceChunkId: "c9" });
+    const { v } = verifier((_u, b) => { body = b; return geminiReply(verdicts({ verdict: "correct", foundAnswer: "1990", note: "stated in the excerpt" })); });
+    const out = await verifyOne(v, { ...question, sourceText: "The bridge opened in 1990.", sourceChunkId: "c9" });
     expect(body.tools).toBeUndefined();
     expect(JSON.stringify(body.contents)).toContain("The bridge opened in 1990.");
     expect(out.sources).toEqual(["chunk:c9"]);
   });
 
-  it("an unknown verdict is malformed, and a timeout or rate limit is unavailable", async () => {
-    await expect(verifier(() => geminiReply({ verdict: "probably", foundAnswer: "", note: "" })).v.verify(question)).rejects.toMatchObject({ kind: "malformed" });
-    await expect(verifier(hang).v.verify(question)).rejects.toMatchObject({ kind: "timeout" });
-    await expect(verifier(() => json({ error: { code: 429, message: "quota" } }, 429)).v.verify(question)).rejects.toMatchObject({ kind: "rate_limited" });
+  it("an unknown verdict fails that question closed; a timeout or rate limit is unavailable", async () => {
+    expect(await verifyOne(verifier(() => geminiReply(verdicts({ verdict: "probably" }))).v, question)).toMatchObject({ verdict: "unverifiable", note: expect.stringMatching(/malformed/) });
+    await expect(verifyOne(verifier(hang).v, question)).rejects.toMatchObject({ kind: "timeout" });
+    await expect(verifyOne(verifier(() => json({ error: { code: 429, message: "quota" } }, 429)).v, question)).rejects.toMatchObject({ kind: "rate_limited" });
   });
 
   it("stops calling once the circuit is open", async () => {
     let calls = 0;
     const { v } = verifier(() => { calls++; return json({ error: { message: "down" } }, 500); }, callDeps({ retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 } }));
-    for (let i = 0; i < 3; i++) await v.verify(question).catch(() => {});
-    await expect(v.verify(question)).rejects.toMatchObject({ kind: "circuit_open" });
+    for (let i = 0; i < 3; i++) await verifyOne(v, question).catch(() => {});
+    await expect(verifyOne(v, question)).rejects.toMatchObject({ kind: "circuit_open" });
     expect(calls).toBe(3);
   });
 });
@@ -212,19 +223,24 @@ describe("verification cache", () => {
 
   it("pays once per question and model, and never caches 'unverifiable'", async () => {
     let calls = 0;
-    const inner = { name: "gemini", verify: async () => { calls++; return { verdict: "correct" as const, sources: ["u"], verifiedBy: { provider: "gemini", model: "m" } }; } };
+    const sent: number[] = [];
+    const inner = { name: "gemini", verifyBatch: async (qs: unknown[]) => { calls++; sent.push(qs.length); return qs.map(() => ({ verdict: "correct" as const, sources: ["u"], verifiedBy: { provider: "gemini", model: "m" } })); } };
     const { cache } = memory();
     const v = cachedVerifier(inner, async () => "m", cache);
-    await v.verify(question);
-    const again = await v.verify(question);
+    await verifyOne(v, question);
+    const again = await verifyOne(v, question);
     expect(calls).toBe(1);
+    // A batch with the cached question and a new one sends only the new one.
+    const other = { ...question, claim: "Nigeria won AFCON in 1994." };
+    await v.verifyBatch([question, other]);
+    expect(sent).toEqual([1, 1]);
     expect(again.verifiedBy?.cached).toBe(true);
     expect(verificationKey("gemini", "m", question)).not.toBe(verificationKey("gemini", "other-model", question));
 
     let unsure = 0;
-    const u = cachedVerifier({ name: "gemini", verify: async () => { unsure++; return { verdict: "unverifiable" as const, sources: [] }; } }, async () => "m", memory().cache);
-    await u.verify(question);
-    await u.verify(question);
+    const u = cachedVerifier({ name: "gemini", verifyBatch: async (qs: unknown[]) => { unsure++; return qs.map(() => ({ verdict: "unverifiable" as const, sources: [] })); } }, async () => "m", memory().cache);
+    await verifyOne(u, question);
+    await verifyOne(u, question);
     expect(unsure).toBe(2);
   });
 
@@ -284,7 +300,7 @@ describe("Gemini embedder", () => {
     expect(out).toHaveLength(20);
     for (const v of out) expect(Math.abs(v.reduce((a, x) => a + x * x, 0) - 1)).toBeLessThan(1e-9);
     expect(asked[0]).toBe("task: clustering | query: text 0");
-    expect(deps.sink.records.map((r) => r.step)).toEqual(["embed", "embed"]); // 16 + 4
+    expect(deps.sink.records.map((r) => [r.step, r.requests])).toEqual([["embed", 20]]); // the set's texts are one call
     expect(e.model).toBe("gemini-embedding-2");
   });
 
@@ -308,7 +324,7 @@ const searchBlocks = (urls: string[]) => [
   { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "2013 afcon coach" } },
   { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: urls.map((url) => ({ type: "web_search_result", url, title: url.split("/")[2], encrypted_content: "x" })) },
 ];
-const verdictText = (v: Record<string, unknown>) => ({ type: "text", text: JSON.stringify({ foundAnswer: "", note: "", sourceUrls: [], ...v }) });
+const verdictText = (...vs: Record<string, unknown>[]) => ({ type: "text", text: JSON.stringify({ verdicts: vs.map((v, i) => ({ id: `q${i + 1}`, foundAnswer: "", note: "", sourceUrls: [], ...v })) }) });
 const claudeV = (h: Handler, deps = callDeps()) => ({ deps, v: claudeVerifier({ client: claudeClient({ apiKey: "test", fetch: fetchOf(h) }), call: deps, model: async () => "claude-opus-5-5" }) });
 
 describe("Claude verifier", () => {
@@ -318,7 +334,7 @@ describe("Claude verifier", () => {
       body = b;
       return claudeMsg([...searchBlocks(["https://cafonline.test/2013", "https://bbc.test/keshi"]), verdictText({ verdict: "correct", foundAnswer: "Stephen Keshi", note: "CAF records", sourceUrls: ["https://cafonline.test/2013", "https://made-up.test/x"] })]);
     });
-    const out = await v.verify(question);
+    const out = await verifyOne(v, question);
     expect(body.model).toBe("claude-opus-5-5");
     expect(body.tools).toEqual([{ type: "web_search_20260209", name: "web_search", max_uses: 3, allowed_callers: ["direct"] }]);
     // No shared context: one user turn, the question alone.
@@ -331,34 +347,34 @@ describe("Claude verifier", () => {
 
   it("a 'correct' citing nothing it was shown is unverifiable", async () => {
     const { v } = claudeV(() => claudeMsg([...searchBlocks(["https://a.test/1"]), verdictText({ verdict: "correct", sourceUrls: ["https://remembered.test/"] })]));
-    expect((await v.verify(question)).verdict).toBe("unverifiable");
+    expect((await verifyOne(v, question)).verdict).toBe("unverifiable");
     const none = claudeV(() => claudeMsg([verdictText({ verdict: "correct", sourceUrls: [] })]));
-    expect((await none.v.verify(question)).verdict).toBe("unverifiable");
+    expect((await verifyOne(none.v, question)).verdict).toBe("unverifiable");
   });
 
   it("keeps incorrect and ambiguous verdicts with what it found", async () => {
     const { v } = claudeV(() => claudeMsg([...searchBlocks(["https://a.test/1"]), verdictText({ verdict: "incorrect", foundAnswer: "Gernot Rohr", sourceUrls: ["https://a.test/1"] })]));
-    expect(await v.verify(question)).toMatchObject({ verdict: "incorrect", foundAnswer: "Gernot Rohr", sources: ["https://a.test/1"] });
+    expect(await verifyOne(v, question)).toMatchObject({ verdict: "incorrect", foundAnswer: "Gernot Rohr", sources: ["https://a.test/1"] });
   });
 
   it("checks a file-scoped question against its chunk, with no search", async () => {
     let body: Record<string, unknown> = {};
     const { v } = claudeV((_u, b) => { body = b; return claudeMsg([verdictText({ verdict: "correct", foundAnswer: "1990" })], { input_tokens: 500, output_tokens: 50 }); });
-    const out = await v.verify({ ...question, sourceText: "The bridge opened in 1990.", sourceChunkId: "c9" });
+    const out = await verifyOne(v, { ...question, sourceText: "The bridge opened in 1990.", sourceChunkId: "c9" });
     expect(body.tools).toBeUndefined();
     expect(JSON.stringify(body.messages)).toContain("The bridge opened in 1990.");
     expect(out).toMatchObject({ verdict: "correct", sources: ["chunk:c9"] });
   });
 
-  it("an unknown verdict is malformed; a timeout, a rate limit and an open circuit are unavailable", async () => {
-    await expect(claudeV(() => claudeMsg([verdictText({ verdict: "probably" })])).v.verify(question)).rejects.toMatchObject({ kind: "malformed" });
-    await expect(claudeV(() => claudeMsg([{ type: "text", text: "not json" }])).v.verify(question)).rejects.toMatchObject({ kind: "malformed" });
-    await expect(claudeV(hang).v.verify(question)).rejects.toMatchObject({ kind: "timeout" });
-    await expect(claudeV(() => json({ type: "error", error: { type: "rate_limit_error", message: "slow" } }, 429)).v.verify(question)).rejects.toMatchObject({ kind: "rate_limited" });
+  it("an unknown verdict fails that question closed; output that isn't JSON is malformed; a timeout, a rate limit and an open circuit are unavailable", async () => {
+    expect(await verifyOne(claudeV(() => claudeMsg([verdictText({ verdict: "probably" })])).v, question)).toMatchObject({ verdict: "unverifiable", note: expect.stringMatching(/malformed/) });
+    await expect(verifyOne(claudeV(() => claudeMsg([{ type: "text", text: "not json" }])).v, question)).rejects.toMatchObject({ kind: "malformed" });
+    await expect(verifyOne(claudeV(hang).v, question)).rejects.toMatchObject({ kind: "timeout" });
+    await expect(verifyOne(claudeV(() => json({ type: "error", error: { type: "rate_limit_error", message: "slow" } }, 429)).v, question)).rejects.toMatchObject({ kind: "rate_limited" });
     let calls = 0;
     const { v } = claudeV(() => { calls++; return json({ type: "error", error: { type: "api_error", message: "down" } }, 500); }, callDeps({ retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 } }));
-    for (let i = 0; i < 3; i++) await v.verify(question).catch(() => {});
-    await expect(v.verify(question)).rejects.toMatchObject({ kind: "circuit_open" });
+    for (let i = 0; i < 3; i++) await verifyOne(v, question).catch(() => {});
+    await expect(verifyOne(v, question)).rejects.toMatchObject({ kind: "circuit_open" });
     expect(calls).toBe(3);
   });
 
@@ -401,24 +417,24 @@ describe("Claude safety", () => {
 describe("live verify and safety follow the admin's model", () => {
   const clientsFor = (seen: string[]) => ({
     anthropic: claudeClient({ apiKey: "test", fetch: fetchOf((u) => { seen.push(`anthropic ${u}`); return claudeMsg([...searchBlocks(["https://a.test/1"]), verdictText({ verdict: "correct", sourceUrls: ["https://a.test/1"] })]); }) }),
-    gemini: geminiClient({ apiKey: "g", fetch: fetchOf((u) => { seen.push(`gemini ${u}`); return geminiReply({ verdict: "correct", foundAnswer: "Keshi", note: "" }, grounded); }) }),
+    gemini: geminiClient({ apiKey: "g", fetch: fetchOf((u) => { seen.push(`gemini ${u}`); return geminiReply(verdicts({ verdict: "correct", foundAnswer: "Keshi" }), grounded); }) }),
   });
   const noCache = { get: async () => null, put: async () => {} };
 
   it("Claude by default, Gemini when the admin picks a Gemini model, no restart", async () => {
     const seen: string[] = [];
     let model: "claude-opus-5-5" | "gemini-3.8-flash" = "claude-opus-5-5";
-    const v = liveVerifier(() => callDeps(), async () => model, clientsFor(seen), noCache);
-    expect((await v.verify(question)).verifiedBy).toMatchObject({ provider: "anthropic", model: "claude-opus-5-5" });
+    const v = liveVerifier(() => callDeps(), async () => model, clientsFor(seen), noCache, async () => 10);
+    expect((await verifyOne(v, question)).verifiedBy).toMatchObject({ provider: "anthropic", model: "claude-opus-5-5" });
     model = "gemini-3.8-flash";
-    expect((await v.verify(question)).verifiedBy).toMatchObject({ provider: "gemini", model: "gemini-3.8-flash" });
+    expect((await verifyOne(v, question)).verifiedBy).toMatchObject({ provider: "gemini", model: "gemini-3.8-flash" });
     expect(seen.map((s) => s.split(" ")[0])).toEqual(["anthropic", "gemini"]);
   });
 
   it("a model whose vendor has no key fails closed, as unavailable", async () => {
     const seen: string[] = [];
-    const v = liveVerifier(() => callDeps(), async () => "gemini-3.8-flash", { ...clientsFor(seen), gemini: null }, noCache);
-    await expect(v.verify(question)).rejects.toBeInstanceOf(ProviderUnavailable);
+    const v = liveVerifier(() => callDeps(), async () => "gemini-3.8-flash", { ...clientsFor(seen), gemini: null }, noCache, async () => 10);
+    await expect(verifyOne(v, question)).rejects.toBeInstanceOf(ProviderUnavailable);
     const s = liveSafety(() => callDeps(), async () => "gemini-3.5-flash-lite", { ...clientsFor(seen), gemini: null });
     await expect(s.review(spec(), items)).rejects.toBeInstanceOf(ProviderUnavailable);
     expect(seen).toEqual([]);
@@ -427,14 +443,15 @@ describe("live verify and safety follow the admin's model", () => {
 
 describe("Gemini embedder on the free tier", () => {
   it("counts each text as a request and waits for the model's per-minute limiter", async () => {
+    // One call for the 32 texts, each its own request underneath: half wait out the window.
     let now = 0;
     const waits: number[] = [];
     const limiter = new RateLimiter({ limit: 16, windowMs: 60_000, now: () => now, sleep: async (ms) => { waits.push(ms); now += ms; } });
     const deps = callDeps({ limiters: { for: () => limiter } as unknown as CallDeps["limiters"] });
     const e = geminiEmbedder({ client: geminiClient({ apiKey: "g", fetch: fetchOf(() => json({ embedding: { values: vector(3) } })) }), call: deps, model: "gemini-embedding-2", tier: "free" });
     await e.embed(Array.from({ length: 32 }, (_, i) => `t${i}`));
-    expect(waits).toEqual([60_000]); // the second batch of 16 waited out the window
-    expect(deps.sink.records.map((r) => [r.tier, r.requests, r.costMicros])).toEqual([["free", 16, 0], ["free", 16, 0]]);
+    expect(waits).toEqual([60_000]); // the 17th request waited out the window
+    expect(deps.sink.records.map((r) => [r.tier, r.requests, r.costMicros])).toEqual([["free", 32, 0]]);
   });
 
   it("a per-minute 429 waits as long as Gemini's RetryInfo asks, then succeeds", async () => {
@@ -464,12 +481,12 @@ describe("Gemini embedder on the free tier", () => {
 
 describe("free profile", () => {
   const noCache = { get: async () => null, put: async () => {} };
-  const free = (h: Handler, deps = callDeps({ paidCapMicros: 0 })) => ({ deps, p: freeProviders(() => deps, geminiClient({ apiKey: "g", fetch: fetchOf(h) }), noCache) });
+  const free = (h: Handler, deps = callDeps({ paidCapMicros: 0 })) => ({ deps, p: freeProviders(() => deps, geminiClient({ apiKey: "g", fetch: fetchOf(h) }), noCache, async () => 10) });
 
   it("verifies from model knowledge, with no search: correct is 'checked without sources', free, and passes only its own gate", async () => {
     let body: Record<string, unknown> = {};
-    const { p, deps } = free((_u, b) => { body = b; return geminiReply({ verdict: "correct", foundAnswer: "Stephen Keshi", note: "well known" }); });
-    const v = await p.verifier.verify(question);
+    const { p, deps } = free((_u, b) => { body = b; return geminiReply(verdicts({ verdict: "correct", foundAnswer: "Stephen Keshi", note: "well known" })); });
+    const v = await verifyOne(p.verifier, question);
     expect(body.tools).toBeUndefined();
     expect(v).toMatchObject({ verdict: "correct", sources: [], unsourced: true, verifiedBy: { provider: "gemini", model: "gemini-3.6-flash" } });
     expect(v.note).toMatch(/^checked without sources/);
@@ -481,13 +498,10 @@ describe("free profile", () => {
   });
 
   it("writes with a free model, on the free tier, while the paid cap is $0", async () => {
-    const { p, deps } = free((_u, b) => {
-      const user = JSON.stringify(b.contents);
-      const format = user.includes("Format: pick all") ? "pick_all" : user.includes("Format: put in order") ? "order" : user.includes("Format: match") ? "match" : "pick_one";
-      return geminiReply({ questions: [ITEMS[format]] });
-    });
+    const { p, deps } = free(() => geminiReply({ questions: { pick_one: [ITEMS.pick_one], order: [ITEMS.order] } }));
     const drafts = await p.generator.draft({ spec: spec({ formats: ["pick_one", "order"] }), count: 2, avoid: [] });
     expect(drafts.map((d) => d.generatedBy)).toEqual([{ provider: "gemini", model: "gemini-3.5-flash-lite" }, { provider: "gemini", model: "gemini-3.5-flash-lite" }]);
+    expect(deps.sink.records).toHaveLength(1);
     expect(deps.sink.records.every((r) => r.tier === "free" && r.costMicros === 0)).toBe(true);
   });
 });
@@ -501,7 +515,7 @@ describe("paid providers are off at a $0 cap", () => {
     const { gen } = generator(() => { calls++; return claudeReply("pick_one"); }, deps);
     await expect(gen.draft({ spec: spec(), count: 1, avoid: [] })).rejects.toMatchObject({ kind: "budget", message: expect.stringMatching(/paid providers are off/) });
     const v = claudeV(() => { calls++; return claudeMsg([verdictText({ verdict: "correct" })]); }, deps).v;
-    await expect(v.verify(question)).rejects.toBeInstanceOf(ProviderUnavailable);
+    await expect(verifyOne(v, question)).rejects.toBeInstanceOf(ProviderUnavailable);
     expect(calls).toBe(0);
     expect(deps.sink.records.every((r) => r.outcome === "budget" && r.requests === 0 && r.costMicros === 0)).toBe(true);
   });

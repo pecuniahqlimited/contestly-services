@@ -4,7 +4,7 @@ import { BAD_IDS, DECK, DUP_IDS, deckEntryByQuestion, isKnownBadQuestion } from 
 import { mockGenerator } from "../src/providers/mock/generator.js";
 import { mockVerifier } from "../src/providers/mock/verifier.js";
 import { mockEmbedder } from "../src/providers/mock/embedder.js";
-import type { GenerationSpec } from "../src/providers/types.js";
+import { verifyOne, type GenerationSpec } from "../src/providers/types.js";
 
 const spec = (over: Partial<GenerationSpec> = {}): GenerationSpec => ({
   topic: "nigerian general knowledge — cities, food, music, football",
@@ -67,7 +67,7 @@ describe("MockGenerator once the deck is exhausted", () => {
     const { embeddingText } = await import("../src/pipeline/text.js");
     for (const d of fresh) {
       expect(payloadSchemas.pick_one.safeParse(d.payload).success).toBe(true);
-      expect((await mockVerifier.verify(d)).verdict).toBe("correct");
+      expect((await verifyOne(mockVerifier, d)).verdict).toBe("correct");
     }
     const vecs = await mockEmbedder.embed(fresh.map((d) => embeddingText(d.format, d.payload)));
     const cos = (x: number[], y: number[]) => x.reduce((s, v, i) => s + v * y[i], 0);
@@ -94,10 +94,10 @@ describe("MockVerifier", () => {
   };
 
   it("fails the fixed bad ids and nothing else", async () => {
-    expect((await mockVerifier.verify(draftOf(BAD_IDS.twoCorrect))).verdict).toBe("ambiguous");
-    expect((await mockVerifier.verify(draftOf(BAD_IDS.answerInQuestion))).verdict).toBe("incorrect");
-    expect((await mockVerifier.verify(draftOf(BAD_IDS.unverifiable))).verdict).toBe("unverifiable");
-    const pass = await mockVerifier.verify(draftOf("po-keshi"));
+    expect((await verifyOne(mockVerifier, draftOf(BAD_IDS.twoCorrect))).verdict).toBe("ambiguous");
+    expect((await verifyOne(mockVerifier, draftOf(BAD_IDS.answerInQuestion))).verdict).toBe("incorrect");
+    expect((await verifyOne(mockVerifier, draftOf(BAD_IDS.unverifiable))).verdict).toBe("unverifiable");
+    const pass = await verifyOne(mockVerifier, draftOf("po-keshi"));
     expect(pass.verdict).toBe("correct");
     expect(pass.sources.length).toBeGreaterThanOrEqual(2);
   });

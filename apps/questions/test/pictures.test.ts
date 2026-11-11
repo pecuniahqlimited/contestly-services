@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { pictureLimit, pictureRoom, withinPictureCap } from "../src/pipeline/pictures.js";
-import { planBatches } from "../src/providers/drafting/generator.js";
+import { planShares } from "../src/providers/drafting/generator.js";
 
 const pic = (image: string) => ({ format: "picture", payload: { imageUrl: `pool/${image}.jpg` } });
 const text = (n: number) => ({ format: "pick_one", payload: { question: `q${n}` } });
@@ -34,15 +34,15 @@ describe("picture cap", () => {
   });
 });
 
-describe("planBatches with a cap", () => {
+describe("planShares with a cap", () => {
   it("gives a capped format's excess to the others", () => {
-    expect(planBatches(10, ["pick_one", "picture"], { picture: 2 })).toEqual([{ format: "pick_one", count: 8 }, { format: "picture", count: 2 }]);
+    expect(planShares(10, ["pick_one", "picture"], { picture: 2 })).toEqual([{ format: "pick_one", count: 8 }, { format: "picture", count: 2 }]);
   });
 
   it("asks for less when every format is capped, and skips a format capped at zero", () => {
-    expect(planBatches(30, ["picture"], { picture: 7 })).toEqual([{ format: "picture", count: 7 }]);
-    expect(planBatches(5, ["picture", "order"], { picture: 0 })).toEqual([{ format: "order", count: 5 }]);
-    expect(planBatches(5, ["picture"], { picture: 0 })).toEqual([]);
+    expect(planShares(30, ["picture"], { picture: 7 })).toEqual([{ format: "picture", count: 7 }]);
+    expect(planShares(5, ["picture", "order"], { picture: 0 })).toEqual([{ format: "order", count: 5 }]);
+    expect(planShares(5, ["picture"], { picture: 0 })).toEqual([]);
   });
 });
 
@@ -66,7 +66,7 @@ describe("draftAndJudge under the picture cap", () => {
       },
     };
     const verified: string[] = [];
-    const verifier = { name: "count", verify: async (q: { payload: unknown }) => { verified.push(String((q.payload as { imageUrl?: string }).imageUrl)); return { verdict: "correct" as const, sources: ["chunk:c0"] }; } };
+    const verifier = { name: "count", verifyBatch: async (qs: { payload: unknown }[]) => qs.map((q) => { verified.push(String((q.payload as { imageUrl?: string }).imageUrl)); return { verdict: "correct" as const, sources: ["chunk:c0"] }; }) };
     const r = await draftAndJudge({
       spec, providers: { generator, verifier, embedder: mockEmbedder, safety: mockSafety }, dedupeSimilarity: 0.99, want: 4, avoid: [], sources,
       pictures: { limit: 2, inSet: [] },

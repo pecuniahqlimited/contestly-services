@@ -11,8 +11,7 @@ import { randomUUID } from "node:crypto";
 import { checkSafety, type QuestionFormat, type SafetyResult } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
 import { ProviderUnavailable } from "@contestly/ai";
-import type { DraftQuestion, GenerationSpec, Providers, SourceChunk, VerifyVerdict } from "../providers/types.js";
-import { mapLimit } from "./concurrency.js";
+import type { DraftQuestion, GenerationSpec, Providers, SourceChunk, VerifyInput, VerifyVerdict } from "../providers/types.js";
 import { nearest, type Neighbour } from "./dedupe.js";
 import { estimateDifficulty, type DifficultyEstimate } from "./difficulty.js";
 import { gateDraft, type GateOutcome } from "./gate.js";
@@ -20,11 +19,10 @@ import { nearestInBank } from "./retrieve.js";
 import { embeddingText, questionText } from "./text.js";
 import { pictureRoom, withinPictureCap } from "./pictures.js";
 
-/** Extra drafts requested beyond the gap, so rejections don't force a second round. */
-const QUALITY_BUFFER = 6;
+/** Extra drafts asked for in the first round beyond the gap, so rejections rarely force a second one. */
+export const QUALITY_BUFFER = 6;
+/** The second round, if any, asks only for the gap that's left. */
 const MAX_DRAFT_ROUNDS = 2;
-/** Verification calls in flight at once (each is a grounded search; the provider rate-limits). */
-const VERIFY_CONCURRENCY = 4;
 
 /** The steps that can be unavailable, as recorded on a fill. */
 export type UnavailableStep = "generate" | "verify" | "safety";
@@ -65,7 +63,7 @@ export interface DraftRequest {
 export async function judgeOne(draft: DraftQuestion, req: Omit<DraftRequest, "want" | "avoid">): Promise<JudgedDraft> {
   const full: DraftRequest = { ...req, want: 1, avoid: [] };
   const checks = new Checks(full);
-  const [checked] = await checks.review([await checks.check(draft)]);
+  const [checked] = await checks.review(await checks.checkAll([draft]));
   const [embedding] = await embedAll([checked], full);
   return dedupeAndGate(checked, embedding, full, []);
 }
@@ -91,7 +89,8 @@ export async function draftAndJudge(req: DraftRequest, progress?: DraftProgress)
     await progress?.("drafting", formats());
     let drafts: DraftQuestion[];
     try {
-      drafts = await req.providers.generator.draft({ spec, count: req.want - accepted.length + QUALITY_BUFFER, avoid, sources: req.sources, ...(room ? { maxPerFormat: { picture: room.left } } : {}) });
+      const count = req.want - accepted.length + (round === 0 ? QUALITY_BUFFER : 0);
+      drafts = await req.providers.generator.draft({ spec, count, avoid, sources: req.sources, ...(room ? { maxPerFormat: { picture: room.left } } : {}) });
     } catch (err) {
       if (!(err instanceof ProviderUnavailable)) throw err;
       checks.down.add("generate");
@@ -101,7 +100,7 @@ export async function draftAndJudge(req: DraftRequest, progress?: DraftProgress)
     if (room) drafts = withinPictureCap(drafts, room).kept;
     await progress?.("checking", formats());
     for (const d of drafts) avoid.push(questionText(d.payload));
-    const checked = await checks.review(await mapLimit(drafts, VERIFY_CONCURRENCY, (d) => checks.check(d)));
+    const checked = await checks.review(await checks.checkAll(drafts));
     await progress?.("dedupe", formats());
     const embeddings = await embedAll(checked, req);
     for (const [i, c] of checked.entries()) {
@@ -128,10 +127,15 @@ class Checks {
   readonly down = new Set<UnavailableStep>();
   constructor(private readonly req: DraftRequest) {}
 
-  async check(draft: DraftQuestion): Promise<Checked> {
-    const payloadValid = payloadSchemas[draft.format].safeParse(draft.payload).success;
-    const verify = payloadValid ? await this.verify(draft) : null;
-    return { draft, payloadValid, verify, safety: { ...checkSafety(this.req.spec, draft.payload, draft.explanation), reviewedBy: "terms" } };
+  /** Shape, then one verification batch for every draft whose shape is valid, then the term filter. */
+  async checkAll(drafts: DraftQuestion[]): Promise<Checked[]> {
+    const valid = drafts.map((d) => payloadSchemas[d.format].safeParse(d.payload).success);
+    const verdicts = await this.verify(drafts.filter((_, i) => valid[i]));
+    let k = 0;
+    return drafts.map((draft, i) => ({
+      draft, payloadValid: valid[i], verify: valid[i] ? verdicts[k++] : null,
+      safety: { ...checkSafety(this.req.spec, draft.payload, draft.explanation), reviewedBy: "terms" },
+    }));
   }
 
   /**
@@ -161,26 +165,33 @@ class Checks {
   }
 
   /**
-   * Verification is a separate provider call by design — never the same call as generation. A
-   * file-scoped draft is checked against the chunk it cites; one that cites nothing (or a chunk
-   * outside the party's files) can't be verified.
+   * Verification is a separate provider call by design — never the same call as generation — and one batch for
+   * the round (the verifier splits it by the admin's batch size). A file-scoped draft is checked against the
+   * chunk it cites; one that cites nothing (or a chunk outside the party's files) can't be verified, and isn't sent.
    */
-  private async verify(draft: DraftQuestion): Promise<VerifyVerdict> {
-    if (this.down.has("verify")) return { verdict: "unverifiable", sources: [], note: "verifier unavailable" };
-    const base = { format: draft.format, payload: draft.payload, explanation: draft.explanation, claim: draft.claim };
-    let input = base as Parameters<Providers["verifier"]["verify"]>[0];
-    if (this.req.sources) {
-      const chunk = this.req.sources.find((c) => c.id === draft.sourceChunkId);
-      if (!chunk) return { verdict: "unverifiable", sources: [], note: "no cited chunk from this party's files" };
-      input = { ...base, sourceText: chunk.text, sourceChunkId: chunk.id };
+  private async verify(drafts: DraftQuestion[]): Promise<VerifyVerdict[]> {
+    if (this.down.has("verify")) return drafts.map(() => ({ verdict: "unverifiable", sources: [], note: "verifier unavailable" }));
+    const out = new Array<VerifyVerdict>(drafts.length);
+    const send: { at: number; input: VerifyInput }[] = [];
+    for (const [at, draft] of drafts.entries()) {
+      const base: VerifyInput = { format: draft.format, payload: draft.payload, explanation: draft.explanation, claim: draft.claim };
+      if (!this.req.sources) send.push({ at, input: base });
+      else {
+        const chunk = this.req.sources.find((c) => c.id === draft.sourceChunkId);
+        if (!chunk) out[at] = { verdict: "unverifiable", sources: [], note: "no cited chunk from this party's files" };
+        else send.push({ at, input: { ...base, sourceText: chunk.text, sourceChunkId: chunk.id } });
+      }
     }
+    if (!send.length) return out;
     try {
-      return await this.req.providers.verifier.verify(input);
+      const verdicts = await this.req.providers.verifier.verifyBatch(send.map((s) => s.input));
+      for (const [k, s] of send.entries()) out[s.at] = verdicts[k];
     } catch (err) {
       if (!(err instanceof ProviderUnavailable)) throw err;
       this.down.add("verify");
-      return { verdict: "unverifiable", sources: [], note: `verifier unavailable (${err.kind})` };
+      for (const s of send) out[s.at] = { verdict: "unverifiable", sources: [], note: `verifier unavailable (${err.kind})` };
     }
+    return out;
   }
 }
 

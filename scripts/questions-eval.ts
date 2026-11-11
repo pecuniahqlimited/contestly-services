@@ -20,7 +20,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, Limiters, MemorySink, withCallContext, type BudgetGate, type CallDeps, type CallRecord, type UsageSink } from "@contestly/ai";
 import { dbBudgetGate, dbFreeQuota, dbUsageSink, freeRequestsToday, getQuestionsConfig } from "@contestly/db";
 import { DIFFICULTIES, FREE_PROFILE_MODELS, FREE_TIER_LIMITS, QUESTION_FORMATS, type Difficulty, type PricedModel, type QuestionFormat } from "@contestly/shared";
-import { draftAndJudge, type JudgedDraft } from "../apps/questions/src/pipeline/judge.js";
+import { draftAndJudge, QUALITY_BUFFER, type JudgedDraft } from "../apps/questions/src/pipeline/judge.js";
 import { buildSpec } from "../apps/questions/src/pipeline/spec.js";
 import { answerKeyText } from "../apps/questions/src/pipeline/text.js";
 import { mapLimit } from "../apps/questions/src/pipeline/concurrency.js";
@@ -43,10 +43,14 @@ const WANT_PER_SET = SMALL ? 3 : 5;
 /** --small: every lane at mixed difficulty, plus the file. */
 const SMALL_DIFFICULTIES: Difficulty[] = ["mixed"];
 /**
- * Free-tier requests a set can take at most, per step (two draft rounds of want + the quality buffer of 6;
- * a generate call per format per round; one safety call per round). What the pre-flight checks against.
+ * Free-tier requests a set can take at most, per step: two draft rounds (want + the quality buffer, then the gap),
+ * one generate call a round, the drafts' verification in batches of the admin's size, one safety call a round, and
+ * each draft's embedding (one call, a request per text). What the pre-flight checks against.
  */
-const perSetRequests = (formats: number) => ({ generate: 2 * formats, verify: 2 * (WANT_PER_SET + 6), safety: 2, embed: 2 * (WANT_PER_SET + 6) });
+const perSetRequests = (batchSize: number) => {
+  const drafts = 2 * WANT_PER_SET + QUALITY_BUFFER;
+  return { generate: 2, verify: Math.ceil((WANT_PER_SET + QUALITY_BUFFER) / batchSize) + Math.ceil(WANT_PER_SET / batchSize), safety: 2, embed: drafts };
+};
 const SET_CONCURRENCY = 4;
 const SECONDS = 20;
 
@@ -151,7 +155,7 @@ async function main() {
     spec: buildSpec({ brief: "Lagos bridges, from the attached notes", difficulty: "mixed", formats: fileFormats, questionCount: WANT_PER_SET, questionSeconds: SECONDS, fileIds: ["sample"] }),
   });
 
-  if (profile === "free") await freeTierPreflight(sets);
+  if (profile === "free") await freeTierPreflight(sets, cfg.providers.verifyBatchSize);
   const result: EvalResult = { startedAt, finishedAt: "", providers: { ...names, embedModel: providers.embedder.model }, models, maxUsd: MAX_USD, sets: [], questions: [], calls: memory.records };
   await mapLimit(sets, SET_CONCURRENCY, async (s) => {
     const spent = memory.records.reduce((a, r) => a + r.costMicros, 0) / 1_000_000;
@@ -193,11 +197,11 @@ async function main() {
  * The free profile: stop before starting if the run could take a model past its free daily quota (what's
  * left today, counted across every process), rather than failing closed halfway through.
  */
-async function freeTierPreflight(sets: SetDef[]) {
+async function freeTierPreflight(sets: SetDef[], batchSize: number) {
   const need: Record<string, number> = {};
   const add = (model: PricedModel, n: number) => { need[model] = (need[model] ?? 0) + n; };
   for (const s of sets) {
-    const r = perSetRequests(s.spec.formats.length);
+    const r = perSetRequests(batchSize);
     add(FREE_PROFILE_MODELS.generate, r.generate);
     add(FREE_PROFILE_MODELS.verify, r.verify);
     add(FREE_PROFILE_MODELS.safety, r.safety);

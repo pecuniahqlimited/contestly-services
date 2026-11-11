@@ -36,11 +36,11 @@ describe("provider fallback", () => {
 
   it("verifier down: every draft is unverifiable and rejected, and drafting stops", async () => {
     let calls = 0;
-    const r = await run({ verifier: { name: "x", verify: async () => { calls++; return down("verify")(); } } });
+    const r = await run({ verifier: { name: "x", verifyBatch: async () => { calls++; return down("verify")(); } } });
     expect(r.accepted).toEqual([]);
     expect(r.unavailable).toEqual(["verify"]);
     expect(r.judged.every((j) => j.outcome === "rejected_verify" && j.verify?.verdict === "unverifiable")).toBe(true);
-    expect(calls).toBeLessThanOrEqual(4); // the in-flight ones; nothing after it went down
+    expect(calls).toBe(1); // the round's one batch; nothing after it went down
   });
 
   it("safety review down: drafts fail closed with the reason", async () => {
