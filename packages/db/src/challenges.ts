@@ -3,7 +3,7 @@
  * decides at the invite's expiry, at the window's halfway point and at its end. Seats and refunds are the usual
  * ones (takeSeat, dropNoShow, refundAndCancel); every money move happens with the party row locked.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import {
   CHALLENGE_ACCEPT_REQUIRED, CHALLENGE_ANSWERED, CHALLENGE_DECLINED_LINE, CHALLENGE_EXPIRED, CHALLENGE_EXPIRED_MESSAGE, CHALLENGE_MIN_PLAYERS, maskProfanity,
   type ChallengeFields, type ChatMessage, type DmPermission,
@@ -28,6 +28,14 @@ export async function challengeOf(conn: Conn, partyId: string): Promise<Challeng
   const [challenge] = await conn.select().from(partyChallenges).where(eq(partyChallenges.partyId, partyId));
   if (!challenge) return null;
   return { challenge, invitees: await conn.select().from(partyChallengeInvitees).where(eq(partyChallengeInvitees.partyId, partyId)) };
+}
+
+/** Of these parties, the open challenges nobody has accepted yet: they start on an accept, not at startsAt. */
+export async function awaitingFirstAccept(conn: Conn, partyIds: string[]): Promise<Set<string>> {
+  if (!partyIds.length) return new Set();
+  const rows = await conn.select({ id: partyChallenges.partyId }).from(partyChallenges).innerJoin(parties, eq(parties.id, partyChallenges.partyId))
+    .where(and(inArray(partyChallenges.partyId, partyIds), isNull(partyChallenges.windowOpensAt), eq(parties.status, "open")));
+  return new Set(rows.map((r) => r.id));
 }
 
 export const isChallenge = async (conn: Conn, partyId: string) => !!(await conn.select({ id: partyChallenges.partyId }).from(partyChallenges).where(eq(partyChallenges.partyId, partyId)))[0];

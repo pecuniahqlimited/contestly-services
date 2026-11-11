@@ -173,6 +173,10 @@ describe("answering", () => {
     const ada = await person("ada");
     const kemi = await person("kemi");
     const id = await challenge(ada, [kemi], {}, { joinWindowMinutes: 15 });
+    // Until someone accepts it has no start time: it starts on an accept (party detail, and Home's parties I'm in).
+    expect((await call(kemi, "GET", `/parties/${id}`)).json().startsWhen).toBe("on_accept");
+    const mine = (await call(kemi, "GET", "/me/parties")).json();
+    expect([...mine.invited, ...mine.upcoming].find((x: { id: string }) => x.id === id).startsWhen).toBe("on_accept");
     expect((await call(kemi, "POST", `/parties/${id}/join`)).json().error).toBe("challenge_accept_required");
     expect((await call(ada, "POST", `/parties/${id}/invites`, { userIds: [kemi.id] })).json().error).toBe("challenge_accept_required");
     const res = await accept(kemi, id);
@@ -182,6 +186,7 @@ describe("answering", () => {
     const [c] = await db.select().from(partyChallenges).where(eq(partyChallenges.partyId, id));
     expect(c.windowClosesAt!.getTime() - c.windowOpensAt!.getTime()).toBe(15 * 60_000);
     expect((await partyOf(id)).startsAt.getTime()).toBe(c.windowClosesAt!.getTime());
+    expect((await call(kemi, "GET", `/parties/${id}`)).json()).toMatchObject({ startsWhen: "scheduled", startsAt: c.windowClosesAt!.toISOString() });
     await inRoom(id, ada);
     expect(await card(ada, id)).toMatchObject({ state: "accepted", joinClosesAt: c.windowClosesAt!.toISOString(), inLobby: [ada.id] });
     expect((await accept(kemi, id)).json()).toMatchObject({ answer: "accepted", replayed: true });

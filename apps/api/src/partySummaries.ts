@@ -2,7 +2,7 @@
 import { asc, eq, inArray } from "drizzle-orm";
 import { db, getPartyConfig, partyPlayers, partyPrizes, publicHosts, users, type Party, type PartyPrize } from "@contestly/db";
 import type { Person } from "@contestly/shared";
-import { publicParty } from "./partyView.js";
+import { publicParties } from "./partyView.js";
 import { placesOf, potKobo } from "./places.js";
 import { peopleOf, personColumns } from "./people.js";
 import { pickPartyPeople } from "./social.js";
@@ -10,7 +10,8 @@ import { pickPartyPeople } from "./social.js";
 export async function partySummaries(list: Party[], viewerId?: string) {
   if (!list.length) return [];
   const ids = list.map((p) => p.id);
-  const [hosts, seated, goods, cfg] = await Promise.all([
+  const [views, hosts, seated, goods, cfg] = await Promise.all([
+    publicParties(list),
     publicHosts(list),
     db.select({ partyId: partyPlayers.partyId, ...personColumns }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId))
       .where(inArray(partyPlayers.partyId, ids)).orderBy(asc(partyPlayers.joinedAt)),
@@ -22,11 +23,11 @@ export async function partySummaries(list: Party[], viewerId?: string) {
   const people = await peopleOf(viewerId);
   const playersOf = new Map<string, Person[]>();
   for (const { partyId, ...person } of seated) playersOf.set(partyId, [...(playersOf.get(partyId) ?? []), person]);
-  return list.map((p) => {
+  return list.map((p, i) => {
     const players = playersOf.get(p.id) ?? [];
     const host = hosts.get(p.id)!;
     return {
-      ...publicParty(p), host, playerCount: players.length, potKobo: potKobo(p, players.length),
+      ...views[i], host, playerCount: players.length, potKobo: potKobo(p, players.length),
       places: placesOf(p, players.length, cfg, goodsOf.get(p.id) ?? []), ...pickPartyPeople(players, host.id, people, viewerId),
     };
   });

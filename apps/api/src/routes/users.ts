@@ -5,7 +5,7 @@ import { climbRuns, climbWeeks, db, dmPermissionBetween, liveUser, users, partie
 import { currentStreak, feedQuerySchema, lagosDay, MAX_PROFILE_RECENT_PARTIES, peopleSearchQuerySchema, peopleSearchResponseSchema, type Person } from "@contestly/shared";
 import { countSearch, findPeople } from "../peopleSearch.js";
 import { requireUser } from "../auth.js";
-import { publicParty } from "../partyView.js";
+import { publicParties } from "../partyView.js";
 import { personColumns } from "../people.js";
 import { hostCornerOf } from "../corners.js";
 import { headToHead } from "../social.js";
@@ -103,8 +103,8 @@ export async function usersRoutes(app: FastifyInstance) {
       me && me.id !== u.id ? dmPermissionBetween(db, me, u) : null,
     ]);
     const safety = me && me.id !== u.id ? await viewerSafetyState(me.id, u.id) : { blockedByYou: false, mutedByYou: false };
-    const hosting = hosted.filter((p) => (p.status === "open" || p.status === "live") && (p.visibility === "public" || me?.id === u.id))
-      .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime()).map(publicParty);
+    const hosting = await publicParties(hosted.filter((p) => (p.status === "open" || p.status === "live") && (p.visibility === "public" || me?.id === u.id))
+      .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime()));
     return {
       ...publicUser(u),
       stats: { parties: Number(stats.parties), wins: Number(stats.wins), bestRank: stats.bestRank === null ? null : Number(stats.bestRank) },

@@ -527,6 +527,13 @@ export const publicHostSchema = z.object({
 export const PARTY_STATUSES = ["open", "live", "finished", "cancelled"] as const;
 export type PartyStatus = (typeof PARTY_STATUSES)[number];
 
+/**
+ * How a party starts: scheduled (at startsAt), or on_accept (a challenge nobody has accepted yet, ADR 0019: it has no
+ * start time until someone does, and startsAt is then the join window's end).
+ */
+export const PARTY_STARTS_WHEN = ["scheduled", "on_accept"] as const;
+export type PartyStartsWhen = (typeof PARTY_STARTS_WHEN)[number];
+
 /** The parties row as the API returns it. */
 export const partyRowSchema = z.object({
   id: z.string().uuid(),
@@ -549,7 +556,9 @@ export const partyRowSchema = z.object({
   coverColor: z.string(),
   coverEmoji: z.string(),
   status: z.enum(PARTY_STATUSES),
+  /** When it starts. For a challenge nobody has accepted yet, only the latest it could (see startsWhen); after the first accept, the join window's end. */
   startsAt: z.string().datetime(),
+  startsWhen: z.enum(PARTY_STARTS_WHEN),
 });
 
 /** Faces on a party card. */
