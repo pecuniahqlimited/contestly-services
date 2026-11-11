@@ -34,6 +34,7 @@ The one-tap challenge made a fixed party: free, private, the lanes you share, st
    - expired, declined or cancelled;
    - left, when the viewer accepted and then left.
    Each invitee's answer is pending, accepted, declined, expired (the invite ran out, or they weren't in the lobby at the window's end) or left.
+   `GET /parties/:id` (which the lobby and the result read too) carries `challenge: { state, cardUrl }` with the same state from the viewer's side and the card's API path, or null for an ordinary party, so the app never probes the card (amended 11 Nov 2026).
 6. **Answering:**
    - **Accepting** (`POST /challenges/:partyId/accept`) takes a seat through `takeSeat`, so an entry is charged here as for any join. The first accept opens the join window and moves `startsAt` to its end. `POST /parties/:id/join` refuses a challenge (`challenge_accept_required`), and so do extra invites.
    - **Declining** (`/decline`) writes "Not this time" on the invitee's card in the DM. Once nobody is left pending or accepted, the party is cancelled and refunded.

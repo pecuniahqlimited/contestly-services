@@ -171,6 +171,17 @@ export const challengeCardSchema = z.object({
 });
 export type ChallengeCard = z.infer<typeof challengeCardSchema>;
 
+/** A challenge's card, the API path (relative to the API's base): GET it for the whole card. */
+export const challengeCardPath = (partyId: string) => `/challenges/${partyId}`;
+
+/**
+ * A party's challenge flag (GET /parties/:id, which the lobby and the result read too): the card's state from the
+ * viewer's side and where the whole card is, or null for an ordinary party. The card itself answers only the
+ * challenger and the people asked; anyone else gets the challenge's own state here and a 404 there.
+ */
+export const partyChallengeFlagSchema = z.object({ state: z.enum(CHALLENGE_STATES), cardUrl: z.string() });
+export type PartyChallengeFlag = z.infer<typeof partyChallengeFlagSchema>;
+
 /** POST /challenges/:partyId/accept | decline. Accept: seated (the entry charged, if any); a repeat is replayed. */
 export const challengeReplySchema = z.object({ answer: z.enum(["accepted", "declined"]), replayed: z.boolean(), card: challengeCardSchema });
 export type ChallengeReply = z.infer<typeof challengeReplySchema>;

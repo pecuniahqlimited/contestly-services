@@ -37,7 +37,7 @@ import { owedSchema } from "./payments.js";
 import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX, handleSchema } from "./accounts.js";
 import { DEFAULT_PROVIDERS_CONFIG, providersConfigSchema } from "./providers.js";
 import { MAX_HOST_QUESTIONS, hostQuestionSchema, templateRefSchema } from "./hostQuestion.js";
-import { challengeFieldsSchema } from "./challenges.js";
+import { challengeFieldsSchema, partyChallengeFlagSchema } from "./challenges.js";
 
 /** All money is stored in kobo (integer). ₦200 = 20_000 kobo. */
 const KOBO_PER_NAIRA = 100;
@@ -684,6 +684,8 @@ export const partyDetailSchema = partySummarySchema.extend({
   /** The party's chat thread: its latest lines here, older ones from GET /chats/:threadId/messages. */
   threadId: z.string().uuid(),
   chat: z.array(chatMessageSchema),
+  /** A challenge (ADR 0019): its state from the viewer's side and its card's path; null for an ordinary party. */
+  challenge: partyChallengeFlagSchema.nullable(),
 });
 
 /** POST /parties/:id/join. A replayed join (already seated) charges nothing and carries no `paid`. */

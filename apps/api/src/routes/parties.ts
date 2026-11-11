@@ -11,7 +11,7 @@ import { potKobo } from "../places.js";
 import { publishLine } from "../chats.js";
 import { valkey } from "../redis.js";
 import { createParty } from "../partyCreate.js";
-import { announceChallengeCancelled, queueChallengeReady, rematchChallenge } from "../challenges.js";
+import { announceChallengeCancelled, challengeFlag, queueChallengeReady, rematchChallenge } from "../challenges.js";
 import { withTemplate } from "../partyTemplates.js";
 import { acceptInvite, dismissInvite, inviteToParty, partyLinks, pendingInviter } from "../invites.js";
 import { followedCornerIds, hostCornerOf } from "../corners.js";
@@ -64,11 +64,11 @@ export async function partiesRoutes(app: FastifyInstance) {
     const [p] = await db.select().from(parties).where(eq(parties.id, id));
     if (!p) return reply.code(404).send({ error: "not_found" });
     const me = req.auth?.user;
-    const [[summary], invitedBy, hostCorner] = await Promise.all([partySummaries([p], me?.id), pendingInviter(p.id, me?.id), hostCornerOf(publicHostId(p), me?.id)]);
+    const [[summary], invitedBy, hostCorner, challenge] = await Promise.all([partySummaries([p], me?.id), pendingInviter(p.id, me?.id), hostCornerOf(publicHostId(p), me?.id), challengeFlag(p, me?.id)]);
     const players = await db.select({ id: users.id, handle: users.handle, displayName: users.displayName, avatarEmoji: users.avatarEmoji, score: partyPlayers.score, rank: partyPlayers.rank, prizeKobo: partyPlayers.prizeKobo }).from(partyPlayers).innerJoin(users, eq(users.id, partyPlayers.userId)).where(eq(partyPlayers.partyId, id));
     const threadId = await partyThreadId(db, p.id);
     const { messages } = await messagesPage(threadId, { limit: PARTY_DETAIL_CHAT_LINES, viewerId: me?.id });
-    return { ...summary, brief: me && (await isHostTeam(p, me.id)) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, hostCorner, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages };
+    return { ...summary, brief: me && (await isHostTeam(p, me.id)) ? p.brief : null, questions: questionDisclosure(p), invite: partyLinks(p.id), invitedBy, hostCorner, players, joined: !!me && players.some((x) => x.id === me.id), threadId, chat: messages, challenge };
   });
 
   /**

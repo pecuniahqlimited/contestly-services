@@ -113,6 +113,20 @@ describe("creating a challenge", () => {
     expect((await call(await person("x"), "GET", `/challenges/${id}`)).statusCode).toBe(404);
   });
 
+  it("party detail (what the lobby and the result read) carries the challenge flag; an ordinary party carries null", async () => {
+    const ada = await person("ada");
+    const kemi = await person("kemi");
+    const id = await challenge(ada, [kemi]);
+    const detail = async (u: User, partyId: string) => (await call(u, "GET", `/parties/${partyId}`)).json();
+    expect((await detail(kemi, id)).challenge).toEqual({ state: "pending", cardUrl: `/challenges/${id}` });
+    expect((await detail(ada, id)).challenge).toEqual({ state: "pending", cardUrl: `/challenges/${id}` });
+    await accept(kemi, id);
+    expect((await detail(kemi, id)).challenge.state).toBe("accepted");
+    const ordinary = await call(ada, "POST", "/parties", { title: "Quiz night", brief: "General knowledge", entryKobo: 0, maxPlayers: 4, funding: "pooled", split: "winner", questionCount: 5, visibility: "private" });
+    expect(ordinary.statusCode, ordinary.body).toBe(201);
+    expect((await detail(ada, ordinary.json().id)).challenge).toBeNull();
+  });
+
   it("outside the ranges, or what a challenge can't be, is refused; so is the day's limit", async () => {
     const ada = await person("ada");
     const kemi = await person("kemi");
