@@ -1,7 +1,8 @@
 /**
  * Repeatable jobs against real Valkey and Postgres: the nudge clock keeps ticking past a tick that never returns
  * (apps/worker/src/nudgeClock.ts), and a repeatable job that stops completing raises one critical admin alert
- * (apps/worker/src/liveness.ts), recorded from the worker's own completions.
+ * (apps/worker/src/liveness.ts), recorded from the worker's own completions; a daily job is watched by when it was
+ * due, from the first time it was ever scheduled.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
@@ -81,5 +82,34 @@ describe("liveness of repeatable jobs", () => {
     expect(alerts[0]).toMatchObject({ kind: "jobs.stalled", severity: "critical", subject: `${queueName} tick hasn't completed in 1 min` });
     expect(alerts[0].details).toMatchObject({ job: job.key, thresholdSeconds: 60 });
     expect(alerts[0].count).toBeGreaterThan(1);
+  });
+});
+
+describe("daily and weekly jobs", () => {
+  it("are watched by when they were due, from the first time they were ever scheduled; the alert names the due time", async () => {
+    const queueName = `liveness_due_test_${randomUUID().slice(0, 8)}`;
+    const queue = new Queue<{ kind: string }>(queueName, { connection: makeRedis(), prefix: QUEUE_PREFIX });
+    opened.push(queue);
+    const before = Date.now();
+    await schedule(queue, "day_start", { pattern: "0 0 * * *", tz: "Africa/Lagos" }, { kind: "day_start" }, 86_400_000);
+    const first = scheduledJobs().find((j) => j.key === `${queueName}:day_start`)!;
+    expect(first.due).toEqual({ pattern: "0 0 * * *", tz: "Africa/Lagos" });
+    expect(first.notBefore).toBeGreaterThanOrEqual(before);
+    // A restart schedules it again: the first time stands, so a due time missed between the two still counts.
+    await new Promise((r) => setTimeout(r, 20));
+    await schedule(queue, "day_start", { pattern: "0 0 * * *", tz: "Africa/Lagos" }, { kind: "day_start" }, 86_400_000);
+    expect(scheduledJobs().find((j) => j.key === `${queueName}:day_start`)!.notBefore).toBe(first.notBefore);
+    // An hourly job keeps N intervals.
+    await schedule(queue, "hourly", { pattern: "0 * * * *", tz: "UTC" }, { kind: "hourly" }, 3600_000);
+    expect(scheduledJobs().find((j) => j.key === `${queueName}:hourly`)!.due).toBeUndefined();
+    await queue.removeJobScheduler("day_start");
+    await queue.removeJobScheduler("hourly");
+    await redis.del(`liveness:since:${first.key}`);
+
+    const dueAt = Date.UTC(2026, 10, 15, 23); // Mon 16 Nov, 00:00 in Lagos
+    await raiseStalled({ job: first, lastCompletedAt: dueAt - 86_400_000, thresholdMs: 3_600_000, overdueMs: 1000, dueAt });
+    const [alert] = await db.select().from(adminAlerts).where(eq(adminAlerts.dedupeKey, `jobs.stalled:${first.key}`));
+    expect(alert).toMatchObject({ severity: "critical", subject: `${queueName} day_start was due at Mon 16 Nov, 00:00 Africa/Lagos and hasn't completed 60 min later` });
+    expect(alert.details).toMatchObject({ dueAt: "2026-11-15T23:00:00.000Z", pattern: "0 0 * * *", timeZone: "Africa/Lagos", thresholdSeconds: 3600 });
   });
 });

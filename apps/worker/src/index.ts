@@ -11,7 +11,7 @@ import { purgeVoiceNotes, transcribeVoice } from "./voice.js";
 import { announceCancelled, cancelFailedGeneration, startOrCancel, sweepOverdue, sweepStalled, type StartDeps } from "./partyStart.js";
 import { watchdogLink, type WatchdogDeps } from "./watchdog.js";
 import { nudgeClockWorker } from "./nudgeClock.js";
-import { LIVENESS_CHECK_EVERY_MS, lastCompletions, livenessCheck, missedIntervalsFromEnv, raiseStalled, recordCompletion, schedule, scheduledJobs, watchCompletions, type WatchedJob } from "./liveness.js";
+import { LIVENESS_CHECK_EVERY_MS, graceMsFromEnv, lastCompletions, livenessCheck, missedIntervalsFromEnv, raiseStalled, recordCompletion, schedule, scheduledJobs, watchCompletions, type WatchedJob } from "./liveness.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { runChallengeJob } from "./challenges.js";
 import { selectTranscriber } from "./transcribe/index.js";
@@ -276,7 +276,7 @@ const checkLiveness = livenessCheck({
   jobs: async () => [...scheduledJobs(), ...(await watchdogChains())],
   lastCompleted: (keys) => lastCompletions(pub, keys),
   stalled: raiseStalled,
-}, { missedIntervals: missedIntervalsFromEnv() });
+}, { missedIntervals: missedIntervalsFromEnv(), graceMs: graceMsFromEnv() });
 setInterval(() => {
   checkLiveness().catch((err) => console.error("[liveness] check failed", err));
 }, LIVENESS_CHECK_EVERY_MS);

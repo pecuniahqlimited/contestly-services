@@ -106,7 +106,12 @@ sweeps, the invariants and reconciliation, the Climb's day start and week close,
 suspensions, the purges) and each live party's watchdog chain is watched. A worker records each completion in
 Valkey (`liveness:<queue>:<scheduler>`, `liveness:watchdog:<partyId>`); a 30-second timer in the worker raises a
 critical `jobs.stalled` alert for any that hasn't completed in `ALERT_JOB_MISSED_INTERVALS` times its interval,
-never under a minute (one per job, deduped for an hour). A gap between checks of more than 90 s means the process
+never under a minute (one per job, deduped for an hour). A job on a cron pattern that runs once a day or less often
+(the Climb's day start and week close, the nightly reconciliation, the three purges) would wait days or weeks that
+way, so it's watched by when it was due instead: late once it hasn't completed `ALERT_JOB_GRACE_MINUTES` (default
+60) after its last due time, and the alert says when that was. It's counted only from the first time the job was
+ever scheduled (`liveness:since:<queue>:<scheduler>`, kept across restarts), so a fresh install or a newly added job
+doesn't owe a run from before it existed. Hourly jobs (the invariants, the hourly nudges) keep N intervals. A gap between checks of more than 90 s means the process
 was suspended: it counts again from the wake rather than paging on everything. It can't see a worker that is
 entirely down (the timer goes with it); that's the deploy's health check.
 

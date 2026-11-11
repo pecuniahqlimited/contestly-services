@@ -1,6 +1,6 @@
 /** The repeatable jobs' liveness check (liveness.ts) on a fake clock, and the deadline a clock run gets (deadline.ts). */
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MISSED_INTERVALS, MIN_STALL_MS, livenessCheck, missedIntervalsFromEnv, type Stall, type WatchedJob } from "../src/liveness.js";
+import { DEFAULT_MISSED_INTERVALS, MIN_STALL_MS, graceMsFromEnv, lastDueAt, livenessCheck, missedIntervalsFromEnv, type Stall, type WatchedJob } from "../src/liveness.js";
 import { DeadlineExceeded, withinDeadline } from "../src/deadline.js";
 
 const T0 = Date.UTC(2026, 10, 11, 9);
@@ -8,13 +8,13 @@ const tick: WatchedJob = { key: "nudge_clock:deliver_nudges", label: "nudge_cloc
 const sweep: WatchedJob = { key: "party:sweep", label: "party sweep", everyMs: 60_000 };
 
 /** A check on a clock the test moves, with completions the test writes. */
-function harness(jobs: WatchedJob[], missedIntervals = 3) {
-  let now = T0;
+function harness(jobs: WatchedJob[], missedIntervals = 3, start = T0) {
+  let now = start;
   const done = new Map<string, number>();
   const raised: Stall[] = [];
   const check = livenessCheck({
     jobs: async () => jobs, lastCompleted: async (keys) => keys.map((k) => done.get(k) ?? null), stalled: async (s) => raised.push(s), now: () => now,
-  }, { missedIntervals, checkEveryMs: 30_000, startedAt: T0 });
+  }, { missedIntervals, graceMs: 60 * 60_000, checkEveryMs: 30_000, startedAt: start });
   return {
     raised, done,
     /** Move the clock in 30-second checks, as the timer would, running each. */
@@ -84,6 +84,70 @@ describe("the liveness check", () => {
     expect(missedIntervalsFromEnv({ ALERT_JOB_MISSED_INTERVALS: "5" })).toBe(5);
     expect(() => missedIntervalsFromEnv({ ALERT_JOB_MISSED_INTERVALS: "0" })).toThrow(/ALERT_JOB_MISSED_INTERVALS/);
     expect(() => missedIntervalsFromEnv({ ALERT_JOB_MISSED_INTERVALS: "soon" })).toThrow(/ALERT_JOB_MISSED_INTERVALS/);
+  });
+});
+
+describe("daily and weekly jobs: late a grace period after they were due", () => {
+  const LAGOS = "Africa/Lagos";
+  /** 23:00 UTC is midnight in Lagos: the day start's due time. 22:50 UTC on 11 Nov, ten minutes before it. */
+  const BEFORE_MIDNIGHT = Date.UTC(2026, 10, 11, 22, 50);
+  const MIDNIGHT = Date.UTC(2026, 10, 11, 23);
+  const dayStart = (notBefore = BEFORE_MIDNIGHT - 86_400_000): WatchedJob =>
+    ({ key: "climb:day_start", label: "climb day_start", everyMs: 86_400_000, due: { pattern: "0 0 * * *", tz: LAGOS }, notBefore });
+
+  it("lastDueAt is the cron's last time at or before now, in its own time zone", () => {
+    expect(lastDueAt({ pattern: "0 0 * * *", tz: LAGOS }, MIDNIGHT)).toBe(MIDNIGHT);
+    expect(lastDueAt({ pattern: "0 0 * * *", tz: LAGOS }, MIDNIGHT - 1)).toBe(MIDNIGHT - 86_400_000);
+    // The week close, Mondays 00:15 Lagos: Sunday 23:15 UTC.
+    expect(new Date(lastDueAt({ pattern: "15 0 * * 1", tz: LAGOS }, MIDNIGHT)).toISOString()).toBe("2026-11-08T23:15:00.000Z");
+  });
+
+  it("done soon after it was due: never raised, all day", async () => {
+    const job = dayStart();
+    const h = harness([job], 3, BEFORE_MIDNIGHT);
+    h.complete(job); // yesterday's run, done
+    await h.run(10 * 60 + 30); // midnight passes
+    h.complete(job);
+    expect(await h.run(3 * 3600)).toEqual([]);
+  });
+
+  it("not done an hour after it was due: one alert naming the due time, not three days of intervals", async () => {
+    const job = dayStart();
+    const h = harness([job], 3, BEFORE_MIDNIGHT);
+    h.complete(job);
+    expect(await h.run(10 * 60 + 60 * 60)).toEqual([]); // midnight, then exactly the grace
+    const [stall] = await h.run(30);
+    expect(stall).toMatchObject({ job, dueAt: MIDNIGHT, thresholdMs: 3_600_000, overdueMs: 30_000 });
+  });
+
+  it("a run due before the job was first scheduled is never expected (a new install, a new job)", async () => {
+    const job = dayStart(MIDNIGHT + 3600_000); // first scheduled at 01:00 Lagos
+    const h = harness([job], 3, MIDNIGHT + 3600_000);
+    expect(await h.run(6 * 3600)).toEqual([]);
+  });
+
+  it("asleep over its due time: the grace counts from the wake (the run happens on wake)", async () => {
+    const job = dayStart();
+    const h = harness([job], 3, BEFORE_MIDNIGHT);
+    h.complete(job);
+    expect(await h.jump(3 * 3600)).toEqual([]); // woke at 01:50 Lagos
+    expect(await h.run(3600)).toEqual([]);
+    expect(await h.run(30)).toHaveLength(1);
+  });
+
+  it("frequent and hourly jobs keep N intervals alongside them", async () => {
+    const job = dayStart();
+    const h = harness([job, sweep], 3, BEFORE_MIDNIGHT);
+    h.complete(job);
+    h.complete(sweep);
+    const late = await h.run(210);
+    expect(late.map((s) => s.job.key)).toEqual(["party:sweep"]);
+  });
+
+  it("the grace is ALERT_JOB_GRACE_MINUTES, 60 by default; nonsense refuses to start", () => {
+    expect(graceMsFromEnv({})).toBe(3_600_000);
+    expect(graceMsFromEnv({ ALERT_JOB_GRACE_MINUTES: "90" })).toBe(90 * 60_000);
+    expect(() => graceMsFromEnv({ ALERT_JOB_GRACE_MINUTES: "-1" })).toThrow(/ALERT_JOB_GRACE_MINUTES/);
   });
 });
 
