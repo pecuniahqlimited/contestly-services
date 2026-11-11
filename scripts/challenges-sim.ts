@@ -18,7 +18,7 @@ import { and, eq } from "drizzle-orm";
 import { db, nudges, partyChallenges } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, type NudgeKind } from "@contestly/shared";
-import { RT, api, call, failureCount, ok, sendChallenge, sleep, waitFor, waitForProgress, walletTotal } from "./sim-lib.js";
+import { putBack, RT, api, call, failureCount, ok, sendChallenge, sleep, waitFor, waitForProgress, walletTotal } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const [ADA, KEMI, TOLU] = ["ada", "kemi", "tolu"].map((n) => `cs${tag}_${n}`);
@@ -120,4 +120,6 @@ const tooLong = await sendChallenge(ADA, [id(KEMI)], { challenge: { joinWindowMi
 ok(tooLong.status === 422 && tooLong.body.error === "challenge_out_of_range", "a window past the admin's range is refused");
 
 console.log(failureCount() ? `\n${failureCount()} check(s) failed` : "\nall challenges checks passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failureCount() ? 1 : 0);

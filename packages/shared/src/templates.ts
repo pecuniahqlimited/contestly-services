@@ -10,6 +10,7 @@ import { z } from "zod";
 import { DIFFICULTIES, QUESTION_FORMATS } from "./questionKinds.js";
 import { checkSafety, parseExclusions, type SafetyResult } from "./safety.js";
 import { personSchema } from "./person.js";
+import { aiStakesSchema } from "./aiRouting.js";
 import { DISTRACTOR_COUNT, MAX_HOST_ANSWER_CHARS, MAX_HOST_QUESTION_CHARS, MAX_HOST_QUESTIONS, templateIdSchema as idSchema, type HostQuestion } from "./hostQuestion.js";
 
 const KOBO_PER_NAIRA = 100;
@@ -57,6 +58,8 @@ export const distractorRequestSchema = z.object({
   answer: z.string().trim().min(1).max(MAX_HOST_ANSWER_CHARS),
   /** The party's brief (or the template's), for tone and exclusions. */
   brief: z.string().trim().max(2000).default(""),
+  /** The draft's stakes as they stand in the builder: they pick the AI routing tier (absent: the default profile). */
+  stakes: aiStakesSchema.optional(),
 });
 export type DistractorRequest = z.infer<typeof distractorRequestSchema>;
 export const distractorResponseSchema = z.object({ distractors: z.array(z.string()).length(DISTRACTOR_COUNT) });

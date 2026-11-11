@@ -25,7 +25,8 @@ import { settle } from "../../worker/src/partySettle.js";
 import { generateSet } from "../../questions/src/pipeline/generateSet.js";
 import { recordPlay } from "../../questions/src/pipeline/recordPlay.js";
 import { startDistractorsWorker } from "../../questions/src/distractorsWorker.js";
-import { mockProviders, selectProviders } from "../../questions/src/providers/index.js";
+import { mockProviders, ProviderRegistry, selectProviders } from "../../questions/src/providers/index.js";
+import { routeStakes } from "../../questions/src/routing.js";
 import { checkHostEdit } from "../../questions/src/pipeline/checkHostEdit.js";
 import type { SafetyReviewer } from "../../questions/src/providers/types.js";
 import { queueDistractors } from "../src/distractors.js";
@@ -198,7 +199,7 @@ describe("distractors", () => {
   });
 
   it("over the real distractors queue: the generation call, then the safety checks", async () => {
-    const worker = startDistractorsWorker({ providers: selectProviders(), connection: makeRedis() });
+    const worker = startDistractorsWorker({ route: (stakes) => routeStakes(stakes, new ProviderRegistry()), connection: makeRedis() });
     try {
       const out = await queueDistractors({ question: "What year did we graduate?", answer: "2009", brief: "" });
       expect(out.distractors).toHaveLength(3);
@@ -222,7 +223,7 @@ describe("distractors never wait behind a set generation", () => {
       generating = true;
       await held;
     }, { connection: makeRedis(), prefix: QUEUE_PREFIX });
-    const distractors = startDistractorsWorker({ providers: selectProviders(), connection: makeRedis() });
+    const distractors = startDistractorsWorker({ route: (stakes) => routeStakes(stakes, new ProviderRegistry()), connection: makeRedis() });
     try {
       await questionsQueue().add("generate_set", { kind: "generate_set", partyId: randomUUID() }, { jobId: `slow-${randomUUID()}`, attempts: 1 });
       const deadline = Date.now() + 10_000;

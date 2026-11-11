@@ -7,14 +7,19 @@ import { Worker } from "bullmq";
 import { QUEUE_PREFIX, type makeRedis } from "@contestly/queue";
 import { QUEUES, type DistractorsJob } from "@contestly/shared";
 import { withCallContext } from "@contestly/ai";
+import type { AiStakes } from "@contestly/shared";
 import { suggestDistractors } from "./pipeline/distractors.js";
-import type { Providers } from "./providers/types.js";
+import type { Routed } from "./routing.js";
 
 /** How many suggestions run at once, per questions process. */
 export const DISTRACTORS_CONCURRENCY = Number(process.env.DISTRACTORS_CONCURRENCY ?? 8);
 
-export function startDistractorsWorker(deps: { providers: Pick<Providers, "generator" | "safety">; connection: ReturnType<typeof makeRedis>; concurrency?: number }) {
-  return new Worker<DistractorsJob>(QUEUES.distractors, (job) => withCallContext({ partyId: null, job: job.data.kind }, () => suggestDistractors(job.data, deps.providers)), {
+/** `route`: the providers for the draft's stakes (AI routing: the builder's current stakes pick the tier). */
+export function startDistractorsWorker(deps: { route: (stakes: AiStakes | undefined) => Promise<Routed>; connection: ReturnType<typeof makeRedis>; concurrency?: number }) {
+  return new Worker<DistractorsJob>(QUEUES.distractors, async (job) => {
+    const { route, providers } = await deps.route(job.data.stakes);
+    return withCallContext({ partyId: null, job: job.data.kind, route }, () => suggestDistractors(job.data, providers));
+  }, {
     connection: deps.connection, prefix: QUEUE_PREFIX, concurrency: deps.concurrency ?? DISTRACTORS_CONCURRENCY,
   });
 }

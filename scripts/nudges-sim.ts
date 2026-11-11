@@ -13,7 +13,7 @@ import { and, eq } from "drizzle-orm";
 import { db, nudges, users } from "@contestly/db";
 import { partyQueue, closeQueues } from "@contestly/queue";
 import { INBOX_ROOM, INSTALL_ID_HEADER, MSG, PARTY_ROOM, localClock, parseThreadLink, type NudgeMessage } from "@contestly/shared";
-import { API, RT, api, failureCount, inMinutes, makeContacts, ok, simHeaders, waitFor } from "./sim-lib.js";
+import { putBack, API, RT, api, failureCount, inMinutes, makeContacts, ok, simHeaders, waitFor } from "./sim-lib.js";
 
 const tag = Date.now().toString(36).slice(-5);
 const [HOST, NIGHT, DAYTIME, FRIEND, FAN] = ["host", "night", "day", "friend", "fan"].map((r) => `nudge.${r}.${tag}`);
@@ -116,4 +116,6 @@ try {
 
 const failures = failureCount();
 console.log(failures ? `\n✗ nudges sim: ${failures} failure(s)` : "\n✓ nudges sim passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failures ? 1 : 0);

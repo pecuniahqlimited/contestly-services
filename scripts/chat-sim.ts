@@ -18,7 +18,7 @@ import { eq } from "drizzle-orm";
 import { db, moderationItems } from "@contestly/db";
 import { partyQueue } from "@contestly/queue";
 import { DEFAULT_CHAT_CONFIG, INBOX_ROOM, MSG, PARTY_ROOM } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, makeContacts, ok, sleep, waitFor, waitForProgress } from "./sim-lib.js";
+import { putBack, RT, api, call, failureCount, inMinutes, makeContacts, ok, sleep, waitFor, waitForProgress } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const [A, B, C] = ["ada", "bayo", "chi"].map((n) => `cs${tag}_${n}`);
@@ -191,4 +191,6 @@ ok(limited.length > 0 && limited.every((r) => (r.retryAfter ?? 0) > 0), `a burst
 
 for (const i of Object.values(inboxes)) await i.room.leave().catch(() => {});
 console.log(failureCount() ? `\n${failureCount()} check(s) failed` : "\nall chat checks passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failureCount() ? 1 : 0);

@@ -12,19 +12,21 @@
  *   npm run questions:eval -- --free --small  Gemini's free tier, a sample that fits its daily limits (costs nothing)
  *   npm run questions:eval -- --free          the free tier, every set (may run into the daily limits; fails closed)
  *   npm run questions:eval -- --mock          the mocks, to check the harness itself
- *   npm run questions:eval                    the profile in .env (AI_PROFILE). The paid profile spends money only
- *                                             with AI_PAID_CAP_USD above 0; --max-usd stops starting new sets past
- *                                             this spend (default 15)
+ *   npm run questions:eval -- --paid          the paid profile: spends money only with AI_PAID_CAP_USD above 0;
+ *                                             --max-usd stops starting new sets past this spend (default 15)
+ *   npm run questions:eval                    the AI routing's default profile (the console), under AI_ALLOWED_PROFILES
+ *
+ * The profile's models are the routing config's (GET /admin/ai/routing). Its calls are recorded under that profile.
  */
 import { mkdir, writeFile } from "node:fs/promises";
-import { Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, Limiters, MemorySink, withCallContext, type BudgetGate, type CallDeps, type CallRecord, type UsageSink } from "@contestly/ai";
-import { dbBudgetGate, dbFreeQuota, dbUsageSink, freeRequestsToday, getQuestionsConfig } from "@contestly/db";
-import { DIFFICULTIES, FREE_PROFILE_MODELS, FREE_TIER_LIMITS, QUESTION_FORMATS, type Difficulty, type PricedModel, type QuestionFormat } from "@contestly/shared";
+import { allowedProfilesFromEnv, Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, Limiters, MemorySink, withCallContext, type BudgetGate, type CallDeps, type CallRecord, type UsageSink } from "@contestly/ai";
+import { aiRouteFor, currentAiRouting, dbBudgetGate, dbFreeQuota, dbUsageSink, freeRequestsToday, getQuestionsConfig } from "@contestly/db";
+import { DIFFICULTIES, FREE_PROFILE_MODELS, FREE_TIER_LIMITS, QUESTION_FORMATS, type AiProfile, type AiRoute, type Difficulty, type PricedModel, type QuestionFormat, type StepModels } from "@contestly/shared";
 import { draftAndJudge, QUALITY_BUFFER, type JudgedDraft } from "../apps/questions/src/pipeline/judge.js";
 import { buildSpec } from "../apps/questions/src/pipeline/spec.js";
 import { answerKeyText } from "../apps/questions/src/pipeline/text.js";
 import { mapLimit } from "../apps/questions/src/pipeline/concurrency.js";
-import { aiProfile, providerNames, selectProviders, STEP_RETRY, STEP_TIMEOUT_MS } from "../apps/questions/src/providers/index.js";
+import { providerNames, selectProviders, STEP_RETRY, STEP_TIMEOUT_MS } from "../apps/questions/src/providers/index.js";
 import type { GenerationSpec, SourceChunk } from "../apps/questions/src/providers/types.js";
 import { readChunks } from "../apps/api/src/sources/readChunks.js";
 import { minimalPdf } from "./sim-pdf.js";
@@ -34,8 +36,13 @@ const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(`--${name}`);
 const value = (name: string, fallback: string) => { const i = args.indexOf(`--${name}`); return i >= 0 && args[i + 1] ? args[i + 1] : fallback; };
 
-if (flag("mock")) process.env.AI_PROFILE = "mock";
-if (flag("free")) process.env.AI_PROFILE = "free";
+/** A flag names the profile; without one, the routing's default profile under the ceiling. */
+async function evalProfile(): Promise<AiProfile> {
+  for (const p of ["mock", "free", "paid"] as const) if (flag(p)) return p;
+  const { route } = await aiRouteFor(null, allowedProfilesFromEnv());
+  if (!route.profile) throw new Error("the routing's default profile isn't allowed here (AI_ALLOWED_PROFILES), and nothing below it is");
+  return route.profile;
+}
 const SMALL = flag("small");
 const MAX_USD = Number(value("max-usd", "15"));
 /** Accepted questions each set asks for (the pipeline drafts this plus its quality buffer). */
@@ -136,12 +143,14 @@ async function main() {
   const deps = (step: keyof typeof STEP_TIMEOUT_MS): CallDeps => ({
     sink: teeSink(memory), budget: evalBudget(memory), freeQuota: dbFreeQuota, limiters, breakers, retry: STEP_RETRY[step] ?? DEFAULT_RETRY, timeoutMs: STEP_TIMEOUT_MS[step],
   });
-  const profile = aiProfile();
+  const profile = await evalProfile();
   const providers = selectProviders(deps, profile);
   const cfg = await getQuestionsConfig();
-  const names = providerNames(profile);
-  const models = profile === "free" ? { generate: FREE_PROFILE_MODELS.generate, verify: FREE_PROFILE_MODELS.verify, safety: FREE_PROFILE_MODELS.safety }
-    : profile === "paid" ? cfg.providers.models : { generate: "mock", verify: "mock", safety: "mock" };
+  const routing = await currentAiRouting();
+  const names = await providerNames(profile);
+  const models: StepModels | Record<keyof StepModels, string> = profile === "mock" ? { generate: "mock", verify: "mock", safety: "mock" } : routing.config.profiles[profile].models;
+  // The eval isn't a party: its calls run (and are capped and recorded) under the profile it was given.
+  const route: AiRoute = { profile, configured: profile, tier: null, prizeKobo: null, version: routing.version };
   console.log(`[eval] profile ${profile}, providers ${JSON.stringify(names)}, models ${JSON.stringify(models)}, embed ${providers.embedder.model}${profile === "paid" ? `, ceiling $${MAX_USD}` : ""}`);
 
   const sets: SetDef[] = [];
@@ -155,7 +164,7 @@ async function main() {
     spec: buildSpec({ brief: "Lagos bridges, from the attached notes", difficulty: "mixed", formats: fileFormats, questionCount: WANT_PER_SET, questionSeconds: SECONDS, fileIds: ["sample"] }),
   });
 
-  if (profile === "free") await freeTierPreflight(sets, cfg.providers.verifyBatchSize);
+  if (profile === "free") await freeTierPreflight(sets, cfg.providers.verifyBatchSize, models as StepModels);
   const result: EvalResult = { startedAt, finishedAt: "", providers: { ...names, embedModel: providers.embedder.model }, models, maxUsd: MAX_USD, sets: [], questions: [], calls: memory.records };
   await mapLimit(sets, SET_CONCURRENCY, async (s) => {
     const spent = memory.records.reduce((a, r) => a + r.costMicros, 0) / 1_000_000;
@@ -164,7 +173,7 @@ async function main() {
       return;
     }
     const t0 = Date.now();
-    const out = await withCallContext({ partyId: null, job: "eval" }, () => draftAndJudge({
+    const out = await withCallContext({ partyId: null, job: "eval", route }, () => draftAndJudge({
       spec: s.spec, providers, dedupeSimilarity: cfg.dedupeSimilarity, want: WANT_PER_SET, avoid: [], sources: s.sources,
     }));
     const ms = Date.now() - t0;
@@ -197,14 +206,14 @@ async function main() {
  * The free profile: stop before starting if the run could take a model past its free daily quota (what's
  * left today, counted across every process), rather than failing closed halfway through.
  */
-async function freeTierPreflight(sets: SetDef[], batchSize: number) {
+async function freeTierPreflight(sets: SetDef[], batchSize: number, models: StepModels) {
   const need: Record<string, number> = {};
   const add = (model: PricedModel, n: number) => { need[model] = (need[model] ?? 0) + n; };
   for (const s of sets) {
     const r = perSetRequests(batchSize);
-    add(FREE_PROFILE_MODELS.generate, r.generate);
-    add(FREE_PROFILE_MODELS.verify, r.verify);
-    add(FREE_PROFILE_MODELS.safety, r.safety);
+    add(models.generate, r.generate);
+    add(models.verify, r.verify);
+    add(models.safety, r.safety);
     add(FREE_PROFILE_MODELS.embed, r.embed);
   }
   const short: string[] = [];

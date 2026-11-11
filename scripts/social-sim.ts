@@ -19,7 +19,7 @@ import { and, eq } from "drizzle-orm";
 import { climbWeekResults, crews, db, partyDays } from "@contestly/db";
 import { climbQueue, partyQueue } from "@contestly/queue";
 import { INBOX_ROOM, MSG, PARTY_ROOM, addDays, lagosDay, weekOf } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, nextClimbRound, ok, rightClimbAnswer, sendChallenge, sleep, waitFor, waitForProgress, wrongClimbAnswer } from "./sim-lib.js";
+import { putBack, RT, api, call, failureCount, inMinutes, nextClimbRound, ok, rightClimbAnswer, sendChallenge, sleep, waitFor, waitForProgress, wrongClimbAnswer } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const [A, B, C] = ["ada", "bayo", "chi"].map((n) => `ss${tag}_${n}`);
@@ -180,4 +180,6 @@ ok((await api(C, "GET", `/crews/${crew.id}/board`)).rows.find((r: any) => r.pers
 
 for (const r of [inboxA, inboxB]) await r.leave().catch(() => {});
 console.log(failureCount() ? `\n${failureCount()} check(s) failed` : "\nall social checks passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failureCount() ? 1 : 0);

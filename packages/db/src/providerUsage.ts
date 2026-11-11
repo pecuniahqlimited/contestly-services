@@ -9,6 +9,7 @@ import { db } from "./client.js";
 import { parties, providerCalls, verificationCache } from "./schema.js";
 import { getQuestionsConfig } from "./config.js";
 import { adminAlert } from "./alerts.js";
+import { currentAiRouting } from "./aiRouting.js";
 
 export type ProviderCallRow = typeof providerCalls.$inferInsert;
 
@@ -48,8 +49,47 @@ function envPaidCapMicros(): number {
   return Number.isFinite(usd) && usd > 0 ? Math.round(usd * MICRO_USD_PER_USD) : 0;
 }
 
+/** Calls (and their spend) recorded under a routed profile: today, and for one party. */
+async function profileUsage(profile: string, partyId: string | null, day: string) {
+  const [[today], [party]] = await Promise.all([
+    db.select({ calls: sql<number>`count(*)::int`, spent }).from(providerCalls).where(and(eq(providerCalls.profile, profile), gte(providerCalls.createdAt, dayStartsAt(day)))),
+    partyId ? db.select({ calls: sql<number>`count(*)::int`, spent }).from(providerCalls).where(and(eq(providerCalls.profile, profile), eq(providerCalls.partyId, partyId))) : Promise.resolve([undefined]),
+  ]);
+  return { dayCalls: Number(today?.calls ?? 0), daySpent: Number(today?.spent ?? 0), partyCalls: Number(party?.calls ?? 0), partySpent: Number(party?.spent ?? 0) };
+}
+
+/**
+ * The routed profile's own caps (AI routing, beside the global ones below): the free profile's in calls, the
+ * paid profile's in money. The party's cap skips embeddings, as below. Reaching one is a warning, once a day.
+ */
+async function profileCapRefusal(profile: string | null, partyId: string | null, step: ProviderStep, day: string): Promise<string | null> {
+  if (profile !== "free" && profile !== "paid") return null;
+  const { config } = await currentAiRouting();
+  const used = await profileUsage(profile, partyId, day);
+  const partyCounts = !!partyId && !PARTY_CAP_EXEMPT.has(step);
+  let refusal: string | null = null;
+  if (profile === "free") {
+    const caps = config.profiles.free.caps;
+    if (used.dayCalls >= caps.dailyCalls) refusal = `the free profile's calls for today (${caps.dailyCalls}) are spent`;
+    else if (partyCounts && used.partyCalls >= caps.perPartyCalls) refusal = `this party's free-profile calls (${caps.perPartyCalls}) are spent`;
+  } else {
+    const caps = config.profiles.paid.caps;
+    if (used.daySpent >= caps.dailyCents * MICRO_USD_PER_CENT) refusal = `the paid profile's budget for today ($${(caps.dailyCents / 100).toFixed(2)}) is spent`;
+    else if (partyCounts && used.partySpent >= caps.perPartyCents * MICRO_USD_PER_CENT) refusal = `this party's paid-profile budget ($${(caps.perPartyCents / 100).toFixed(2)}) is spent`;
+  }
+  if (refusal) {
+    await adminAlert({
+      kind: "ai.profile_cap", severity: "warning", subject: `AI routing: ${refusal}`,
+      details: { profile, day, partyId, ...used }, dedupeKey: `ai.profile_cap:${profile}:${partyId && refusal.startsWith("this party") ? partyId : day}`,
+    });
+  }
+  return refusal;
+}
+
 export const dbBudgetGate = {
-  async check({ partyId, step, tier = "paid" }: { partyId: string | null; step: ProviderStep; tier?: CallTier }): Promise<string | null> {
+  async check({ partyId, step, tier = "paid", profile = null }: { partyId: string | null; step: ProviderStep; tier?: CallTier; profile?: string | null }): Promise<string | null> {
+    const profileRefusal = await profileCapRefusal(profile, partyId, step, lagosDay());
+    if (profileRefusal) return profileRefusal;
     // Free calls cost nothing; their limit is the free tier's quota (dbFreeQuota), not money.
     if (tier === "free") return null;
     const { providers } = await getQuestionsConfig();

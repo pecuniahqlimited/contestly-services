@@ -7,11 +7,13 @@
  */
 import { Worker } from "bullmq";
 import { eq } from "drizzle-orm";
-import { db, parties } from "@contestly/db";
+import { db, parties, partyFiles } from "@contestly/db";
 import { makeRedis, notifyQueue, PARTY_EVENTS_CHANNEL, partyQueue, questionsQueue, QUEUE_PREFIX, startHeartbeat } from "@contestly/queue";
 import { QUEUES, type QuestionsJob } from "@contestly/shared";
-import { ProviderUnavailable, describeTally, tallied, withCallContext } from "@contestly/ai";
-import { providerNames, selectProviders } from "./providers/index.js";
+import { allowedProfilesFromEnv, ProviderUnavailable, describeTally, tallied, withCallContext } from "@contestly/ai";
+import { providerNames, ProviderRegistry } from "./providers/index.js";
+import type { Providers } from "./providers/types.js";
+import { routeParty, routePrize, routeStakes, type Routed } from "./routing.js";
 import { generateSet } from "./pipeline/generateSet.js";
 import { resealForRoster } from "./pipeline/reseal.js";
 import { SetUnderfilled } from "./pipeline/gate.js";
@@ -37,7 +39,8 @@ const pub = makeRedis();
 const partyJobs = partyQueue();
 const notifyJobs = notifyQueue();
 const questionJobs = questionsQueue();
-const providers = selectProviders();
+/** Each AI profile's providers, built on first use; which one a job gets is the AI routing (routing.ts). */
+const registry = new ProviderRegistry();
 const publish = (ev: { partyId: string; status: string }) => pub.publish(PARTY_EVENTS_CHANNEL, JSON.stringify(ev));
 
 /** Re-embedding is one chain: each batch queues the next, after a backoff when the provider was rate-limited. */
@@ -49,15 +52,18 @@ const queueReembed = (waits = 0, delay = 0) => questionJobs.add("reembed", { kin
  */
 const reembedsInto = (model: string) => model !== "mock";
 
+/** The bank is re-embedded into the default profile's embedder (free and paid share gemini-embedding-2). */
+const defaultEmbedder = async () => (await routePrize(null, registry)).providers.embedder;
+
 /** At start: a chain already waiting (from before a restart) carries on, so starting one more would double the rate. */
 async function startReembed() {
-  if (!reembedsInto(providers.embedder.model)) return;
+  if (!reembedsInto((await defaultEmbedder()).model)) return;
   const pending = await questionJobs.getJobs(["waiting", "delayed", "prioritized", "active"]);
   if (pending.some((j) => j.data.kind === "reembed")) return;
-  await startReembed();
+  await queueReembed();
 }
 
-async function reembed(waits: number) {
+async function reembed(waits: number, providers: Providers) {
   // A chain queued under a real embedder, picked up after a switch to the mock: it stops here.
   if (!reembedsInto(providers.embedder.model)) return console.log("[reembed] the mock embedder doesn't re-embed; stopping the chain");
   const t0 = Date.now();
@@ -83,12 +89,26 @@ const worker = new Worker<QuestionsJob>(QUEUES.questions, async (job) => {
   // Every provider call this job makes is recorded against its party (budgets, the usage view) and its kind, and
   // counted, so each set's calls, tokens and cost are one log line.
   const partyId = "partyId" in d ? d.partyId : null;
-  const { value, tally } = await withCallContext({ partyId, job: d.kind }, () => tallied(() => run(d)));
-  if (tally.calls) console.log(`[questions] ${d.kind}${partyId ? ` ${partyId}` : ""}: AI ${describeTally(tally)}`);
+  const routed = MAKES_CALLS.has(d.kind) ? await routeJob(d) : null;
+  const { value, tally } = await withCallContext({ partyId, job: d.kind, ...(routed ? { route: routed.route } : {}) }, () => tallied(() => run(d, routed?.providers ?? registry.for(null))));
+  if (tally.calls) console.log(`[questions] ${d.kind}${partyId ? ` ${partyId}` : ""} on ${routed?.route.profile ?? "none"}: AI ${describeTally(tally)}`);
   return value;
 }, { connection, prefix: QUEUE_PREFIX });
 
-async function run(d: QuestionsJob) {
+/** The jobs that call a provider: only these are routed. */
+const MAKES_CALLS = new Set<QuestionsJob["kind"]>(["generate_set", "reseal_for_roster", "regenerate_one", "file_read", "review_edit", "check_host_edit", "reembed"]);
+
+/** A party's job (a file belongs to its party) runs the party's tier; the rest, the default profile. */
+async function routeJob(d: QuestionsJob): Promise<Routed> {
+  if ("partyId" in d) return routeParty(d.partyId, registry);
+  if (d.kind === "file_read") {
+    const [f] = await db.select({ partyId: partyFiles.partyId }).from(partyFiles).where(eq(partyFiles.id, d.fileId));
+    if (f) return routeParty(f.partyId, registry);
+  }
+  return routePrize(null, registry);
+}
+
+async function run(d: QuestionsJob, providers: Providers) {
   switch (d.kind) {
     case "generate_set": return generateSet(d.partyId, { providers, publish });
     case "reseal_for_roster": return resealForRoster(d.partyId, { providers, publish });
@@ -103,7 +123,7 @@ async function run(d: QuestionsJob) {
     case "check_host_edit": return checkHostEdit(d, { providers });
     case "retire_sweep": return retireSweep();
     case "source_sweep": return sourceSweep();
-    case "reembed": return reembed(d.waits ?? 0);
+    case "reembed": return reembed(d.waits ?? 0, providers);
   }
 }
 
@@ -142,7 +162,7 @@ function hostReason(err: Error): string {
 }
 
 // Distractor suggestions on their own queue and workers: a host in the builder never waits behind a set.
-const distractorsWorker = startDistractorsWorker({ providers, connection: makeRedis() });
+const distractorsWorker = startDistractorsWorker({ route: (stakes) => routeStakes(stakes, registry), connection: makeRedis() });
 distractorsWorker.on("failed", (job, err) => console.warn(`[questions] distractors ${job?.id}: ${err.message}`));
 
 await questionJobs.upsertJobScheduler("retire-sweep", { pattern: RETIRE_SWEEP_CRON }, { name: "retire_sweep", data: { kind: "retire_sweep" } });
@@ -154,5 +174,6 @@ await startReembed();
 // GET /health/deep reads it: this process is up.
 startHeartbeat(pub, QUEUE_PREFIX, "questions");
 
-const names = providerNames();
-console.log(`questions running: queues ${QUEUES.questions} and ${QUEUES.distractors}, AI profile ${names.profile}: generate=${names.generator} verify=${names.verifier} embed=${names.embedder} (${providers.embedder.model}) safety=${names.safety}`);
+const { route } = await routePrize(null, registry);
+const names = route.profile ? await providerNames(route.profile) : null;
+console.log(`questions running: queues ${QUEUES.questions} and ${QUEUES.distractors}; AI routing v${route.version} under ${allowedProfilesFromEnv().join(",")}, default ${route.profile ?? "none"}${names ? `: generate=${names.generator} verify=${names.verifier} embed=${names.embedder} safety=${names.safety}` : ""}; parties by their prize tier`);

@@ -19,6 +19,8 @@ export interface CallRecord {
   requests: number;
   partyId: string | null;
   job: string | null;
+  /** The routed profile the call ran under (null: not routed, e.g. a script naming its providers). */
+  profile: string | null;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
@@ -37,7 +39,7 @@ export interface UsageSink {
 
 /** Whether a call may be made: null, or why not (the party's or the day's spend has reached its cap). */
 export interface BudgetGate {
-  check(input: { partyId: string | null; step: ProviderStep; tier: CallTier }): Promise<string | null>;
+  check(input: { partyId: string | null; step: ProviderStep; tier: CallTier; profile: string | null }): Promise<string | null>;
 }
 
 /** Whether a free-tier call fits the model's daily quota: null, or why not. */
@@ -116,7 +118,7 @@ export async function providerCall<T>(spec: CallSpec, deps: CallDeps, fn: (signa
   const breaker = deps.breakers.for(`${spec.provider}:${spec.step}`);
   const finish = async (outcome: CallRecord["outcome"], usage: CallUsage, attempts: number, error: string | null) => {
     const record: CallRecord = {
-      provider: spec.provider, model: spec.model, step: spec.step, tier, requests: perAttempt * attempts, partyId: ctx.partyId ?? null, job: ctx.job ?? null,
+      provider: spec.provider, model: spec.model, step: spec.step, tier, requests: perAttempt * attempts, partyId: ctx.partyId ?? null, job: ctx.job ?? null, profile: ctx.route?.profile ?? null,
       inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedInputTokens: usage.cachedInputTokens ?? 0, searchQueries: usage.searchQueries ?? 0,
       // The free tier costs nothing; the estimate is for paid calls only.
       latencyMs: now() - started, costMicros: outcome === "ok" && tier === "paid" ? estimateCostMicros(spec.model, usage) : 0, attempts, outcome, error,
@@ -150,7 +152,7 @@ export async function providerCall<T>(spec: CallSpec, deps: CallDeps, fn: (signa
     const over = await deps.freeQuota?.check({ model: spec.model, requests: perAttempt });
     if (over) throw await unavailable("rate_limited", over, 0);
   }
-  const refused = await deps.budget.check({ partyId: ctx.partyId ?? null, step: spec.step, tier });
+  const refused = await deps.budget.check({ partyId: ctx.partyId ?? null, step: spec.step, tier, profile: ctx.route?.profile ?? null });
   if (refused) throw await unavailable("budget", refused, 0);
   if (tier === "free") await deps.limiters?.for(spec.model)?.acquire(perAttempt);
   if (!breaker.tryPass()) throw await unavailable("circuit_open", "too many recent failures; waiting before trying again", 0);

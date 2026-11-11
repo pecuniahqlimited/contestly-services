@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { Breakers, claudeClient, geminiClient, MemorySink, noBudget, ProviderUnavailable, RateLimiter, type CallDeps } from "@contestly/ai";
-import { EMBEDDING_DIM, QUESTION_FORMATS, type QuestionFormat } from "@contestly/shared";
+import { EMBEDDING_DIM, FREE_PROFILE_MODELS, QUESTION_FORMATS, type QuestionFormat } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
 import { anthropicGenerator } from "../src/providers/anthropic/generator.js";
 import { planShares } from "../src/providers/drafting/generator.js";
@@ -481,7 +481,7 @@ describe("Gemini embedder on the free tier", () => {
 
 describe("free profile", () => {
   const noCache = { get: async () => null, put: async () => {} };
-  const free = (h: Handler, deps = callDeps({ paidCapMicros: 0 })) => ({ deps, p: freeProviders(() => deps, geminiClient({ apiKey: "g", fetch: fetchOf(h) }), noCache, async () => 10) });
+  const free = (h: Handler, deps = callDeps({ paidCapMicros: 0 })) => ({ deps, p: freeProviders(() => deps, geminiClient({ apiKey: "g", fetch: fetchOf(h) }), noCache, async () => 10, (step) => async () => FREE_PROFILE_MODELS[step]) });
 
   it("verifies from model knowledge, with no search: correct is 'checked without sources', free, and passes only its own gate", async () => {
     let body: Record<string, unknown> = {};
@@ -536,26 +536,25 @@ describe("paid providers are off at a $0 cap", () => {
 });
 
 describe("provider selection", () => {
-  it("mock by default; free needs the Gemini key; paid won't start at a $0 cap; unknown profiles are refused", async () => {
-    const { selectProviders } = await import("../src/providers/index.js");
+  it("each profile built once on first use; one that can't be built (no key) answers unavailable; no profile allowed calls nothing", async () => {
+    const { ProviderRegistry, selectProviders } = await import("../src/providers/index.js");
     const saved = { ...process.env };
     try {
-      for (const k of ["AI_PROFILE", "AI_PAID_CAP_USD", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GEMINI_EMBED_MODEL"]) delete process.env[k];
-      const p = selectProviders();
+      for (const k of ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GEMINI_EMBED_MODEL"]) delete process.env[k];
+      const p = selectProviders(() => callDeps());
       expect([p.verifier.name, p.embedder.model, p.safety.name, p.allowUnsourced]).toEqual(["mock", "mock", "mock", undefined]);
-      process.env.AI_PROFILE = "free";
-      expect(() => selectProviders()).toThrow(/GEMINI_API_KEY/);
+      const registry = new ProviderRegistry(() => callDeps());
+      expect(registry.for("mock")).toBe(registry.for("mock"));
+      // No key: the free profile can't run, so its calls are unavailable (generation falls back to the bank).
+      await expect(registry.for("free").generator.draft({ spec: spec(), count: 1, avoid: [] })).rejects.toBeInstanceOf(ProviderUnavailable);
       process.env.GEMINI_API_KEY = "g";
-      expect(selectProviders()).toMatchObject({ verifier: { name: "gemini-unsourced" }, embedder: { model: "gemini-embedding-2" }, allowUnsourced: true });
-      process.env.AI_PROFILE = "paid";
+      expect(new ProviderRegistry(() => callDeps()).for("free")).toMatchObject({ verifier: { name: "gemini-unsourced" }, embedder: { model: "gemini-embedding-2" }, allowUnsourced: true });
+      // Paid builds at a $0 cap (it can be routed live); providerCall refuses its calls instead.
       process.env.ANTHROPIC_API_KEY = "a";
-      expect(() => selectProviders()).toThrow(/AI_PAID_CAP_USD/);
-      process.env.AI_PAID_CAP_USD = "25";
-      expect(selectProviders().verifier.name).toBe("live");
+      expect(new ProviderRegistry(() => callDeps()).for("paid").verifier.name).toBe("live");
       process.env.GEMINI_EMBED_MODEL = "text-embedding-3-small";
-      expect(() => selectProviders()).toThrow(/no price/);
-      process.env.AI_PROFILE = "gpt";
-      expect(() => selectProviders()).toThrow(/not a profile/);
+      await expect(new ProviderRegistry(() => callDeps()).for("paid").embedder.embed(["a"])).rejects.toMatchObject({ message: expect.stringMatching(/no price/) });
+      await expect(registry.for(null).verifier.verifyBatch([question])).rejects.toBeInstanceOf(ProviderUnavailable);
     } finally {
       process.env = saved;
     }

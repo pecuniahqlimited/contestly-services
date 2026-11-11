@@ -1,11 +1,12 @@
 /**
- * Voice-note transcription, behind a vendor-neutral interface (ADR 0016: Gemini), chosen by AI_PROFILE like
- * the question engine: mock (the default) never calls anything; free uses gemini-3.5-transcribe on the free
- * tier (counted against its daily quota, refused once spent); paid uses GEMINI_TRANSCRIBE_MODEL as a paid
- * call (refused while AI_PAID_CAP_USD is 0). A real profile without its key throws at start.
+ * Voice-note transcription, behind a vendor-neutral interface (ADR 0016: Gemini), on the AI routing's default
+ * profile (a voice note isn't a party), resolved per call under AI_ALLOWED_PROFILES: mock never calls anything;
+ * free uses gemini-3.5-transcribe on the free tier (counted against its daily quota, refused once spent); paid
+ * uses GEMINI_TRANSCRIBE_MODEL as a paid call (refused while AI_PAID_CAP_USD is 0). A profile that can't be built
+ * (its key isn't set) is unavailable, and the job retries.
  */
-import { aiProfileFromEnv, Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, geminiClient, Limiters, withCallContext, type CallDeps } from "@contestly/ai";
-import { dbBudgetGate, dbFreeQuota, dbUsageSink } from "@contestly/db";
+import { allowedProfilesFromEnv, Breakers, DEFAULT_BREAKER, DEFAULT_RETRY, geminiClient, Limiters, ProviderUnavailable, withCallContext, type CallDeps } from "@contestly/ai";
+import { aiRouteFor, dbBudgetGate, dbFreeQuota, dbUsageSink } from "@contestly/db";
 import { FREE_PROFILE_MODELS, FREE_TIER_LIMITS, PRICED_MODELS, type AiProfile, type PricedModel } from "@contestly/shared";
 import { geminiTranscriber } from "./gemini.js";
 export interface Transcript {
@@ -49,10 +50,35 @@ const transcribers: Record<AiProfile, () => Transcriber> = {
   paid: () => geminiTranscriber({ client: gemini(), call: callDeps(), model: transcribeModel(), tier: "paid" }),
 };
 
-export function selectTranscriber(profile: AiProfile = aiProfileFromEnv()): Transcriber {
+/** One profile's transcriber on its own (tests). */
+export function selectTranscriber(profile: AiProfile): Transcriber {
   const factory = transcribers[profile];
   if (!factory) throw new Error(`${profile} is not a profile (have: ${Object.keys(transcribers).join(", ")})`);
-  const t = factory();
-  // Every call is recorded as part of the transcription job (no party: a voice note's cost is the day's).
-  return { transcribe: (audio) => withCallContext({ partyId: null, job: "transcribe_voice" }, () => t.transcribe(audio)) };
+  return factory();
+}
+
+/**
+ * The default profile's transcriber, routed per call (an admin change applies to the next voice note), each
+ * profile's built once. Every call is recorded as part of the transcription job under its route (no party: a
+ * voice note's cost is the day's).
+ */
+export function routedTranscriber(allowed: () => readonly AiProfile[] = allowedProfilesFromEnv): Transcriber {
+  const built = new Map<AiProfile, Transcriber>();
+  return {
+    async transcribe(audio) {
+      const { route } = await aiRouteFor(null, allowed());
+      if (!route.profile) throw new ProviderUnavailable("auth", "none", "transcribe", "no AI profile is allowed for the default route (AI_ALLOWED_PROFILES)");
+      let t = built.get(route.profile);
+      if (!t) {
+        try {
+          t = selectTranscriber(route.profile);
+        } catch (err) {
+          throw new ProviderUnavailable("auth", "none", "transcribe", `the ${route.profile} profile can't transcribe: ${(err as Error).message}`);
+        }
+        built.set(route.profile, t);
+      }
+      const chosen = t;
+      return withCallContext({ partyId: null, job: "transcribe_voice", route }, () => chosen.transcribe(audio));
+    },
+  };
 }

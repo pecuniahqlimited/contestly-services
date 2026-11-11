@@ -34,6 +34,7 @@ import { adminAlertsRoutes } from "./routes/adminAlerts.js";
 import { adminPartiesRoutes } from "./routes/adminParties.js";
 import { adminQuestionsRoutes } from "./routes/adminQuestions.js";
 import { adminProvidersRoutes } from "./routes/adminProviders.js";
+import { adminAiRoutingRoutes } from "./routes/adminAiRouting.js";
 import { safetyRoutes } from "./routes/safety.js";
 import { adminModerationRoutes } from "./routes/adminModeration.js";
 import { chatsRoutes } from "./routes/chats.js";
@@ -162,6 +163,7 @@ export async function buildApp(opts: AppOptions = {}) {
   await app.register(adminPartiesRoutes);
   await app.register(adminQuestionsRoutes);
   await app.register(adminProvidersRoutes);
+  await app.register(adminAiRoutingRoutes);
   await app.register(chatsRoutes);
   await app.register(safetyRoutes);
   await app.register(adminModerationRoutes);

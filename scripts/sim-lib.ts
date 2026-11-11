@@ -7,7 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { climbRounds, contactMatches, db, ledgerAccounts, ledgerEntries, parties, users } from "@contestly/db";
 import type { QuestionFormat } from "@contestly/game";
 import { DEV_SIM_HEADER } from "@contestly/auth";
-import { ACT_AS_HEADER, SOURCE_FILE_FIELD, type ClimbGameType } from "@contestly/shared";
+import { ACT_AS_HEADER, AI_PROFILES, SOURCE_FILE_FIELD, type AdminAiRouting, type AiProfile, type ClimbGameType } from "@contestly/shared";
 
 export const API = process.env.API_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
 export const RT = process.env.RT_URL ?? `ws://localhost:${process.env.REALTIME_PORT ?? 4001}`;
@@ -50,28 +50,45 @@ export async function putBack() {
 }
 
 /**
- * The running stack's AI profile (ADR 0016), asked of the stack itself (GET /admin/questions/providers as a dev
- * admin), never read from this process's env: a shell's AI_PROFILE overrides --env-file, and a sim that thought
- * the stack ran a real model checked what only a model catches against the mocks.
+ * The AI profile the sims run on (ADR 0016), set through the stack's own API like the console does (the routing:
+ * the default and every prize tier), never through the env, and put back afterwards. Mock unless SIM_AI_PROFILE
+ * names another (free runs the real free-tier models, and the sims then also check what only a model catches);
+ * paid only with SIM_ALLOW_PAID=1. A stack whose ceiling (AI_ALLOWED_PROFILES) refuses it stops the sim.
  */
-async function stackProfile(): Promise<string> {
-  const admin = (process.env.DEV_ADMIN_HANDLES ?? "tunde").split(",")[0].trim();
-  const res = await fetch(`${API}/admin/questions/providers`, { headers: { "x-dev-user": admin } }).catch(() => null);
-  if (!res?.ok) {
-    console.error(`Couldn't ask the stack for its AI profile (GET /admin/questions/providers as ${admin}: ${res?.status ?? "no answer"}). Is the API running?`);
+async function routeAiForSims(): Promise<AiProfile> {
+  const want = (process.env.SIM_AI_PROFILE?.trim() || "mock") as AiProfile;
+  if (!AI_PROFILES.includes(want)) {
+    console.error(`SIM_AI_PROFILE=${want} is not a profile (have: ${AI_PROFILES.join(", ")})`);
     process.exit(2);
   }
-  const { profile } = (await res.json()) as { profile: string };
-  const own = process.env.AI_PROFILE?.trim();
-  if (own && own !== profile) console.log(`(this shell says AI_PROFILE=${own}; the stack runs ${profile}, and the sim follows the stack)`);
-  return profile;
+  // The sims never spend money by accident.
+  if (want === "paid" && process.env.SIM_ALLOW_PAID !== "1") {
+    console.error("SIM_AI_PROFILE=paid would spend money. Set SIM_ALLOW_PAID=1 to mean it.");
+    process.exit(2);
+  }
+  const admin = (process.env.DEV_ADMIN_HANDLES ?? "tunde").split(",")[0].trim();
+  const headers = { "x-dev-user": admin, "content-type": "application/json" };
+  const res = await fetch(`${API}/admin/ai/routing`, { headers }).catch(() => null);
+  if (!res?.ok) {
+    console.error(`Couldn't read the stack's AI routing (GET /admin/ai/routing as ${admin}: ${res?.status ?? "no answer"}). Is the API running?`);
+    process.exit(2);
+  }
+  const current = (await res.json()) as AdminAiRouting;
+  const config = { ...current.config, defaultProfile: want, tiers: current.config.tiers.map((t) => ({ ...t, profile: want })) };
+  if (JSON.stringify(config) === JSON.stringify(current.config)) return want;
+  const put = (body: unknown) => fetch(`${API}/admin/ai/routing`, { method: "PUT", headers, body: JSON.stringify(body) });
+  const set = await put({ config, reason: `the sims run on the ${want} profile` });
+  if (!set.ok) {
+    console.error(`The stack refused routing the sims to ${want} (${set.status}: ${await set.text()}).`);
+    process.exit(2);
+  }
+  putBackLater("the AI routing", async () => {
+    const back = await put({ config: current.config, reason: "the sims put the AI routing back as they found it" });
+    if (!back.ok) throw new Error(`PUT /admin/ai/routing: ${back.status}`);
+  });
+  return want;
 }
-export const AI_PROFILE = await stackProfile();
-// The sims never spend money by accident: against a paid stack they stop unless asked for in so many words.
-if (AI_PROFILE === "paid" && process.env.SIM_ALLOW_PAID !== "1") {
-  console.error("The stack's AI_PROFILE is paid: the sims would spend money. Use the mock or free profile, or set SIM_ALLOW_PAID=1 to mean it.");
-  process.exit(2);
-}
+export const AI_PROFILE = await routeAiForSims();
 export const MOCK_GENERATOR = AI_PROFILE === "mock";
 /** waitFor tries (every 500 ms) for a question set to be made: real providers take minutes, the mocks a moment. */
 export const GENERATION_TRIES = MOCK_GENERATOR ? 120 : 720;

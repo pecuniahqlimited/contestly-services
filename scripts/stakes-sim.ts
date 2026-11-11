@@ -10,7 +10,7 @@ import { and, eq } from "drizzle-orm";
 import { db, ledgerEntries, parties, partyPlayers, prizeFulfilments, sql, users } from "@contestly/db";
 import { closeQueues, partyQueue } from "@contestly/queue";
 import { LEFT_PARTY, MSG, PARTY_ROOM, kobo, type PartyLimitsResponse } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, ok, partyNetKobo, waitFor } from "./sim-lib.js";
+import { putBack, RT, api, call, failureCount, inMinutes, ok, partyNetKobo, waitFor } from "./sim-lib.js";
 
 const BRIEF = "Nigerian music history: Fela, highlife and the artists who built Afrobeats";
 const base = { brief: BRIEF, startsAt: inMinutes(30), questionCount: 3, secondsPerQuestion: 5 };
@@ -157,4 +157,6 @@ ok((await partyNetKobo(await userId("jollofrepublic"), g.id)) === 0, "goods move
 await closeQueues(partyJobs);
 await sql.end();
 console.log(failureCount() ? `\n${failureCount()} check(s) failed` : "\nall stakes checks passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failureCount() ? 1 : 0);

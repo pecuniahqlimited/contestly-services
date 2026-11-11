@@ -20,7 +20,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { bankQuestions, db, partyQuestions, sql } from "@contestly/db";
 import { closeQueues, partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM, kobo, type QuestionFormat } from "@contestly/shared";
-import { RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
+import { putBack, RT, api, call, correctAnswer, failureCount, inMinutes, ok, partyNetKobo, sleep, waitFor, wrongAnswer } from "./sim-lib.js";
 
 const tag = randomBytes(3).toString("hex");
 const ADMIN = "tunde"; // any dev user passes requireAdmin in AUTH_MODE=dev
@@ -200,4 +200,6 @@ try {
 }
 
 console.log(failureCount() ? `\n${failureCount()} check(s) failed` : "\nall admin checks passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failureCount() ? 1 : 0);

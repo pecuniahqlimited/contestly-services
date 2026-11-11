@@ -84,6 +84,16 @@ then. `--force` grants anyway; the `admin_actions` row and the alert both record
   LOCKED, the emitters record under dedupe keys); once no old worker is left, restart one new worker so it removes
   them again. Set `ALERT_JOB_MISSED_INTERVALS` (default 3) if 3 is wrong for production.
 
+- **AI routing (0064, 11 Nov 2026; ADR 0016 "Routing by stakes").** Additive (a table and two nullable columns),
+  so a rolling deploy is fine. Before the first new process starts, set the environment: **production
+  `AI_ALLOWED_PROFILES=free,paid`** (unset means `mock,free`, so a production box without it never pays and
+  never routes to paid), `AI_PAID_CAP_USD` as before, and `AI_PROFILE` to what the first routing version should
+  default to (it's only read once, to write version 1; after that the console decides). Then set the tiers in the
+  console (`/admin/ai/routing`, with the preview). The per-step models move from `questions.providers.models` into
+  routing version 1's paid profile; a stored questions config keeps the old key, unread. Old processes keep
+  running on `AI_PROFILE` until they stop; their `provider_calls` rows have no `profile`, which the per-profile
+  caps don't count.
+
 ## Repeatable jobs: what stops them, and the liveness alert
 
 **What happened (10 Nov 2026, dev):** nudges went undelivered for about 7 minutes during sim:nudges, twice. Not a

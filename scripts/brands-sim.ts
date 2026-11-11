@@ -18,7 +18,7 @@ import { and, eq } from "drizzle-orm";
 import { brandEvents, chatMessages, corners, db, nudges, parties, partyPlayers, prizeFulfilments, recordDeliveryNudges, sql, users } from "@contestly/db";
 import { closeQueues, partyQueue } from "@contestly/queue";
 import { INBOX_ROOM, MSG, kobo, type NudgeKind } from "@contestly/shared";
-import { RT, SIM_PNG, api, call, failureCount, latestMail, mailedCode, ok, uploadLogo, waitFor, type ActingAs } from "./sim-lib.js";
+import { putBack, RT, SIM_PNG, api, call, failureCount, latestMail, mailedCode, ok, uploadLogo, waitFor, type ActingAs } from "./sim-lib.js";
 
 const run = Date.now().toString(36).slice(-6);
 const OWNER = `sbo_${run}`;
@@ -226,4 +226,6 @@ ok(["created", "invited", "invite_accepted", "invite_declined", "submitted", "ch
 await closeQueues(partyJobs);
 await sql.end();
 console.log(failureCount() ? `\n${failureCount()} check(s) failed` : "\nbrands-sim: all assertions passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failureCount() ? 1 : 0);

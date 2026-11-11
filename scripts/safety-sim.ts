@@ -17,7 +17,7 @@ import { Client, type Room } from "colyseus.js";
 import { eq } from "drizzle-orm";
 import { db, users } from "@contestly/db";
 import { DEFAULT_SAFETY_CONFIG, MSG, PARTY_ROOM, kobo } from "@contestly/shared";
-import { RT, api, call, failureCount, inMinutes, makeContacts, ok, sendChallenge, sleep, waitFor, walletTotal } from "./sim-lib.js";
+import { putBack, RT, api, call, failureCount, inMinutes, makeContacts, ok, sendChallenge, sleep, waitFor, walletTotal } from "./sim-lib.js";
 
 const tag = randomBytes(2).toString("hex");
 const handle = (n: string) => `ss${tag}_${n}`;
@@ -142,4 +142,6 @@ ok((await api(F, "POST", "/me", { displayName: "Mumu Funke", handle: F })).displ
 
 const failed = failureCount();
 console.log(failed ? `\n${failed} check(s) failed` : "\nsafety sim passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failed ? 1 : 0);

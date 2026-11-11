@@ -116,8 +116,10 @@ export function estimateCostMicros(model: PricedModel, u: CallUsage): number {
 }
 
 const pricedModel = z.enum(PRICED_MODELS as [PricedModel, ...PricedModel[]]);
-const chatModel = pricedModel.refine((m) => PROVIDER_PRICES[m].use === "chat", "must be a chat model");
-const chatModelOf = (provider: ProviderName) => chatModel.refine((m) => PROVIDER_PRICES[m].provider === provider, `must be a ${provider} model`);
+export const chatModel = pricedModel.refine((m) => PROVIDER_PRICES[m].use === "chat", "must be a chat model");
+export const chatModelOf = (provider: ProviderName) => chatModel.refine((m) => PROVIDER_PRICES[m].provider === provider, `must be a ${provider} model`);
+/** A chat model with a free tier we hold ourselves to (FREE_TIER_LIMITS): what the free profile may run. */
+export const freeChatModel = chatModel.refine((m) => !!FREE_TIER_LIMITS[m], "must be a model with a free tier (FREE_TIER_LIMITS)");
 
 /** The vendor a priced model belongs to: verification and safety follow the model the admin picked. */
 export const providerOf = (model: PricedModel): ProviderName => PROVIDER_PRICES[model].provider;
@@ -125,18 +127,12 @@ export const providerOf = (model: PricedModel): ProviderName => PROVIDER_PRICES[
 export const DEFAULT_VERIFY_BATCH = 10;
 export const MAX_VERIFY_BATCH = 20;
 
-/** The question engine's provider settings: admin config under questions.providers. */
+/**
+ * The question engine's provider settings: admin config under questions.providers. The caps here cover every
+ * profile; which profile a call runs and each profile's models and own caps are the AI routing config
+ * (aiRouting.ts, since 11 Nov 2026).
+ */
 export const providersConfigSchema = z.object({
-  /**
-   * Per step, which model. Only priced chat models, so every call has a cost; embed and transcribe models are
-   * env (changing the embedder means re-embedding). Verify and safety may be either vendor's: the model picks
-   * the vendor. The verifier is never the generator's model (ADR 0016).
-   */
-  models: z.object({
-    generate: chatModelOf("anthropic"),
-    verify: chatModel,
-    safety: chatModel,
-  }).refine((m) => m.verify !== m.generate, { message: "the verifier must be a different model from the generator", path: ["verify"] }),
   /** A party's provider spend stops here (US cents, all steps); the set then falls back to the bank. */
   perPartyCents: z.number().int().min(1).max(100_000),
   /** All providers, per day (Africa/Lagos), US cents. Reached: every call is refused until midnight. */
@@ -148,8 +144,10 @@ export const providersConfigSchema = z.object({
 });
 export type ProvidersConfig = z.infer<typeof providersConfigSchema>;
 
+/** The paid profile's models before an admin picks (AI routing version 1 starts from these). */
+export const DEFAULT_PAID_MODELS = { generate: "claude-sonnet-5-5", verify: "claude-opus-5-5", safety: "claude-haiku-5-5" } as const satisfies Record<"generate" | "verify" | "safety", PricedModel>;
+
 export const DEFAULT_PROVIDERS_CONFIG: ProvidersConfig = {
-  models: { generate: "claude-sonnet-5-5", verify: "claude-opus-5-5", safety: "claude-haiku-5-5" },
   perPartyCents: 500,
   dailyCents: 2_500,
   alertAtPct: 80,

@@ -3,12 +3,12 @@
  * question as a card (answer, distractors, verdict, sources, safety, dedupe). One self-contained HTML page
  * that follows the reader's light or dark setting, plus a plain-text summary for the terminal.
  */
-import { DEFAULT_PROVIDERS_CONFIG, estimateCostMicros, SEARCH_USD_PER_QUERY, MICRO_USD_PER_USD, type PricedModel, type ProviderStep, type QuestionFormat } from "@contestly/shared";
+import { DEFAULT_PAID_MODELS, estimateCostMicros, SEARCH_USD_PER_QUERY, MICRO_USD_PER_USD, type PricedModel, type ProviderStep, type QuestionFormat } from "@contestly/shared";
 import type { CallRecord } from "@contestly/ai";
 import type { EvalQuestion, EvalResult } from "./questions-eval.js";
 
 /** The paid profile's model per step (its defaults), to price a free or mock run's tokens as if paid. */
-const PAID_MODEL: Partial<Record<ProviderStep, PricedModel>> = { ...DEFAULT_PROVIDERS_CONFIG.models, embed: "gemini-embedding-2" };
+const PAID_MODEL: Partial<Record<ProviderStep, PricedModel>> = { ...DEFAULT_PAID_MODELS, embed: "gemini-embedding-2" };
 /** Searches a paid check runs per question, for runs that made none (free, mock): an assumption, the same both sides of a comparison. */
 export const ASSUMED_SEARCHES_PER_QUESTION = 2;
 

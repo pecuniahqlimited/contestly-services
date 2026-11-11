@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { Breakers, claudeClient, DEFAULT_RETRY, geminiClient, MemorySink, noBudget, paidCapMicrosFromEnv, type CallDeps } from "@contestly/ai";
-import { DEFAULT_PROVIDERS_CONFIG, EMBEDDING_DIM, FREE_PROFILE_MODELS } from "@contestly/shared";
+import { DEFAULT_PAID_MODELS, EMBEDDING_DIM, FREE_PROFILE_MODELS } from "@contestly/shared";
 import { payloadSchemas } from "@contestly/game";
 import { anthropicGenerator } from "../src/providers/anthropic/generator.js";
 import { claudeVerifier } from "../src/providers/anthropic/verifier.js";
@@ -25,7 +25,7 @@ const spec = buildSpec({ brief: "Naija football: the Super Eagles at the Africa 
 const q = { format: "pick_one" as const, payload: { question: "Who coached Nigeria to the 2013 AFCON title?", options: ["Stephen Keshi", "Gernot Rohr", "Sunday Oliseh", "Clemens Westerhof"], correctIndex: 0 }, claim: "Stephen Keshi coached Nigeria to the 2013 Africa Cup of Nations title." };
 
 describe.skipIf(!live)("live providers: the free profile (Gemini free tier, $0)", () => {
-  const p = () => freeProviders(() => deps, geminiClient({ apiKey: process.env.GEMINI_API_KEY ?? "" }), noCache);
+  const p = () => freeProviders(() => deps, geminiClient({ apiKey: process.env.GEMINI_API_KEY ?? "" }), noCache, async () => 10, (step) => async () => FREE_PROFILE_MODELS[step]);
 
   it("writes valid questions", async () => {
     const drafts = await p().generator.draft({ spec, count: 2, avoid: [] });
@@ -47,7 +47,7 @@ describe.skipIf(!live)("live providers: the free profile (Gemini free tier, $0)"
 
 describe.skipIf(!paidAllowed)("live providers: the paid profile's Claude calls (costs money; AI_PAID_CAP_USD > 0)", () => {
   const client = () => claudeClient({ apiKey: process.env.ANTHROPIC_API_KEY ?? "" });
-  const models = DEFAULT_PROVIDERS_CONFIG.models;
+  const models = DEFAULT_PAID_MODELS;
 
   it("Claude writes, verifies with web search and reviews safety", async () => {
     const drafts = await anthropicGenerator({ client: client(), call: deps, model: async () => models.generate }).draft({ spec, count: 2, avoid: [] });

@@ -23,7 +23,7 @@ import { notifyQueue, partyQueue } from "@contestly/queue";
 import { MSG, PARTY_ROOM } from "@contestly/shared";
 import { isOptionFormat, type QuestionFormat } from "@contestly/game";
 import { isKnownBadQuestion } from "../apps/questions/src/providers/mock/deck.js";
-import { GENERATION_TRIES, MOCK_GENERATOR, RT, api, call, correctAnswer, failureCount, inMinutes, leaks, ok, partyNetKobo, waitFor, wrongAnswer } from "./sim-lib.js";
+import { putBack, GENERATION_TRIES, MOCK_GENERATOR, RT, api, call, correctAnswer, failureCount, inMinutes, leaks, ok, partyNetKobo, waitFor, wrongAnswer } from "./sim-lib.js";
 
 const HANDLES = ["tunde", "ada.o", "kemz"];
 const BRIEF = "Nigerian general knowledge — cities, food, music, football";
@@ -380,4 +380,6 @@ ok(repeatedTexts.length === 0, `no question repeats between the two parties${rep
 
 const failures = failureCount();
 console.log(failures ? `\n${failures} assertion(s) FAILED` : "\nparty-sim: all assertions passed");
+// Admin config this sim changed (the AI routing, if it wasn't on the sims' profile) goes back as it was.
+await putBack();
 process.exit(failures ? 1 : 0);

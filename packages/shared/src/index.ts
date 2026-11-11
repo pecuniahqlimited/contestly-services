@@ -146,6 +146,7 @@ export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
 
 export * from "./safety.js";
 export * from "./providers.js";
+export * from "./aiRouting.js";
 
 /** Why a player flagged a question. */
 export const FLAG_REASONS = ["wrong_answer", "multiple_correct", "unclear", "out_of_date", "inappropriate"] as const;
@@ -346,7 +347,7 @@ export const QUEUES = { notify: "notify", nudgeClock: "nudge_clock", party: "par
  * waits for the result, so it has its own queue and workers in the questions service: a host in the builder never
  * waits behind a set generation.
  */
-export type DistractorsJob = { kind: "suggest_distractors"; question: string; answer: string; brief: string };
+export type DistractorsJob = { kind: "suggest_distractors"; question: string; answer: string; brief: string; stakes?: { entryKobo: number; maxPlayers: number; hostPrizeKobo: number } };
 
 export type PaymentsJob =
   | { kind: "webhook"; eventId: string }

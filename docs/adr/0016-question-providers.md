@@ -5,7 +5,8 @@ Status: accepted (7 Nov 2026), amended twice the same day: verification and the 
 a free Gemini-only profile, and the Claude setup as the paid profile, off unless a paid cap is set
 ("Profiles"); amended 9 Nov 2026 to cut the free profile's calls per set ("Free-tier call volume", agreed,
 not built), and 11 Nov 2026 to cut every profile's calls per set instead ("Calls per set", built; it replaces
-the 9 Nov amendment and roadmap row 0a). Closes open question
+the 9 Nov amendment and roadmap row 0a), and again 11 Nov 2026 to route profiles by the party's stakes from the
+console ("Routing by stakes"; `AI_PROFILE` is no longer the switch). Closes open question
 2's provider half. Model ids and prices checked against the providers' own docs and model lists on 7 Nov 2026.
 
 ## Context
@@ -19,6 +20,9 @@ its own homework.
 ## Decision
 
 ### Profiles (amendment, 7 Nov 2026)
+
+(Since 11 Nov 2026 the profile is chosen per call by the AI routing config, under an environment ceiling, and
+each profile's chat models are set there: "Routing by stakes". The profiles themselves are as below.)
 
 Dev and testing cost nothing. One switch, `AI_PROFILE` (env, read by the questions service, the worker, the
 API's console and the eval), picks every provider together:
@@ -281,6 +285,60 @@ others' verdicts and sources stop being per question. Shuffling and ids keep pos
 sources are required and kept per verdict on paid, every defect fails only its own question, and the eval is
 the check that rejections don't rise; if they do on paid, `verifyBatchSize: 1` restores one call per question
 from the console, with no deploy.
+
+## Routing by stakes (amendment, 11 Nov 2026; built)
+
+One environment switch made every party in a deployment run one profile: a bragging-rights party paid what a
+₦500,000 party did, and changing it took a restart. Now the profile is **routed per call by the party's stakes**,
+from the console.
+
+**The config** (`ai_routing_configs`, migration 0064: one immutable row per save, the newest current; `GET/PUT
+/admin/ai/routing`, logged with a reason; shared schemas in `packages/shared/src/aiRouting.ts`):
+
+- a **default profile**, for anything not tied to a party: voice-note transcription, an admin's edit of a bank
+  question, re-embedding, distractor suggestions before the builder has stakes;
+- **prize tiers**, an ordered list of `{ upToKobo, profile }`: the first is bragging rights (`upToKobo: 0`),
+  each bound above the last, the last unbounded (`null`). A party's prize is its **maximum possible prize**:
+  every seat's entry plus the host's cash prize (`entryKobo × maxPlayers + hostPoolKobo`; goods don't count). A
+  bound is inclusive;
+- the **models per step** for each profile (moved here from `questions.providers.models`, which version 1 copies
+  for the paid profile): free may name only models in `FREE_TIER_LIMITS`, paid generates on Claude, and neither
+  verifies with its generator. Embedding and transcription models stay fixed per profile (changing the embedder
+  means re-embedding);
+- **per-profile caps** beside the global ones in `questions.providers` (which still apply): the paid profile's
+  in US cents per party and per day, the free profile's in calls (it costs nothing), counted from
+  `provider_calls.profile` (new in 0064). Reaching one refuses the call (the set falls back to the bank, checks
+  fail closed) and raises a `ai.profile_cap` warning.
+
+**The ceiling stays in the environment.** `AI_ALLOWED_PROFILES` (dev `mock,free`; production `free,paid`;
+unset: `mock,free`, so never paid by accident) and `AI_PAID_CAP_USD` as before. A save that names a profile
+outside the ceiling is refused (400 `ai_profile_not_allowed`, with the profiles). At call time a profile the
+ceiling doesn't allow (the environment narrowed after a save) falls back to the **highest allowed profile below
+it**, logged and raised as an `ai.profile_fallback` warning (one a day per pair); with none below, nothing is
+called, and the set fails closed. With `AI_PAID_CAP_USD` at 0 every paid call is still refused before it's sent,
+whatever the routing says: the paid profile builds at 0 now (so it can be routed live), and refuses instead.
+
+**`AI_PROFILE` is no longer the switch.** It's only the default written into version 1, the first time anything
+reads the routing. Mock, free and paid are all selectable live within the ceiling, dev included.
+
+**Where the tier applies.** Every questions job tied to a party resolves the party's tier and profile when it
+starts (`apps/questions/src/routing.ts`), so a set is made and judged under one profile, and the next job sees
+any change with no restart: set generation (at creation, for curate and sealed alike), the start-time reseal and
+its top-ups, curate replacements (`regenerate_one`), host-edit checks and file embedding. Replacements after a
+flag-void come from the set's reserves, made with the set under its tier, so a void makes no call of its own.
+Verification runs under the same route as the set it checks. Distractor suggestions use the draft's current
+stakes (`stakes` on the request; none: the default profile). The route (`{ profile, configured, tier, prizeKobo,
+version }`) is in the call context, so it's on each generation record (`question_generations.route`) and each
+provider call (`provider_calls.profile`). Models are still read per call.
+
+**The console** previews a route: `POST /admin/ai/routing/preview { stakes, config? }` gives the prize, the tier,
+the configured and effective profile, the models it would use and whether paid is off, changing nothing.
+
+**Trade-offs.** Routing once per job rather than per call means a change lands at the next set, not halfway
+through one, so a set is never verified by one profile's gate and accepted by another's. Bank questions are
+compared only with rows of the same embedding model, so a mock-routed party never sees free- or paid-embedded
+questions (free and paid share `gemini-embedding-2`, so they share the bank); re-embedding follows the default
+profile's embedder.
 
 ## Alternatives considered
 

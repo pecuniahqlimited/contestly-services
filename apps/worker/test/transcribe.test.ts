@@ -55,11 +55,10 @@ describe("Gemini transcriber", () => {
     expect(calls).toBe(0);
   });
 
-  it("selection follows AI_PROFILE: mock by default, unknown profiles refused, free needs the Gemini key", () => {
+  it("each profile's transcriber: unknown profiles refused, free needs the Gemini key (which profile runs is the routing)", () => {
     const saved = { ...process.env };
     try {
-      delete process.env.AI_PROFILE;
-      expect(selectTranscriber()).toBeTruthy();
+      expect(selectTranscriber("mock")).toBeTruthy();
       expect(() => selectTranscriber("whisper" as never)).toThrow(/not a profile/);
       delete process.env.GEMINI_API_KEY;
       expect(() => selectTranscriber("free")).toThrow(/GEMINI_API_KEY/);

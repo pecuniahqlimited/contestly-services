@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PROVIDERS_CONFIG, estimateCostMicros, providerOf, providersConfigSchema } from "../src/index.js";
+import { aiRoutingConfigSchema, DEFAULT_PAID_MODELS, DEFAULT_PROVIDERS_CONFIG, estimateCostMicros, initialAiRouting, providerOf, providersConfigSchema } from "../src/index.js";
 
 describe("provider costs", () => {
   it("prices tokens and each vendor's web search", () => {
@@ -10,14 +10,16 @@ describe("provider costs", () => {
   });
 });
 
-describe("provider config", () => {
-  const withModels = (models: Record<string, string>) => providersConfigSchema.safeParse({ ...DEFAULT_PROVIDERS_CONFIG, models: { ...DEFAULT_PROVIDERS_CONFIG.models, ...models } });
+describe("the paid profile's models (AI routing)", () => {
+  const base = initialAiRouting("mock");
+  const withModels = (models: Record<string, string>) => aiRoutingConfigSchema.safeParse({ ...base, profiles: { ...base.profiles, paid: { ...base.profiles.paid, models: { ...DEFAULT_PAID_MODELS, ...models } } } });
 
   it("defaults to Claude for every model step, the verifier on a different model from the generator", () => {
-    const m = DEFAULT_PROVIDERS_CONFIG.models;
+    const m = DEFAULT_PAID_MODELS;
     expect([m.generate, m.verify, m.safety].map((x) => providerOf(x))).toEqual(["anthropic", "anthropic", "anthropic"]);
     expect(m.verify).not.toBe(m.generate);
     expect(providersConfigSchema.safeParse(DEFAULT_PROVIDERS_CONFIG).success).toBe(true);
+    expect(withModels({}).success).toBe(true);
   });
 
   it("lets verify and safety be either vendor's chat model, never the generator's model or a non-chat model", () => {

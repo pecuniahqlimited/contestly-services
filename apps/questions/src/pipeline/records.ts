@@ -1,4 +1,5 @@
 /** Row builders for what a judged draft leaves behind: its bank row and its generation record. */
+import { currentCallContext } from "@contestly/ai";
 import type { GenerationSpec } from "../providers/types.js";
 import type { JudgedDraft } from "./judge.js";
 
@@ -27,4 +28,6 @@ export const generationRecord = (j: JudgedDraft, ctx: { partyId: string; brief: 
   difficulty: j.difficulty,
   safety: j.safety,
   outcome: j.outcome,
+  // The AI routing the job ran under (its profile, the party's tier, the config version), from the call context.
+  route: currentCallContext().route ?? null,
 });

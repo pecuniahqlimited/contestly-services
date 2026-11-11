@@ -14,7 +14,7 @@ import { nudgeClockWorker } from "./nudgeClock.js";
 import { LIVENESS_CHECK_EVERY_MS, graceMsFromEnv, lastCompletions, livenessCheck, missedIntervalsFromEnv, raiseStalled, recordCompletion, schedule, scheduledJobs, watchCompletions, type WatchedJob } from "./liveness.js";
 import { settle as settleWith, type SettleDeps } from "./partySettle.js";
 import { runChallengeJob } from "./challenges.js";
-import { selectTranscriber } from "./transcribe/index.js";
+import { routedTranscriber } from "./transcribe/index.js";
 import { sendersFromEnv } from "@contestly/email";
 import { ALERT_DELIVERY_EVERY_MS, alertChannelsFromEnv, alertDeliveryConfigFromEnv, deliverAlerts } from "./alertDelivery.js";
 import { selectPushSender } from "./push/index.js";
@@ -218,7 +218,7 @@ await schedule(climbJobs, "day_start", { pattern: CLIMB_DAY_START, tz: CLIMB_TIM
 await schedule(climbJobs, "week_close", { pattern: CLIMB_WEEK_CLOSE, tz: CLIMB_TIME_ZONE }, { kind: "week_close" }, 7 * DAY_MS);
 
 const store = objectStoreFromEnv();
-const transcriber = selectTranscriber();
+const transcriber = routedTranscriber();
 const chatWorker = new Worker<ChatJob>(QUEUES.chat, async (job) => {
   if (job.data.kind === "transcribe_voice") return transcribeVoice(store, transcriber, job.data.voiceNoteId);
 }, { connection, prefix: QUEUE_PREFIX });

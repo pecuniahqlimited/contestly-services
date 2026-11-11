@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig, BRAND_ROLES, BRAND_VERIFICATION_STATUSES, BRAND_INVITE_STATUSES, BRAND_EVENT_KINDS, type BrandEventKind, CHALLENGE_ANSWERS, CHALLENGE_ENDINGS, type ChallengeAnswer, type ChallengeEnding } from "@contestly/shared";
+import { type AiRoute, type AiRoutingConfig, ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig, BRAND_ROLES, BRAND_VERIFICATION_STATUSES, BRAND_INVITE_STATUSES, BRAND_EVENT_KINDS, type BrandEventKind, CHALLENGE_ANSWERS, CHALLENGE_ENDINGS, type ChallengeAnswer, type ChallengeEnding } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -582,6 +582,8 @@ export const questionGenerations = pgTable("question_generations", {
   difficulty: jsonb("difficulty"), // { value, source }
   safety: jsonb("safety"), // { passed, reasons }
   outcome: generationOutcome("outcome").notNull(),
+  /** The AI routing it was made under: profile, what the config said, the party's tier, the config version (null before 11 Nov 2026). */
+  route: jsonb("route").$type<AiRoute>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("question_generations_party_idx").on(t.partyId)]);
 
@@ -1212,6 +1214,8 @@ export const providerCalls = pgTable("provider_calls", {
   requests: integer("requests").notNull().default(1),
   partyId: uuid("party_id").references(() => parties.id, { onDelete: "set null" }),
   job: text("job"),
+  /** The routed profile it ran under (mock | free | paid); null for calls nobody routed (the eval, before 11 Nov 2026). */
+  profile: text("profile"),
   inputTokens: integer("input_tokens").notNull().default(0),
   outputTokens: integer("output_tokens").notNull().default(0),
   cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
@@ -1549,6 +1553,18 @@ export const corners = pgTable("corners", {
 }, (t) => [index("corners_status_idx").on(t.status)]);
 
 /** The unlock thresholds (P, R, D, N): one immutable row per admin save; the newest is current. Version 1 from the migration. */
+/**
+ * AI routing (ADR 0016, 11 Nov 2026): one immutable row per admin save. The newest is current; version 1 is written
+ * the first time it's read, from AI_PROFILE. Who and why are here and in admin_actions.
+ */
+export const aiRoutingConfigs = pgTable("ai_routing_configs", {
+  version: integer("version").primaryKey(),
+  config: jsonb("config").$type<AiRoutingConfig>().notNull(),
+  createdByUserId: uuid("created_by_user_id").references(() => users.id),
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const cornerConfigs = pgTable("corner_configs", {
   version: integer("version").primaryKey(),
   config: jsonb("config").$type<CornerUnlockConfig>().notNull(),

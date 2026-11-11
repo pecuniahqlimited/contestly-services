@@ -4,7 +4,7 @@
  * bookkeeping parameters through every pipeline step.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ProviderStep } from "@contestly/shared";
+import type { AiRoute, ProviderStep } from "@contestly/shared";
 
 /** What a piece of work (a question set) spent on providers: every call made inside it adds to it. */
 export interface CallTally {
@@ -31,6 +31,8 @@ export interface CallContext {
   job?: string | null;
   /** Totals for the work in hand (a set), when someone is counting. */
   tally?: CallTally;
+  /** The AI routing this work runs under (its profile, tier and config version), when it was routed. */
+  route?: AiRoute;
 }
 
 const storage = new AsyncLocalStorage<CallContext>();
