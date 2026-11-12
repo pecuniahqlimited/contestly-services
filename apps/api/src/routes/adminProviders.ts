@@ -6,17 +6,20 @@
 import type { FastifyInstance } from "fastify";
 import { paidCapMicrosFromEnv } from "@contestly/ai";
 import { db, getQuestionsConfig, providerUsage, recordAdminAction, setQuestionsConfig } from "@contestly/db";
-import { adminProviderUsageQuerySchema, adminProviderUsageSchema, adminProvidersConfigBodySchema, MICRO_USD_PER_CENT } from "@contestly/shared";
+import { adminProviderUsageQuerySchema, adminProviderUsageSchema, adminProvidersConfigBodySchema, adminProvidersSchema, MICRO_USD_PER_CENT, type AdminProviders, type ProvidersConfig } from "@contestly/shared";
 import { requireAdmin } from "../auth.js";
+
+/** The one response shape of GET and PUT (adminProvidersSchema). */
+const view = (config: ProvidersConfig): AdminProviders => adminProvidersSchema.parse({ config, paidCapMicros: paidCapMicrosFromEnv() });
 
 export async function adminProvidersRoutes(app: FastifyInstance) {
   /** The settings and the paid ceiling (AI_PAID_CAP_USD; 0 = every paid call refused). */
   app.get("/admin/questions/providers", async (req) => {
     requireAdmin(req);
-    return { config: (await getQuestionsConfig()).providers, paidCapMicros: paidCapMicrosFromEnv() };
+    return view((await getQuestionsConfig()).providers);
   });
 
-  /** New calls use these at once; spend already recorded stays. */
+  /** New calls use these at once; spend already recorded stays. Answers like GET. */
   app.put("/admin/questions/providers", async (req) => {
     const admin = requireAdmin(req);
     const { config, reason } = adminProvidersConfigBodySchema.parse(req.body);
@@ -24,7 +27,7 @@ export async function adminProvidersRoutes(app: FastifyInstance) {
       const current = await getQuestionsConfig(tx);
       const saved = await setQuestionsConfig({ ...current, providers: config }, tx);
       await recordAdminAction(tx, { adminUserId: admin.id, action: "config.question_providers", targetType: "config", targetId: "question_providers", reason, before: current.providers, after: saved.providers });
-      return { config: saved.providers };
+      return view(saved.providers);
     });
   });
 

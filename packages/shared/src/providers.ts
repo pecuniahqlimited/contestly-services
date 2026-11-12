@@ -158,8 +158,15 @@ export const DEFAULT_PROVIDERS_CONFIG: ProvidersConfig = {
 export const VERIFY_VERDICTS = ["correct", "incorrect", "ambiguous", "unverifiable"] as const;
 export type VerifyVerdictKind = (typeof VERIFY_VERDICTS)[number];
 
-/** Admin: the budget and per-step models, edited with a reason (logged). */
+/** Admin: the global caps and the verification batch size, edited with a reason (logged). */
 export const adminProvidersConfigBodySchema = z.object({ config: providersConfigSchema, reason: z.string().trim().min(3).max(500) });
+
+/**
+ * GET /admin/questions/providers, and PUT's answer: the settings and the paid ceiling they run under
+ * (AI_PAID_CAP_USD in micro-USD; 0 means every paid call is refused, whatever the caps say).
+ */
+export const adminProvidersSchema = z.object({ config: providersConfigSchema, paidCapMicros: z.number().int().min(0) });
+export type AdminProviders = z.infer<typeof adminProvidersSchema>;
 
 /** Admin: provider usage, per day and per party, in micro-USD. */
 export const adminProviderUsageQuerySchema = z.object({ days: z.coerce.number().int().min(1).max(90).default(14) });
