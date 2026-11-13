@@ -20,7 +20,8 @@ export const REEMBED_MAX_WAIT_MS = 24 * 60 * 60_000;
 
 export const reembedBackoffMs = (waits: number) => Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.max(0, waits - 1));
 
-const staleBank = (model: string) => ne(bankQuestions.embeddingModel, model);
+/** Rows on another model; a mock-written question is never moved into a real model's space (it would be served there). */
+const staleBank = (model: string) => and(ne(bankQuestions.embeddingModel, model), model === "mock" ? undefined : ne(bankQuestions.writtenBy, "mock"));
 const staleChunks = (model: string) => and(isNotNull(fileChunks.embedding), ne(fileChunks.embeddingModel, model));
 
 export async function needsReembed(model: string): Promise<boolean> {

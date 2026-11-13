@@ -13,30 +13,36 @@ import type { DraftQuestion, Generator } from "../types.js";
 const DIFFICULTY_TARGET: Record<Difficulty, number> = { easy: 0.25, mixed: 0.5, hard: 0.7, brutal: 0.85 };
 const PLANTED_IDS = new Set<string>([...Object.values(BAD_IDS), DUP_IDS.duplicate]);
 
+/** Every mock draft says so: a mock-written question in the bank is never served to a real profile (retrieve.ts). */
+const MOCK_WRITER = { provider: "mock", model: "mock" };
 const toDraft = (e: DeckEntry): DraftQuestion => ({ format: e.format, payload: e.payload, explanation: e.explanation, claim: e.claim });
 
 export const mockGenerator: Generator = {
-  async draft({ spec, count, avoid, sources }) {
-    const avoidSet = new Set(avoid);
-    if (sources) return spec.formats.includes("pick_one") ? draftsFromFile(sources, count, avoidSet) : [];
-    const eligible = (e: DeckEntry) => spec.formats.includes(e.format) && !avoidSet.has(e.payload.question);
-
-    const planted = DECK.filter((e) => PLANTED_IDS.has(e.id)).filter(eligible);
-    const target = DIFFICULTY_TARGET[spec.difficulty];
-    const topic = spec.topic.toLowerCase();
-    const score = (e: DeckEntry) => e.topics.filter((t) => topic.includes(t)).length * 2 - Math.abs(e.difficulty - target);
-
-    const good = DECK.filter((e) => !PLANTED_IDS.has(e.id)).filter(eligible);
-    // Stable rank; the duplicate's original always leads so the planted near-duplicate has its pair in the batch.
-    good.sort((a, b) => (a.id === DUP_IDS.original ? -1 : b.id === DUP_IDS.original ? 1 : score(b) - score(a) || DECK.indexOf(a) - DECK.indexOf(b)));
-
-    const chosen = good.slice(0, Math.max(0, count - planted.length)).map(toDraft);
-    // Deck exhausted for this avoid list: top up with numbered synthetic questions.
-    const shortfall = count - planted.length - chosen.length;
-    const extra = shortfall > 0 && spec.formats.includes("pick_one") ? syntheticDrafts(shortfall, avoidSet) : [];
-    return [...chosen, ...extra, ...planted.map(toDraft)].slice(0, count);
+  async draft(input) {
+    return (await draftFromDeck(input)).map((d) => ({ ...d, generatedBy: MOCK_WRITER }));
   },
   async distract(input) {
     return mockDistract(input);
   },
 };
+
+async function draftFromDeck({ spec, count, avoid, sources }: Parameters<Generator["draft"]>[0]): Promise<DraftQuestion[]> {
+  const avoidSet = new Set(avoid);
+  if (sources) return spec.formats.includes("pick_one") ? draftsFromFile(sources, count, avoidSet) : [];
+  const eligible = (e: DeckEntry) => spec.formats.includes(e.format) && !avoidSet.has(e.payload.question);
+
+  const planted = DECK.filter((e) => PLANTED_IDS.has(e.id)).filter(eligible);
+  const target = DIFFICULTY_TARGET[spec.difficulty];
+  const topic = spec.topic.toLowerCase();
+  const score = (e: DeckEntry) => e.topics.filter((t) => topic.includes(t)).length * 2 - Math.abs(e.difficulty - target);
+
+  const good = DECK.filter((e) => !PLANTED_IDS.has(e.id)).filter(eligible);
+  // Stable rank; the duplicate's original always leads so the planted near-duplicate has its pair in the batch.
+  good.sort((a, b) => (a.id === DUP_IDS.original ? -1 : b.id === DUP_IDS.original ? 1 : score(b) - score(a) || DECK.indexOf(a) - DECK.indexOf(b)));
+
+  const chosen = good.slice(0, Math.max(0, count - planted.length)).map(toDraft);
+  // Deck exhausted for this avoid list: top up with numbered synthetic questions.
+  const shortfall = count - planted.length - chosen.length;
+  const extra = shortfall > 0 && spec.formats.includes("pick_one") ? syntheticDrafts(shortfall, avoidSet) : [];
+  return [...chosen, ...extra, ...planted.map(toDraft)].slice(0, count);
+}

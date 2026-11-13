@@ -14,6 +14,7 @@ export const bankRow = (j: JudgedDraft, spec: GenerationSpec) => ({
   embeddingModel: j.embeddingModel,
   difficulty: j.difficulty.value,
   sourceChunkId: j.draft.sourceChunkId ?? null,
+  writtenBy: j.draft.generatedBy?.provider ?? "unknown",
 });
 
 /** `banked`: the draft's bank row is being written alongside this record (only when its set sealed). */

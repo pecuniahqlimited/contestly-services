@@ -545,6 +545,11 @@ export const bankQuestions = pgTable("bank_questions", {
   difficultySource: difficultySource("difficulty_source").notNull().default("model_estimate"),
   status: bankQuestionStatus("status").notNull().default("active"),
   origin: text("origin").notNull().default("generated"),
+  /**
+   * Which provider wrote it: mock | gemini | anthropic, or unknown (an admin's insert). A mock-written question is
+   * never served to a party on a real profile, nor re-embedded into a real model's space (migration 0065).
+   */
+  writtenBy: text("written_by").notNull().default("unknown"),
   sourceChunkId: uuid("source_chunk_id"), // the file chunk this question was generated from (file-sourced parties)
   timesPlayed: integer("times_played").notNull().default(0), // parties this question ran in
   timesAnswered: integer("times_answered").notNull().default(0),
@@ -552,7 +557,7 @@ export const bankQuestions = pgTable("bank_questions", {
   answeredMsSum: bigint("answered_ms_sum", { mode: "number" }).notNull().default(0),
   timesSkipped: integer("times_skipped").notNull().default(0), // graded with no answer submitted
   flagCount: integer("flag_count").notNull().default(0), // player flags across all parties
-  retiredReason: text("retired_reason"), // flagged | too_hard | skipped (set by the retirement sweep)
+  retiredReason: text("retired_reason"), // flagged | too_hard | skipped (the retirement sweep) | mock_written (0065)
   retiredAt: timestamp("retired_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastPlayedAt: timestamp("last_played_at", { withTimezone: true }),

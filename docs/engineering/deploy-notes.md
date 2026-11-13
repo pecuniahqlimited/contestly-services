@@ -94,6 +94,11 @@ then. `--force` grants anyway; the `admin_actions` row and the alert both record
   running on `AI_PROFILE` until they stop; their `provider_calls` rows have no `profile`, which the per-profile
   caps don't count.
 
+- **Who wrote each bank question (0065, 11 Nov 2026).** Adds `bank_questions.written_by`, backfills it (a
+  provider recorded on the generation record, else `mock`) and retires mock-written rows that carry a real model's
+  embedding (`retired_reason = 'mock_written'`). Production's bank should have none; run it before the new code,
+  since old code banks rows as `unknown`, which real profiles still reuse.
+
 ## Repeatable jobs: what stops them, and the liveness alert
 
 **What happened (10 Nov 2026, dev):** nudges went undelivered for about 7 minutes during sim:nudges, twice. Not a

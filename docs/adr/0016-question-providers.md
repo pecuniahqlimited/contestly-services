@@ -340,6 +340,25 @@ compared only with rows of the same embedding model, so a mock-routed party neve
 questions (free and paid share `gemini-embedding-2`, so they share the bank); re-embedding follows the default
 profile's embedder.
 
+## Reusing bank questions under real embeddings (amendment, 11 Nov 2026; built; migration 0065)
+
+A free-profile party briefed "All about WWE Monday Night Raw 2026" came back with seven Nigerian spelling
+questions from the bank, every one written by the mock generator. Two faults: retrieval's similarity floor (0.1)
+was set for the mock embedder, and real embeddings score unrelated text far above it; and the 7 Nov re-embed
+had moved mock-written questions into gemini-embedding-2's space, where they looked like any other.
+
+- **A measured floor per embedder** (`RETRIEVAL_MIN_SIMILARITY` in `apps/questions/src/pipeline/retrieve.ts`).
+  For gemini-embedding-2, five briefs (WWE, Afrobeats, Super Eagles, Nollywood, Lagos) against three on-topic
+  questions each, the other topics' questions and mock filler: on-topic scored 0.79–0.87, everything else
+  0.65–0.78, so the floor is **0.79**. The margin is thin; an embedder nobody has measured gets 0.85, so it
+  generates rather than reuses until it's calibrated. Below the floor nothing is reused and the gap is generated.
+- **Category narrows retrieval when it's specific.** A Football spec reuses only Football questions; "General
+  knowledge", the catch-all ("we couldn't tell"), doesn't narrow.
+- **Who wrote it** (`bank_questions.written_by`: mock, gemini, anthropic, or unknown). A real embedder never
+  retrieves a mock-written question and the re-embed job never moves one into a real model's space. 0065
+  backfills it from the generation records (no recorded provider means the mock wrote it) and retires the
+  mock-written rows already in a real model's space (`retired_reason = 'mock_written'`; restorable).
+
 ## Alternatives considered
 
 - **Claude for everything.** One vendor, one bill, but the verifier would share the generator's blind spots.
