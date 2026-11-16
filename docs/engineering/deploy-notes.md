@@ -24,6 +24,34 @@ New env with this release (ADR 0013): `PAYSTACK_SECRET_KEY` (a `sk_test_…` key
 `PAYMENTS_RETURN_URL`, optionally `PAYMENTS_WEBHOOK_IP_ALLOWLIST`. Staging and production leave
 `PAYMENTS_DEV_TOOLS` unset (and set `NODE_ENV=production` in production).
 
+## Continuous deploy
+
+A push to `main` runs `.github/workflows/deploy.yml`: typecheck and unit tests, the four images built in
+GitHub Actions and pushed to DigitalOcean Container Registry tagged with the commit, then
+`scripts/deploy.sh` on the droplet over SSH. That script pulls the images, puts the checkout on the commit,
+and always stops, migrates and starts (the 0022 rule above, for every release), then waits for the API and
+realtime to answer; the job fails with their logs if they don't. Deploys queue in push order; a failed test
+or build deploys nothing. Stopping realtime ends live parties, which the worker refunds, so a push to main
+mid-party costs those parties. Re-run a release from Actions (or "Run workflow") to deploy it again.
+
+The droplet's checkout belongs to the pipeline: each deploy resets tracked files to the commit, so change
+the compose file or Caddyfile in git, never on the box. `.env` is untracked and stays; the script writes only
+`IMAGE_REGISTRY` and `IMAGE_TAG` into it, so a hand-run `docker compose` uses the deployed images.
+
+Setup, once:
+
+- **Registry.** Create a DigitalOcean Container Registry (Basic or above: four repositories). Old tags pile up;
+  run garbage collection from the registry's settings now and then.
+- **DigitalOcean token** with registry read and write: repository secret `DIGITALOCEAN_ACCESS_TOKEN`. It
+  stays in GitHub; the droplet gets only a read-only login that expires in 15 minutes and is deleted after.
+- **SSH.** A key pair for deploys only (`ssh-keygen -t ed25519 -f contestly-deploy -N ""`): the public key in
+  the deploy user's `~/.ssh/authorized_keys` on the droplet, the private key as secret `DEPLOY_SSH_KEY`.
+- **Repository variables:** `DO_REGISTRY` (the registry's name), `DEPLOY_HOST` (the droplet's address),
+  `DEPLOY_USER`, `DEPLOY_PATH` (the checkout, e.g. `/opt/contestly/contestly-services`) and
+  `DEPLOY_KNOWN_HOSTS` (`ssh-keyscan -t ed25519 <host>`, checked against the droplet's own key).
+- **The droplet** can `git fetch` the repo (a read-only deploy key) and has `COMPOSE_PROFILES` in `.env`
+  (`mock` on a test box).
+
 ## Operations: payments break-glass
 
 Not a migration, but it needs the same access. The payments console needs at least two unbanned
