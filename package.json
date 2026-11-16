@@ -18,6 +18,8 @@
     "sim:stakes": "tsx --env-file=.env scripts/stakes-sim.ts",
     "sim:climb": "tsx --env-file=.env scripts/climb-sim.ts",
     "dev:bots": "tsx --env-file=.env scripts/dev-bots.ts",
+    "load:party": "tsx --env-file-if-exists=.env scripts/load-party.ts",
+    "load:report": "node scripts/load-report.mjs",
     "infra:up": "docker compose up -d --wait postgres valkey storage mailpit firebase-auth",
     "infra:down": "docker compose down",
     "db:generate": "npm run generate -w @contestly/db --",

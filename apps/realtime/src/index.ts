@@ -13,6 +13,7 @@ import { assertAuthConfig } from "@contestly/auth";
 import { QUEUE_PREFIX, makeRedis, startHeartbeat } from "@contestly/queue";
 import { PartyRoom } from "./PartyRoom.js";
 import { InboxRoom } from "./InboxRoom.js";
+import { redisClaims, useRoomClaims } from "./roomClaims.js";
 
 // Refuses AUTH_MODE=dev in production.
 assertAuthConfig();
@@ -35,6 +36,8 @@ const gameServer = new Server({
   driver: new RedisDriver(REDIS_URL),
 });
 
+// One room per party across every realtime process: the claim lives in Valkey.
+useRoomClaims(redisClaims(makeRedis()));
 gameServer.define(PARTY_ROOM, PartyRoom).filterBy(["partyId"]);
 // One per user: joinOrCreate with the user's own id; onAuth refuses anyone else.
 gameServer.define(INBOX_ROOM, InboxRoom).filterBy(["userId"]);

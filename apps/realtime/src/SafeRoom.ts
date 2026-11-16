@@ -12,6 +12,7 @@ import { ACCOUNT_BANNED, ACCOUNT_GONE, MSG, ROOM_FLOOD_CLOSE_CODE, TOO_MANY_MESS
 import { MessageCap, messageCapFromEnv, type MessageCapConfig } from "./messageCap.js";
 import { hiddenAuthors, type HiddenAuthors } from "./hiddenAuthors.js";
 import { asSeenBy, type LineForViewer } from "./cardFlags.js";
+import { CLAIM_REFRESH_MS, CLAIM_TTL_MS, roomClaims } from "./roomClaims.js";
 const { Room } = colyseus;
 
 /** What a client is told when its message failed on the server. Never the error itself. */
@@ -25,6 +26,40 @@ const MESSAGE_CAP = messageCapFromEnv();
 export abstract class SafeRoom extends Room {
   /** Names the room in logs, e.g. "party 3f…". */
   protected abstract get label(): string;
+
+  /** The key this room holds (soleRoomFor), released when it's disposed. */
+  private claimKey?: string;
+  /** Lost the claim to another room for the same key: locked and seatless, it holds nobody and disposes itself. */
+  protected standIn = false;
+
+  /**
+   * Call first in onCreate, before any setup: true if this is the one room for `key`. False means another room
+   * has it; this one then stands in (return from onCreate at once), and Colyseus retries each join it was made
+   * for until it finds that room (roomClaims.ts says why).
+   */
+  protected async soleRoomFor(key: string): Promise<boolean> {
+    if (await roomClaims().claim(key, this.roomId, CLAIM_TTL_MS)) {
+      this.claimKey = key;
+      this.every(CLAIM_REFRESH_MS, "room claim", async () => {
+        if (!(await roomClaims().refresh(key, this.roomId, CLAIM_TTL_MS))) throw new Error(`lost the claim on ${key}`);
+      });
+      return true;
+    }
+    this.standIn = true;
+    this.maxClients = 0;
+    // Colyseus lists the room after onCreate; lock() saves the listing, which needs its id already.
+    this.listing.roomId = this.roomId;
+    await this.lock();
+    return false;
+  }
+
+  /** Frees the claim (from onDispose, and when setup fails after claiming), so the next join creates the room again. */
+  protected async releaseSoleRoom() {
+    if (!this.claimKey) return;
+    const key = this.claimKey;
+    this.claimKey = undefined;
+    await roomClaims().release(key, this.roomId);
+  }
 
   /** The user id a client plays as (rooms keep it on client.auth). */
   protected userIdOf(client: Client): string | undefined {
