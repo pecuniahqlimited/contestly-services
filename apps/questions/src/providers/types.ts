@@ -33,6 +33,18 @@ export interface GenerationSpec {
   sourceScope: SourceScope;
   /** The one-line "what we understood", shown back to the host and stored on the party. */
   summary: string;
+  /**
+   * The period the brief asks about (briefPeriod() in shared). "only": the set stays inside it. "history": it's too
+   * recent for the writers to know, and the host chose the topic's history instead, so nothing may claim to be from it.
+   */
+  period?: SpecPeriod;
+}
+
+export interface SpecPeriod {
+  label: string;
+  from: number;
+  to: number;
+  use: "only" | "history";
 }
 
 export interface DraftQuestion {

@@ -359,6 +359,33 @@ had moved mock-written questions into gemini-embedding-2's space, where they loo
   backfills it from the generation records (no recorded provider means the mock wrote it) and retires the
   mock-written rows already in a real model's space (`retired_reason = 'mock_written'`; restorable).
 
+## Periods, recent events and on-topic pictures (amendment, 16 Nov 2026; built; migration 0066)
+
+The same WWE brief, retried on the free profile with the floor fixed, came back as Raw's history (the Attitude
+Era, Raw 1000, catchphrases) with two Nigerian landmark pictures among the drafts. Three causes: the prompt's
+"no facts that change over time" rule steered away from anything recent, and nothing in the spec said "2026";
+no question writer can know 2026 (every profile writes from the model's own knowledge; only verification
+searches, and on the free profile not even that); and the image pool, all Nigerian landmarks, was offered to
+every set, so the generator wrote pictures for a WWE quiz.
+
+- **The spec carries the brief's period** (`briefPeriod()` in `packages/shared/src/briefPeriod.ts`: a year, a
+  range or season, a decade, or "latest", "this season", "current"). An older period is kept: the set stays
+  inside it, each question says when, the summary reads "· 1997–2001 only", and bank reuse keeps only questions
+  that name a year in it. Something that happened on a date is a fixed fact; "current" anything still isn't.
+- **A recent period needs the host's explicit choice.** A period is recent when it reaches past
+  `knownThroughYear()` (the year before `WRITER_KNOWLEDGE_LAG_MONTHS`, 12, ago). `POST /parties` and a retry
+  with a new brief refuse it with 409 `recent_period_unsupported` `{ period, knownThrough, choices }` until the
+  request carries `recentPeriod: "history"`, kept on `parties.recent_period`. The set is then the topic's
+  history, the prompt forbids claiming anything happened in the period, and the summary reads "· its history,
+  not 2026". It's never made for the host silently. This applies on every profile, since none writes with search;
+  a later "search" choice (generation grounded in search) would join `RECENT_PERIOD_CHOICES` and be offered
+  only on a route that has it. A rematch keeps the original's answer.
+- **Sports is a category** (wrestling, boxing, the NBA, the Olympics…), and category hints match at the start
+  of a word ("rap" no longer matches "trap").
+- **Pictures only on topic.** Each pool image lists the brief words it fits (`topics` in `imagePool.ts`); a
+  Geography set takes the whole pool, any other set only the images its brief names (Nigeria, Lagos, Abuja…).
+  With none, the generator asks for no picture rounds. The mock generator keeps its own deck.
+
 ## Alternatives considered
 
 - **Claude for everything.** One vendor, one bill, but the verifier would share the generator's blind spots.

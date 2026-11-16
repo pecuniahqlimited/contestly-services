@@ -7,6 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { db, parties, partyFiles, isHostTeam, type User } from "@contestly/db";
 import { questionsQueue } from "@contestly/queue";
 import type { RetryQuestionsInput } from "@contestly/shared";
+import { assertRecentPeriodChosen } from "./recentPeriod.js";
 
 const questionJobs = questionsQueue();
 const httpError = (statusCode: number, message: string) => Object.assign(new Error(message), { statusCode });
@@ -29,7 +30,7 @@ export async function retrySealedSet(partyId: string, user: User, edit: RetryQue
     if (p.status !== "open") throw httpError(409, "party_not_open");
     if (p.questionsStatus !== "failed") throw httpError(409, "questions_not_failed");
     await tx.update(parties).set({
-      ...(edit.brief === undefined ? {} : { brief: edit.brief }),
+      ...(edit.brief === undefined ? {} : { brief: edit.brief, recentPeriod: assertRecentPeriodChosen(edit.brief, edit.recentPeriod) }),
       ...(edit.difficulty === undefined ? {} : { difficulty: edit.difficulty }),
       ...(edit.formats === undefined ? {} : { formats: edit.formats }),
       questionsStatus: "generating",

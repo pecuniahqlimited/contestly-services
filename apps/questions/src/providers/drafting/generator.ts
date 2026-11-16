@@ -8,7 +8,7 @@
  */
 import type { PricedModel, ProviderName, QuestionFormat } from "@contestly/shared";
 import type { DraftQuestion, GenerationSpec, Generator, SourceChunk } from "../types.js";
-import { IMAGE_POOL, type PoolImage } from "../imagePool.js";
+import { imagesFor, type PoolImage } from "../imagePool.js";
 import { FORMAT_TEMPLATES } from "./formats.js";
 import { SYSTEM_PROMPT, userPrompt } from "./prompt.js";
 import { DISTRACT_SYSTEM, distractPrompt, distractSchema, distractorsFrom } from "./distract.js";
@@ -61,12 +61,13 @@ export function planShares(count: number, formats: QuestionFormat[], maxPerForma
 export function structuredGenerator(deps: StructuredGeneratorDeps): Generator {
   return {
     async draft({ spec, count, avoid, sources, maxPerFormat = {} }) {
-      // Picture rounds need a pool image; a file has none, so file-scoped sets skip that format. A set never asks
-      // for more pictures than there are images.
-      const formats = spec.formats.filter((f) => f !== "picture" || (!sources && IMAGE_POOL.length > 0));
-      const shares = planShares(count, formats, { ...maxPerFormat, picture: Math.min(maxPerFormat.picture ?? Infinity, IMAGE_POOL.length) });
+      // Picture rounds need a pool image on the set's topic; a file has none, so file-scoped sets skip that format,
+      // and so does a set no image fits. A set never asks for more pictures than there are images.
+      const images = sources ? [] : imagesFor(spec);
+      const formats = spec.formats.filter((f) => f !== "picture" || images.length > 0);
+      const shares = planShares(count, formats, { ...maxPerFormat, picture: Math.min(maxPerFormat.picture ?? Infinity, images.length) });
       if (!shares.length) return [];
-      return draftSet(deps, await deps.model(), spec, shares, avoid, sources);
+      return draftSet(deps, await deps.model(), spec, shares, avoid, sources, images);
     },
     /** A host-written question's wrong options (ADR 0015): one call; the pipeline filters them. */
     async distract(input) {
@@ -77,8 +78,8 @@ export function structuredGenerator(deps: StructuredGeneratorDeps): Generator {
 }
 
 /** The whole set in one call; each format's items mapped by its template. An item that doesn't fit is dropped, never repaired. */
-async function draftSet(deps: StructuredGeneratorDeps, model: PricedModel, spec: GenerationSpec, shares: Share[], avoid: string[], sources?: SourceChunk[]): Promise<DraftQuestion[]> {
-  const images: PoolImage[] = shares.some((s) => s.format === "picture") ? IMAGE_POOL : [];
+async function draftSet(deps: StructuredGeneratorDeps, model: PricedModel, spec: GenerationSpec, shares: Share[], avoid: string[], sources: SourceChunk[] | undefined, onTopic: PoolImage[]): Promise<DraftQuestion[]> {
+  const images: PoolImage[] = shares.some((s) => s.format === "picture") ? onTopic : [];
   const schema = setSchema(shares.map((s) => s.format), images, !!sources);
   const user = userPrompt({ spec, formats: shares.map((s) => ({ ...s, instructions: FORMAT_TEMPLATES[s.format].instructions })), avoid, sources, images: images.length ? images : undefined });
   const raw = await deps.ask({ model, system: SYSTEM_PROMPT, user, schema });

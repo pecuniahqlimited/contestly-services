@@ -463,6 +463,13 @@
       "when": 1794527936327,
       "tag": "0065_bank_written_by",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1794867304963,
+      "tag": "0066_party_recent_period",
+      "breakpoints": true
     }
   ]
 }

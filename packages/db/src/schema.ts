@@ -1,6 +1,6 @@
 import { pgTable, uuid, text, integer, bigint, real, boolean, timestamp, jsonb, vector, primaryKey, uniqueIndex, index, pgEnum, serial, check, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { type AiRoute, type AiRoutingConfig, ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig, BRAND_ROLES, BRAND_VERIFICATION_STATUSES, BRAND_INVITE_STATUSES, BRAND_EVENT_KINDS, type BrandEventKind, CHALLENGE_ANSWERS, CHALLENGE_ENDINGS, type ChallengeAnswer, type ChallengeEnding } from "@contestly/shared";
+import { type AiRoute, type AiRoutingConfig, ALERT_SEVERITIES, CREW_ROLES, FEED_KINDS, CHAT_MEMBER_STATES, CHAT_MESSAGE_KINDS, CHAT_THREAD_KINDS, CLIMB_AWARD_STATUSES, CLIMB_RUN_STATUSES, EMBEDDING_DIM, PARTY_FILE_STATUSES, PRIZE_KINDS, QUESTIONS_STATUSES, type CancelledBy, type ChallengeQuestion, type ClimbLadder, type ClimbWordGame, type ForgeProgress, type AboutAnswers, type AboutConfig, type PartyLimits, FEE_BEARERS, PAYMENT_PERMISSIONS, PAYOUT_STATUSES, TOPUP_STATUSES, CORNER_STATUSES, CORNER_COLORS, type CornerColor, type Category, type CornerUnlockConfig, type NewPlayerExclusion, type NewPlayerStatus, type NewPlayerVia, DEFAULT_TIME_ZONE, type NudgeActor, type NudgeCategory, type NudgeChannel, type NudgeKind, type NudgeSkipReason, type NudgeStatus, HELD_PRIZE_STATUSES, HELD_PRIZE_DECISIONS, type HeldPrizeEvidence, type HeldPrizeOutcome, type HostWrittenRules, type PartyTemplateCopy, type PartyTemplatesConfig, BRAND_ROLES, BRAND_VERIFICATION_STATUSES, BRAND_INVITE_STATUSES, BRAND_EVENT_KINDS, type BrandEventKind, CHALLENGE_ANSWERS, CHALLENGE_ENDINGS, type ChallengeAnswer, type ChallengeEnding, type RecentPeriodChoice } from "@contestly/shared";
 
 export const partyStatus = pgEnum("party_status", ["open", "live", "finished", "cancelled"]);
 export const fundingKind = pgEnum("funding_kind", ["pooled", "host"]);
@@ -276,6 +276,8 @@ export const parties = pgTable("parties", {
   title: text("title").notNull(),
   /** The host's free-text source for question generation. Files land in step 2b. */
   brief: text("brief").notNull().default(""),
+  /** The host's explicit choice for a brief that asks about a period too recent to cover ("history"); null otherwise. */
+  recentPeriod: text("recent_period").$type<RecentPeriodChoice>(),
   /** Inferred from the brief (no category picker); the engine may refine it when it builds the spec. */
   category: text("category").notNull(),
   difficulty: partyDifficulty("difficulty").notNull().default("mixed"),

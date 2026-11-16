@@ -18,6 +18,7 @@ import { enqueueSealedSet } from "./questionSet.js";
 import { assertHostQuestionsSafe, assertHostWrittenStakes, queueHostChecks, writeHostQuestions } from "./hostQuestions.js";
 import { currentHostRules } from "./partyTemplates.js";
 import { challengeSeats, checkChallenge } from "./challenges.js";
+import { assertRecentPeriodChosen } from "./recentPeriod.js";
 
 const notify = notifyQueue();
 const partyJobs = partyQueue();
@@ -67,6 +68,7 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
     ...(input.challenge ? { visibility: "private" as const, maxPlayers: await challengeSeats(input.challenge.invitees.length) } : {}),
   };
   const startsAt = body.challenge ? latestStart(body.challenge, now) : startsAtFor(body);
+  const recentPeriod = assertRecentPeriodChosen(body.brief, body.recentPeriod, now);
   // The server decides: the current limits, and whether this host may offer goods (canOfferNonCashPrize, the one place that says).
   const brandId = opts.brand?.account.id ?? null;
   const [cfg, host, hostRules] = await Promise.all([getPartyConfig(), prospectiveHost(me.id, brandId), currentHostRules()]);
@@ -93,7 +95,7 @@ export async function createParty(me: User, input: CreatePartyInput, opts: Creat
   const lines: ChatMessage[] = [];
   const { party, invited, hostChecks } = await db.transaction(async (tx) => {
     const crew = body.crewId ? await crewForParty(tx, body.crewId, me.id) : null;
-    const [p] = await tx.insert(parties).values({ createdByUserId: me.id, brandId, title: body.title, brief: body.brief, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode, questionsStatus: mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, split: [...SPLITS[body.split].shares], limits: cfg.limits, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt, crewId: crew?.id, rematchOf: opts.rematchOf, isSim: me.isSim, template, hostRules }).returning();
+    const [p] = await tx.insert(parties).values({ createdByUserId: me.id, brandId, title: body.title, brief: body.brief, recentPeriod, category: body.category ?? inferCategory(body.brief), difficulty: body.difficulty, formats: body.formats, mode, questionsStatus: mode === "sealed" ? "generating" : "not_started", entryKobo: body.entryKobo, maxPlayers: body.maxPlayers, questionCount: body.questionCount, questionSeconds: body.secondsPerQuestion, funding: body.funding, hostPoolKobo: body.hostPoolKobo, prizeKind: body.prizeKind, split: [...SPLITS[body.split].shares], limits: cfg.limits, visibility: body.visibility, coverColor: body.coverColor, coverEmoji: body.coverEmoji, startsAt, crewId: crew?.id, rematchOf: opts.rematchOf, isSim: me.isSim, template, hostRules }).returning();
     // The host's cash prize is held now, so it can't be spent elsewhere: paid out by place at settlement, released if cancelled.
     // Goods move no money: one fulfilment record per winning place at settlement.
     if (body.funding === "host" && body.prizeKind === "cash") await ledger.hold(tx, { userId: funder, amountKobo: body.hostPoolKobo, type: "party_fund", refType: "party", refId: p.id, idempotencyKey: `party_fund:${p.id}` });

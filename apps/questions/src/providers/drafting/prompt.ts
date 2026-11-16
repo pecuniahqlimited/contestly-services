@@ -4,7 +4,7 @@
  * question texts to avoid go in: never anyone's name, handle or other personal data (ADR 0016).
  */
 import { wantsPolitics, type Difficulty } from "@contestly/shared";
-import type { GenerationSpec, SourceChunk } from "../types.js";
+import type { GenerationSpec, SourceChunk, SpecPeriod } from "../types.js";
 import type { PoolImage } from "../imagePool.js";
 
 /** How many avoid texts go in the prompt (the newest), and how long each may be. */
@@ -26,7 +26,7 @@ Every question must follow these rules:
 3. No trick wording, no double negatives, no "Which of these is NOT…".
 4. No "all of the above", "none of the above" or "both A and B" options.
 5. The answer must not appear in, or be given away by, the question.
-6. No facts that change over time: no prices, exchange rates, current office holders or "current" anything, ages, populations "today", records likely to be broken, or anything described as "latest". Prefer fixed facts: what happened, when, who did it first.
+6. No facts that change over time: no prices, exchange rates, current office holders or "current" anything, ages, populations "today", records likely to be broken, or anything described as "latest". Prefer fixed facts: what happened, when, who did it first. Something that happened on a date is fixed: when the spec gives a period, say when ("At WrestleMania 40 in April 2024, who…"), never "current".
 7. Grounded locally: when the topic is Nigerian or open, use Nigerian people, places, music, film, football, food and history, in plain Nigerian English. When the topic is clearly about somewhere else, stay on that topic.
 8. Short enough to read and answer in the time given; plain words; no URLs.
 9. Never about real private individuals; only public figures and public facts. No sexual content, hate, slurs or profanity, no promotion of gambling or alcohol. No politics, parties, elections or politicians' records unless the brief asks for politics.
@@ -67,6 +67,7 @@ export function userPrompt(p: PromptInput): string {
     `- Language and register: ${spec.language === "en" ? "English, plain and friendly; Nigerian English is welcome" : spec.language}`,
     `- Politics: ${wantsPolitics(spec) ? "the brief asks for it; keep it factual and even-handed" : "not allowed"}`,
     spec.exclusions.length ? `- Exclusions (nothing about): ${spec.exclusions.join("; ")}` : null,
+    spec.period ? `- Period: ${periodRule(spec.period)}` : null,
   ];
   if (p.sources) {
     lines.push("", FILE_RULES, "", "Source excerpts:");
@@ -83,5 +84,10 @@ export function userPrompt(p: PromptInput): string {
   }
   return lines.filter((l): l is string => l !== null).join("\n");
 }
+
+/** Inside the period, or (too recent to know) its history, never claiming anything from the period itself. */
+const periodRule = (p: SpecPeriod) => p.use === "only"
+  ? `only ${p.label} (${p.from === p.to ? p.from : `${p.from} to ${p.to}`}). Every question is about something that happened in that period, and says when. Nothing from before or after it.`
+  : `the brief mentions ${p.label}, which is too recent for you to know reliably. The host chose the topic's history instead: write about what you reliably know of it, ${p.from === p.to ? `and never say or imply that anything happened in ${p.from}` : "and nothing from the end of that period you aren't sure of"}.`;
 
 const quote = (s: string) => `"""${s.replace(/"""/g, "\"\"")}"""`;

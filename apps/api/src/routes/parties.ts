@@ -99,8 +99,10 @@ export async function partiesRoutes(app: FastifyInstance) {
     const source = await challengeOf(db, id);
     const challenge = source ? await rematchChallenge(me, source.challenge, seats.map((s) => s.userId)) : undefined;
     const inCrew = p.crewId ? (await db.select().from(crewMembers).where(and(eq(crewMembers.crewId, p.crewId), eq(crewMembers.userId, me.id)))).length > 0 : false;
+    // Same brief, same answer to it: a recent period stays history, as the original was made (a party from before
+    // the choice existed was made as history too), so a rematch never asks again.
     const body = createPartySchema.parse({
-      title: (p.title.startsWith(REMATCH_PREFIX) ? p.title : `${REMATCH_PREFIX}${p.title}`).slice(0, 60), brief: p.brief, category: p.category, difficulty: p.difficulty,
+      title: (p.title.startsWith(REMATCH_PREFIX) ? p.title : `${REMATCH_PREFIX}${p.title}`).slice(0, 60), brief: p.brief, recentPeriod: p.recentPeriod ?? "history", category: p.category, difficulty: p.difficulty,
       formats: p.formats, mode: "sealed", questionCount: p.questionCount, secondsPerQuestion: p.questionSeconds, maxPlayers: p.maxPlayers, entryKobo: p.entryKobo,
       funding: sameHost ? p.funding : "pooled", hostPoolKobo: sameHost ? p.hostPoolKobo : 0, prizeKind: sameHost ? p.prizeKind : "cash",
       places: goods.map((g) => ({ text: g.text, valueKobo: g.valueKobo ?? undefined })), split,

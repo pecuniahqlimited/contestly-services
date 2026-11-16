@@ -33,6 +33,7 @@ import { BRAND_ROLES } from "./brandRoles.js";
 import { CORNER_STATUSES, cornerColorSchema, cornerPostsPageSchema, cornerRefSchema, cornerRegularSchema, cornerViewerCanSchema, cornerViewerSchema, cornerWinnerSchema, hostCornerSchema, yourPeopleFollowingSchema } from "./corners.js";
 import { chatMessageSchema, chatPreviewSchema } from "./chat.js";
 import { CATEGORIES, type Category } from "./categories.js";
+import { recentPeriodChoiceSchema } from "./briefPeriod.js";
 import { owedSchema } from "./payments.js";
 import { DELETED_HANDLE_PREFIX, GUEST_HANDLE_PREFIX, handleSchema } from "./accounts.js";
 import { DEFAULT_PROVIDERS_CONFIG, providersConfigSchema } from "./providers.js";
@@ -147,6 +148,7 @@ export const DEFAULT_QUESTIONS_CONFIG: QuestionsConfig = {
 export * from "./safety.js";
 export * from "./providers.js";
 export * from "./aiRouting.js";
+export * from "./briefPeriod.js";
 
 /** Why a player flagged a question. */
 export const FLAG_REASONS = ["wrong_answer", "multiple_correct", "unclear", "out_of_date", "inappropriate"] as const;
@@ -186,7 +188,8 @@ export const EMBEDDING_DIM = 1536;
  * There is no category picker: the engine infers the category tag from the host's brief, and this
  * keyword map is the v1 inference, shared by the API (at create) and the question engine (in the spec).
  * A single clear winner takes the tag; no hit at all, or a tie across topics (a mixed brief), lands
- * on General knowledge.
+ * on General knowledge. A hint matches at the start of a word ("rap" isn't "trap"), so a hint can be a stem
+ * ("wrestl" for wrestler, wrestling, WrestleMania).
  */
 const CATEGORY_HINTS: Partial<Record<Category, string[]>> = {
   Afrobeats: ["afrobeat", "music", "song", "artist", "burna", "wizkid", "davido", "tems"],
@@ -202,10 +205,13 @@ const CATEGORY_HINTS: Partial<Record<Category, string[]>> = {
   "Reality TV": ["reality tv", "bbnaija", "big brother"],
   Maths: ["maths", "math", "number", "algebra", "arithmetic"],
   "Hip hop": ["hip hop", "rap", "rapper"],
+  Sports: ["sport", "wwe", "wrestl", "monday night raw", "smackdown", "boxing", "boxer", "ufc", "mma", "nba", "basketball", "tennis", "olympic", "athletics", "formula 1", "f1", "golf", "cricket"],
 };
+const HINT_PATTERNS = Object.fromEntries(Object.entries(CATEGORY_HINTS).map(([cat, hints]) =>
+  [cat, hints.map((h) => new RegExp(`\\b${h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`))])) as Partial<Record<Category, RegExp[]>>;
 export function inferCategory(brief: string): Category {
   const text = brief.toLowerCase();
-  const scored = CATEGORIES.map((cat) => ({ cat, hits: (CATEGORY_HINTS[cat] ?? []).filter((h) => text.includes(h)).length }));
+  const scored = CATEGORIES.map((cat) => ({ cat, hits: (HINT_PATTERNS[cat] ?? []).filter((h) => h.test(text)).length }));
   const top = Math.max(...scored.map((s) => s.hits));
   const leaders = scored.filter((s) => s.hits === top);
   return top > 0 && leaders.length === 1 ? leaders[0].cat : "General knowledge";
@@ -236,6 +242,11 @@ export const createPartySchema = z.object({
   title: z.string().min(3).max(60),
   /** The source for question generation: a topic, a vibe, a list of facts — anything. File upload lands in step 2b. */
   brief: z.string().min(3).max(2000),
+  /**
+   * The host's answer when the brief asks about a period too recent to cover (briefPeriod.ts): without it such a
+   * brief is refused with 409 recent_period_unsupported, so the choice is always the host's, never made for them.
+   */
+  recentPeriod: recentPeriodChoiceSchema.optional(),
   /** Omitted → inferred from the brief; the engine may refine it again when it builds the spec. */
   category: z.enum(CATEGORIES).optional(),
   difficulty: z.enum(DIFFICULTIES).default("mixed"),
@@ -672,6 +683,8 @@ export const retryQuestionsResponseSchema = z.object({ status: z.literal("genera
 /** POST /parties/:id/questions/retry: try a failed set again, optionally with a changed brief. */
 export const retryQuestionsSchema = z.object({
   brief: z.string().min(3).max(2000).optional(),
+  /** As on create: needed when the new brief asks about a recent period. */
+  recentPeriod: recentPeriodChoiceSchema.optional(),
   difficulty: z.enum(DIFFICULTIES).optional(),
   formats: z.array(z.enum(QUESTION_FORMATS)).min(1).max(QUESTION_FORMATS.length).optional(),
 });

@@ -26,10 +26,12 @@ export const CATCH_ALL_CATEGORY: Category = "General knowledge";
  * Proven open-knowledge questions for the spec, most similar first, at or above the model's floor. Excludes
  * questions generated from someone's uploaded file (only answerable with that file) and anything in `excludeIds`.
  * Only rows embedded by `model` are comparable with the spec's vector (ADR 0016); a real model never gets a
- * mock-written row; and a spec with a specific category gets only that category's questions.
+ * mock-written row; a spec with a specific category gets only that category's questions; and a spec that stays
+ * inside a period gets only questions that name a year in it.
  */
 export async function retrieveFromBank(spec: GenerationSpec, specEmbedding: number[], limit: number, excludeIds: string[], model: string): Promise<BankQuestion[]> {
   const similarity = sql<number>`1 - (${cosineDistance(bankQuestions.embedding, specEmbedding)})`;
+  const scoped = spec.period?.use === "only";
   const rows = await db
     .select({ q: bankQuestions, similarity })
     .from(bankQuestions)
@@ -40,9 +42,26 @@ export async function retrieveFromBank(spec: GenerationSpec, specEmbedding: numb
       spec.categoryTag === CATCH_ALL_CATEGORY ? undefined : eq(bankQuestions.categoryTag, spec.categoryTag),
     ))
     .orderBy(desc(similarity))
-    .limit(limit);
+    .limit(scoped ? limit * PERIOD_OVERFETCH : limit);
   const floor = retrievalFloor(model);
-  return rows.filter((r) => Number(r.similarity) >= floor).map((r) => r.q);
+  return inPeriod(spec, rows.filter((r) => Number(r.similarity) >= floor).map((r) => r.q)).slice(0, limit);
+}
+
+/** A period-scoped spec reads more candidates, since only those that say a year inside the period are kept. */
+const PERIOD_OVERFETCH = 5;
+const YEARS = /\b(?:19|20)\d{2}\b/g;
+
+/**
+ * For a spec that stays inside a period ("only"), the bank questions whose text names a year inside it: a question
+ * that names no year, or another one, may be about any time. Every other spec keeps them all.
+ */
+export function inPeriod<T extends Pick<BankQuestion, "payload" | "explanation">>(spec: GenerationSpec, rows: T[]): T[] {
+  const period = spec.period;
+  if (period?.use !== "only") return rows;
+  return rows.filter((q) => {
+    const years = `${JSON.stringify(q.payload)} ${q.explanation ?? ""}`.match(YEARS)?.map(Number) ?? [];
+    return years.some((y) => y >= period.from && y <= period.to);
+  });
 }
 
 /** A bank question this spec may reuse: active, open-knowledge, an allowed format, not excluded. */
@@ -59,7 +78,7 @@ const reusable = (spec: GenerationSpec, excludeIds: string[]) => and(
  */
 export async function reusableAmong(spec: GenerationSpec, ids: string[], excludeIds: string[]): Promise<BankQuestion[]> {
   if (!ids.length) return [];
-  return db.select().from(bankQuestions).where(and(inArray(bankQuestions.id, ids), reusable(spec, excludeIds)));
+  return inPeriod(spec, await db.select().from(bankQuestions).where(and(inArray(bankQuestions.id, ids), reusable(spec, excludeIds))));
 }
 
 /**
