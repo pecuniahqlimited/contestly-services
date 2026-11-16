@@ -1,0 +1,122 @@
+# A load test against a dev stack, run by hand (Actions → Load test → Run workflow). GitHub's runners are the
+# players, several machines at once, so the server under test isn't also simulating them.
+# Prepare the server first: docs/engineering/load-testing.md (AUTH_MODE=dev and AI_PROFILE=mock, then put them back).
+name: Load test
+
+on:
+  workflow_dispatch:
+    inputs:
+      parties:
+        description: Parties (the total, split across the machines)
+        default: "10"
+      players:
+        description: Players per party (the host included)
+        default: "100"
+      machines:
+        description: Runner machines (about 2,000 players each at most)
+        default: "1"
+      questions:
+        description: Questions per party
+        default: "5"
+      seconds:
+        description: Seconds per question
+        default: "10"
+      starts_in_minutes:
+        description: Minutes until the parties start (time to create them and seat everyone)
+        default: "8"
+      api_url:
+        description: API (blank = the LOAD_API_URL variable)
+        default: ""
+      rt_url:
+        description: Realtime, wss:// (blank = the LOAD_RT_URL variable)
+        default: ""
+
+# One load test at a time.
+concurrency:
+  group: load-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      starts_at: ${{ steps.plan.outputs.starts_at }}
+      run: ${{ steps.plan.outputs.run }}
+    steps:
+      - id: plan
+        env:
+          MACHINES: ${{ inputs.machines }}
+          MINUTES: ${{ inputs.starts_in_minutes }}
+        run: |
+          set -euo pipefail
+          [[ "$MACHINES" =~ ^[1-9][0-9]?$ ]] || { echo "machines must be 1-99"; exit 1; }
+          [[ "$MINUTES" =~ ^[0-9]+$ ]] || { echo "starts_in_minutes must be a number"; exit 1; }
+          echo "shards=$(seq -s, 0 $((MACHINES - 1)) | sed 's/^/[/;s/$/]/')" >> "$GITHUB_OUTPUT"
+          # Every machine's parties start together, after the slowest machine has installed and seated its players.
+          echo "starts_at=$(date -u -d "+${MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          # Fresh players every run: the engine never repeats a question to anyone seated, so reused players shrink the pool.
+          echo "run=$(openssl rand -hex 2)" >> "$GITHUB_OUTPUT"
+
+  players:
+    name: Players (machine ${{ matrix.shard }})
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Play
+        env:
+          LOAD_API: ${{ inputs.api_url || vars.LOAD_API_URL }}
+          LOAD_RT: ${{ inputs.rt_url || vars.LOAD_RT_URL }}
+          LOAD_PARTIES: ${{ inputs.parties }}
+          LOAD_PLAYERS: ${{ inputs.players }}
+          LOAD_QUESTIONS: ${{ inputs.questions }}
+          LOAD_SECONDS: ${{ inputs.seconds }}
+          LOAD_SHARDS: ${{ inputs.machines }}
+          LOAD_SHARD: ${{ matrix.shard }}
+          LOAD_STARTS_AT: ${{ needs.plan.outputs.starts_at }}
+          LOAD_RUN: ${{ needs.plan.outputs.run }}
+          LOAD_OUT: load-report-${{ matrix.shard }}.json
+        run: |
+          ulimit -n "$(ulimit -Hn)"   # one socket per player
+          npx tsx scripts/load-party.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: load-report-${{ matrix.shard }}
+          path: load-report-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+
+  report:
+    name: Report
+    needs: players
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/load-report.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: load-report-*
+          merge-multiple: true
+          path: reports
+      - run: node scripts/load-report.mjs reports/*.json | tee -a "$GITHUB_STEP_SUMMARY"

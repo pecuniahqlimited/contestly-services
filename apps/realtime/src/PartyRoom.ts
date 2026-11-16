@@ -9,6 +9,7 @@
  */
 import type { Client } from "colyseus";
 import { SafeRoom } from "./SafeRoom.js";
+import { partyRoomClaimKey } from "./roomClaims.js";
 import { firstSighting, parsePublished, sendLine } from "./chat.js";
 import type { ChatMessage } from "@contestly/shared";
 import { and, asc, eq, notInArray } from "drizzle-orm";
@@ -76,6 +77,17 @@ export class PartyRoom extends SafeRoom {
   async onCreate(options: { partyId?: string }) {
     const partyId = options?.partyId;
     if (!partyId || typeof partyId !== "string") throw new Error("partyId required");
+    // One room per party, or a crowd arriving together splits it into separate games (roomClaims.ts).
+    if (!(await this.soleRoomFor(partyRoomClaimKey(partyId)))) return;
+    try {
+      await this.setUp(partyId);
+    } catch (e) {
+      await this.releaseSoleRoom();
+      throw e;
+    }
+  }
+
+  private async setUp(partyId: string) {
     const [party] = await db.select().from(parties).where(eq(parties.id, partyId));
     if (!party) throw new Error("party not found");
     this.partyId = partyId;
@@ -243,6 +255,9 @@ export class PartyRoom extends SafeRoom {
   }
 
   onDispose() {
+    // A stand-in never set anything up; the party's presence and claim belong to the room that has it.
+    if (this.standIn) return;
+    this.run("room claim: release", () => this.releaseSoleRoom());
     this.heartbeat?.clear();
     this.run("presence: here", () => this.presence.del(partyHereKey(this.partyId)));
     if (this.thread) this.presence.unsubscribe(chatThreadChannel(this.thread.id), this.onLine);
